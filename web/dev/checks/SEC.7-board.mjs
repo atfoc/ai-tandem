@@ -12,7 +12,7 @@ import { act, byTid, openBoard, press, tidSel } from "./sel.mjs";
 import { sideSeen } from "./side.mjs";
 // Added in the sweep (rn-sw-webtest), from web/test/sectionviews.test.ts "a section's board whose server is away and which this window keeps no drawing of says that it
 // opens when the server is back; one deleted there says so" (A-ST-08), which nothing in the browser proved on the new build: the view in the canvas's place (`board-off`).
-import { drawer, LIVE } from "./boarddraw.mjs";
+import { drawer, editHere, LIVE } from "./boarddraw.mjs";
 
 export const viewports = ["desktop", "tablet", "phone"];
 
@@ -32,7 +32,7 @@ await check("SEC.7 a board that is open when its server drops, and when it is ba
   const noRows = async (name) => { if (!await until(async () => !(await sideSeen(page, STUDIO)).outline.length, 10000)) fail(`${name}: the section still has rows: ${J((await sideSeen(page, STUDIO)).outline)}`); };
   const none = async (id) => until(async () => !(await byTid(page, id).count()), 10000);
 
-  await page.waitForSelector(LIVE, { timeout: 20000 });
+  await editHere(page); // (a board opens as a reader's: the button makes the window its writer)
   const saves = () => on(/\/boards\/b_loose\/scene\?/, "PUT");
   const count = () => there("return scenes.b_loose.scene.elements.filter((e) => !e.isDeleted).length;");
   const draw = drawer(page);
@@ -44,7 +44,7 @@ await check("SEC.7 a board that is open when its server drops, and when it is ba
   await noRows("a board, its server dropped");
   await draw();
   await says("a board drawn on while its server is away", "save-banner", "Not saved, Studio Mac unreachable");
-  if (!await page.locator(LIVE).count() || await byTid(page, "board-off").count() || await byTid(page, "takeover-panel").count()) fail("the open board cannot be drawn on while its server is away");
+  if (!await page.locator(LIVE).count() || await byTid(page, "board-off").count() || await byTid(page, "board-role").count()) fail("the open board cannot be drawn on while its server is away");
   await draw();
   if (!await until(() => saves().filter((c) => c.status === 503).length >= 1, 10000)) fail("no save of the board was answered 503 during the outage");
   if (await count() !== 2) fail("Studio Mac got a drawing while it was not connected");
@@ -52,6 +52,7 @@ await check("SEC.7 a board that is open when its server drops, and when it is ba
   // back, at the revision the page has: the drawing is saved there
   const at = saves().length;
   await back();
+  await editHere(page); // (the new stream holds nothing: the window is a reader, with its unsaved drawing kept; the button saves it where it was made)
   if (!await until(async () => await count() === 4, 15000)) fail(`back at the same revision, the board's drawing was not saved: Studio Mac has ${await count()} shapes, not 4; the saves: ${J(saves().slice(at).map((c) => [c.path, c.status]))}`);
   if (!await none("save-banner")) fail("back and saved, the banner stays");
   if (saves().slice(at).some((c) => c.status !== 200 && c.status !== undefined)) fail(`back at the same revision, a save was refused: ${J(saves().slice(at).map((c) => [c.path, c.status]))}`);
@@ -62,14 +63,22 @@ await check("SEC.7 a board that is open when its server drops, and when it is ba
   await says("the board drawn on, its server away again", "save-banner", "Not saved, Studio Mac unreachable");
   const other = { type: "excalidraw", version: 2, elements: [{ id: "sec_other", type: "ellipse", x: 200, y: 160, width: 140, height: 90 }], appState: {}, files: {} };
   await back(`onServer("${STUDIO}", () => { scenes.b_loose.scene = ${J(other)}; scenes.b_loose.rev += 5; })`);
-  await says("a board changed there while its server was away", "canvas-note", "This board was changed while Studio Mac was unreachable. Your unsaved changes were dropped.");
+  // (the window came back as a reader: the note is the reader bar's, with the words of a dropped change; the outage's own sentence belongs to the note on a held canvas)
+  await says("a board changed there while its server was away", "board-role-dropped", "A change made here was not saved in time and was dropped.");
   if (!await none("save-banner")) fail("the edit dropped, the banner stays");
+  if (await byTid(page, "canvas-note").count()) fail("the canvas of a reader shows the note of a held one");
   if (J(await there("return scenes.b_loose.scene.elements.map((e) => e.id);")) !== J(["sec_other"])) fail(`the drawing made during the outage replaced the one made there: ${J(await there("return scenes.b_loose.scene.elements.map((e) => e.id);"))}`);
-  if (!await until(() => page.locator(LIVE).count(), 15000)) fail("after the dropped edit the board cannot be drawn on");
-  // the note's × hides it, and the board is as it was (D-RB-06)
+  if (!await page.locator(".excalidraw").count() || !await byTid(page, "board-take").count()) fail("after the dropped edit the board is not shown to a reader with its button");
+  // the button takes the board again at the stored scene, and the reader bar's note goes with the press
+  await editHere(page);
+  if (!await none("board-role-dropped")) fail("the dropped note stays after Edit here");
+  // a held canvas's note: a save refused as stale (the board was saved elsewhere meanwhile) drops the edit with the note, and its × hides it (D-RB-06)
+  await there("return othersave('b_loose', [])");
+  await draw();
+  await says("a drawing refused as stale", "canvas-note", "A change made here was not saved in time and was dropped.");
   await press(page, byTid(page, "canvas-note-hide").first());
   if (!await none("canvas-note")) fail("the × of the note does not hide it");
-  if (!await page.locator(LIVE).count()) fail("hiding the note took the canvas away");
+  if (!await page.locator(".excalidraw").count()) fail("hiding the note took the canvas away");
   if (calls.some((c) => c.server === "local" && /^\/api\/boards\//.test(c.path))) fail("a call for the section's board went to this computer's routes");
   await ctx.close(); // (the mock has one stream: two pages open take it from each other)
 
@@ -99,7 +108,7 @@ await check("SEC.7 a board that is open when its server drops, and when it is ba
     await seed(url, "SEC");
     const KEY = `${STUDIO}~c_on_floor`;
     const q = await open({ sel: { board: `${STUDIO}~b_loose`, chat: null } });
-    await q.page.waitForSelector(LIVE, { timeout: 20000 });
+    await editHere(q.page);
     await act(q.page, "select");
     await press(q.page, byTid(q.page, "board-chats").first()); // (the chat beside the board; on the phone the screen over it)
     const chips = () => byTid(q.page, "composer-input").locator(tidSel("ref-chip")).allTextContents();

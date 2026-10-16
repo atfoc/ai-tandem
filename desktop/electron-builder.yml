@@ -28,6 +28,12 @@ extraResources:
     to: remote/setup-remote.sh
   - from: ../assets/icon/AppIcon.icns
     to: AppIcon.icns
+  # The headless writer (scripts/build-app.sh builds it into build/headless): headless.mjs, manifest.json and engine/ with the
+  # native canvas (engine/node_modules/skia-canvas/lib/skia.node). A resource, not part of app.asar: a native module can't be
+  # loaded from an asar archive, and the server runs headless.mjs from this folder (asarUnpack would not give it a plain folder).
+  # It is signed with the rest of the app (every Mach-O file in the bundle is).
+  - from: build/headless
+    to: headless
 mac:
   target: dir
   icon: ../assets/icon/AppIcon.icns

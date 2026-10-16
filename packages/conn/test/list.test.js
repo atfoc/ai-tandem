@@ -176,9 +176,9 @@ test('backoffFor: the steps, then the last one; jitter stays within its part', (
   assert.equal(backoffFor(j, 0, () => 0.5), 100);
 });
 
-test('routes.json is the client API of the plan: 51 rows, hello and the stream first', () => {
+test('routes.json is the client API of the plan: 53 rows, hello and the stream first', () => {
   const routes = require('../core/routes.json');
-  assert.equal(routes.length, 51);
+  assert.equal(routes.length, 53);
   assert.deepEqual(routes.slice(0, 3), ['GET /api/hello', 'GET /api/events', 'GET /api/state']);
   assert.equal(new Set(routes).size, routes.length);
   assert.ok(routes.every((r) => /^(GET|POST|PUT|PATCH|DELETE) \/api\//.test(r)));

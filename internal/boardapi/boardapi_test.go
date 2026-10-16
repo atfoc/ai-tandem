@@ -262,6 +262,7 @@ func TestToolsCallThroughClient(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	e.take("A", other.ID) // a board that no window holds is not asked of the window that holds the chat's board
 	_, out := e.mcp(e.token, `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"read_board","arguments":{"board":"`+other.ID+`"}}}`)
 	text, isErr := callResult(t, out)
 	if isErr || text != "rect r1 at 0,0" {
@@ -454,10 +455,10 @@ func TestCallGoesToTheHolderOfItsTarget(t *testing.T) {
 	}
 }
 
-// A call about a board nobody holds goes to the holder of the chat's board, as a call about no
-// board: the holder is not given the board, and no held arrives before the call. Another page is
-// not asked.
-func TestCallForAFreeBoardGoesToTheHolderOfTheChatsBoard(t *testing.T) {
+// A call about a board nobody holds is not asked of the holder of the chat's board, and gives the
+// board to nobody: with no background editor the agent is told that the board isn't open. The page
+// that holds the board answers its calls, and a reply from another page is refused.
+func TestCallForAFreeBoardIsNotAskedOfTheHolderOfTheChatsBoard(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)
 	other := e.newBoard("other")
@@ -466,6 +467,17 @@ func TestCallForAFreeBoardGoesToTheHolderOfTheChatsBoard(t *testing.T) {
 	p1.OnRPC(nil) // read its events in order
 	e.take("P1", e.board.ID)
 
+	for _, tool := range []string{"read_board", "apply", "delete_elements", "get_image"} {
+		if text, isErr := e.relay.Call(e.token, tool, json.RawMessage(`{"board":"`+other.ID+`"}`)); !isErr || text != NoClientText {
+			t.Fatalf("%s on a free board: %q isErr=%v", tool, text, isErr)
+		}
+	}
+	if id, held := e.relay.Bridge.HolderOf(other.ID); held {
+		t.Fatalf("the call gave the free board to %q", id)
+	}
+	p1.ExpectNone(50 * time.Millisecond)
+
+	e.take("P1", other.ID)
 	type answer struct {
 		text  string
 		isErr bool
@@ -478,9 +490,6 @@ func TestCallForAFreeBoardGoesToTheHolderOfTheChatsBoard(t *testing.T) {
 	rpc := p1.Expect("rpc")
 	if p := rpc["params"].(map[string]any); rpc["method"] != "tool" || p["target"] != other.ID || p["board"] != e.board.ID || p["name"] != "apply" {
 		t.Fatalf("rpc = %v", rpc)
-	}
-	if id, held := e.relay.Bridge.HolderOf(other.ID); held {
-		t.Fatalf("the call gave the free board to %q", id)
 	}
 	// Another page's answer is refused and the call stays open.
 	if status, _ := p2.Do("POST", "/api/rpc-reply", map[string]any{"id": rpc["id"], "result": "stolen"}); status != http.StatusConflict {
@@ -500,13 +509,14 @@ func TestCallForAFreeBoardGoesToTheHolderOfTheChatsBoard(t *testing.T) {
 	}
 }
 
-// One page, which holds the chat's board, is asked every tool on every board.
+// One page, which holds both boards, is asked every tool on every board.
 func TestOnePageGetsEveryToolOnEveryBoard(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)
 	other := e.newBoard("other")
 	_, seen := e.pages("P1")
 	e.take("P1", e.board.ID)
+	e.take("P1", other.ID)
 	for _, bd := range []model.Board{e.board, other} {
 		for _, tool := range []string{"read_board", "get_view", "get_image", "apply", "delete_elements", "show_board"} {
 			text, isErr := e.relay.Call(e.token, tool, json.RawMessage(`{"board":"`+bd.ID+`"}`))
@@ -527,12 +537,11 @@ func TestOnePageGetsEveryToolOnEveryBoard(t *testing.T) {
 			}
 		}
 	}
-	// No call gave a board to the page: it holds the chat's board and nothing else.
-	if id, _ := e.relay.Bridge.HolderOf(e.board.ID); id != "P1" {
-		t.Fatalf("holder of the chat's board is %q", id)
-	}
-	if id, held := e.relay.Bridge.HolderOf(other.ID); held {
-		t.Fatalf("a call gave the other board to %q", id)
+	// No call changed who holds what.
+	for _, bd := range []model.Board{e.board, other} {
+		if id, _ := e.relay.Bridge.HolderOf(bd.ID); id != "P1" {
+			t.Fatalf("holder of %s is %q", bd.Name, id)
+		}
 	}
 }
 

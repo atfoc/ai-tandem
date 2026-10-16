@@ -1066,9 +1066,9 @@ async function step9() {
   execFileSync(B.bin, ["remote", "setup", "-home", elsewhere, "-port", String(await freePort()), "-name", "127.0.0.1"], { env: B.env, stdio: "ignore" });
   // (a hello is answered without the secret: the refusal of a secret comes at the stream that follows it)
   const STATES = [
-    ["Secret not accepted", tls, (req) => (req.url.startsWith("/api/hello") ? hello(6, B.instance) : json(401, { error: "unauthorized" }))],
+    ["Secret not accepted", tls, (req) => (req.url.startsWith("/api/hello") ? hello(7, B.instance) : json(401, { error: "unauthorized" }))],
     ["Not an AI Whiteboard server", tls, () => [200, "text/html", "<html><body>It works!</body></html>"]],
-    ["Another server", tls, (req) => (req.url.startsWith("/api/hello") ? hello(6, "0b9f4a52-6c1d-4e8a-9f3b-2d7c5a1e8f60") : json(404, { error: "not found" }))],
+    ["Another server", tls, (req) => (req.url.startsWith("/api/hello") ? hello(7, "0b9f4a52-6c1d-4e8a-9f3b-2d7c5a1e8f60") : json(404, { error: "not found" }))],
     ["Name not known there", tls, () => json(403, { error: "bad host" })],
     ["Certificate changed", { key: fs.readFileSync(path.join(elsewhere, "remote-key.pem")), cert: fs.readFileSync(path.join(elsewhere, "remote-cert.pem")) }, () => json(401, { error: "unauthorized" })],
   ];

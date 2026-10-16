@@ -3,7 +3,7 @@
 // each entry; calls go out through api.ts. Several windows work on one server at once; each board is held by one of
 // them, which hands it over after it has written its pending save (board.ts keeps the roles).
 import { api } from "../api.ts";
-import { setState, getState, applySnapshot, applySection, dropLeftBehind, dropServer, markGone, setSectionGroups, setSectionDefaults, setServers, setServerLists, setLibrary, dropLibrary, libraryAwayOf, upsertBoard, removeBoard, upsertChat, removeChat, setThread, setSubs, upsertSub,
+import { setState, getState, applySnapshot, applySection, dropLeftBehind, dropServer, markGone, setSectionGroups, setSectionDefaults, setServers, setServerLists, setLibrary, dropLibrary, libraryAwayOf, upsertBoard, removeBoard, setWriter, clearWriters, upsertChat, removeChat, setThread, setSubs, upsertSub,
   upsertState, setDrawer, setShown, setThreadError, setLoading, dropLoading, threadAt, shownBranch, shownKey, currentBranch, branchState, isBusy,
   type ThreadKey } from "./store.ts";
 import { boardSide } from "./ports.ts";
@@ -56,7 +56,7 @@ function onStreamState(st: StreamState) {
 /** The events that are about a thing of a server: every id in them is that server's own, and the page's key of the thing
  *  has the server in it (logic/keys.ts). The others are about the server itself. */
 const OF_A_THING = new Set(["groups", "defaults", "board", "board_removed", "chat", "chat_removed", "branch_state", "tree", "chat_items", "sub",
-  "sub_items", "held", "release_request", "superseded", "rpc"]);
+  "sub_items", "held", "release_request", "superseded", "rpc", "scene", "writer"]);
 
 async function handle(m: Envelope) {
   if ("app" in m) return onApp(m.app);
@@ -99,11 +99,13 @@ async function onEvent(server: string, m: any) {
   if (on && OF_A_THING.has(m.type) && !getState().sections[on]) return;
   const key = (id: string) => keyOn(on, id);
   switch (m.type) {
-    case "hello": boardSide().streamOpened(server); if (!on) { setState({ role: "active" }); draftBacks.opened(); } return; // a new stream holds no board of that server; a draft that could not be saved without one is saved
+    case "hello": boardSide().streamOpened(server); clearWriters(server); if (!on) { setState({ role: "active" }); draftBacks.opened(); } return; // a new stream holds no board of that server; a draft that could not be saved without one is saved
     case "snapshot": if (on) onSectionSnapshot(on, m); else onSnapshot(m); return;
     case "release_request": if (m.board) await boardSide().handOver(key(m.board)); return; // another window asks for one board
-    case "superseded": if (m.board) boardSide().boardLost(key(m.board)); return; // that board's canvas gives way to the panel (TakeoverPanel); the stream stays
+    case "superseded": if (m.board) boardSide().boardLost(key(m.board)); return; // that board turns into a reader (the role bar says another window took it); the stream stays
     case "held": if (m.board) boardSide().granted(key(m.board), m.rev ?? 0); return; // a board handed over to this window, or given to it for a tool call; for a board of a section also after its server is back
+    case "scene": if (m.board && typeof m.rev === "number") boardSide().sceneMoved(key(m.board), m.rev); return; // the stored scene of a board on screen moved (someone else wrote it): a reader reads it again
+    case "writer": if (m.board) setWriter(key(m.board), m.writer === "window" || m.writer === "headless" ? m.writer : ""); return; // who writes a board on screen changed
     case "server_stopping": await boardSide().flushAll(server); await api.flushed(server).catch(() => {}); return;
     case "rpc": return answer(server, on ? { ...m, params: toolCallIn(on, m.params) } : m);
     case "groups": if (on) setSectionGroups(on, (m.groups ?? []).map((g: any) => groupIn(on, g))); else setState({ groups: m.groups ?? [] }); return;
@@ -186,7 +188,7 @@ function afterSnapshot() {
   const snap = ++snapshots;
   stale.clear(); // the snapshot dropped every thread of this computer's; a section's are judged anew when its tree follows
   const { chat } = getState().sel;
-  boardSide().takeAfterSnapshot(); // the board on screen and those with an unsaved edit, if no other window holds them
+  boardSide().afterSnapshot(); // (takes nothing: a window is the writer of a board only by the user's button)
   if (!chat || inSection(chat) || !reachable(getState(), chat)) return; // (a section's is read when its own tree arrives; one that is no longer on this computer shows so)
   void api.openChat(chat, shownBranch(getState(), chat)).catch(() => {});
   void loadList(chat).catch(() => {}); // a new fetch, and not one that runs: a read made while the stream was down started no follow

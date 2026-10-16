@@ -56,6 +56,10 @@ type ModelChoice = {
  *  computer where an entry id of the server list is asked for (logic/keys.ts). */
 export const LOCAL_SERVER = "local";
 
+/** Who writes a board, as the server tells it (the `follow` answer, a `writer` event): a window (whichever; never named), the headless
+ *  writer, or nobody (""). */
+export type Writer = "window" | "headless" | "";
+
 export type ServerDefaults = {
   agent?: AgentKind; // the agent a new chat starts with
   cwd?: string;

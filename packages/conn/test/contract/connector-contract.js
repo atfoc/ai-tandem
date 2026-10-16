@@ -119,7 +119,7 @@ function runConnectorContract(makeConnector, env) {
             return s;
           },
           pinned: () => ({ selfSigned: true, pin: srv.fingerprint }),
-          headers: (extra = {}) => ({ 'x-aiwb-secret': srv.secret, 'x-aiwb-client': '00000000-0000-4000-8000-000000000000', 'x-aiwb-level': '6', ...extra }),
+          headers: (extra = {}) => ({ 'x-aiwb-secret': srv.secret, 'x-aiwb-client': '00000000-0000-4000-8000-000000000000', 'x-aiwb-level': '7', ...extra }),
           req: (path, extra = {}) => ({ method: 'GET', path, headers: ctx.headers(), body: null, ...extra }),
         };
         await fn(ctx, t);
@@ -227,7 +227,7 @@ function runConnectorContract(makeConnector, env) {
 
   scenario('the stream gives the text of its body in order, then ends once, without an error', 'aiwb', async ({ srv, open, pinned, req }) => {
     const s = await open(pinned());
-    const r = await s.stream(req(eventsPath, { headers: { 'x-aiwb-secret': srv.secret, 'x-aiwb-level': '6', accept: 'text/event-stream' } }));
+    const r = await s.stream(req(eventsPath, { headers: { 'x-aiwb-secret': srv.secret, 'x-aiwb-level': '7', accept: 'text/event-stream' } }));
     equal(r.status, 200);
     match(r.headers['content-type'], /^text\/event-stream/, 'content-type');
     const got = collect(r.body);
@@ -301,7 +301,7 @@ function runConnectorContract(makeConnector, env) {
     equal(r.status, 200);
     bytesEqual(r.body, bytes, 'the answer');
     const sent = Uint8Array.from([0, 255, 254, 0, 1, 0x80, 0xc3, 0x28, 10, 13]); // not UTF-8
-    const e = await s.fetch({ ...req('/api/echo', { method: 'POST', body: sent, headers: { ...{ 'x-aiwb-secret': srv.secret, 'x-aiwb-level': '6' }, 'content-type': 'application/octet-stream' } }), limitMs: 10 * SECOND });
+    const e = await s.fetch({ ...req('/api/echo', { method: 'POST', body: sent, headers: { ...{ 'x-aiwb-secret': srv.secret, 'x-aiwb-level': '7' }, 'content-type': 'application/octet-stream' } }), limitMs: 10 * SECOND });
     bytesEqual(e.body, sent, 'the echo');
     const seen = srv.requests().find((q) => q.method === 'POST');
     equal(seen.path, '/api/echo');

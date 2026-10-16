@@ -54,11 +54,15 @@ you have no id for, call `list_boards` first; if several share the name, pick by
 5. The user draws at the same time as you. Never move, restyle or delete what the user drew unless
    they asked. If `apply` reports conflicts, re-read and try again, or tell the user.
 6. `delete_elements` removes elements; give a short `reason`.
-7. If a board tool says the board isn't open, stop working on the board and tell the user in one
-   sentence that the AI Whiteboard window must be open for board work.
+7. Boards can be read and changed while no window is open. If a board tool says the board isn't open,
+   or that nobody is editing it in a window, stop working on the board and tell the user in one
+   sentence what the tool said. If a change fails because the board was taken over in a window, or
+   its background editor stopped, read the board again before you change it. `get_view` and
+   `show_board` need a window that shows the board; if none does they say so in plain words, and
+   that is no failure of the board: go on with `read_board` and `apply`.
 8. `get_image` shows you the board as a picture: use it to check colours, layout and overlaps that
    `read_board` does not show, for example after a larger change. The user's selection can be drawn
-   only for the board on their screen; otherwise use `refs` with the ids from `<selection>`, or
+   only while a window shows the board; otherwise use `refs` with the ids from `<selection>`, or
    `rect`, or `all`. It refuses a very large picture (`TOO_LARGE`): ask again for a smaller scope
    or scale. In a Cursor chat the result names an image file; open it with your file tools.
 

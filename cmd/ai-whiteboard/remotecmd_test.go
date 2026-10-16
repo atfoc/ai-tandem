@@ -423,7 +423,7 @@ func TestStatusJSON(t *testing.T) {
 		client, _ := r.Running["client"].(map[string]any)
 		mcp, _ := r.Running["mcp"].(map[string]any)
 		listener, _ := mcp["listener"].(map[string]any)
-		if r.Running["build"] != "this" || r.Running["version"] != "1.2.3" || r.Running["pid"] != float64(s.pid) || r.Running["featureLevel"] != float64(6) ||
+		if r.Running["build"] != "this" || r.Running["version"] != "1.2.3" || r.Running["pid"] != float64(s.pid) || r.Running["featureLevel"] != float64(7) ||
 			r.Running["instanceId"] != standInID || client["listening"] != true || client["address"] != "https://127.0.0.1:5123" || client["port"] != float64(5123) ||
 			client["fingerprint"] != "AB:CD:EF" || client["secretReloads"] != float64(0) || listener["up"] != true || mcp["chats"] == nil {
 			t.Fatalf("running: %+v", r.Running)

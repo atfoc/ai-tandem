@@ -28,7 +28,8 @@ Every whiteboard has its own chats, and the agent of such a chat has tools for t
   your selection. Press ⌘L to put the selected shapes into your message, or ⌘⇧L and click to
   point at a spot on the board.
 - **It draws directly on the board.** New and changed elements appear as the agent works,
-  marked with the agent's name. Each change it makes is one undo step, so ⌘Z takes it back.
+  marked with the agent's name. When your window is editing the board, each change the agent makes is
+  one undo step, so ⌘Z takes it back; a change it made with no window editing has none.
 - **It works across boards.** Mention another board with `@` to bring it into the message. When
   you ask for it, an agent creates a new board or brings a board to your screen.
 
@@ -217,15 +218,28 @@ flowchart LR
   same rule as the desktop's, and the list of servers and their secrets stay in the device's
   secure storage.
 - Agents reach the board through **MCP tools** (read the board, get a picture, apply changes,
-  delete elements, and more) on a second local port, 6006. The window that has the board open
-  carries out the edits, which is how they become undo steps.
+  delete elements, and more) on a second local port, 6006. The window that is editing the board
+  carries out the edits, which is how they become undo steps. When no window is, the server's
+  headless writer does, with no screen.
 
 More in [docs/architecture.md](docs/architecture.md).
 
 ## Good to know
 
-- **A board needs an open window to be changed.** Agents edit a board through the app window that
-  has it open, so keep one open while an agent draws.
+- **One writer per board.** Any number of windows can show a board and follow it live, but one
+  changes it; the others are read-only until you press **Edit here**, which makes that window the
+  writer. A window never becomes the writer by itself, only by that button (or by making the board).
+- **Agents can edit a board with no window open.** When no window is editing the board an agent
+  works on, the server's headless writer, a Node process that runs the app's board engine, does it
+  and saves each change, so the board shows it the next time you open it. It needs Node 22 or
+  later on the server's machine, or the desktop app's own, and the files that come in the server's
+  folder (`headless/`) or in the Mac app; without them, the server works as before and the agent is
+  told that no board is open. Text in Excalidraw's own fonts is laid out as a window lays it out; Chinese,
+  Japanese, Korean and emoji text uses the machine's fonts, so a Linux server wants Noto CJK and Noto
+  Color Emoji installed. Showing the board to you, your selection and your
+  view need a window, so the agent cannot use them while it works away. See
+  [Who changes a board](docs/architecture.md#who-changes-a-board) and
+  [The board engine in Node](docs/architecture.md#the-board-engine-in-node).
 - **One instance per machine.** The MCP port is fixed at 6006, so a second AI Whiteboard server
   on the same machine does not start.
 - **A server's secret is all or nothing.** Whoever has a server's secret reads and changes every
@@ -239,8 +253,9 @@ The full list, with the caps, is in [docs/limitations.md](docs/limitations.md).
 ## Documentation
 
 - [docs/README.md](docs/README.md): the index of everything below
-- [docs/architecture.md](docs/architecture.md): server, the app on its four targets, the connection
-  between them, the MCP listener and the board tools, subagents, images
+- [docs/architecture.md](docs/architecture.md): server, the app on its four targets, who changes a
+  board (readers, the writer and the headless writer), the connection between them, the MCP
+  listener and the board tools, subagents, images
 - [docs/prompt-library.md](docs/prompt-library.md): the prompt library in full
 - [docs/remote-servers.md](docs/remote-servers.md): this computer and other servers as sections of
   the sidebar, building a server for another machine and using it from the app, and updating from

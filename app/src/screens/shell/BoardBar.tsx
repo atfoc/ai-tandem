@@ -30,7 +30,7 @@ export function BoardBar({ board, chatOpen, leading }: { board: string; chatOpen
   if (!b) return null;
   const chats = boardChats(all, board, showArchived);
   const showChats = () => {
-    if (!(selChat && all[selChat]?.board === board)) openBoard(board, false, true);
+    if (!(selChat && all[selChat]?.board === board)) openBoard(board, true);
     setState({ panel: true });
   };
   const path = [...(section ? [section] : []), ...groupPath(groups, b.group)];

@@ -49,6 +49,7 @@ Port: 4748
 Names: mac.local, 192.168.1.20
 Fingerprint: AB:CD:…
 MCP listener: http://localhost:6006/mcp (up)
+Headless writer: available, not running
 Files: the next start will listen
 Port: 4748
 Names: mac.local, 192.168.1.20
@@ -61,6 +62,10 @@ what its files say, which a new start will use. With no server running the first
 `-json` the object has `running` (null, or the build, version, pid, feature level, the client
 listener and the MCP listener with the chats that contacted it) and `files` (whether it is set up,
 whether the next start works, the port, names and fingerprint, and the message when it does not).
+The `Headless writer:` line says `available, not running`, `running (pid N, N boards)`, or `not
+available: <reason>` (no Node of version 22 or later, no bundle, a bundle of another version, or a
+start that failed in the last minute); `-json` has the same under `running.headless` as `available`,
+`reason`, `running`, `pid` and `boards`. See [The headless writer](#the-headless-writer).
 A changed set-up takes effect at the server's next start, except a new secret.
 
 ## Starting and stopping
@@ -102,6 +107,9 @@ The flags of `serve`, `launch` and `relaunch` (`-json` is for the last two):
 | `-cursor-cost` | `cursor-cost`  | binary that reports the Cursor plan's usage (`~/bin` is tried too) |
 | `-pi`      | `pi`               | pi binary                                 |
 | `-pi-namer-model` | pi's default | pi model used to name new chats (empty = the CLI's current model) |
+| `-headless-node` | the desktop app's Electron, else `node` 22 or later on `PATH` (or `AIWB_HEADLESS_NODE`) | program that runs the headless writer, which edits boards while no window is open |
+| `-headless-dir` | `headless/` beside the server (`Resources/headless/` in the Mac app) | folder with the headless writer's `headless.mjs`, `manifest.json` and `engine/`; a bundle of another version than the server is not used (a development build takes any) |
+| `-headless-quiet` | `1m` | how long the headless writer keeps a board after an agent's last call on it, before it lets it go; above 0 |
 | `-json`    | off                | `launch` and `relaunch` only: one JSON line for the app |
 
 There is no flag for the port or for a web client to serve: the client port is the one the set-up
@@ -113,3 +121,35 @@ There is no MCP port flag. The MCP listener is always on 6006, because Cursor's 
 approves exactly `http://localhost:6006/mcp`; the only other value is a hidden test-only override.
 Only one AI Whiteboard instance per machine can serve MCP: if 6006 is taken the app refuses to
 start (see [Port 6006 is taken](troubleshooting.md#port-6006-is-taken)).
+
+## The headless writer
+
+The headless writer is a Node process of the server's machine that holds a board for an agent's
+board call when no window holds it, so an agent can read and change a board with no window open
+([Who changes a board](architecture.md#who-changes-a-board) says how it behaves). The server does not
+look for it at boot and does not start it until such a call comes, and it stops it when it holds
+nothing. It is looked for again after a failed start has been remembered for a minute, so a Node
+installed meanwhile is found. A server that cannot run it works as before, and an agent is told that no
+board is open. These are the ways to say where it is:
+
+| What | Flag | Variable | Without it |
+| ---- | ---- | -------- | ---------- |
+| the program that runs it | `-headless-node` | `AIWB_HEADLESS_NODE` (the flag wins) | the desktop app's Electron when the server runs from `…/AI Whiteboard.app/Contents/MacOS/`, else `node` on `PATH`, which must be version 22 or later |
+| the folder with `headless.mjs` and `manifest.json` | `-headless-dir` | | `Resources/headless/` of the Mac app, else `headless/` beside the server program |
+| the quiet time | `-headless-quiet` | | 1 minute |
+
+A flag names the program or the folder and nothing else is tried in its place: if it cannot be used
+the headless writer is unavailable and `status` says why. The folder's `manifest.json` must name the
+server's version (a development build takes any); the server and its headless writer are one build.
+What the machine needs is Node 22 or later, or the Mac app's Electron, and the bundle, which holds the
+board engine, its fonts and the native canvas for the bundle's operating system and processor
+(`engine/node_modules/skia-canvas/lib/skia.node`), so nothing else is installed. A bundle built for another
+system or processor does not start: the reason in `status` names the missing or unloadable file. Text in
+Excalidraw's own fonts is measured as a window does; Chinese, Japanese, Korean, emoji and other scripts
+use the machine's fonts, which on a Linux server means installing Noto Sans CJK and Noto Color Emoji
+(see [the server folder's README](../scripts/remote/README.md)). How the engine works is in
+[The board engine in Node](architecture.md#the-board-engine-in-node).
+
+The process gets the server's address, the certificate's fingerprint, the secret and its client id as
+one line on its stdin, never in its arguments or its environment, and its output goes to the server's
+log, each line prefixed `headless:`.

@@ -5,6 +5,7 @@
 package boardapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,8 +25,9 @@ import (
 	"ai-whiteboard/internal/model"
 )
 
-// callTimeout is how long a board tool call waits for the client's answer.
-const callTimeout = 30 * time.Second
+// callTimeout is how long a board tool call waits for the client's answer. A variable so that a
+// test can lower it; the production value stays.
+var callTimeout = 30 * time.Second
 
 // maxBodyBytes is the largest /mcp request body that is read. The largest real requests are an
 // apply with a board's worth of elements and a spawn_subagent prompt, both far below it.
@@ -38,6 +40,30 @@ const maxNameBytes = 128
 // NoClientText is what an agent is told when no client is active.
 const NoClientText = "The board isn't open: the AI Whiteboard window is closed. " +
 	"Board work needs the window open. Tell the user, and don't retry until they ask again."
+
+// What an agent is told when a board call cannot be carried out the usual way (architecture 2.10).
+const (
+	// NoEditorText is the answer when the server's background editor cannot run and a window is
+	// connected, so there is one place to press.
+	NoEditorText = "Nobody is editing this board in a window, and this server cannot edit a board without one. " +
+		"Tell the user that they can press Edit here on the board; don't retry until they ask again."
+	// AwayLostText is the answer to a call cut by the end of the background editor.
+	AwayLostText = "The board's background editor stopped while it ran this call, so the call did not finish. " +
+		"The board is as it was after your last finished change. Read the board again before you change it."
+	// TakenText is the answer to a call cut by a hand-off, an archive or a delete of its board.
+	TakenText = "The board was taken over in a window while this call ran, so the call did not finish. " +
+		"Your earlier changes are saved. Read the board again before you change it."
+)
+
+// AwayEditor is the headless writer as the relay sees it: the server's background editor of boards
+// that no window holds.
+type AwayEditor interface {
+	// Ensure makes sure the editor runs and has its stream open, and returns its client id. An error
+	// says that it cannot run; the calls then fail with the text for the agent.
+	Ensure(ctx context.Context) (clientID string, err error)
+	// CallTimedOut tells the editor that a call routed to it got no answer in time.
+	CallTimedOut()
+}
 
 // Relay is the one path from an agent to the client, shared by every agent's board MCP server.
 type Relay struct {
@@ -52,6 +78,9 @@ type Relay struct {
 	// means an hour. Both are agent.ImageFiles' own.
 	ImageDir    string
 	ImageMaxAge time.Duration
+	// Away is the background editor that works on the boards no window holds. Nil: there is none, and
+	// a board call that no window holds fails with NoClientText.
+	Away AwayEditor
 }
 
 // Call runs a board tool for the chat with this token and returns the text for the agent; a
@@ -120,17 +149,77 @@ func (r *Relay) CallResult(token, tool string, args json.RawMessage) ToolResult 
 		params["target"] = target
 	}
 	spec := editorbridge.CallSpec{Method: "tool", Params: params, Board: target, ChatBoard: meta.Board}
-	if tool == "get_view" || tool == "show_board" { // asked of the screen that shows the chat's board
+	screen := tool == "get_view" || tool == "show_board" // asked of the screen that shows the chat's board
+	if screen {
 		spec.Board, spec.Screen = "", true
+	} else if r.Away != nil {
+		// A board that no window holds is worked on by the background editor, which is started only
+		// now; the bridge hands it the board, unless a window took it meanwhile.
+		spec.Away = true
+		if _, held := r.Bridge.HolderOf(target); !held {
+			ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
+			_, err := r.Away.Ensure(ctx)
+			cancel()
+			if err != nil {
+				return errResult(r.noBoardText())
+			}
+		}
 	}
 	out, err := r.Bridge.CallBoard(spec, callTimeout)
-	if errors.Is(err, editorbridge.ErrNoClient) {
+	switch {
+	case err == nil:
+		return pageResult(tool, out)
+	case errors.Is(err, editorbridge.ErrNoClient):
+		switch {
+		case screen && r.Away != nil: // no window shows the board: not a failure of the board
+			return textResult(r.screenText(tool, meta.Board, target), false)
+		case spec.Away:
+			return errResult(r.noBoardText())
+		}
 		return errResult(NoClientText)
+	case errors.Is(err, editorbridge.ErrTaken):
+		return errResult(TakenText)
+	case errors.Is(err, editorbridge.ErrAwayLost):
+		return errResult(AwayLostText)
 	}
-	if err != nil {
-		return errResult(err.Error())
+	if !screen && r.Away != nil && timedOut(err) && r.Bridge.WriterOf(target) == "headless" {
+		r.Away.CallTimedOut()
 	}
-	return pageResult(tool, out)
+	return errResult(err.Error())
+}
+
+// noBoardText is what an agent is told when no client can work on a board that no window holds:
+// the usual text, or, when the server has a background editor that cannot run and a window is
+// connected, the one that names the button.
+func (r *Relay) noBoardText() string {
+	if r.Away != nil && r.Bridge.WindowsConnected() {
+		return NoEditorText
+	}
+	return NoClientText
+}
+
+// timedOut reports whether err is CallBoard's "did not answer in time".
+func timedOut(err error) bool {
+	return errors.Is(err, editorbridge.ErrTimeout)
+}
+
+// screenText is the plain answer to get_view or show_board when no window shows the chat's board.
+// It is no error: the board can be worked on without a screen.
+func (r *Relay) screenText(tool, chatBoard, target string) string {
+	if tool == "get_view" {
+		return "No window shows " + r.boardRef(chatBoard) + " now, so there is no view and no selection to read. " +
+			"The board itself can be read and changed as usual: use read_board, and get_image for a picture."
+	}
+	return "No window shows this chat's board now, so " + r.boardRef(target) + " could not be put on a screen. " +
+		"Your changes are saved in the board; the user sees them when they open it."
+}
+
+// boardRef writes a board as the agent's context does, "name (id)".
+func (r *Relay) boardRef(id string) string {
+	if bd, ok := r.Boards.Get(id); ok {
+		return bd.Name + " (" + bd.ID + ")"
+	}
+	return id
 }
 
 // groupText is a board's group path as an agent reads it, "Work / Infra", or "Ungrouped".

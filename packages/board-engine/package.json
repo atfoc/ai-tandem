@@ -1,0 +1,28 @@
+{
+  "name": "@aiwb/board-engine",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The board engine of @aiwb/board-view in Node: the stand-in page, Excalidraw's fonts cut into runs, and the native canvas (skia-canvas). No engine logic of its own.",
+  "exports": {
+    "./node": "./src/node.ts",
+    "./*": "./src/*"
+  },
+  "scripts": {
+    "test": "node --test --experimental-strip-types 'test/*.test.ts'",
+    "check": "tsc --noEmit",
+    "build": "node build.mjs",
+    "faithful": "node --experimental-strip-types dev/faithful.mjs"
+  },
+  "dependencies": {
+    "@aiwb/board-bridge": "*",
+    "@aiwb/board-view": "*",
+    "skia-canvas": "4.0.0"
+  },
+  "devDependencies": {
+    "@excalidraw/excalidraw": "0.18.1",
+    "@types/node": "^22.20.5",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2"
+  }
+}

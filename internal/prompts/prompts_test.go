@@ -50,3 +50,25 @@ func TestInstructionsDescribeReferences(t *testing.T) {
 		t.Error("instructions still say the selection is sent with every message")
 	}
 }
+
+// Rules 7 and 8 tell the agent that boards can be worked on with no window open, what to do when the editor
+// cannot run or the board was taken over, and that the screen tools need a window.
+func TestInstructionsTellWhatWorksWithNoWindow(t *testing.T) {
+	s := Claude()
+	for _, want := range []string{
+		"Boards can be read and changed while no window is open",
+		"nobody is editing it in a window",
+		"taken over in a window",
+		"background editor stopped",
+		"`get_view` and\n   `show_board` need a window that shows the board",
+		"no failure of the board",
+		"only while a window shows the board",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("instructions lack %q", want)
+		}
+	}
+	if strings.Contains(s, "the AI Whiteboard window must be open for board work") {
+		t.Error("instructions still say a board needs an open window")
+	}
+}

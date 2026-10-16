@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"ai-whiteboard/internal/chats"
+	"ai-whiteboard/internal/headless"
 	"ai-whiteboard/internal/usable"
 )
 
@@ -44,6 +45,11 @@ func (c clock) of(d time.Duration) time.Duration {
 var lowered = map[string]time.Duration{
 	"agents": usable.Every,
 	"images": chats.DefaultImageWait,
+	// The headless writer's: the quiet time, the look for the idle stop (headless.Options.Linger) and
+	// the bridge's hand-off. (Its start limit, hstart, is no wait a test sits out.)
+	"quiet":    headless.QuietDefault,
+	"linger":   5 * time.Second,
+	"handover": 10 * time.Second,
 }
 
 // env is the AIWB_TEST_WAITS of a server whose named waits run on this clock, for instance.setenv.

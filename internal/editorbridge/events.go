@@ -46,6 +46,8 @@ var Events = map[string]Rule{
 	"defaults":      {Class: List},
 	"board":         {Class: List, Per: PerBoard},
 	"board_removed": {Class: List, Per: PerBoard},
+	"scene":         {Class: Content, Per: PerBoard},
+	"writer":        {Class: Content, Per: PerBoard},
 	"catalog":       {Class: List},
 	"agents":        {Class: List},
 
@@ -67,7 +69,8 @@ type Item struct{ Kind, ID string }
 // Chat is the item of a top-level chat.
 func Chat(id string) Item { return Item{Kind: "chat", ID: id} }
 
-// Board is the item of a board. It is not followed.
+// Board is the item of a board. A client follows a board while it shows it: the scene and writer
+// events of the board reach its followers.
 func Board(id string) Item { return Item{Kind: "board", ID: id} }
 
 // Broadcast sends ev, an event about no chat and no board, to the clients its type is for. It
@@ -81,8 +84,8 @@ func (b *Bridge) SendChat(chat string, ev any) {
 	b.route(ev, PerChat, Chat(chat), false)
 }
 
-// SendBoard sends ev, an event of the board with this id: to every client.
-// It never blocks.
+// SendBoard sends ev, an event of the board with this id: to every client for a list type, to the
+// followers of the board for a content type. It never blocks.
 func (b *Bridge) SendBoard(board string, ev any) {
 	b.route(ev, PerBoard, Board(board), false)
 }
@@ -110,7 +113,7 @@ func (b *Bridge) route(ev any, per Per, it Item, unlisted bool) {
 		return
 	}
 	for _, c := range b.clients {
-		if rule.Per != PerNone && (rule.Class == Content || unlisted) && !c.follows[it] {
+		if rule.Per != PerNone && (rule.Class == Content || unlisted) && c.follows[it] == 0 {
 			continue
 		}
 		b.sendRawLocked(c, msg)
@@ -154,7 +157,8 @@ func typeOf(ev any, msg []byte) string {
 }
 
 // Follow notes that the client follows it, so that the item's content events reach it. It
-// reports false, and starts no follow, when the id has no open stream. A follow ends with the
+// reports false, and starts no follow, when the id has no open stream. A follow of an item already
+// followed changes nothing. A follow ends with the
 // client's stream, by Unfollow or by Forget.
 func (b *Bridge) Follow(clientID string, it Item) bool {
 	b.mu.Lock()
@@ -163,8 +167,28 @@ func (b *Bridge) Follow(clientID string, it Item) bool {
 	if c == nil {
 		return false
 	}
-	c.follows[it] = true
+	if c.follows[it] == 0 {
+		b.followN++
+		c.follows[it] = b.followN
+	}
 	return true
+}
+
+// FollowBoard makes the client follow the board and returns the board's stored revision and its
+// writer kind (WriterOf), which a client that starts to follow needs at once. A board already
+// followed stays so. ok is false, and nothing is followed, when the id has no open stream.
+func (b *Bridge) FollowBoard(clientID, board string) (rev int64, writer string, ok bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	c := b.clients[clientID]
+	if c == nil {
+		return 0, "", false
+	}
+	if it := Board(board); c.follows[it] == 0 {
+		b.followN++
+		c.follows[it] = b.followN
+	}
+	return b.revLocked(board), b.writerLocked(board), true
 }
 
 // Unfollow ends the client's follow of it, if there is one.
@@ -182,7 +206,7 @@ func (b *Bridge) Followers(it Item) []string {
 	defer b.mu.Unlock()
 	var ids []string
 	for id, c := range b.clients {
-		if c.follows[it] {
+		if c.follows[it] > 0 {
 			ids = append(ids, id)
 		}
 	}
@@ -199,7 +223,7 @@ func (b *Bridge) Followed(it Item) bool {
 
 func (b *Bridge) followedLocked(it Item) bool {
 	for _, c := range b.clients {
-		if c.follows[it] {
+		if c.follows[it] > 0 {
 			return true
 		}
 	}

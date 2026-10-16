@@ -12,6 +12,16 @@ What the app does not do, or does not do fully, and the limits it enforces.
   cannot do is checked by hand: drawing on the board with a finger or a Pencil, the code scan with a real
   camera, HEIC pictures from the iOS library, the local network permission prompt, an app suspended and
   resumed.
+- One window changes a board at a time. The others show it read-only and follow it live; there is no
+  merging and no drawing together. Anyone who may use the server may press **Edit here** and take the board.
+- An agent working on a board that no window is editing (the server's headless writer) can read the
+  board, create, change and delete elements, make boards and ask for a picture of a board, a frame, a
+  region or chosen elements. It cannot show a board on your screen, read your selection or the view you
+  are looking at, and what it does has no undo step in any window. It needs Node 22 or later on the
+  server's machine, or the desktop app's own; without one, the agent is told that no board is open.
+  Text in Excalidraw's own fonts is sized as in a window; Chinese, Japanese, Korean and emoji text is
+  sized with the server machine's fonts, so a Linux server needs Noto CJK and Noto Color Emoji installed,
+  and Han text on a Mac can come out up to 1.3% wider than a window's.
 - With the app closed nothing is connected, to any server. Servers and their agents run on; each
   section fills again when the app opens.
 - Every server that runs listens on its network, behind its secret alone. A server never starts

@@ -25,6 +25,7 @@
 import { check, mockEval, seed, until } from "../shot.mjs";
 import { act, back, byTid, mouseDrag, press, tidSel, touchDrag } from "./sel.mjs";
 import { select } from "./quote.mjs";
+import { editHere } from "./boarddraw.mjs";
 
 export const viewports = ["desktop", "tablet", "phone"];
 
@@ -87,7 +88,14 @@ await check("P7.4 ⌘⇧L waits for a point on the board, and does not reach the
   const rev = () => mockEval(`return scenes.${BOARD}.rev;`, url);
   const view = () => page.evaluate(() => window.__aiwbView?.() ?? null);
 
-  await page.waitForSelector(LIVE, { timeout: 20000, state: "attached" });
+  // (a board opens as a reader's: the button makes the window its writer, and only a writer's canvas has a selection to quote and a point to give. On the
+  // phone the chat is the screen over the board: back to the board, the button, and the chat again)
+  if (layout === "phone") {
+    if (!await back(page)) return fail("the chat's screen has no back to the board");
+    await editHere(page);
+    await press(page, byTid(page, "board-chats").first());
+    await byTid(page, "composer-input").first().waitFor({ state: "visible", timeout: 20000 });
+  } else await editHere(page);
   await page.waitForSelector(ready, { timeout: 20000, state: "attached" });
   if (layout === "phone") return phoneFlow({ page, touch, fail, note, key, frame, picking, view, shows });
   if (!await until(() => byTid(page, "chat-head").count(), 10000)) fail("the chat of the board is not beside it: the key has no chat to give a point to");

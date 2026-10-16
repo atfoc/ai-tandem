@@ -79,7 +79,7 @@ ports.setUi({
 });
 ports.setBoardSide({
   runTool: async () => ({}), flushAll: async () => {}, forgetBoard() {}, boardLost() {}, granted() {}, handOver: async () => {}, streamOpened() {},
-  takeAfterSnapshot() {}, sectionBack() {}, boardUnsaved: () => false,
+  afterSnapshot() {}, sectionBack() {}, boardUnsaved: () => false,
 });
 fs.rmSync(path.dirname(out), { recursive: true, force: true });
 

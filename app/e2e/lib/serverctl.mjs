@@ -35,7 +35,7 @@ import http2 from "node:http2";
 
 import { sceneOf } from "./scenes.mjs";
 
-const LEVEL = 6; // internal/server/clients.go MinClientLevel: the feature level this caller says it has
+const LEVEL = 7; // internal/server/clients.go MinClientLevel: the feature level this caller says it has
 
 /** A client of the server's client API: `call(method, path, body)` answers { status, json, text, rev }. Its client id is its own (a v4 UUID).
  *  `known(fn)` runs `fn(call)` with the client known to the server: an event stream is open for the time of it, as an app's is (a client

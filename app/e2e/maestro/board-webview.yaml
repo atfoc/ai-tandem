@@ -19,21 +19,12 @@ appId: ${APP_ID}
     visible: "touch strokes: 0.*"
     timeout: 60000
 - takeScreenshot: board-touch-start
-# The page is Excalidraw's tablet layout on an iPad: the toolbar is at the top (the pencil is "Draw", the "A" is "Text"). Real touches
-# (Maestro drives XCUITest / adb input): the page sees pointerType "touch".
-- runFlow:
-    when:
-      platform: iOS
-    commands:
-      - tapOn:
-          point: "60%, 16%"
-- runFlow:
-    when:
-      platform: Android
-    commands:
-      # the phone layout: the toolbar is a floating bar at about 21% of the height (the pencil at 57%, the "A" at 65%, the selection arrow at 9%)
-      - tapOn:
-          point: "57%, 21%"
+# The page is Excalidraw's phone layout (an iPhone simulator and the Android emulator): the toolbar is a floating bar at about 21% of the
+# height (the pencil, "Draw", at 57%, the "A", "Text", at 65%, the selection arrow at 9%). Real touches (Maestro drives XCUITest / adb input):
+# the page sees pointerType "touch". (The flow's iOS points were those of an iPad's tablet layout, the toolbar at 16%; the phone's are the
+# same on both platforms.)
+- tapOn:
+    point: "57%, 21%"
 - swipe:
     start: 30%, 35%
     end: 80%, 45%
@@ -52,34 +43,14 @@ appId: ${APP_ID}
 - takeScreenshot: board-touch-strokes
 # The text tool, with the keyboard: tap the "A", tap the canvas (Excalidraw opens its text editor and focuses it), type, tap elsewhere
 # (the on-screen keyboard is up and covers the lower part: the "selection" tool at the top commits the text), and the page tells it.
-- runFlow:
-    when:
-      platform: iOS
-    commands:
-      - tapOn:
-          point: "64%, 16%"
-- runFlow:
-    when:
-      platform: Android
-    commands:
-      - tapOn:
-          point: "65%, 21%"
+- tapOn:
+    point: "65%, 21%"
 - tapOn:
     point: "30%, 60%"
 - inputText: "hello"
 - takeScreenshot: board-text-typing
-- runFlow:
-    when:
-      platform: iOS
-    commands:
-      - tapOn:
-          point: "31%, 16%"
-- runFlow:
-    when:
-      platform: Android
-    commands:
-      - tapOn:
-          point: "9%, 21%"
+- tapOn:
+    point: "9%, 21%"
 - extendedWaitUntil:
     visible: ".*texts: \\[\"hello\"\\].*"
     timeout: 20000

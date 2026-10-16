@@ -169,7 +169,7 @@ export const BoardNode = memo(function BoardNode({ b, editing, setEditing }: Edi
     try { await boardApp.flush(b.id); upsertBoard(await api.renameBoard(b.id, v)); setErr(""); }
     catch (e: any) { setErr(e?.message ?? String(e)); }
   };
-  const press = useDoublePress(() => openBoard(b.id, true), () => { if (!b.archived) setEditing(key); });
+  const press = useDoublePress(() => openBoard(b.id), () => { if (!b.archived) setEditing(key); });
   // (a board of a section: its menu has no file to reveal, and moves it between the groups of its own server)
   const targets = moveTargets(groups, b.group).map((g) => ({ label: g.label, run: () => attempt("Couldn't move the board", () => api.moveBoard(b.id, g.id)) }));
   const run: Record<BoardMenuItem, () => void> = {

@@ -87,8 +87,9 @@ func TestSilentHolderHasTheHandoverDelay(t *testing.T) {
 	}
 }
 
-// A call never gives a client a board. Asked as the holder of the chat's board about a target
-// nobody holds, it gets the call alone, about no board: no hand-off of the target fails it.
+// A call never gives a client a board. Asked about a target nobody holds, the holder of the
+// chat's board gets nothing and the call has no client; a screen call is asked of it, and gives
+// nothing either.
 func TestCallGivesAClientNoBoard(t *testing.T) {
 	t.Parallel()
 	b, srv := newTestServer(t, nil)
@@ -97,39 +98,20 @@ func TestCallGivesAClientNoBoard(t *testing.T) {
 	x := open(t, srv, "X")
 	take(t, b, "X", "home", false, "held")
 
-	done := goCall(b, CallSpec{Method: "tool", Board: "b1", ChatBoard: "home"}, bridgetest.Wait)
-	rpc := x.Expect("rpc") // and no held before it
-	id := rpc["id"].(string)
-	if _, ok := b.HolderOf("b1"); ok {
-		t.Fatal("the call gave the API client the board")
+	for _, target := range []string{"b1", "plain", "second", "other"} {
+		_, err := b.CallBoard(CallSpec{Method: "tool", Board: target, ChatBoard: "home"}, bridgetest.Wait)
+		if !errors.Is(err, ErrNoClient) {
+			t.Fatalf("the call about the board %s ended with %v, want ErrNoClient", target, err)
+		}
+		if _, ok := b.HolderOf(target); ok {
+			t.Fatalf("the call about the board %s gave it to somebody", target)
+		}
 	}
-	b.mu.Lock()
-	k := b.rpcs[id]
-	b.mu.Unlock()
-	if k == nil || k.client != "X" || k.board != "" {
-		t.Fatalf("the open call = %+v, want one of X about no board", k)
-	}
-	// The page behind the client takes the target itself, and lets it go again: the call
-	// stays open.
-	take(t, b, "X", "b1", false, "held")
-	take(t, b, "P", "b1", false, "waiting")
-	expectBoard(t, x, "release_request", "b1")
-	if got := b.ReleaseBoard("X", "b1"); got != "handed" {
-		t.Fatalf("release = %q", got)
-	}
-	expectBoard(t, x, "superseded", "b1")
-	expectBoard(t, p, "held", "b1")
-	expectOpen(t, done)
-	if !b.ReplyFrom("X", id, RPCReply{Result: json.RawMessage(`"drawn"`)}) {
-		t.Fatal("the reply was refused")
-	}
-	if r := expectResult(t, done); r.err != nil || string(r.v) != `"drawn"` {
-		t.Fatalf("call = %s, %v", r.v, r.err)
-	}
+	x.ExpectNone(20 * time.Millisecond)
 
-	// A screen call is asked of it as well, and gives nothing either.
-	done = goCall(b, CallSpec{Method: "get_view", Board: "b2", ChatBoard: "home", Screen: true}, bridgetest.Wait)
-	rpc = x.Expect("rpc")
+	// A screen call is asked of the holder of the chat's board, and gives nothing.
+	done := goCall(b, CallSpec{Method: "get_view", Board: "b2", ChatBoard: "home", Screen: true}, bridgetest.Wait)
+	rpc := x.Expect("rpc")
 	b.ReplyFrom("X", rpc["id"].(string), RPCReply{Result: json.RawMessage(`1`)})
 	if r := expectResult(t, done); r.err != nil {
 		t.Fatal(r.err)
@@ -138,36 +120,13 @@ func TestCallGivesAClientNoBoard(t *testing.T) {
 		t.Fatal("the screen call gave a board")
 	}
 
-	// The holder of the chat's board is asked about every board of the server, and another
-	// client is not.
-	p.OnRPC(func(map[string]any) (any, string) { return "from P", "" })
-	for _, target := range []string{"plain", "second", "other"} {
-		done := goCall(b, CallSpec{Method: "tool", Board: target, ChatBoard: "home"}, bridgetest.Wait)
-		rpc := x.Expect("rpc")
-		if _, ok := b.HolderOf(target); ok {
-			t.Fatalf("the call about the board %s gave it to somebody", target)
-		}
-		b.ReplyFrom("X", rpc["id"].(string), RPCReply{Result: json.RawMessage(`"from X"`)})
-		if r := expectResult(t, done); r.err != nil || string(r.v) != `"from X"` {
-			t.Fatalf("the call about the board %s = %s, %v", target, r.v, r.err)
-		}
-	}
-	if got := p.Drain(20 * time.Millisecond); len(got) != 0 {
-		t.Fatalf("the page got %v", got)
-	}
-
 	// A call about a board the client holds is about that board: losing it fails the call.
 	done = goCall(b, CallSpec{Method: "tool", Board: "home"}, bridgetest.Wait)
 	x.Expect("rpc")
 	b.LoseBoard("home")
 	expectBoard(t, x, "superseded", "home")
-	if r := expectResult(t, done); !errors.Is(r.err, ErrNoClient) {
+	if r := expectResult(t, done); !errors.Is(r.err, ErrTaken) {
 		t.Fatalf("the call on the lost board ended with %v", r.err)
-	}
-	// With the chat's board free there is no client to ask: a call never falls to a client that
-	// holds nothing.
-	if _, err := b.CallBoard(CallSpec{Method: "tool", Board: "b3", ChatBoard: "home"}, bridgetest.Wait); !errors.Is(err, ErrNoClient) {
-		t.Fatalf("the call with the chat's board free ended with %v, want ErrNoClient", err)
 	}
 	for _, c := range []*bridgetest.Page{p, x} {
 		if got := c.Drain(20 * time.Millisecond); len(got) != 0 {
@@ -246,7 +205,7 @@ func TestLoseBoard(t *testing.T) {
 	b.LoseBoard("b1")
 	expectBoard(t, p, "superseded", "b1")
 	expectBoard(t, q, "superseded", "b1")
-	if r := expectResult(t, onB1); !errors.Is(r.err, ErrNoClient) {
+	if r := expectResult(t, onB1); !errors.Is(r.err, ErrTaken) {
 		t.Fatalf("the call on b1 ended with %v", r.err)
 	}
 	expectOpen(t, onB2)
@@ -314,6 +273,7 @@ func TestBoardEventsReachEveryClient(t *testing.T) {
 	// A follow, or holding the board, changes nothing.
 	b.Follow("Y", Board("b1"))
 	take(t, b, "Y", "b1", false, "held")
+	expectBoard(t, y, "writer", "b1") // the follower is told the writer
 	sent("board", "b1", all...)
 
 	// The removal reaches every client.

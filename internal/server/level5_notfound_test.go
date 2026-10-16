@@ -44,8 +44,9 @@ var l5Bodies = map[string][2]string{
 // l5NotLookups is the routes with an {id} that look nothing up: each ends something for the
 // caller, and there is nothing to end for a thing that is not there.
 var l5NotLookups = map[string]string{
-	"POST /api/chats/{id}/unfollow": `{"ok":true}`,
-	"POST /api/boards/{id}/release": `{"state":"none"}`,
+	"POST /api/chats/{id}/unfollow":  `{"ok":true}`,
+	"POST /api/boards/{id}/release":  `{"state":"none"}`,
+	"POST /api/boards/{id}/unfollow": `{"ok":true}`,
 }
 
 // l5Kind is what a route with an {id} names: its path's word after /api/, the id of a thing of

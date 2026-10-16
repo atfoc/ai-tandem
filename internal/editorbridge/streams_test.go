@@ -131,13 +131,15 @@ func TestEventRows(t *testing.T) {
 				sent(t, typ, board("c1"))
 				sent(t, typ, b.Broadcast)
 			case rule.Per == PerBoard:
-				if rule.Class != List {
-					t.Fatalf("a %v type of a board", rule.Class)
+				if rule.Class == Content {
+					sent(t, typ, board("b1"), f) // by follow
+					sent(t, typ, board("b2"))    // a board nobody follows
+				} else {
+					sent(t, typ, board("b1"), all...) // every client
+					sent(t, typ, board("b2"), all...) // a board nobody follows
 				}
-				sent(t, typ, board("b1"), all...) // every client
-				sent(t, typ, board("b2"), all...) // a board nobody follows
-				sent(t, typ, b.Broadcast)         // misdirected: no client
-				sent(t, typ, chat("c1"))          // the same
+				sent(t, typ, b.Broadcast) // misdirected: no client
+				sent(t, typ, chat("c1"))  // the same
 			default:
 				t.Fatalf("no case for the row %+v", rule)
 			}

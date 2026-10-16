@@ -24,7 +24,7 @@ func TestFindRunningThisBuild(t *testing.T) {
 		asThisFolders(t, home, standInID)
 		(&standIn{version: "1.2.3"}).this(t, home, serverFile)
 		run, ok := findRunning(store.NewPaths(home))
-		if !ok || run.build != thisBuild || run.hello.Version != "1.2.3" || run.hello.FeatureLevel != 6 || run.control != store.ControlSocketPath(home) {
+		if !ok || run.build != thisBuild || run.hello.Version != "1.2.3" || run.hello.FeatureLevel != 7 || run.control != store.ControlSocketPath(home) {
 			t.Fatalf("server.json written %v: %+v, %v", serverFile, run, ok)
 		}
 		// The folder by another path: a symlink to it is the same folder.
@@ -198,7 +198,7 @@ func TestLaunchFindsTheRunningServer(t *testing.T) {
 		t.Fatalf("-json wrote %q (%v)", out.String(), err)
 	}
 	want := map[string]any{"state": "running", "address": "https://127.0.0.1:5123", "fingerprint": "AB:CD:EF", "version": "1.2.3",
-		"featureLevel": float64(6), "instanceId": standInID, "pid": float64(s.pid), "home": home}
+		"featureLevel": float64(7), "instanceId": standInID, "pid": float64(s.pid), "home": home}
 	if len(got) != len(want) {
 		t.Errorf("-json fields %v, want %v", got, want)
 	}

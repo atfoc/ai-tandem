@@ -3,7 +3,7 @@
 For agents and people who change this repository. What the app is is in `README.md` and how it fits together is in
 `docs/architecture.md`; this file is only about which tests to run, when, and how to write them. The code is the Go server
 (`cmd/`, `internal/`), the React Native app (`app/`, on iOS, iPadOS, Android and, as a web build, in the Electron window of
-`desktop/`) with its packages (`packages/core`, `conn`, `board-bridge`, `board-view`), and the tools that test them (`web/dev`: the test
+`desktop/`) with its packages (`packages/core`, `conn`, `board-bridge`, `board-view`, and `board-engine`, the board view's engine in Node, and `headless`, the Node process that edits boards while no window is open; the Go side of it is `internal/headless`), and the tools that test them (`web/dev`: the test
 host, the mock and the browser checks; `web/e2e`: the end-to-end scripts; `app/e2e`: the device tests).
 
 ## Two sets of Go tests
@@ -44,16 +44,20 @@ under "The JavaScript tests" below.
 | You changed code where goroutines share state | Also `go test -race ./<pkg>` for that package. |
 | You changed only `app/`, `packages/*`, `web/` or `desktop/` | From the repository root `npm test && npm run check` (every workspace: `app`, `packages/*`), `cd web && npm test`, `cd desktop && npm test` (a few seconds each). No Go tests. If the change is to what a screen shows or does: also the browser checks that touch it, `cd web && npm run uicheck -- <ids>` (the whole run is long). |
 | You changed `web/dev/host.mjs`, `web/dev/hostface.mjs` or `packages/conn` | Also `cd packages/conn && npm test`, `node --test web/dev/host.test.mjs`, and the free scripts of `web/e2e` that touch what you changed. |
+| You changed `packages/headless` (or `packages/core` in a way the headless writer runs: the board side) | `cd packages/headless && npm test && npm run check` (the root `npm test && npm run check` runs it too). If the change is to how the server starts, finds or stops it (`internal/headless`): also `go test ./internal/headless`, and for its flags and its status in `cmd/ai-whiteboard` the default set of that package. |
+| You changed `packages/board-view/src/{engine,apply,export,imagesize,faces,indices}.ts` (the code the window and the Node engine share) or `packages/board-engine` | Also `cd packages/board-engine && npm test && npm run check`, which runs the engine in Node. If the change is to what a request answers (elements, text sizes, pictures): also `cd packages/board-engine && npm run faithful` (Playwright, see below), and `node dev/harness.mjs` in `packages/board-view` for the window's side. |
 | You changed `app/modules`, the native network, the board in a web view or anything else only a device shows | Also the device flow that covers it (`node app/e2e/run.mjs <flow> --platform ios --device <your own simulator>`, `app/e2e/README.md`). They start simulators and builds: never "to be sure", and not while other agents build. |
 | You changed only documentation | No tests. |
 
 ## The JavaScript tests
 
 ```sh
-npm test && npm run check                # at the root: the unit tests and the type checks of app/ and packages/* (core, conn, board-bridge, board-view)
+npm test && npm run check                # at the root: the unit tests and the type checks of app/ and packages/* (core, conn, board-bridge, board-view, board-engine, headless)
 cd web && npm test                       # the test host, the mock's face, the helpers of the browser checks
 cd desktop && npm test                   # the main process, the IPC face, the preload
 cd packages/conn && npm test             # the connection module (@aiwb/conn) against its stand-in server
+cd packages/board-engine && npm test && npm run check   # the board engine in Node (@aiwb/board-engine): the stand-in page, the font runs, the endpoint and the assets, against the real native canvas
+cd packages/headless && npm test && npm run check   # the headless writer (@aiwb/headless): its loop, its start-up and its bundle, against a fake engine and a fake client
 node --test web/dev/host.test.mjs        # the test host alone; `cd web && npm test` runs it too
 ```
 
@@ -68,9 +72,13 @@ in `web/`; a later `npm install` there removes it). They serve or load the app's
 | `cd web && npm run uicheck:electron [-- L8 A2.2]` | the same checks drawn by the desktop app's own Chromium (Electron, `web/dev/electron`); no check named: L8; `--all`: every check | seconds per check |
 | `node web/e2e/newchat.e2e.mjs` | the app against a real server through the test host | about 7 s |
 | `node web/e2e/localserver.e2e.mjs` | this computer's server in every state it can be in; builds two binaries and two builds of the app itself | about 20 s |
-| `node web/e2e/twopages.e2e.mjs` | two apps on one server | about 45 s |
+| `node web/e2e/twopages.e2e.mjs` | two apps on one server, one writing and the other a reader that takes the board with **Edit here** | about 100 s |
+| `node web/e2e/readers.e2e.mjs` | three pages, the writer, the readers and the button (goal 6.3): a reader follows what the writer saves, a press hands the board over (a change in progress is cut, the finished ones kept), the headless writer's board, two presses together; builds the server, the page and the headless bundle | about 30 s |
 | `node web/e2e/remotechat.e2e.mjs` | this computer's server and a remote one, an outage and the return; also `VIEWPORT=phone` | about 60 s |
+| `node web/e2e/away.e2e.mjs` | an agent works on boards while no window is connected (reads, changes, asks for a picture, makes another board; the headless writer answers), then a window connects and shows every change in order, as a reader (goal 6.2); builds the server, the page and the headless bundle | about 10 s |
+| `node web/e2e/headlessfail.e2e.mjs` | the headless writer killed in the middle of a change (the board keeps the first change, is free to take, the agent is told, a new call starts a new process), and a server on which it cannot run; builds the server, the page and the headless bundle | about 10–25 s |
 | `cd desktop && npm run e2e` | the app itself (Electron, a window is opened for a few seconds) on the web build (`cd app && npm run build:web` first): the page over IPC, a stream that is cut, a picture from the app's own scheme | a few seconds |
+| `cd packages/board-engine && npm run faithful` | the same requests to the board view's web target in Chromium and to the Node engine: elements, replies, pictures (size, bounds, share of pixels differing), a text corpus; builds the web target itself; writes `report.json` and the diff pictures to `out/faithful`; exit 1 on a difference outside its list of known ones (`dev/faithful.mjs`). Run it when you change `packages/board-engine` or the board view's engine (`apply`, `export`, fonts) | about 10 s |
 | `node web/dev/reallibrary.mjs` | the prompt library's popups on real servers; builds what it needs | about 20 s |
 
 The browser checks need a build with the version `uicheck` and a policy that lets the page reach the mock (`--connect-self`): the

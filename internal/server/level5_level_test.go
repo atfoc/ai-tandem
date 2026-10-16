@@ -10,12 +10,12 @@ import (
 )
 
 // The level of a client: hello is open to every app, every other route refuses a client that
-// states no level or one below 6, and the refusal has its place among the listener's checks and
+// states no level or one below 7, and the refusal has its place among the listener's checks and
 // its line in the log.
 
-// l5Old is what a client that is refused states as its level: nothing, a level below 6, and
+// l5Old is what a client that is refused states as its level: nothing, a level below 7, and
 // values that are no integer.
-var l5Old = []string{"", "5", "4", "1", "0", "-5", "5.9", "6.0", "six", "v6", "6x"}
+var l5Old = []string{"", "6", "5", "4", "1", "0", "-5", "6.9", "7.0", "six", "v7", "7x"}
 
 // l5Tree makes one group with a board and a chat, as the owner, and returns the three ids. Their
 // names are ones no other answer holds by chance.
@@ -53,14 +53,14 @@ func l5PathOf(route, group, board, chat string) (method, path string) {
 func TestLevel5HelloIsOpenToEveryLevel(t *testing.T) {
 	t.Parallel()
 	_, l := remoteEnv(t)
-	if FeatureLevel != 6 || MinClientLevel != 6 || LevelHeader != "X-AIWB-Level" {
+	if FeatureLevel != 7 || MinClientLevel != 7 || LevelHeader != "X-AIWB-Level" {
 		t.Fatalf("the level is %d, the lowest client level %d, the header %q", FeatureLevel, MinClientLevel, LevelHeader)
 	}
-	for _, level := range append(slices.Clone(l5Old), "6", "7", "40") {
+	for _, level := range append(slices.Clone(l5Old), "7", "8", "40") {
 		for _, id := range []string{apiX, ownID, "", "client-1"} { // any id, and none, may ask hello
 			for _, secret := range []string{testSecret, ""} { // and no secret is needed
 				status, out := l.callAt(level, id, secret, "GET", "/api/hello", "")
-				if status != 200 || !strings.Contains(out, `"featureLevel":6`) {
+				if status != 200 || !strings.Contains(out, `"featureLevel":7`) {
 					t.Fatalf("hello for a client that states the level %q: %d %s", level, status, out)
 				}
 				if got := keysOf(t, out); !slices.Equal(got, []string{"app", "featureLevel", "instanceId", "version"}) {
@@ -128,9 +128,9 @@ func TestLevel5RefusesAnOlderClient(t *testing.T) {
 		t.Error("the refused stream made the client a known one")
 	}
 
-	// Level 6 and above are served: the state holds the tree, the stream opens, and a route
+	// Level 7 and above are served: the state holds the tree, the stream opens, and a route
 	// outside the table is the listener's 404.
-	for _, level := range []string{"6", "7", "40"} {
+	for _, level := range []string{"7", "8", "40"} {
 		status, out := l.callAt(level, apiX, testSecret, "GET", "/api/state", "")
 		if status != 200 || !strings.Contains(out, group) || !strings.Contains(out, board) || !strings.Contains(out, chat) {
 			t.Errorf("the state for a client of level %s: %d %s", level, status, out)
@@ -211,7 +211,7 @@ func TestLevel5OrderOfTheChecks(t *testing.T) {
 	status, out = hello(l5Req{secret: testSecret, host: evil, client: "client-1"})
 	l5Is(t, "hello with a bad Host", status, out, 403, badHost)
 	for _, rq := range []l5Req{{client: "client-1"}, {secret: testSecret, client: "client-1"}, {client: ownID}, {}} {
-		if status, out = hello(rq); status != 200 || !strings.Contains(out, `"featureLevel":6`) {
+		if status, out = hello(rq); status != 200 || !strings.Contains(out, `"featureLevel":7`) {
 			t.Errorf("hello with %+v: %d %s", rq, status, out)
 		}
 	}

@@ -1,0 +1,3976 @@
+{
+ "runs": 10,
+ "node": "v24.3.0",
+ "machine": "darwin arm64",
+ "cold": {
+  "small": [
+   {
+    "ms": 193,
+    "err": "",
+    "bytes": 661,
+    "phases": {
+     "spawn": 43,
+     "boot": 13,
+     "engine": 110,
+     "stream": 11,
+     "grant": 13,
+     "load": 2,
+     "answer": 1,
+     "total": 193
+    },
+    "rss": 120,
+    "evs": [
+     {
+      "pid": 38289,
+      "ev": "start",
+      "t": 43
+     },
+     {
+      "pid": 38289,
+      "ev": "preload",
+      "t": 56
+     },
+     {
+      "pid": 38289,
+      "ev": "tls.connect",
+      "t": 166,
+      "id": 1
+     },
+     {
+      "pid": 38289,
+      "ev": "secureConnect",
+      "t": 174,
+      "id": 1
+     },
+     {
+      "pid": 38289,
+      "ev": "http2.connect",
+      "t": 175
+     },
+     {
+      "pid": 38289,
+      "ev": "request",
+      "t": 175,
+      "id": 1,
+      "line": "GET /api/hello"
+     },
+     {
+      "pid": 38289,
+      "ev": "response",
+      "t": 176,
+      "id": 1,
+      "line": "GET /api/hello",
+      "status": 200
+     },
+     {
+      "pid": 38289,
+      "ev": "request",
+      "t": 177,
+      "id": 2,
+      "line": "GET /api/events"
+     },
+     {
+      "pid": 38289,
+      "ev": "closed",
+      "t": 177,
+      "id": 1,
+      "line": "GET /api/hello"
+     },
+     {
+      "pid": 38289,
+      "ev": "response",
+      "t": 177,
+      "id": 2,
+      "line": "GET /api/events",
+      "status": 200
+     },
+     {
+      "pid": 38289,
+      "ev": "request",
+      "t": 190,
+      "id": 3,
+      "line": "GET /api/boards/b_d6tyb7b7/scene"
+     },
+     {
+      "pid": 38289,
+      "ev": "response",
+      "t": 190,
+      "id": 3,
+      "line": "GET /api/boards/b_d6tyb7b7/scene",
+      "status": 200
+     },
+     {
+      "pid": 38289,
+      "ev": "request",
+      "t": 192,
+      "id": 4,
+      "line": "POST /api/rpc-reply"
+     },
+     {
+      "pid": 38289,
+      "ev": "closed",
+      "t": 192,
+      "id": 3,
+      "line": "GET /api/boards/b_d6tyb7b7/scene"
+     },
+     {
+      "pid": 38289,
+      "ev": "response",
+      "t": 192,
+      "id": 4,
+      "line": "POST /api/rpc-reply",
+      "status": 200
+     },
+     {
+      "pid": 38289,
+      "ev": "closed",
+      "t": 192,
+      "id": 4,
+      "line": "POST /api/rpc-reply"
+     }
+    ]
+   },
+   {
+    "ms": 180,
+    "err": "",
+    "bytes": 661,
+    "phases": {
+     "spawn": 40,
+     "boot": 12,
+     "engine": 110,
+     "stream": 11,
+     "grant": 4,
+     "load": 2,
+     "answer": 1,
+     "total": 180
+    },
+    "rss": 117,
+    "evs": [
+     {
+      "pid": 38364,
+      "ev": "start",
+      "t": 40
+     },
+     {
+      "pid": 38364,
+      "ev": "preload",
+      "t": 52
+     },
+     {
+      "pid": 38364,
+      "ev": "tls.connect",
+      "t": 162,
+      "id": 1
+     },
+     {
+      "pid": 38364,
+      "ev": "secureConnect",
+      "t": 169,
+      "id": 1
+     },
+     {
+      "pid": 38364,
+      "ev": "http2.connect",
+      "t": 170
+     },
+     {
+      "pid": 38364,
+      "ev": "request",
+      "t": 171,
+      "id": 1,
+      "line": "GET /api/hello"
+     },
+     {
+      "pid": 38364,
+      "ev": "response",
+      "t": 172,
+      "id": 1,
+      "line": "GET /api/hello",
+      "status": 200
+     },
+     {
+      "pid": 38364,
+      "ev": "request",
+      "t": 172,
+      "id": 2,
+      "line": "GET /api/events"
+     },
+     {
+      "pid": 38364,
+      "ev": "closed",
+      "t": 173,
+      "id": 1,
+      "line": "GET /api/hello"
+     },
+     {
+      "pid": 38364,
+      "ev": "response",
+      "t": 173,
+      "id": 2,
+      "line": "GET /api/events",
+      "status": 200
+     },
+     {
+      "pid": 38364,
+      "ev": "request",
+      "t": 177,
+      "id": 3,
+      "line": "GET /api/boards/b_d6tyb7b7/scene"
+     },
+     {
+      "pid": 38364,
+      "ev": "response",
+      "t": 178,
+      "id": 3,
+      "line": "GET /api/boards/b_d6tyb7b7/scene",
+      "status": 200
+     },
+     {
+      "pid": 38364,
+      "ev": "request",
+      "t": 179,
+      "id": 4,
+      "line": "POST /api/rpc-reply"
+     },
+     {
+      "pid": 38364,
+      "ev": "closed",
+      "t": 179,
+      "id": 3,
+      "line": "GET /api/boards/b_d6tyb7b7/scene"
+     },
+     {
+      "pid": 38364,
+      "ev": "response",
+      "t": 180,
+      "id": 4,
+      "line": "POST /api/rpc-reply",
+      "status": 200
+     },
+     {
+      "pid": 38364,
+      "ev": "closed",
+      "t": 180,
+      "id": 4,
+      "line": "POST /api/rpc-reply"
+     }
+    ]
+   },
+   {
+    "ms": 156,
+    "err": "",
+    "bytes": 661,
+    "phases": {
+     "spawn": 19,
+     "boot": 8,
+     "engine": 112,
+     "stream": 12,
+     "grant": 2,
+     "load": 2,
+     "answer": 1,
+     "total": 156
+    },
+    "rss": 120,
+    "evs": [
+     {
+      "pid": 38475,
+      "ev": "start",
+      "t": 19
+     },
+     {
+      "pid": 38475,
+      "ev": "preload",
+      "t": 27
+     },
+     {
+      "pid": 38475,
+      "ev": "tls.connect",
+      "t": 139,
+      "id": 1
+     },
+     {
+      "pid": 38475,
+      "ev": "secureConnect",
+      "t": 146,
+      "id": 1
+     },
+     {
+      "pid": 38475,
+      "ev": "http2.connect",
+      "t": 147
+     },
+     {
+      "pid": 38475,
+      "ev": "request",
+      "t": 148,
+      "id": 1,
+      "line": "GET /api/hello"
+     },
+     {
+      "pid": 38475,
+      "ev": "response",
+      "t": 149,
+      "id": 1,
+      "line": "GET /api/hello",
+      "status": 200
+     },
+     {
+      "pid": 38475,
+      "ev": "request",
+      "t": 150,
+      "id": 2,
+      "line": "GET /api/events"
+     },
+     {
+      "pid": 38475,
+      "ev": "closed",
+      "t": 150,
+      "id": 1,
+      "line": "GET /api/hello"
+     },
+     {
+      "pid": 38475,
+      "ev": "response",
+      "t": 151,
+      "id": 2,
+      "line": "GET /api/events",
+      "status": 200
+     },
+     {
+      "pid": 38475,
+      "ev": "request",
+      "t": 153,
+      "id": 3,
+      "line": "GET /api/boards/b_d6tyb7b7/scene"
+     },
+     {
+      "pid": 38475,
+      "ev": "response",
+      "t": 154,
+      "id": 3,
+      "line": "GET /api/boards/b_d6tyb7b7/scene",
+      "status": 200
+     },
+     {
+      "pid": 38475,
+      "ev": "request",
+      "t": 155,
+      "id": 4,
+      "line": "POST /api/rpc-reply"
+     },
+     {
+      "pid": 38475,
+      "ev": "closed",
+      "t": 156,
+      "id": 3,
+      "line": "GET /api/boards/b_d6tyb7b7/scene"
+     },
+     {
+      "pid": 38475,
+      "ev": "response",
+      "t": 156,
+      "id": 4,
+      "line": "POST /api/rpc-reply",
+      "status": 200
+     },
+     {
+      "pid": 38475,
+      "ev": "closed",
+      "t": 156,
+      "id": 4,
+      "line": "POST /api/rpc-reply"
+     }
+    ]
+   },
+   {
+    "ms": 195,
+    "err": "",
+    "bytes": 661,
+    "phases": {
+     "spawn": 44,
+     "boot": 13,
+     "engine": 113,
+     "stream": 13,
+     "grant": 9,
+     "load": 2,
+     "answer": 1,
+     "total": 195
+    },
+    "rss": 115,
+    "evs": [
+     {
+      "pid": 38539,
+      "ev": "start",
+      "t": 44
+     },
+     {
+      "pid": 38539,
+      "ev": "preload",
+      "t": 57
+     },
+     {
+      "pid": 38539,
+      "ev": "tls.connect",
+      "t": 170,
+      "id": 1
+     },
+     {
+      "pid": 38539,
+      "ev": "secureConnect",
+      "t": 179,
+      "id": 1
+     },
+     {
+      "pid": 38539,
+      "ev": "http2.connect",
+      "t": 180
+     },
+     {
+      "pid": 38539,
+      "ev": "request",
+      "t": 180,
+      "id": 1,
+      "line": "GET /api/hello"
+     },
+     {
+      "pid": 38539,
+      "ev": "response",
+      "t": 181,
+      "id": 1,
+      "line": "GET /api/hello",
+      "status": 200
+     },
+     {
+      "pid": 38539,
+      "ev": "request",
+      "t": 182,
+      "id": 2,
+      "line": "GET /api/events"
+     },
+     {
+      "pid": 38539,
+      "ev": "closed",
+      "t": 183,
+      "id": 1,
+      "line": "GET /api/hello"
+     },
+     {
+      "pid": 38539,
+      "ev": "response",
+      "t": 183,
+      "id": 2,
+      "line": "GET /api/events",
+      "status": 200
+     },
+     {
+      "pid": 38539,
+      "ev": "request",
+      "t": 192,
+      "id": 3,
+      "line": "GET /api/boards/b_d6tyb7b7/scene"
+     },
+     {
+      "pid": 38539,
+      "ev": "response",
+      "t": 192,
+      "id": 3,
+      "line": "GET /api/boards/b_d6tyb7b7/scene",
+      "status": 200
+     },
+     {
+      "pid": 38539,
+      "ev": "request",
+      "t": 194,
+      "id": 4,
+      "line": "POST /api/rpc-reply"
+     },
+     {
+      "pid": 38539,
+      "ev": "closed",
+      "t": 194,
+      "id": 3,
+      "line": "GET /api/boards/b_d6tyb7b7/scene"
+     },
+     {
+      "pid": 38539,
+      "ev": "response",
+      "t": 194,
+      "id": 4,
+      "line": "POST /api/rpc-reply",
+      "status": 200
+     },
+     {
+      "pid": 38539,
+      "ev": "closed",
+      "t": 195,
+      "id": 4,
+      "line": "POST /api/rpc-reply"
+     }
+    ]
+   },
+   {
+    "ms": 156,
+    "err": "",
+    "bytes": 661,
+    "phases": {
+     "spawn": 24,
+     "boot": 10,
+     "engine": 105,
+     "stream": 12,
+     "grant": 3,
+     "load": 1,
+     "answer": 1,
+     "total": 156
+    },
+    "rss": 116,
+    "evs": [
+     {
+      "pid": 38599,
+      "ev": "start",
+      "t": 24
+     },
+     {
+      "pid": 38599,
+      "ev": "preload",
+      "t": 34
+     },
+     {
+      "pid": 38599,
+      "ev": "tls.connect",
+      "t": 139,
+      "id": 1
+     },
+     {
+      "pid": 38599,
+      "ev": "secureConnect",
+      "t": 147,
+      "id": 1
+     },
+     {
+      "pid": 38599,
+      "ev": "http2.connect",
+      "t": 148
+     },
+     {
+      "pid": 38599,
+      "ev": "request",
+      "t": 148,
+      "id": 1,
+      "line": "GET /api/hello"
+     },
+     {
+      "pid": 38599,
+      "ev": "response",
+      "t": 149,
+      "id": 1,
+      "line": "GET /api/hello",
+      "status": 200
+     },
+     {
+      "pid": 38599,
+      "ev": "request",
+      "t": 150,
+      "id": 2,
+      "line": "GET /api/events"
+     },
+     {
+      "pid": 38599,
+      "ev": "closed",
+      "t": 150,
+      "id": 1,
+      "line": "GET /api/hello"
+     },
+     {
+      "pid": 38599,
+      "ev": "response",
+      "t": 151,
+      "id": 2,
+      "line": "GET /api/events",
+      "status": 200
+     },
+     {
+      "pid": 38599,
+      "ev": "request",
+      "t": 154,
+      "id": 3,
+      "line": "GET /api/boards/b_d6tyb7b7/scene"
+     },
+     {
+      "pid": 38599,
+      "ev": "response",
+      "t": 154,
+      "id": 3,
+      "line": "GET /api/boards/b_d6tyb7b7/scene",
+      "status": 200
+     },
+     {
+      "pid": 38599,
+      "ev": "request",
+      "t": 155,
+      "id": 4,
+      "line": "POST /api/rpc-reply"
+     },
+     {
+      "pid": 38599,
+      "ev": "closed",
+      "t": 156,
+      "id": 3,
+      "line": "GET /api/boards/b_d6tyb7b7/scene"
+     },
+     {
+      "pid": 38599,
+      "ev": "response",
+      "t": 156,
+      "id": 4,
+      "line": "POST /api/rpc-reply",
+      "status": 200
+     },
+     {
+      "pid": 38599,
+      "ev": "closed",
+      "t": 156,
+      "id": 4,
+      "line": "POST /api/rpc-reply"
+     }
+    ]
+   },
+   {
+    "ms": 179,
+    "err": "",
+    "bytes": 661,
+    "phases": {
+     "spawn": 35,
+     "boot": 12,
+     "engine": 110,
+     "stream": 11,
+     "grant": 8,
+     "load": 2,
+     "answer": 1,
+     "total": 179
+    },
+    "rss": 116,
+    "evs": [
+     {
+      "pid": 38655,
+      "ev": "start",
+      "t": 35
+     },
+     {
+      "pid": 38655,
+      "ev": "preload",
+      "t": 47
+     },
+     {
+      "pid": 38655,
+      "ev": "tls.connect",
+      "t": 157,
+      "id": 1
+     },
+     {
+      "pid": 38655,
+      "ev": "secureConnect",
+      "t": 164,
+      "id": 1
+     },
+     {
+      "pid": 38655,
+      "ev": "http2.connect",
+      "t": 165
+     },
+     {
+      "pid": 38655,
+      "ev": "request",
+      "t": 165,
+      "id": 1,
+      "line": "GET /api/hello"
+     },
+     {
+      "pid": 38655,
+      "ev": "response",
+      "t": 167,
+      "id": 1,
+      "line": "GET /api/hello",
+      "status": 200
+     },
+     {
+      "pid": 38655,
+      "ev": "request",
+      "t": 167,
+      "id": 2,
+      "line": "GET /api/events"
+     },
+     {
+      "pid": 38655,
+      "ev": "closed",
+      "t": 168,
+      "id": 1,
+      "line": "GET /api/hello"
+     },
+     {
+      "pid": 38655,
+      "ev": "response",
+      "t": 168,
+      "id": 2,
+      "line": "GET /api/events",
+      "status": 200
+     },
+     {
+      "pid": 38655,
+      "ev": "request",
+      "t": 176,
+      "id": 3,
+      "line": "GET /api/boards/b_d6tyb7b7/scene"
+     },
+     {
+      "pid": 38655,
+      "ev": "response",
+      "t": 176,
+      "id": 3,
+      "line": "GET /api/boards/b_d6tyb7b7/scene",
+      "status": 200
+     },
+     {
+      "pid": 38655,
+      "ev": "request",
+      "t": 178,
+      "id": 4,
+      "line": "POST /api/rpc-reply"
+     },
+     {
+      "pid": 38655,
+      "ev": "closed",
+      "t": 178,
+      "id": 3,
+      "line": "GET /api/boards/b_d6tyb7b7/scene"
+     },
+     {
+      "pid": 38655,
+      "ev": "response",
+      "t": 178,
+      "id": 4,
+      "line": "POST /api/rpc-reply",
+      "status": 200
+     },
+     {
+      "pid": 38655,
+      "ev": "closed",
+      "t": 178,
+      "id": 4,
+      "line": "POST /api/rpc-reply"
+     }
+    ]
+   },
+   {
+    "ms": 194,
+    "err": "",
+    "bytes": 661,
+    "phases": {
+     "spawn": 39,
+     "boot": 12,
+     "engine": 116,
+     "stream": 13,
+     "grant": 10,
+     "load": 3,
+     "answer": 1,
+     "total": 194
+    },
+    "rss": 121,
+    "evs": [
+     {
+      "pid": 38713,
+      "ev": "start",
+      "t": 39
+     },
+     {
+      "pid": 38713,
+      "ev": "preload",
+      "t": 51
+     },
+     {
+      "pid": 38713,
+      "ev": "tls.connect",
+      "t": 167,
+      "id": 1
+     },
+     {
+      "pid": 38713,
+      "ev": "secureConnect",
+      "t": 176,
+      "id": 1
+     },
+     {
+      "pid": 38713,
+      "ev": "http2.connect",
+      "t": 177
+     },
+     {
+      "pid": 38713,
+      "ev": "request",
+      "t": 178,
+      "id": 1,
+      "line": "GET /api/hello"
+     },
+     {
+      "pid": 38713,
+      "ev": "response",
+      "t": 179,
+      "id": 1,
+      "line": "GET /api/hello",
+      "status": 200
+     },
+     {
+      "pid": 38713,
+      "ev": "request",
+      "t": 180,
+      "id": 2,
+      "line": "GET /api/events"
+     },
+     {
+      "pid": 38713,
+      "ev": "closed",
+      "t": 180,
+      "id": 1,
+      "line": "GET /api/hello"
+     },
+     {
+      "pid": 38713,
+      "ev": "response",
+      "t": 180,
+      "id": 2,
+      "line": "GET /api/events",
+      "status": 200
+     },
+     {
+      "pid": 38713,
+      "ev": "request",
+      "t": 190,
+      "id": 3,
+      "line": "GET /api/boards/b_d6tyb7b7/scene"
+     },
+     {
+      "pid": 38713,
+      "ev": "response",
+      "t": 191,
+      "id": 3,
+      "line": "GET /api/boards/b_d6tyb7b7/scene",
+      "status": 200
+     },
+     {
+      "pid": 38713,
+      "ev": "request",
+      "t": 193,
+      "id": 4,
+      "line": "POST /api/rpc-reply"
+     },
+     {
+      "pid": 38713,
+      "ev": "closed",
+      "t": 193,
+      "id": 3,
+      "line": "GET /api/boards/b_d6tyb7b7/scene"
+     },
+     {
+      "pid": 38713,
+      "ev": "response",
+      "t": 193,
+      "id": 4,
+      "line": "POST /api/rpc-reply",
+      "status": 200
+     },
+     {
+      "pid": 38713,
+      "ev": "closed",
+      "t": 194,
+      "id": 4,
+      "line": "POST /api/rpc-reply"
+     }
+    ]
+   },
+   {
+    "ms": 190,
+    "err": "",
+    "bytes": 661,
+    "phases": {
+     "spawn": 40,
+     "boot": 13,
+     "engine": 113,
+     "stream": 12,
+     "grant": 9,
+     "load": 2,
+     "answer": 1,
+     "total": 190
+    },
+    "rss": 119,
+    "evs": [
+     {
+      "pid": 38776,
+      "ev": "start",
+      "t": 40
+     },
+     {
+      "pid": 38776,
+      "ev": "preload",
+      "t": 53
+     },
+     {
+      "pid": 38776,
+      "ev": "tls.connect",
+      "t": 166,
+      "id": 1
+     },
+     {
+      "pid": 38776,
+      "ev": "secureConnect",
+      "t": 174,
+      "id": 1
+     },
+     {
+      "pid": 38776,
+      "ev": "http2.connect",
+      "t": 175
+     },
+     {
+      "pid": 38776,
+      "ev": "request",
+      "t": 176,
+      "id": 1,
+      "line": "GET /api/hello"
+     },
+     {
+      "pid": 38776,
+      "ev": "response",
+      "t": 177,
+      "id": 1,
+      "line": "GET /api/hello",
+      "status": 200
+     },
+     {
+      "pid": 38776,
+      "ev": "request",
+      "t": 177,
+      "id": 2,
+      "line": "GET /api/events"
+     },
+     {
+      "pid": 38776,
+      "ev": "closed",
+      "t": 178,
+      "id": 1,
+      "line": "GET /api/hello"
+     },
+     {
+      "pid": 38776,
+      "ev": "response",
+      "t": 178,
+      "id": 2,
+      "line": "GET /api/events",
+      "status": 200
+     },
+     {
+      "pid": 38776,
+      "ev": "request",
+      "t": 187,
+      "id": 3,
+      "line": "GET /api/boards/b_d6tyb7b7/scene"
+     },
+     {
+      "pid": 38776,
+      "ev": "response",
+      "t": 187,
+      "id": 3,
+      "line": "GET /api/boards/b_d6tyb7b7/scene",
+      "status": 200
+     },
+     {
+      "pid": 38776,
+      "ev": "request",
+      "t": 189,
+      "id": 4,
+      "line": "POST /api/rpc-reply"
+     },
+     {
+      "pid": 38776,
+      "ev": "closed",
+      "t": 189,
+      "id": 3,
+      "line": "GET /api/boards/b_d6tyb7b7/scene"
+     },
+     {
+      "pid": 38776,
+      "ev": "response",
+      "t": 190,
+      "id": 4,
+      "line": "POST /api/rpc-reply",
+      "status": 200
+     },
+     {
+      "pid": 38776,
+      "ev": "closed",
+      "t": 190,
+      "id": 4,
+      "line": "POST /api/rpc-reply"
+     }
+    ]
+   },
+   {
+    "ms": 181,
+    "err": "",
+    "bytes": 661,
+    "phases": {
+     "spawn": 37,
+     "boot": 15,
+     "engine": 111,
+     "stream": 11,
+     "grant": 4,
+     "load": 2,
+     "answer": 1,
+     "total": 181
+    },
+    "rss": 115,
+    "evs": [
+     {
+      "pid": 38847,
+      "ev": "start",
+      "t": 37
+     },
+     {
+      "pid": 38847,
+      "ev": "preload",
+      "t": 52
+     },
+     {
+      "pid": 38847,
+      "ev": "tls.connect",
+      "t": 163,
+      "id": 1
+     },
+     {
+      "pid": 38847,
+      "ev": "secureConnect",
+      "t": 171,
+      "id": 1
+     },
+     {
+      "pid": 38847,
+      "ev": "http2.connect",
+      "t": 172
+     },
+     {
+      "pid": 38847,
+      "ev": "request",
+      "t": 172,
+      "id": 1,
+      "line": "GET /api/hello"
+     },
+     {
+      "pid": 38847,
+      "ev": "response",
+      "t": 173,
+      "id": 1,
+      "line": "GET /api/hello",
+      "status": 200
+     },
+     {
+      "pid": 38847,
+      "ev": "request",
+      "t": 173,
+      "id": 2,
+      "line": "GET /api/events"
+     },
+     {
+      "pid": 38847,
+      "ev": "closed",
+      "t": 174,
+      "id": 1,
+      "line": "GET /api/hello"
+     },
+     {
+      "pid": 38847,
+      "ev": "response",
+      "t": 174,
+      "id": 2,
+      "line": "GET /api/events",
+      "status": 200
+     },
+     {
+      "pid": 38847,
+      "ev": "request",
+      "t": 178,
+      "id": 3,
+      "line": "GET /api/boards/b_d6tyb7b7/scene"
+     },
+     {
+      "pid": 38847,
+      "ev": "response",
+      "t": 178,
+      "id": 3,
+      "line": "GET /api/boards/b_d6tyb7b7/scene",
+      "status": 200
+     },
+     {
+      "pid": 38847,
+      "ev": "request",
+      "t": 180,
+      "id": 4,
+      "line": "POST /api/rpc-reply"
+     },
+     {
+      "pid": 38847,
+      "ev": "closed",
+      "t": 180,
+      "id": 3,
+      "line": "GET /api/boards/b_d6tyb7b7/scene"
+     },
+     {
+      "pid": 38847,
+      "ev": "response",
+      "t": 180,
+      "id": 4,
+      "line": "POST /api/rpc-reply",
+      "status": 200
+     },
+     {
+      "pid": 38847,
+      "ev": "closed",
+      "t": 180,
+      "id": 4,
+      "line": "POST /api/rpc-reply"
+     }
+    ]
+   },
+   {
+    "ms": 211,
+    "err": "",
+    "bytes": 661,
+    "phases": {
+     "spawn": 57,
+     "boot": 18,
+     "engine": 115,
+     "stream": 12,
+     "grant": 6,
+     "load": 2,
+     "answer": 1,
+     "total": 211
+    },
+    "rss": 120,
+    "evs": [
+     {
+      "pid": 38916,
+      "ev": "start",
+      "t": 57
+     },
+     {
+      "pid": 38916,
+      "ev": "preload",
+      "t": 75
+     },
+     {
+      "pid": 38916,
+      "ev": "tls.connect",
+      "t": 190,
+      "id": 1
+     },
+     {
+      "pid": 38916,
+      "ev": "secureConnect",
+      "t": 198,
+      "id": 1
+     },
+     {
+      "pid": 38916,
+      "ev": "http2.connect",
+      "t": 199
+     },
+     {
+      "pid": 38916,
+      "ev": "request",
+      "t": 199,
+      "id": 1,
+      "line": "GET /api/hello"
+     },
+     {
+      "pid": 38916,
+      "ev": "response",
+      "t": 200,
+      "id": 1,
+      "line": "GET /api/hello",
+      "status": 200
+     },
+     {
+      "pid": 38916,
+      "ev": "request",
+      "t": 201,
+      "id": 2,
+      "line": "GET /api/events"
+     },
+     {
+      "pid": 38916,
+      "ev": "closed",
+      "t": 201,
+      "id": 1,
+      "line": "GET /api/hello"
+     },
+     {
+      "pid": 38916,
+      "ev": "response",
+      "t": 202,
+      "id": 2,
+      "line": "GET /api/events",
+      "status": 200
+     },
+     {
+      "pid": 38916,
+      "ev": "request",
+      "t": 208,
+      "id": 3,
+      "line": "GET /api/boards/b_d6tyb7b7/scene"
+     },
+     {
+      "pid": 38916,
+      "ev": "response",
+      "t": 208,
+      "id": 3,
+      "line": "GET /api/boards/b_d6tyb7b7/scene",
+      "status": 200
+     },
+     {
+      "pid": 38916,
+      "ev": "request",
+      "t": 210,
+      "id": 4,
+      "line": "POST /api/rpc-reply"
+     },
+     {
+      "pid": 38916,
+      "ev": "closed",
+      "t": 210,
+      "id": 3,
+      "line": "GET /api/boards/b_d6tyb7b7/scene"
+     },
+     {
+      "pid": 38916,
+      "ev": "response",
+      "t": 211,
+      "id": 4,
+      "line": "POST /api/rpc-reply",
+      "status": 200
+     },
+     {
+      "pid": 38916,
+      "ev": "closed",
+      "t": 211,
+      "id": 4,
+      "line": "POST /api/rpc-reply"
+     }
+    ]
+   }
+  ],
+  "large": [
+   {
+    "ms": 190,
+    "err": "",
+    "bytes": 124240,
+    "phases": {
+     "spawn": 20,
+     "boot": 9,
+     "engine": 106,
+     "stream": 12,
+     "grant": 6,
+     "load": 28,
+     "answer": 9,
+     "total": 190
+    },
+    "rss": 134,
+    "evs": [
+     {
+      "pid": 38323,
+      "ev": "start",
+      "t": 20
+     },
+     {
+      "pid": 38323,
+      "ev": "preload",
+      "t": 29
+     },
+     {
+      "pid": 38323,
+      "ev": "tls.connect",
+      "t": 135,
+      "id": 1
+     },
+     {
+      "pid": 38323,
+      "ev": "secureConnect",
+      "t": 143,
+      "id": 1
+     },
+     {
+      "pid": 38323,
+      "ev": "http2.connect",
+      "t": 144
+     },
+     {
+      "pid": 38323,
+      "ev": "request",
+      "t": 145,
+      "id": 1,
+      "line": "GET /api/hello"
+     },
+     {
+      "pid": 38323,
+      "ev": "response",
+      "t": 146,
+      "id": 1,
+      "line": "GET /api/hello",
+      "status": 200
+     },
+     {
+      "pid": 38323,
+      "ev": "request",
+      "t": 146,
+      "id": 2,
+      "line": "GET /api/events"
+     },
+     {
+      "pid": 38323,
+      "ev": "closed",
+      "t": 147,
+      "id": 1,
+      "line": "GET /api/hello"
+     },
+     {
+      "pid": 38323,
+      "ev": "response",
+      "t": 147,
+      "id": 2,
+      "line": "GET /api/events",
+      "status": 200
+     },
+     {
+      "pid": 38323,
+      "ev": "request",
+      "t": 153,
+      "id": 3,
+      "line": "GET /api/boards/b_2unenzvr/scene"
+     },
+     {
+      "pid": 38323,
+      "ev": "response",
+      "t": 154,
+      "id": 3,
+      "line": "GET /api/boards/b_2unenzvr/scene",
+      "status": 200
+     },
+     {
+      "pid": 38323,
+      "ev": "request",
+      "t": 181,
+      "id": 4,
+      "line": "POST /api/rpc-reply"
+     },
+     {
+      "pid": 38323,
+      "ev": "closed",
+      "t": 187,
+      "id": 3,
+      "line": "GET /api/boards/b_2unenzvr/scene"
+     },
+     {
+      "pid": 38323,
+      "ev": "response",
+      "t": 189,
+      "id": 4,
+      "line": "POST /api/rpc-reply",
+      "status": 200
+     },
+     {
+      "pid": 38323,
+      "ev": "closed",
+      "t": 189,
+      "id": 4,
+      "line": "POST /api/rpc-reply"
+     }
+    ]
+   },
+   {
+    "ms": 219,
+    "err": "",
+    "bytes": 124240,
+    "phases": {
+     "spawn": 47,
+     "boot": 14,
+     "engine": 111,
+     "stream": 11,
+     "grant": 6,
+     "load": 27,
+     "answer": 3,
+     "total": 219
+    },
+    "rss": 133,
+    "evs": [
+     {
+      "pid": 38390,
+      "ev": "start",
+      "t": 47
+     },
+     {
+      "pid": 38390,
+      "ev": "preload",
+      "t": 61
+     },
+     {
+      "pid": 38390,
+      "ev": "tls.connect",
+      "t": 172,
+      "id": 1
+     },
+     {
+      "pid": 38390,
+      "ev": "secureConnect",
+      "t": 179,
+      "id": 1
+     },
+     {
+      "pid": 38390,
+      "ev": "http2.connect",
+      "t": 180
+     },
+     {
+      "pid": 38390,
+      "ev": "request",
+      "t": 180,
+      "id": 1,
+      "line": "GET /api/hello"
+     },
+     {
+      "pid": 38390,
+      "ev": "response",
+      "t": 181,
+      "id": 1,
+      "line": "GET /api/hello",
+      "status": 200
+     },
+     {
+      "pid": 38390,
+      "ev": "request",
+      "t": 182,
+      "id": 2,
+      "line": "GET /api/events"
+     },
+     {
+      "pid": 38390,
+      "ev": "closed",
+      "t": 182,
+      "id": 1,
+      "line": "GET /api/hello"
+     },
+     {
+      "pid": 38390,
+      "ev": "response",
+      "t": 183,
+      "id": 2,
+      "line": "GET /api/events",
+      "status": 200
+     },
+     {
+      "pid": 38390,
+      "ev": "request",
+      "t": 189,
+      "id": 3,
+      "line": "GET /api/boards/b_2unenzvr/scene"
+     },
+     {
+      "pid": 38390,
+      "ev": "response",
+      "t": 189,
+      "id": 3,
+      "line": "GET /api/boards/b_2unenzvr/scene",
+      "status": 200
+     },
+     {
+      "pid": 38390,
+      "ev": "request",
+      "t": 216,
+      "id": 4,
+      "line": "POST /api/rpc-reply"
+     },
+     {
+      "pid": 38390,
+      "ev": "closed",
+      "t": 217,
+      "id": 3,
+      "line": "GET /api/boards/b_2unenzvr/scene"
+     },
+     {
+      "pid": 38390,
+      "ev": "response",
+      "t": 218,
+      "id": 4,
+      "line": "POST /api/rpc-reply",
+      "status": 200
+     },
+     {
+      "pid": 38390,
+      "ev": "closed",
+      "t": 218,
+      "id": 4,
+      "line": "POST /api/rpc-reply"
+     }
+    ]
+   },
+   {
+    "ms": 213,
+    "err": "",
+    "bytes": 124240,
+    "phases": {
+     "spawn": 39,
+     "boot": 13,
+     "engine": 113,
+     "stream": 12,
+     "grant": 1,
+     "load": 32,
+     "answer": 3,
+     "total": 213
+    },
+    "rss": 136,
+    "evs": [
+     {
+      "pid": 38512,
+      "ev": "start",
+      "t": 39
+     },
+     {
+      "pid": 38512,
+      "ev": "preload",
+      "t": 52
+     },
+     {
+      "pid": 38512,
+      "ev": "tls.connect",
+      "t": 165,
+      "id": 1
+     },
+     {
+      "pid": 38512,
+      "ev": "secureConnect",
+      "t": 173,
+      "id": 1
+     },
+     {
+      "pid": 38512,
+      "ev": "http2.connect",
+      "t": 174
+     },
+     {
+      "pid": 38512,
+      "ev": "request",
+      "t": 174,
+      "id": 1,
+      "line": "GET /api/hello"
+     },
+     {
+      "pid": 38512,
+      "ev": "response",
+      "t": 176,
+      "id": 1,
+      "line": "GET /api/hello",
+      "status": 200
+     },
+     {
+      "pid": 38512,
+      "ev": "request",
+      "t": 176,
+      "id": 2,
+      "line": "GET /api/events"
+     },
+     {
+      "pid": 38512,
+      "ev": "closed",
+      "t": 176,
+      "id": 1,
+      "line": "GET /api/hello"
+     },
+     {
+      "pid": 38512,
+      "ev": "response",
+      "t": 177,
+      "id": 2,
+      "line": "GET /api/events",
+      "status": 200
+     },
+     {
+      "pid": 38512,
+      "ev": "request",
+      "t": 178,
+      "id": 3,
+      "line": "GET /api/boards/b_2unenzvr/scene"
+     },
+     {
+      "pid": 38512,
+      "ev": "response",
+      "t": 179,
+      "id": 3,
+      "line": "GET /api/boards/b_2unenzvr/scene",
+      "status": 200
+     },
+     {
+      "pid": 38512,
+      "ev": "request",
+      "t": 210,
+      "id": 4,
+      "line": "POST /api/rpc-reply"
+     },
+     {
+      "pid": 38512,
+      "ev": "closed",
+      "t": 210,
+      "id": 3,
+      "line": "GET /api/boards/b_2unenzvr/scene"
+     },
+     {
+      "pid": 38512,
+      "ev": "response",
+      "t": 211,
+      "id": 4,
+      "line": "POST /api/rpc-reply",
+      "status": 200
+     },
+     {
+      "pid": 38512,
+      "ev": "closed",
+      "t": 211,
+      "id": 4,
+      "line": "POST /api/rpc-reply"
+     }
+    ]
+   },
+   {
+    "ms": 205,
+    "err": "",
+    "bytes": 124240,
+    "phases": {
+     "spawn": 26,
+     "boot": 11,
+     "engine": 116,
+     "stream": 12,
+     "grant": 9,
+     "load": 28,
+     "answer": 3,
+     "total": 205
+    },
+    "rss": 135,
+    "evs": [
+     {
+      "pid": 38567,
+      "ev": "start",
+      "t": 26
+     },
+     {
+      "pid": 38567,
+      "ev": "preload",
+      "t": 37
+     },
+     {
+      "pid": 38567,
+      "ev": "tls.connect",
+      "t": 153,
+      "id": 1
+     },
+     {
+      "pid": 38567,
+      "ev": "secureConnect",
+      "t": 161,
+      "id": 1
+     },
+     {
+      "pid": 38567,
+      "ev": "http2.connect",
+      "t": 162
+     },
+     {
+      "pid": 38567,
+      "ev": "request",
+      "t": 162,
+      "id": 1,
+      "line": "GET /api/hello"
+     },
+     {
+      "pid": 38567,
+      "ev": "response",
+      "t": 163,
+      "id": 1,
+      "line": "GET /api/hello",
+      "status": 200
+     },
+     {
+      "pid": 38567,
+      "ev": "request",
+      "t": 164,
+      "id": 2,
+      "line": "GET /api/events"
+     },
+     {
+      "pid": 38567,
+      "ev": "closed",
+      "t": 164,
+      "id": 1,
+      "line": "GET /api/hello"
+     },
+     {
+      "pid": 38567,
+      "ev": "response",
+      "t": 165,
+      "id": 2,
+      "line": "GET /api/events",
+      "status": 200
+     },
+     {
+      "pid": 38567,
+      "ev": "request",
+      "t": 174,
+      "id": 3,
+      "line": "GET /api/boards/b_2unenzvr/scene"
+     },
+     {
+      "pid": 38567,
+      "ev": "response",
+      "t": 174,
+      "id": 3,
+      "line": "GET /api/boards/b_2unenzvr/scene",
+      "status": 200
+     },
+     {
+      "pid": 38567,
+      "ev": "request",
+      "t": 202,
+      "id": 4,
+      "line": "POST /api/rpc-reply"
+     },
+     {
+      "pid": 38567,
+      "ev": "closed",
+      "t": 202,
+      "id": 3,
+      "line": "GET /api/boards/b_2unenzvr/scene"
+     },
+     {
+      "pid": 38567,
+      "ev": "response",
+      "t": 204,
+      "id": 4,
+      "line": "POST /api/rpc-reply",
+      "status": 200
+     },
+     {
+      "pid": 38567,
+      "ev": "closed",
+      "t": 204,
+      "id": 4,
+      "line": "POST /api/rpc-reply"
+     }
+    ]
+   },
+   {
+    "ms": 219,
+    "err": "",
+    "bytes": 124240,
+    "phases": {
+     "spawn": 41,
+     "boot": 13,
+     "engine": 114,
+     "stream": 12,
+     "grant": 8,
+     "load": 28,
+     "answer": 3,
+     "total": 219
+    },
+    "rss": 136,
+    "evs": [
+     {
+      "pid": 38629,
+      "ev": "start",
+      "t": 41
+     },
+     {
+      "pid": 38629,
+      "ev": "preload",
+      "t": 54
+     },
+     {
+      "pid": 38629,
+      "ev": "tls.connect",
+      "t": 168,
+      "id": 1
+     },
+     {
+      "pid": 38629,
+      "ev": "secureConnect",
+      "t": 176,
+      "id": 1
+     },
+     {
+      "pid": 38629,
+      "ev": "http2.connect",
+      "t": 177
+     },
+     {
+      "pid": 38629,
+      "ev": "request",
+      "t": 177,
+      "id": 1,
+      "line": "GET /api/hello"
+     },
+     {
+      "pid": 38629,
+      "ev": "response",
+      "t": 178,
+      "id": 1,
+      "line": "GET /api/hello",
+      "status": 200
+     },
+     {
+      "pid": 38629,
+      "ev": "request",
+      "t": 179,
+      "id": 2,
+      "line": "GET /api/events"
+     },
+     {
+      "pid": 38629,
+      "ev": "closed",
+      "t": 179,
+      "id": 1,
+      "line": "GET /api/hello"
+     },
+     {
+      "pid": 38629,
+      "ev": "response",
+      "t": 180,
+      "id": 2,
+      "line": "GET /api/events",
+      "status": 200
+     },
+     {
+      "pid": 38629,
+      "ev": "request",
+      "t": 188,
+      "id": 3,
+      "line": "GET /api/boards/b_2unenzvr/scene"
+     },
+     {
+      "pid": 38629,
+      "ev": "response",
+      "t": 189,
+      "id": 3,
+      "line": "GET /api/boards/b_2unenzvr/scene",
+      "status": 200
+     },
+     {
+      "pid": 38629,
+      "ev": "request",
+      "t": 216,
+      "id": 4,
+      "line": "POST /api/rpc-reply"
+     },
+     {
+      "pid": 38629,
+      "ev": "closed",
+      "t": 217,
+      "id": 3,
+      "line": "GET /api/boards/b_2unenzvr/scene"
+     },
+     {
+      "pid": 38629,
+      "ev": "response",
+      "t": 218,
+      "id": 4,
+      "line": "POST /api/rpc-reply",
+      "status": 200
+     },
+     {
+      "pid": 38629,
+      "ev": "closed",
+      "t": 218,
+      "id": 4,
+      "line": "POST /api/rpc-reply"
+     }
+    ]
+   },
+   {
+    "ms": 198,
+    "err": "",
+    "bytes": 124240,
+    "phases": {
+     "spawn": 35,
+     "boot": 12,
+     "engine": 108,
+     "stream": 11,
+     "grant": 2,
+     "load": 26,
+     "answer": 4,
+     "total": 198
+    },
+    "rss": 135,
+    "evs": [
+     {
+      "pid": 38681,
+      "ev": "start",
+      "t": 35
+     },
+     {
+      "pid": 38681,
+      "ev": "preload",
+      "t": 47
+     },
+     {
+      "pid": 38681,
+      "ev": "tls.connect",
+      "t": 155,
+      "id": 1
+     },
+     {
+      "pid": 38681,
+      "ev": "secureConnect",
+      "t": 163,
+      "id": 1
+     },
+     {
+      "pid": 38681,
+      "ev": "http2.connect",
+      "t": 163
+     },
+     {
+      "pid": 38681,
+      "ev": "request",
+      "t": 164,
+      "id": 1,
+      "line": "GET /api/hello"
+     },
+     {
+      "pid": 38681,
+      "ev": "response",
+      "t": 165,
+      "id": 1,
+      "line": "GET /api/hello",
+      "status": 200
+     },
+     {
+      "pid": 38681,
+      "ev": "request",
+      "t": 166,
+      "id": 2,
+      "line": "GET /api/events"
+     },
+     {
+      "pid": 38681,
+      "ev": "closed",
+      "t": 166,
+      "id": 1,
+      "line": "GET /api/hello"
+     },
+     {
+      "pid": 38681,
+      "ev": "response",
+      "t": 166,
+      "id": 2,
+      "line": "GET /api/events",
+      "status": 200
+     },
+     {
+      "pid": 38681,
+      "ev": "request",
+      "t": 168,
+      "id": 3,
+      "line": "GET /api/boards/b_2unenzvr/scene"
+     },
+     {
+      "pid": 38681,
+      "ev": "response",
+      "t": 168,
+      "id": 3,
+      "line": "GET /api/boards/b_2unenzvr/scene",
+      "status": 200
+     },
+     {
+      "pid": 38681,
+      "ev": "request",
+      "t": 194,
+      "id": 4,
+      "line": "POST /api/rpc-reply"
+     },
+     {
+      "pid": 38681,
+      "ev": "closed",
+      "t": 195,
+      "id": 3,
+      "line": "GET /api/boards/b_2unenzvr/scene"
+     },
+     {
+      "pid": 38681,
+      "ev": "response",
+      "t": 196,
+      "id": 4,
+      "line": "POST /api/rpc-reply",
+      "status": 200
+     },
+     {
+      "pid": 38681,
+      "ev": "closed",
+      "t": 197,
+      "id": 4,
+      "line": "POST /api/rpc-reply"
+     }
+    ]
+   },
+   {
+    "ms": 213,
+    "err": "",
+    "bytes": 124240,
+    "phases": {
+     "spawn": 37,
+     "boot": 11,
+     "engine": 112,
+     "stream": 13,
+     "grant": 7,
+     "load": 30,
+     "answer": 3,
+     "total": 213
+    },
+    "rss": 136,
+    "evs": [
+     {
+      "pid": 38740,
+      "ev": "start",
+      "t": 37
+     },
+     {
+      "pid": 38740,
+      "ev": "preload",
+      "t": 48
+     },
+     {
+      "pid": 38740,
+      "ev": "tls.connect",
+      "t": 160,
+      "id": 1
+     },
+     {
+      "pid": 38740,
+      "ev": "secureConnect",
+      "t": 169,
+      "id": 1
+     },
+     {
+      "pid": 38740,
+      "ev": "http2.connect",
+      "t": 170
+     },
+     {
+      "pid": 38740,
+      "ev": "request",
+      "t": 170,
+      "id": 1,
+      "line": "GET /api/hello"
+     },
+     {
+      "pid": 38740,
+      "ev": "response",
+      "t": 172,
+      "id": 1,
+      "line": "GET /api/hello",
+      "status": 200
+     },
+     {
+      "pid": 38740,
+      "ev": "request",
+      "t": 172,
+      "id": 2,
+      "line": "GET /api/events"
+     },
+     {
+      "pid": 38740,
+      "ev": "closed",
+      "t": 173,
+      "id": 1,
+      "line": "GET /api/hello"
+     },
+     {
+      "pid": 38740,
+      "ev": "response",
+      "t": 173,
+      "id": 2,
+      "line": "GET /api/events",
+      "status": 200
+     },
+     {
+      "pid": 38740,
+      "ev": "request",
+      "t": 180,
+      "id": 3,
+      "line": "GET /api/boards/b_2unenzvr/scene"
+     },
+     {
+      "pid": 38740,
+      "ev": "response",
+      "t": 181,
+      "id": 3,
+      "line": "GET /api/boards/b_2unenzvr/scene",
+      "status": 200
+     },
+     {
+      "pid": 38740,
+      "ev": "request",
+      "t": 210,
+      "id": 4,
+      "line": "POST /api/rpc-reply"
+     },
+     {
+      "pid": 38740,
+      "ev": "closed",
+      "t": 210,
+      "id": 3,
+      "line": "GET /api/boards/b_2unenzvr/scene"
+     },
+     {
+      "pid": 38740,
+      "ev": "response",
+      "t": 212,
+      "id": 4,
+      "line": "POST /api/rpc-reply",
+      "status": 200
+     },
+     {
+      "pid": 38740,
+      "ev": "closed",
+      "t": 212,
+      "id": 4,
+      "line": "POST /api/rpc-reply"
+     }
+    ]
+   },
+   {
+    "ms": 218,
+    "err": "",
+    "bytes": 124240,
+    "phases": {
+     "spawn": 44,
+     "boot": 14,
+     "engine": 113,
+     "stream": 12,
+     "grant": 5,
+     "load": 27,
+     "answer": 3,
+     "total": 218
+    },
+    "rss": 138,
+    "evs": [
+     {
+      "pid": 38809,
+      "ev": "start",
+      "t": 44
+     },
+     {
+      "pid": 38809,
+      "ev": "preload",
+      "t": 58
+     },
+     {
+      "pid": 38809,
+      "ev": "tls.connect",
+      "t": 171,
+      "id": 1
+     },
+     {
+      "pid": 38809,
+      "ev": "secureConnect",
+      "t": 179,
+      "id": 1
+     },
+     {
+      "pid": 38809,
+      "ev": "http2.connect",
+      "t": 180
+     },
+     {
+      "pid": 38809,
+      "ev": "request",
+      "t": 180,
+      "id": 1,
+      "line": "GET /api/hello"
+     },
+     {
+      "pid": 38809,
+      "ev": "response",
+      "t": 181,
+      "id": 1,
+      "line": "GET /api/hello",
+      "status": 200
+     },
+     {
+      "pid": 38809,
+      "ev": "request",
+      "t": 182,
+      "id": 2,
+      "line": "GET /api/events"
+     },
+     {
+      "pid": 38809,
+      "ev": "closed",
+      "t": 182,
+      "id": 1,
+      "line": "GET /api/hello"
+     },
+     {
+      "pid": 38809,
+      "ev": "response",
+      "t": 183,
+      "id": 2,
+      "line": "GET /api/events",
+      "status": 200
+     },
+     {
+      "pid": 38809,
+      "ev": "request",
+      "t": 188,
+      "id": 3,
+      "line": "GET /api/boards/b_2unenzvr/scene"
+     },
+     {
+      "pid": 38809,
+      "ev": "response",
+      "t": 188,
+      "id": 3,
+      "line": "GET /api/boards/b_2unenzvr/scene",
+      "status": 200
+     },
+     {
+      "pid": 38809,
+      "ev": "request",
+      "t": 215,
+      "id": 4,
+      "line": "POST /api/rpc-reply"
+     },
+     {
+      "pid": 38809,
+      "ev": "closed",
+      "t": 216,
+      "id": 3,
+      "line": "GET /api/boards/b_2unenzvr/scene"
+     },
+     {
+      "pid": 38809,
+      "ev": "response",
+      "t": 217,
+      "id": 4,
+      "line": "POST /api/rpc-reply",
+      "status": 200
+     },
+     {
+      "pid": 38809,
+      "ev": "closed",
+      "t": 217,
+      "id": 4,
+      "line": "POST /api/rpc-reply"
+     }
+    ]
+   },
+   {
+    "ms": 241,
+    "err": "",
+    "bytes": 124240,
+    "phases": {
+     "spawn": 59,
+     "boot": 18,
+     "engine": 110,
+     "stream": 12,
+     "grant": 12,
+     "load": 27,
+     "answer": 3,
+     "total": 241
+    },
+    "rss": 131,
+    "evs": [
+     {
+      "pid": 38891,
+      "ev": "start",
+      "t": 59
+     },
+     {
+      "pid": 38891,
+      "ev": "preload",
+      "t": 77
+     },
+     {
+      "pid": 38891,
+      "ev": "tls.connect",
+      "t": 187,
+      "id": 1
+     },
+     {
+      "pid": 38891,
+      "ev": "secureConnect",
+      "t": 194,
+      "id": 1
+     },
+     {
+      "pid": 38891,
+      "ev": "http2.connect",
+      "t": 196
+     },
+     {
+      "pid": 38891,
+      "ev": "request",
+      "t": 196,
+      "id": 1,
+      "line": "GET /api/hello"
+     },
+     {
+      "pid": 38891,
+      "ev": "response",
+      "t": 197,
+      "id": 1,
+      "line": "GET /api/hello",
+      "status": 200
+     },
+     {
+      "pid": 38891,
+      "ev": "request",
+      "t": 198,
+      "id": 2,
+      "line": "GET /api/events"
+     },
+     {
+      "pid": 38891,
+      "ev": "closed",
+      "t": 198,
+      "id": 1,
+      "line": "GET /api/hello"
+     },
+     {
+      "pid": 38891,
+      "ev": "response",
+      "t": 199,
+      "id": 2,
+      "line": "GET /api/events",
+      "status": 200
+     },
+     {
+      "pid": 38891,
+      "ev": "request",
+      "t": 211,
+      "id": 3,
+      "line": "GET /api/boards/b_2unenzvr/scene"
+     },
+     {
+      "pid": 38891,
+      "ev": "response",
+      "t": 212,
+      "id": 3,
+      "line": "GET /api/boards/b_2unenzvr/scene",
+      "status": 200
+     },
+     {
+      "pid": 38891,
+      "ev": "request",
+      "t": 238,
+      "id": 4,
+      "line": "POST /api/rpc-reply"
+     },
+     {
+      "pid": 38891,
+      "ev": "closed",
+      "t": 239,
+      "id": 3,
+      "line": "GET /api/boards/b_2unenzvr/scene"
+     },
+     {
+      "pid": 38891,
+      "ev": "response",
+      "t": 240,
+      "id": 4,
+      "line": "POST /api/rpc-reply",
+      "status": 200
+     },
+     {
+      "pid": 38891,
+      "ev": "closed",
+      "t": 240,
+      "id": 4,
+      "line": "POST /api/rpc-reply"
+     }
+    ]
+   },
+   {
+    "ms": 175,
+    "err": "",
+    "bytes": 124240,
+    "phases": {
+     "spawn": 15,
+     "boot": 9,
+     "engine": 101,
+     "stream": 11,
+     "grant": 8,
+     "load": 28,
+     "answer": 3,
+     "total": 175
+    },
+    "rss": 135,
+    "evs": [
+     {
+      "pid": 39212,
+      "ev": "start",
+      "t": 15
+     },
+     {
+      "pid": 39212,
+      "ev": "preload",
+      "t": 24
+     },
+     {
+      "pid": 39212,
+      "ev": "tls.connect",
+      "t": 125,
+      "id": 1
+     },
+     {
+      "pid": 39212,
+      "ev": "secureConnect",
+      "t": 133,
+      "id": 1
+     },
+     {
+      "pid": 39212,
+      "ev": "http2.connect",
+      "t": 134
+     },
+     {
+      "pid": 39212,
+      "ev": "request",
+      "t": 134,
+      "id": 1,
+      "line": "GET /api/hello"
+     },
+     {
+      "pid": 39212,
+      "ev": "response",
+      "t": 135,
+      "id": 1,
+      "line": "GET /api/hello",
+      "status": 200
+     },
+     {
+      "pid": 39212,
+      "ev": "request",
+      "t": 136,
+      "id": 2,
+      "line": "GET /api/events"
+     },
+     {
+      "pid": 39212,
+      "ev": "closed",
+      "t": 136,
+      "id": 1,
+      "line": "GET /api/hello"
+     },
+     {
+      "pid": 39212,
+      "ev": "response",
+      "t": 136,
+      "id": 2,
+      "line": "GET /api/events",
+      "status": 200
+     },
+     {
+      "pid": 39212,
+      "ev": "request",
+      "t": 144,
+      "id": 3,
+      "line": "GET /api/boards/b_2unenzvr/scene"
+     },
+     {
+      "pid": 39212,
+      "ev": "response",
+      "t": 144,
+      "id": 3,
+      "line": "GET /api/boards/b_2unenzvr/scene",
+      "status": 200
+     },
+     {
+      "pid": 39212,
+      "ev": "request",
+      "t": 172,
+      "id": 4,
+      "line": "POST /api/rpc-reply"
+     },
+     {
+      "pid": 39212,
+      "ev": "closed",
+      "t": 173,
+      "id": 3,
+      "line": "GET /api/boards/b_2unenzvr/scene"
+     },
+     {
+      "pid": 39212,
+      "ev": "response",
+      "t": 174,
+      "id": 4,
+      "line": "POST /api/rpc-reply",
+      "status": 200
+     },
+     {
+      "pid": 39212,
+      "ev": "closed",
+      "t": 174,
+      "id": 4,
+      "line": "POST /api/rpc-reply"
+     }
+    ]
+   }
+  ]
+ },
+ "reload": {
+  "small": [
+   {
+    "ms": 4,
+    "err": "",
+    "bytes": 661,
+    "phases": {
+     "grant": 1,
+     "load": 2,
+     "answer": 1,
+     "total": 4
+    },
+    "evs": [
+     {
+      "pid": 39258,
+      "ev": "request",
+      "t": 1,
+      "id": 11,
+      "line": "GET /api/boards/b_7mx4i7zw/scene"
+     },
+     {
+      "pid": 39258,
+      "ev": "response",
+      "t": 1,
+      "id": 11,
+      "line": "GET /api/boards/b_7mx4i7zw/scene",
+      "status": 200
+     },
+     {
+      "pid": 39258,
+      "ev": "request",
+      "t": 3,
+      "id": 12,
+      "line": "POST /api/rpc-reply"
+     },
+     {
+      "pid": 39258,
+      "ev": "closed",
+      "t": 3,
+      "id": 11,
+      "line": "GET /api/boards/b_7mx4i7zw/scene"
+     },
+     {
+      "pid": 39258,
+      "ev": "response",
+      "t": 3,
+      "id": 12,
+      "line": "POST /api/rpc-reply",
+      "status": 200
+     },
+     {
+      "pid": 39258,
+      "ev": "closed",
+      "t": 3,
+      "id": 12,
+      "line": "POST /api/rpc-reply"
+     }
+    ]
+   },
+   {
+    "ms": 3,
+    "err": "",
+    "bytes": 661,
+    "phases": {
+     "grant": 1,
+     "load": 1,
+     "answer": 1,
+     "total": 3
+    },
+    "evs": [
+     {
+      "pid": 39258,
+      "ev": "request",
+      "t": 1,
+      "id": 18,
+      "line": "GET /api/boards/b_7mx4i7zw/scene"
+     },
+     {
+      "pid": 39258,
+      "ev": "response",
+      "t": 2,
+      "id": 18,
+      "line": "GET /api/boards/b_7mx4i7zw/scene",
+      "status": 200
+     },
+     {
+      "pid": 39258,
+      "ev": "request",
+      "t": 2,
+      "id": 19,
+      "line": "POST /api/rpc-reply"
+     },
+     {
+      "pid": 39258,
+      "ev": "closed",
+      "t": 3,
+      "id": 18,
+      "line": "GET /api/boards/b_7mx4i7zw/scene"
+     },
+     {
+      "pid": 39258,
+      "ev": "response",
+      "t": 3,
+      "id": 19,
+      "line": "POST /api/rpc-reply",
+      "status": 200
+     },
+     {
+      "pid": 39258,
+      "ev": "closed",
+      "t": 3,
+      "id": 19,
+      "line": "POST /api/rpc-reply"
+     }
+    ]
+   },
+   {
+    "ms": 3,
+    "err": "",
+    "bytes": 661,
+    "phases": {
+     "grant": 1,
+     "load": 1,
+     "answer": 1,
+     "total": 3
+    },
+    "evs": [
+     {
+      "pid": 39258,
+      "ev": "request",
+      "t": 1,
+      "id": 25,
+      "line": "GET /api/boards/b_7mx4i7zw/scene"
+     },
+     {
+      "pid": 39258,
+      "ev": "response",
+      "t": 2,
+      "id": 25,
+      "line": "GET /api/boards/b_7mx4i7zw/scene",
+      "status": 200
+     },
+     {
+      "pid": 39258,
+      "ev": "request",
+      "t": 2,
+      "id": 26,
+      "line": "POST /api/rpc-reply"
+     },
+     {
+      "pid": 39258,
+      "ev": "closed",
+      "t": 2,
+      "id": 25,
+      "line": "GET /api/boards/b_7mx4i7zw/scene"
+     },
+     {
+      "pid": 39258,
+      "ev": "response",
+      "t": 3,
+      "id": 26,
+      "line": "POST /api/rpc-reply",
+      "status": 200
+     },
+     {
+      "pid": 39258,
+      "ev": "closed",
+      "t": 3,
+      "id": 26,
+      "line": "POST /api/rpc-reply"
+     }
+    ]
+   },
+   {
+    "ms": 3,
+    "err": "",
+    "bytes": 661,
+    "phases": {
+     "grant": 1,
+     "load": 1,
+     "answer": 1,
+     "total": 3
+    },
+    "evs": [
+     {
+      "pid": 39258,
+      "ev": "request",
+      "t": 1,
+      "id": 32,
+      "line": "GET /api/boards/b_7mx4i7zw/scene"
+     },
+     {
+      "pid": 39258,
+      "ev": "response",
+      "t": 1,
+      "id": 32,
+      "line": "GET /api/boards/b_7mx4i7zw/scene",
+      "status": 200
+     },
+     {
+      "pid": 39258,
+      "ev": "request",
+      "t": 2,
+      "id": 33,
+      "line": "POST /api/rpc-reply"
+     },
+     {
+      "pid": 39258,
+      "ev": "closed",
+      "t": 2,
+      "id": 32,
+      "line": "GET /api/boards/b_7mx4i7zw/scene"
+     },
+     {
+      "pid": 39258,
+      "ev": "response",
+      "t": 2,
+      "id": 33,
+      "line": "POST /api/rpc-reply",
+      "status": 200
+     },
+     {
+      "pid": 39258,
+      "ev": "closed",
+      "t": 3,
+      "id": 33,
+      "line": "POST /api/rpc-reply"
+     }
+    ]
+   },
+   {
+    "ms": 2,
+    "err": "",
+    "bytes": 661,
+    "phases": {
+     "grant": 1,
+     "load": 1,
+     "answer": 0,
+     "total": 2
+    },
+    "evs": [
+     {
+      "pid": 39258,
+      "ev": "request",
+      "t": 1,
+      "id": 39,
+      "line": "GET /api/boards/b_7mx4i7zw/scene"
+     },
+     {
+      "pid": 39258,
+      "ev": "response",
+      "t": 1,
+      "id": 39,
+      "line": "GET /api/boards/b_7mx4i7zw/scene",
+      "status": 200
+     },
+     {
+      "pid": 39258,
+      "ev": "request",
+      "t": 2,
+      "id": 40,
+      "line": "POST /api/rpc-reply"
+     },
+     {
+      "pid": 39258,
+      "ev": "closed",
+      "t": 2,
+      "id": 39,
+      "line": "GET /api/boards/b_7mx4i7zw/scene"
+     },
+     {
+      "pid": 39258,
+      "ev": "response",
+      "t": 2,
+      "id": 40,
+      "line": "POST /api/rpc-reply",
+      "status": 200
+     },
+     {
+      "pid": 39258,
+      "ev": "closed",
+      "t": 2,
+      "id": 40,
+      "line": "POST /api/rpc-reply"
+     }
+    ]
+   },
+   {
+    "ms": 3,
+    "err": "",
+    "bytes": 661,
+    "phases": {
+     "grant": 1,
+     "load": 1,
+     "answer": 1,
+     "total": 3
+    },
+    "evs": [
+     {
+      "pid": 39258,
+      "ev": "request",
+      "t": 1,
+      "id": 46,
+      "line": "GET /api/boards/b_7mx4i7zw/scene"
+     },
+     {
+      "pid": 39258,
+      "ev": "response",
+      "t": 2,
+      "id": 46,
+      "line": "GET /api/boards/b_7mx4i7zw/scene",
+      "status": 200
+     },
+     {
+      "pid": 39258,
+      "ev": "request",
+      "t": 2,
+      "id": 47,
+      "line": "POST /api/rpc-reply"
+     },
+     {
+      "pid": 39258,
+      "ev": "closed",
+      "t": 3,
+      "id": 46,
+      "line": "GET /api/boards/b_7mx4i7zw/scene"
+     },
+     {
+      "pid": 39258,
+      "ev": "response",
+      "t": 3,
+      "id": 47,
+      "line": "POST /api/rpc-reply",
+      "status": 200
+     },
+     {
+      "pid": 39258,
+      "ev": "closed",
+      "t": 3,
+      "id": 47,
+      "line": "POST /api/rpc-reply"
+     }
+    ]
+   },
+   {
+    "ms": 4,
+    "err": "",
+    "bytes": 661,
+    "phases": {
+     "grant": 1,
+     "load": 2,
+     "answer": 1,
+     "total": 4
+    },
+    "evs": [
+     {
+      "pid": 39258,
+      "ev": "request",
+      "t": 1,
+      "id": 53,
+      "line": "GET /api/boards/b_7mx4i7zw/scene"
+     },
+     {
+      "pid": 39258,
+      "ev": "response",
+      "t": 2,
+      "id": 53,
+      "line": "GET /api/boards/b_7mx4i7zw/scene",
+      "status": 200
+     },
+     {
+      "pid": 39258,
+      "ev": "request",
+      "t": 3,
+      "id": 54,
+      "line": "POST /api/rpc-reply"
+     },
+     {
+      "pid": 39258,
+      "ev": "closed",
+      "t": 3,
+      "id": 53,
+      "line": "GET /api/boards/b_7mx4i7zw/scene"
+     },
+     {
+      "pid": 39258,
+      "ev": "response",
+      "t": 4,
+      "id": 54,
+      "line": "POST /api/rpc-reply",
+      "status": 200
+     },
+     {
+      "pid": 39258,
+      "ev": "closed",
+      "t": 4,
+      "id": 54,
+      "line": "POST /api/rpc-reply"
+     }
+    ]
+   },
+   {
+    "ms": 2,
+    "err": "",
+    "bytes": 661,
+    "phases": {
+     "grant": 0,
+     "load": 1,
+     "answer": 1,
+     "total": 2
+    },
+    "evs": [
+     {
+      "pid": 39258,
+      "ev": "request",
+      "t": 0,
+      "id": 60,
+      "line": "GET /api/boards/b_7mx4i7zw/scene"
+     },
+     {
+      "pid": 39258,
+      "ev": "response",
+      "t": 1,
+      "id": 60,
+      "line": "GET /api/boards/b_7mx4i7zw/scene",
+      "status": 200
+     },
+     {
+      "pid": 39258,
+      "ev": "request",
+      "t": 1,
+      "id": 61,
+      "line": "POST /api/rpc-reply"
+     },
+     {
+      "pid": 39258,
+      "ev": "closed",
+      "t": 1,
+      "id": 60,
+      "line": "GET /api/boards/b_7mx4i7zw/scene"
+     },
+     {
+      "pid": 39258,
+      "ev": "response",
+      "t": 2,
+      "id": 61,
+      "line": "POST /api/rpc-reply",
+      "status": 200
+     },
+     {
+      "pid": 39258,
+      "ev": "closed",
+      "t": 2,
+      "id": 61,
+      "line": "POST /api/rpc-reply"
+     }
+    ]
+   },
+   {
+    "ms": 4,
+    "err": "",
+    "bytes": 661,
+    "phases": {
+     "grant": 1,
+     "load": 2,
+     "answer": 1,
+     "total": 4
+    },
+    "evs": [
+     {
+      "pid": 39258,
+      "ev": "request",
+      "t": 1,
+      "id": 67,
+      "line": "GET /api/boards/b_7mx4i7zw/scene"
+     },
+     {
+      "pid": 39258,
+      "ev": "response",
+      "t": 2,
+      "id": 67,
+      "line": "GET /api/boards/b_7mx4i7zw/scene",
+      "status": 200
+     },
+     {
+      "pid": 39258,
+      "ev": "request",
+      "t": 3,
+      "id": 68,
+      "line": "POST /api/rpc-reply"
+     },
+     {
+      "pid": 39258,
+      "ev": "closed",
+      "t": 3,
+      "id": 67,
+      "line": "GET /api/boards/b_7mx4i7zw/scene"
+     },
+     {
+      "pid": 39258,
+      "ev": "response",
+      "t": 3,
+      "id": 68,
+      "line": "POST /api/rpc-reply",
+      "status": 200
+     },
+     {
+      "pid": 39258,
+      "ev": "closed",
+      "t": 3,
+      "id": 68,
+      "line": "POST /api/rpc-reply"
+     }
+    ]
+   },
+   {
+    "ms": 3,
+    "err": "",
+    "bytes": 661,
+    "phases": {
+     "grant": 1,
+     "load": 1,
+     "answer": 1,
+     "total": 3
+    },
+    "evs": [
+     {
+      "pid": 39258,
+      "ev": "request",
+      "t": 1,
+      "id": 74,
+      "line": "GET /api/boards/b_7mx4i7zw/scene"
+     },
+     {
+      "pid": 39258,
+      "ev": "response",
+      "t": 2,
+      "id": 74,
+      "line": "GET /api/boards/b_7mx4i7zw/scene",
+      "status": 200
+     },
+     {
+      "pid": 39258,
+      "ev": "request",
+      "t": 2,
+      "id": 75,
+      "line": "POST /api/rpc-reply"
+     },
+     {
+      "pid": 39258,
+      "ev": "closed",
+      "t": 2,
+      "id": 74,
+      "line": "GET /api/boards/b_7mx4i7zw/scene"
+     },
+     {
+      "pid": 39258,
+      "ev": "response",
+      "t": 2,
+      "id": 75,
+      "line": "POST /api/rpc-reply",
+      "status": 200
+     },
+     {
+      "pid": 39258,
+      "ev": "closed",
+      "t": 2,
+      "id": 75,
+      "line": "POST /api/rpc-reply"
+     }
+    ]
+   }
+  ],
+  "large": [
+   {
+    "ms": 44,
+    "err": "",
+    "bytes": 124240,
+    "phases": {
+     "grant": 2,
+     "load": 39,
+     "answer": 3,
+     "total": 44
+    },
+    "evs": [
+     {
+      "pid": 39258,
+      "ev": "request",
+      "t": 2,
+      "id": 81,
+      "line": "GET /api/boards/b_iakws5z9/scene"
+     },
+     {
+      "pid": 39258,
+      "ev": "response",
+      "t": 3,
+      "id": 81,
+      "line": "GET /api/boards/b_iakws5z9/scene",
+      "status": 200
+     },
+     {
+      "pid": 39258,
+      "ev": "request",
+      "t": 41,
+      "id": 82,
+      "line": "POST /api/rpc-reply"
+     },
+     {
+      "pid": 39258,
+      "ev": "closed",
+      "t": 41,
+      "id": 81,
+      "line": "GET /api/boards/b_iakws5z9/scene"
+     },
+     {
+      "pid": 39258,
+      "ev": "response",
+      "t": 44,
+      "id": 82,
+      "line": "POST /api/rpc-reply",
+      "status": 200
+     },
+     {
+      "pid": 39258,
+      "ev": "closed",
+      "t": 44,
+      "id": 82,
+      "line": "POST /api/rpc-reply"
+     }
+    ]
+   },
+   {
+    "ms": 40,
+    "err": "",
+    "bytes": 124240,
+    "phases": {
+     "grant": 2,
+     "load": 35,
+     "answer": 3,
+     "total": 40
+    },
+    "evs": [
+     {
+      "pid": 39258,
+      "ev": "request",
+      "t": 2,
+      "id": 88,
+      "line": "GET /api/boards/b_iakws5z9/scene"
+     },
+     {
+      "pid": 39258,
+      "ev": "response",
+      "t": 3,
+      "id": 88,
+      "line": "GET /api/boards/b_iakws5z9/scene",
+      "status": 200
+     },
+     {
+      "pid": 39258,
+      "ev": "request",
+      "t": 37,
+      "id": 89,
+      "line": "POST /api/rpc-reply"
+     },
+     {
+      "pid": 39258,
+      "ev": "closed",
+      "t": 37,
+      "id": 88,
+      "line": "GET /api/boards/b_iakws5z9/scene"
+     },
+     {
+      "pid": 39258,
+      "ev": "response",
+      "t": 38,
+      "id": 89,
+      "line": "POST /api/rpc-reply",
+      "status": 200
+     },
+     {
+      "pid": 39258,
+      "ev": "closed",
+      "t": 38,
+      "id": 89,
+      "line": "POST /api/rpc-reply"
+     }
+    ]
+   },
+   {
+    "ms": 37,
+    "err": "",
+    "bytes": 124240,
+    "phases": {
+     "grant": 2,
+     "load": 33,
+     "answer": 2,
+     "total": 37
+    },
+    "evs": [
+     {
+      "pid": 39258,
+      "ev": "request",
+      "t": 2,
+      "id": 95,
+      "line": "GET /api/boards/b_iakws5z9/scene"
+     },
+     {
+      "pid": 39258,
+      "ev": "response",
+      "t": 3,
+      "id": 95,
+      "line": "GET /api/boards/b_iakws5z9/scene",
+      "status": 200
+     },
+     {
+      "pid": 39258,
+      "ev": "request",
+      "t": 35,
+      "id": 96,
+      "line": "POST /api/rpc-reply"
+     },
+     {
+      "pid": 39258,
+      "ev": "closed",
+      "t": 35,
+      "id": 95,
+      "line": "GET /api/boards/b_iakws5z9/scene"
+     },
+     {
+      "pid": 39258,
+      "ev": "response",
+      "t": 36,
+      "id": 96,
+      "line": "POST /api/rpc-reply",
+      "status": 200
+     },
+     {
+      "pid": 39258,
+      "ev": "closed",
+      "t": 36,
+      "id": 96,
+      "line": "POST /api/rpc-reply"
+     }
+    ]
+   },
+   {
+    "ms": 24,
+    "err": "",
+    "bytes": 124240,
+    "phases": {
+     "grant": 0,
+     "load": 22,
+     "answer": 2,
+     "total": 24
+    },
+    "evs": [
+     {
+      "pid": 39258,
+      "ev": "request",
+      "t": 0,
+      "id": 102,
+      "line": "GET /api/boards/b_iakws5z9/scene"
+     },
+     {
+      "pid": 39258,
+      "ev": "response",
+      "t": 1,
+      "id": 102,
+      "line": "GET /api/boards/b_iakws5z9/scene",
+      "status": 200
+     },
+     {
+      "pid": 39258,
+      "ev": "request",
+      "t": 22,
+      "id": 103,
+      "line": "POST /api/rpc-reply"
+     },
+     {
+      "pid": 39258,
+      "ev": "closed",
+      "t": 22,
+      "id": 102,
+      "line": "GET /api/boards/b_iakws5z9/scene"
+     },
+     {
+      "pid": 39258,
+      "ev": "response",
+      "t": 23,
+      "id": 103,
+      "line": "POST /api/rpc-reply",
+      "status": 200
+     },
+     {
+      "pid": 39258,
+      "ev": "closed",
+      "t": 23,
+      "id": 103,
+      "line": "POST /api/rpc-reply"
+     }
+    ]
+   },
+   {
+    "ms": 46,
+    "err": "",
+    "bytes": 124240,
+    "phases": {
+     "grant": 2,
+     "load": 40,
+     "answer": 4,
+     "total": 46
+    },
+    "evs": [
+     {
+      "pid": 39258,
+      "ev": "request",
+      "t": 2,
+      "id": 109,
+      "line": "GET /api/boards/b_iakws5z9/scene"
+     },
+     {
+      "pid": 39258,
+      "ev": "response",
+      "t": 4,
+      "id": 109,
+      "line": "GET /api/boards/b_iakws5z9/scene",
+      "status": 200
+     },
+     {
+      "pid": 39258,
+      "ev": "request",
+      "t": 42,
+      "id": 110,
+      "line": "POST /api/rpc-reply"
+     },
+     {
+      "pid": 39258,
+      "ev": "closed",
+      "t": 42,
+      "id": 109,
+      "line": "GET /api/boards/b_iakws5z9/scene"
+     }
+    ]
+   },
+   {
+    "ms": 44,
+    "err": "",
+    "bytes": 124240,
+    "phases": {
+     "grant": 4,
+     "load": 36,
+     "answer": 4,
+     "total": 44
+    },
+    "evs": [
+     {
+      "pid": 39258,
+      "ev": "request",
+      "t": 4,
+      "id": 116,
+      "line": "GET /api/boards/b_iakws5z9/scene"
+     },
+     {
+      "pid": 39258,
+      "ev": "response",
+      "t": 6,
+      "id": 116,
+      "line": "GET /api/boards/b_iakws5z9/scene",
+      "status": 200
+     },
+     {
+      "pid": 39258,
+      "ev": "request",
+      "t": 40,
+      "id": 117,
+      "line": "POST /api/rpc-reply"
+     },
+     {
+      "pid": 39258,
+      "ev": "closed",
+      "t": 41,
+      "id": 116,
+      "line": "GET /api/boards/b_iakws5z9/scene"
+     },
+     {
+      "pid": 39258,
+      "ev": "response",
+      "t": 43,
+      "id": 117,
+      "line": "POST /api/rpc-reply",
+      "status": 200
+     },
+     {
+      "pid": 39258,
+      "ev": "closed",
+      "t": 43,
+      "id": 117,
+      "line": "POST /api/rpc-reply"
+     }
+    ]
+   },
+   {
+    "ms": 47,
+    "err": "",
+    "bytes": 124240,
+    "phases": {
+     "grant": 3,
+     "load": 40,
+     "answer": 4,
+     "total": 47
+    },
+    "evs": [
+     {
+      "pid": 39258,
+      "ev": "request",
+      "t": 3,
+      "id": 123,
+      "line": "GET /api/boards/b_iakws5z9/scene"
+     },
+     {
+      "pid": 39258,
+      "ev": "response",
+      "t": 6,
+      "id": 123,
+      "line": "GET /api/boards/b_iakws5z9/scene",
+      "status": 200
+     },
+     {
+      "pid": 39258,
+      "ev": "request",
+      "t": 43,
+      "id": 124,
+      "line": "POST /api/rpc-reply"
+     },
+     {
+      "pid": 39258,
+      "ev": "closed",
+      "t": 43,
+      "id": 123,
+      "line": "GET /api/boards/b_iakws5z9/scene"
+     }
+    ]
+   },
+   {
+    "ms": 50,
+    "err": "",
+    "bytes": 124240,
+    "phases": {
+     "grant": 3,
+     "load": 44,
+     "answer": 3,
+     "total": 50
+    },
+    "evs": [
+     {
+      "pid": 39258,
+      "ev": "request",
+      "t": 3,
+      "id": 130,
+      "line": "GET /api/boards/b_iakws5z9/scene"
+     },
+     {
+      "pid": 39258,
+      "ev": "response",
+      "t": 6,
+      "id": 130,
+      "line": "GET /api/boards/b_iakws5z9/scene",
+      "status": 200
+     },
+     {
+      "pid": 39258,
+      "ev": "request",
+      "t": 47,
+      "id": 131,
+      "line": "POST /api/rpc-reply"
+     },
+     {
+      "pid": 39258,
+      "ev": "closed",
+      "t": 47,
+      "id": 130,
+      "line": "GET /api/boards/b_iakws5z9/scene"
+     }
+    ]
+   },
+   {
+    "ms": 47,
+    "err": "",
+    "bytes": 124240,
+    "phases": {
+     "grant": 2,
+     "load": 41,
+     "answer": 4,
+     "total": 47
+    },
+    "evs": [
+     {
+      "pid": 39258,
+      "ev": "request",
+      "t": 2,
+      "id": 137,
+      "line": "GET /api/boards/b_iakws5z9/scene"
+     },
+     {
+      "pid": 39258,
+      "ev": "response",
+      "t": 5,
+      "id": 137,
+      "line": "GET /api/boards/b_iakws5z9/scene",
+      "status": 200
+     },
+     {
+      "pid": 39258,
+      "ev": "request",
+      "t": 43,
+      "id": 138,
+      "line": "POST /api/rpc-reply"
+     },
+     {
+      "pid": 39258,
+      "ev": "closed",
+      "t": 44,
+      "id": 137,
+      "line": "GET /api/boards/b_iakws5z9/scene"
+     }
+    ]
+   },
+   {
+    "ms": 45,
+    "err": "",
+    "bytes": 124240,
+    "phases": {
+     "grant": 3,
+     "load": 38,
+     "answer": 4,
+     "total": 45
+    },
+    "evs": [
+     {
+      "pid": 39258,
+      "ev": "request",
+      "t": 3,
+      "id": 144,
+      "line": "GET /api/boards/b_iakws5z9/scene"
+     },
+     {
+      "pid": 39258,
+      "ev": "response",
+      "t": 5,
+      "id": 144,
+      "line": "GET /api/boards/b_iakws5z9/scene",
+      "status": 200
+     },
+     {
+      "pid": 39258,
+      "ev": "request",
+      "t": 41,
+      "id": 145,
+      "line": "POST /api/rpc-reply"
+     },
+     {
+      "pid": 39258,
+      "ev": "closed",
+      "t": 42,
+      "id": 144,
+      "line": "GET /api/boards/b_iakws5z9/scene"
+     },
+     {
+      "pid": 39258,
+      "ev": "response",
+      "t": 43,
+      "id": 145,
+      "line": "POST /api/rpc-reply",
+      "status": 200
+     },
+     {
+      "pid": 39258,
+      "ev": "closed",
+      "t": 43,
+      "id": 145,
+      "line": "POST /api/rpc-reply"
+     }
+    ]
+   }
+  ]
+ },
+ "warm": {
+  "small": [
+   {
+    "readMs": 1,
+    "applyMs": 4,
+    "applyErr": "",
+    "requests": [
+     "POST /api/rpc-reply",
+     "PUT /api/boards/b_7mx4i7zw/scene",
+     "POST /api/rpc-reply"
+    ],
+    "imageMs": 40,
+    "imageErr": ""
+   },
+   {
+    "readMs": 2,
+    "applyMs": 2,
+    "applyErr": "",
+    "requests": [
+     "POST /api/rpc-reply",
+     "PUT /api/boards/b_7mx4i7zw/scene",
+     "POST /api/rpc-reply"
+    ],
+    "imageMs": 11,
+    "imageErr": ""
+   },
+   {
+    "readMs": 1,
+    "applyMs": 3,
+    "applyErr": "",
+    "requests": [
+     "POST /api/rpc-reply",
+     "PUT /api/boards/b_7mx4i7zw/scene",
+     "POST /api/rpc-reply"
+    ],
+    "imageMs": 8,
+    "imageErr": ""
+   },
+   {
+    "readMs": 2,
+    "applyMs": 2,
+    "applyErr": "",
+    "requests": [
+     "POST /api/rpc-reply",
+     "PUT /api/boards/b_7mx4i7zw/scene",
+     "POST /api/rpc-reply"
+    ],
+    "imageMs": 10,
+    "imageErr": ""
+   },
+   {
+    "readMs": 1,
+    "applyMs": 2,
+    "applyErr": "",
+    "requests": [
+     "POST /api/rpc-reply",
+     "PUT /api/boards/b_7mx4i7zw/scene",
+     "POST /api/rpc-reply"
+    ],
+    "imageMs": 6,
+    "imageErr": ""
+   },
+   {
+    "readMs": 2,
+    "applyMs": 3,
+    "applyErr": "",
+    "requests": [
+     "POST /api/rpc-reply",
+     "PUT /api/boards/b_7mx4i7zw/scene",
+     "POST /api/rpc-reply"
+    ],
+    "imageMs": 9,
+    "imageErr": ""
+   },
+   {
+    "readMs": 2,
+    "applyMs": 2,
+    "applyErr": "",
+    "requests": [
+     "POST /api/rpc-reply",
+     "PUT /api/boards/b_7mx4i7zw/scene",
+     "POST /api/rpc-reply"
+    ],
+    "imageMs": 8,
+    "imageErr": ""
+   },
+   {
+    "readMs": 1,
+    "applyMs": 2,
+    "applyErr": "",
+    "requests": [
+     "POST /api/rpc-reply",
+     "PUT /api/boards/b_7mx4i7zw/scene",
+     "POST /api/rpc-reply"
+    ],
+    "imageMs": 6,
+    "imageErr": ""
+   },
+   {
+    "readMs": 1,
+    "applyMs": 3,
+    "applyErr": "",
+    "requests": [
+     "POST /api/rpc-reply",
+     "PUT /api/boards/b_7mx4i7zw/scene",
+     "POST /api/rpc-reply"
+    ],
+    "imageMs": 8,
+    "imageErr": ""
+   },
+   {
+    "readMs": 1,
+    "applyMs": 1,
+    "applyErr": "",
+    "requests": [
+     "POST /api/rpc-reply",
+     "PUT /api/boards/b_7mx4i7zw/scene",
+     "POST /api/rpc-reply"
+    ],
+    "imageMs": 7,
+    "imageErr": ""
+   }
+  ],
+  "large": [
+   {
+    "readMs": 5,
+    "applyMs": 18,
+    "applyErr": "",
+    "requests": [
+     "POST /api/rpc-reply",
+     "PUT /api/boards/b_iakws5z9/scene",
+     "POST /api/rpc-reply"
+    ],
+    "imageMs": 143,
+    "imageErr": ""
+   },
+   {
+    "readMs": 5,
+    "applyMs": 18,
+    "applyErr": "",
+    "requests": [
+     "POST /api/rpc-reply",
+     "PUT /api/boards/b_iakws5z9/scene",
+     "POST /api/rpc-reply"
+    ],
+    "imageMs": 136,
+    "imageErr": ""
+   },
+   {
+    "readMs": 5,
+    "applyMs": 18,
+    "applyErr": "",
+    "requests": [
+     "POST /api/rpc-reply",
+     "PUT /api/boards/b_iakws5z9/scene",
+     "POST /api/rpc-reply"
+    ],
+    "imageMs": 133,
+    "imageErr": ""
+   },
+   {
+    "readMs": 4,
+    "applyMs": 16,
+    "applyErr": "",
+    "requests": [
+     "POST /api/rpc-reply",
+     "PUT /api/boards/b_iakws5z9/scene",
+     "POST /api/rpc-reply"
+    ],
+    "imageMs": 148,
+    "imageErr": ""
+   },
+   {
+    "readMs": 5,
+    "applyMs": 17,
+    "applyErr": "",
+    "requests": [
+     "POST /api/rpc-reply",
+     "PUT /api/boards/b_iakws5z9/scene",
+     "POST /api/rpc-reply"
+    ],
+    "imageMs": 133,
+    "imageErr": ""
+   },
+   {
+    "readMs": 5,
+    "applyMs": 18,
+    "applyErr": "",
+    "requests": [
+     "POST /api/rpc-reply",
+     "PUT /api/boards/b_iakws5z9/scene",
+     "POST /api/rpc-reply"
+    ],
+    "imageMs": 132,
+    "imageErr": ""
+   },
+   {
+    "readMs": 5,
+    "applyMs": 17,
+    "applyErr": "",
+    "requests": [
+     "POST /api/rpc-reply",
+     "PUT /api/boards/b_iakws5z9/scene",
+     "POST /api/rpc-reply"
+    ],
+    "imageMs": 134,
+    "imageErr": ""
+   },
+   {
+    "readMs": 5,
+    "applyMs": 17,
+    "applyErr": "",
+    "requests": [
+     "POST /api/rpc-reply",
+     "PUT /api/boards/b_iakws5z9/scene",
+     "POST /api/rpc-reply"
+    ],
+    "imageMs": 136,
+    "imageErr": ""
+   },
+   {
+    "readMs": 5,
+    "applyMs": 18,
+    "applyErr": "",
+    "requests": [
+     "POST /api/rpc-reply",
+     "PUT /api/boards/b_iakws5z9/scene",
+     "POST /api/rpc-reply"
+    ],
+    "imageMs": 134,
+    "imageErr": ""
+   },
+   {
+    "readMs": 6,
+    "applyMs": 17,
+    "applyErr": "",
+    "requests": [
+     "POST /api/rpc-reply",
+     "PUT /api/boards/b_iakws5z9/scene",
+     "POST /api/rpc-reply"
+    ],
+    "imageMs": 128,
+    "imageErr": ""
+   }
+  ]
+ },
+ "rss": {
+  "small": {
+   "empty": [
+    170,
+    178,
+    179,
+    179,
+    179,
+    179,
+    180,
+    180,
+    180,
+    180
+   ],
+   "held": [
+    170,
+    178,
+    179,
+    179,
+    179,
+    179,
+    180,
+    180,
+    180,
+    180
+   ],
+   "afterRead": [
+    169,
+    178,
+    179,
+    179,
+    179,
+    179,
+    180,
+    180,
+    180,
+    180
+   ],
+   "peakImage": [
+    178,
+    179,
+    179,
+    179,
+    179,
+    180,
+    180,
+    180,
+    180,
+    180
+   ]
+  },
+  "large": {
+   "empty": [
+    180,
+    218,
+    238,
+    255,
+    294,
+    296,
+    298,
+    330,
+    363,
+    362
+   ],
+   "held": [
+    185,
+    232,
+    241,
+    276,
+    293,
+    297,
+    303,
+    359,
+    361,
+    361
+   ],
+   "afterRead": [
+    188,
+    234,
+    242,
+    282,
+    296,
+    299,
+    305,
+    363,
+    363,
+    363
+   ],
+   "peakImage": [
+    238,
+    258,
+    275,
+    311,
+    316,
+    318,
+    350,
+    383,
+    382,
+    382
+   ]
+  }
+ },
+ "setup": {
+  "smallApplyMs": 164,
+  "largeApplyMs": 218,
+  "smallElements": 10,
+  "largeElements": 1818,
+  "largeFileBytes": 1215731,
+  "smallFileBytes": 6331,
+  "smallErr": "",
+  "largeErr": ""
+ },
+ "summary": "min / median / max in ms (n = runs); times in the cold rows are from the call sent to the answer\n\n| cold start | n | spawn | node boot | engine ready | stream open | grant | load + call | answer back | total | RSS MB right after |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n| small | 10 | 19 / 39.5 / 57 | 8 / 12.5 / 18 | 105 / 111.5 / 116 | 11 / 12 / 13 | 2 / 7 / 13 | 1 / 2 / 3 | 1 / 1 / 1 | 156 / 185.5 / 211 | 115 / 118 / 121 |\n| large | 10 | 15 / 38 / 59 | 9 / 12.5 / 18 | 101 / 111.5 / 116 | 11 / 12 / 13 | 1 / 6.5 / 12 | 26 / 28 / 32 | 3 / 3 / 9 | 175 / 213 / 241 | 131 / 135 / 138 |\n\n| reload (process runs) | n | grant | load + call | answer back | total |\n| --- | --- | --- | --- | --- |\n| small | 10 | 0 / 1 / 1 | 1 / 1 / 2 | 0 / 1 / 1 | 2 / 3 / 4 |\n| large | 10 | 0 / 2 / 4 | 22 / 38.5 / 44 | 2 / 3.5 / 4 | 24 / 44.5 / 50 |\n\n| warm (board held) | n | read_board | apply (move one element) | get_image all, scale 0.5 |\n| --- | --- | --- | --- | --- |\n| small | 10 | 1 / 1 / 2 | 1 / 2 / 4 | 6 / 8 / 40 |\n| large | 10 | 4 / 5 / 6 | 16 / 17.5 / 18 | 128 / 134 / 148 |\n\n| RSS of the process, MB | n | holds no board | holds the board | after read + apply | peak during get_image |\n| --- | --- | --- | --- | --- | --- |\n| small | 10 | 170 / 179 / 180 | 170 / 179 / 180 | 169 / 179 / 180 | 178 / 179.5 / 180 |\n| large | 10 | 180 / 295 / 363 | 185 / 295 / 361 | 188 / 297.5 / 363 | 238 / 317 / 383 |"
+}

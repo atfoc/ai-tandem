@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 
 	"ai-whiteboard/internal/remote"
@@ -20,6 +21,14 @@ type remoteStart struct {
 	root string // the data folder
 	rep  remote.Report
 	ln   net.Listener
+
+	secret atomic.Value // string: the secret the client listener accepts now, for the headless writer's start
+}
+
+// currentSecret is the secret the client listener accepts now.
+func (rem *remoteStart) currentSecret() string {
+	s, _ := rem.secret.Load().(string)
+	return s
 }
 
 // checkRemote runs the start's check for serve, after the "already running" return and before
@@ -61,6 +70,7 @@ func (rem *remoteStart) attach(srv *server.Server) {
 	srv.InstanceID = id
 	c := rem.rep.Config
 	srv.Clients = server.NewClientListener(c.Port, c.Names, rem.rep.Fingerprint, rem.rep.Secret)
+	rem.secret.Store(rem.rep.Secret)
 	go rem.reloadSecret(srv, reload)
 }
 
@@ -73,6 +83,7 @@ func (rem *remoteStart) reloadSecret(srv *server.Server, reload <-chan os.Signal
 			log.Printf("Remote listener: the secret was not read again, the old one stays: %v", err)
 			continue
 		}
+		rem.secret.Store(s) // before the streams close: the headless writer's next start gets this one
 		log.Printf("Remote listener: the secret was read again; %d client streams closed", srv.ReloadSecret(s))
 	}
 }

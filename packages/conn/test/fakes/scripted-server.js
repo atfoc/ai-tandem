@@ -289,7 +289,7 @@ class ScriptedServer {
     this.secret = opts.secret || 'secret-one';
     this.instanceId = opts.instanceId || instanceIdFor(`${this.host}:${this.port}`);
     this.version = opts.version || '1.2.3';
-    this.level = opts.level === undefined ? 6 : opts.level;
+    this.level = opts.level === undefined ? 7 : opts.level;
     this.snapshotBody = opts.snapshot || SNAPSHOT_BODY;
     this.withHello = opts.withHello !== false;
 

@@ -99,7 +99,7 @@ ports.setKv(localStorageKv); // the page's storage: the test gives the globalThi
     flushAll: async (server?: string) => { fake.board.push(server && server !== "local" ? ["flushAll", server] : ["flushAll"]); },
     forgetBoard: () => {},
     handOver: async (id: string) => { fake.board.push(["handOver", id]); },
-    boardLost: told("boardLost"), granted: told("granted"), streamOpened: toldOf("streamOpened"), takeAfterSnapshot: told("takeAfterSnapshot"), sectionBack: told("sectionBack"),
+    boardLost: told("boardLost"), granted: told("granted"), streamOpened: toldOf("streamOpened"), afterSnapshot: told("afterSnapshot"), sectionBack: told("sectionBack"),
     boardUnsaved: (id: string) => fake.unsaved.includes(id),
   });
 }
@@ -871,11 +871,11 @@ test("a new stream holds nothing: `hello` tells the board layer before the snaps
   assert.deepEqual([s().role, s().connected], ["active", true]);
   assert.deepEqual(fake.board, [["streamOpened"]]);
   await ev(snapshot([]));
-  assert.deepEqual(fake.board, [["streamOpened"], ["takeAfterSnapshot"]]);
+  assert.deepEqual(fake.board, [["streamOpened"], ["afterSnapshot"]]);
   // the same stream after a cut: the way reconnects by itself, and the server greets again
   await ev({ type: "hello", client: "test" });
   await ev(snapshot([]));
-  assert.deepEqual(fake.board.map((c) => c[0]), ["streamOpened", "takeAfterSnapshot", "streamOpened", "takeAfterSnapshot"]);
+  assert.deepEqual(fake.board.map((c) => c[0]), ["streamOpened", "afterSnapshot", "streamOpened", "afterSnapshot"]);
 });
 
 test("`release_request` hands over the one board it names, and no other board is flushed", async () => {
@@ -1604,7 +1604,7 @@ test("a `section` with a tree is told to the board layer, which reads and takes 
   assert.deepEqual(s().sections, {});
   // a snapshot's tree is told the same, after the snapshot's own takes
   await ev({ ...snapshot([]), sections: { [S2]: treeOf() } });
-  assert.deepEqual(fake.board, [["takeAfterSnapshot"], ["sectionBack", S2]]);
+  assert.deepEqual(fake.board, [["afterSnapshot"], ["sectionBack", S2]]);
 });
 
 test("a `section` with a tree and the stream's `hello` tell the open composers to save a draft that waits (logic/draftsback.ts)", async () => {

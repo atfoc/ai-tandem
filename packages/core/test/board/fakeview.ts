@@ -245,7 +245,7 @@ export const stored = (rev: number, version = 1, more: El[] = []) => async () =>
 /** The store as a test starts from it: connected, no boards, nothing on screen. */
 export function resetStore() {
   store.setState({
-    connected: true, boards: {}, sections: {}, gone: {}, roles: {}, dropped: {}, sceneGen: {}, outage: {}, saveSaid: {},
+    connected: true, boards: {}, sections: {}, gone: {}, roles: {}, writers: {}, dropped: {}, sceneGen: {}, outage: {}, saveSaid: {},
     sel: { board: null, chat: null }, chats: {}, flashes: [], busyOn: {}, selection: { count: 0, lines: [] },
     view: { scrollX: 0, scrollY: 0, zoom: 1, width: 0, height: 0 },
   } as any);

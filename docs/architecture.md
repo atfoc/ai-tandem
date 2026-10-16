@@ -1,6 +1,6 @@
 # Architecture
 
-How AI Whiteboard fits together: the server, the app on its four targets (the desktop window, iPhone, iPad and Android), how the app reaches every server, the MCP listener and the board tools the agents get, the subagent settings, `get_image`, images in a message, and how pi is run.
+How AI Whiteboard fits together: the server, the app on its four targets (the desktop window, iPhone, iPad and Android), who changes a board (readers, the writer, the button and the headless writer), the board engine in Node, how the app reaches every server, the MCP listener and the board tools the agents get, the subagent settings, `get_image`, images in a message, and how pi is run.
 
 - **Server** (`cmd/`, `internal/`): a Go program. It stores boards and chats,
   runs the agent processes and gives them board tools (`list_boards`, `read_board`, `get_view`,
@@ -33,7 +33,8 @@ How AI Whiteboard fits together: the server, the app on its four targets (the de
   folder without naming it (a glob, a variable, a symlink, a search from a parent folder) is not
   stopped. Cursor reaches the same endpoint from its ACP session, keeps one
   first-message instructions block with the same whiteboard prompt as Claude and pi, and its board calls are
-  auto-approved too (no permission card). Plain (non-board) chats get no board tools.
+  auto-approved too (no permission card). Plain (non-board) chats get no board tools. The server never changes a
+  drawing itself: a client does, the one that is the board's writer ([Who changes a board](#who-changes-a-board)).
 - **The app** (`app/`, with the packages in `packages/`): one React Native codebase (Expo) for four
   targets: iOS, iPadOS, Android and the desktop. A screen is written once; what differs by platform
   is a port with a file per platform (`app/src/platform/*.web.ts`, `*.native.ts`) or a layout (the
@@ -42,7 +43,9 @@ How AI Whiteboard fits together: the server, the app on its four targets (the de
   packages: `@aiwb/core` (the app's logic, store and transport interface, with no screen in it),
   `@aiwb/conn` (the connection to the servers, [below](#how-the-app-reaches-the-servers)),
   `@aiwb/board-bridge` (the typed messages between the app and the board) and `@aiwb/board-view`
-  (Excalidraw behind that bridge). The **web build** (`cd app && npm run build:web` →
+  (Excalidraw behind that bridge). Two more packages are not part of the app: `@aiwb/headless`, the
+  headless writer ([below](#the-headless-writer)), and `@aiwb/board-engine`, the board view's code
+  in Node ([below](#the-board-engine-in-node)). The **web build** (`cd app && npm run build:web` →
   `app/dist-web`) is what the desktop app shows; no server serves it. The board is Excalidraw in
   the page itself on the web build, and in a web view on a phone or tablet, so Excalidraw is
   the one place the board is drawn in.
@@ -92,6 +95,177 @@ A server has two listeners and one socket.
 
 A server that was never set up (see [Server commands and flags](server-reference.md)) refuses to
 start. Port 4747, where an earlier build served its own page, is gone.
+
+## Who changes a board
+
+A board has one **writer** at any moment, and any number of **readers**. The writer is the one client
+that may change the board; a reader shows it, read-only, and follows the writer's changes live. The
+server keeps who the writer is (in memory, never on disk) and refuses every write that is not from the
+writer or that is based on an older revision than the stored one: `PUT /api/boards/{id}/scene` answers
+409 `not_holder` or 409 `stale`. The board file, its format and its stored colours are the same whoever
+writes.
+
+- **Readers follow.** A window follows a board while the board is on its screen: it calls
+  `POST /api/boards/{id}/follow` when the board appears and `…/unfollow` when it leaves (and follows
+  again after each new stream). The answer carries the stored revision and the writer. After that the
+  server sends the follower two events: `scene` (`{board, rev}`) after every accepted save, and `writer`
+  (`{board, writer}`) whenever the writer changes. `writer` is `window`, `headless` or an empty string for
+  nobody; the id of a client is never sent to another client. A `scene` event carries the revision and
+  not the drawing: the reader reads the scene again and the board view replaces the elements in place,
+  keeping the reader's own scroll and zoom. Following never delays the writer, and a reader keeps no
+  change of its own: a paste or a drop in a reader's view is never kept or written.
+- **The button.** Over the canvas of every board a bar says what this window is, and a reader has the
+  button **Edit here**: "View only.", "View only. Another window is editing this board.", "View only. An
+  agent is editing this board.", or, for a window that lost the board, "Another window took over this
+  board. View only."; the writer shows a small "Editing" mark. Pressing the button is the only way a
+  window becomes the writer. Opening a board, switching to it, connecting, or an agent's call never takes
+  it. The one exception is a board the window has just made: the window that made a board is its writer.
+- **The hand-off.** A press on a board nobody holds makes the window the writer at once. A press on a
+  held board asks the writer to save and let go (`release_request`); it saves, answers with
+  `POST /api/boards/{id}/release`, and the pressing window gets the board at the revision after that
+  save, so nothing the old writer drew is lost and nothing is overwritten by an older version. The old
+  writer is told at once that it is a reader now (`superseded`, and `writer` to the windows that show
+  the board). If it does not answer within 10 seconds, it loses the board anyway and its later saves are
+  refused. Two presses together: the last one wins and the other window stays a reader.
+- **A writer that lost its network** does not get the board back by itself, and neither does any window
+  after the server restarts: it returns as a reader, and the button is the way back. A change it made
+  while it was cut off stays in the window: the button saves it if the board is still at the revision the
+  change was made on, and a newer revision drops it, with a note.
+- **Agent calls.** A board tool (`read_board`, `apply`, `delete_elements`, `get_image`) goes to the
+  writer of the board, a window or the headless writer, as an `rpc` event, and the writer answers it with
+  `POST /api/rpc-reply`. A window answers only for a board it holds; an agent's call never makes a
+  window the writer. When nobody holds the board, the call goes to the headless writer, which the server
+  starts for it (below). `list_boards` and `create_board` are answered by the server itself: a new board
+  has no writer until a call needs one. `get_view` and `show_board` need a person's screen: they go to a
+  window that shows the chat's board, a reader included, else the window that holds it, never to the
+  headless writer, and when no window shows it the agent is told so in plain words, which is no failure of the board. A call cut by a
+  hand-off, an archive or a delete of its board fails with a text of its own (the board was taken over in
+  a window while the call ran; the earlier changes are saved).
+- **Feature level 7.** Both ends need these rules: a server reports 7 and the app connects to no server
+  below 7, this computer's included (see [A server that is too old](remote-servers.md#a-server-that-is-too-old)).
+
+### The headless writer
+
+When an agent works on a board and no window holds it, the **headless writer** holds it. It is a
+Node process on the server's machine that does what a window does for an agent's board call, with no
+screen: it runs the app's board side (`@aiwb/core`) and the app's board engine in Node, so the same
+`apply` call gives the same result whichever answers it. It is a client of the client API like a window
+(`packages/headless`, started and watched by `internal/headless`): the server's secret, a client id of its
+own made for each start, and the same level; it is no way in without them. The server still does not edit
+a scene itself.
+
+- **When it starts.** Only when an agent's board call needs a board that no window holds. Nothing is
+  looked up or started at boot, and with no agent working away it is not running and uses no memory.
+  The server finds the program and the bundle at the first such call (and again after a failed start has
+  been remembered), starts the process, gives it its address, the certificate's fingerprint, the secret
+  and its client id as one line on its stdin (not in argv or the environment), and waits for its stream to
+  open, at most 20 seconds. The process opens its stream only after its engine is ready.
+- **What it holds.** Only a board the server gave it for an agent's call. It never takes a board a
+  window holds, and when the last window leaves a board it does not take over the boards that were open.
+  Its changes appear live in the windows that show the board, which are readers, and the button is
+  offered.
+- **What it answers.** `read_board`, `apply`, `delete_elements` and `get_image` for `all`, `refs` and
+  `rect`. `get_image` with `scope: selection`, `get_view` and `show_board` need a screen: the agent is
+  told that no window shows the board, in plain words, and that the board itself can be read and changed
+  as usual.
+- **Saving.** It saves after each finished `apply` or `delete_elements`, before it answers the agent, so
+  an agent that was told a change is done finds it in the board file. If the save fails, the agent is
+  told the change was made but not saved.
+- **Quiet time.** After an agent's last call on a board it keeps the board for a quiet time (1 minute;
+  `-headless-quiet`), so the next call of a chat does not pay for a reload, then saves and lets it go.
+  When it holds no board and has no call open at two looks in a row, 5 seconds apart, the server stops
+  the process.
+- **Yielding.** When a person presses **Edit here**, the headless writer is asked to release like any
+  writer. It starts no new call on that board (the agent is told to call again in a moment, and the
+  window answers), waits for the call in progress for at most 8 seconds of the 10, saves and releases. The
+  person becomes the writer.
+- **Failure.** If it stops in the middle of a call, the board is as it was after the last finished
+  change, it has no writer, and the agent is told that the background editor stopped and to read the
+  board again before it changes it. A call that does not answer in 30 seconds makes the server kill the
+  process, with the same result. A failed start is remembered for 60 seconds: calls in that time fail at
+  once, and the server log has one line with the reason.
+- **Where Node comes from.** The first that exists: the program of `-headless-node` (or
+  `AIWB_HEADLESS_NODE`); the desktop app's own Electron, when the server runs from inside the Mac app,
+  started as Node; `node` of version 22 or later on the server's `PATH`. A Mac app needs no Node of its own.
+- **Where the bundle comes from.** The bundle is a folder with the writer's program (`headless.mjs`), its
+  `manifest.json` and `engine/`, the board engine's files ([below](#the-board-engine-in-node)). It is
+  built with the server, and the server finds it in the folder of `-headless-dir`, else in
+  `Resources/headless/` of the Mac app (outside `app.asar`, since a native module cannot load from
+  inside it), else in `headless/` beside the server program, which is how a server folder made by
+  `scripts/build-server.sh` has it. The manifest names the version of the build, and a bundle of another
+  version than the server is not used; a development build of the server (version `dev`) takes any.
+  The bundle is for one operating system and one processor, the server's.
+- **If it is not there.** If no Node or no bundle is found, the headless writer is
+  unavailable: the server works as before and an agent is told that no board is open (or, when a
+  window is connected, that nobody is editing the board and the person can press **Edit here**).
+  `ai-whiteboard status` says whether it is available and why not
+  ([Server commands and flags](server-reference.md)).
+
+## The board engine in Node
+
+The headless writer must do to a board what a window does: create and change elements, fit text in
+its box, route arrows, draw a picture. That is Excalidraw's code, and the app already has it behind the
+board bridge (`@aiwb/board-view`), so the headless writer has no engine of its own: it runs the board
+view's code in Node, with no screen, and a call gives the same result whichever answers it.
+
+- **What runs where.** The requests on a given list of elements (`restore`, `apply`, `delete`,
+  `export`) are one body of code, `packages/board-view/src/engine.ts` with `apply.ts`, `export.ts`,
+  `imagesize.ts`, `faces.ts` and `indices.ts`. The app's board view runs it on the board that is on screen
+  and for a board that is not (on a phone in a hidden web view when no board is shown), and the headless
+  writer runs it in Node. `packages/board-engine` (`@aiwb/board-engine`) is the Node host of that code
+  and has none of its own: the stand-in page, the fonts, the canvas, the bundle and its tests. What
+  needs a screen (`snapshot`, anything on the board on screen) is answered "no board is shown", as a
+  board view with no board does. The engine keeps nothing between two requests: the board side
+  (`@aiwb/core`) keeps the scene and sends it with each one.
+- **The bundle.** `node build.mjs` in `packages/board-engine` makes `engine.mjs` (about 4 MB) with
+  Excalidraw inside, built with the board view's own settings and from the same lockfile, so both carry
+  the same Excalidraw. The server's build puts it, with the fonts and the canvas, in `engine/` of the
+  headless bundle, and the headless writer loads it from there when it starts. It is ready 70 to 100 ms
+  later and the process holds about 120 to 135 MB; an `apply` takes under 10 ms and a picture 15 to 50 ms.
+  Excalidraw's fonts are the files the window ships (without Xiaolai, the Chinese hand font).
+- **The stand-in page.** Excalidraw expects a browser. `src/page.ts` supplies the little of one that its
+  element code and its export reach for: `window`, `document` with `createElement` for canvases and
+  images, `document.fonts` and `FontFace`, `FileReader`, `Image`, `Path2D`, `DOMMatrix`, `ImageData`
+  and a few more. It is installed before Excalidraw is evaluated, because Excalidraw makes images and
+  fonts as it loads. Nothing of Excalidraw is patched.
+- **The canvas.** Drawing and measuring use skia-canvas, a native module built on Skia, which is what Chromium
+  draws with too. It finds the system's fonts the way a browser does, needs no system libraries and no
+  install step, and has a binary for each target (macOS arm64 and x64, Linux arm64 and x64 with glibc),
+  28 to 38 MB each. It is the one native file of the bundle, `engine/node_modules/skia-canvas/lib/skia.node`.
+  The server build for another target than the build machine's fetches that target's binary from npm
+  (`@skia-canvas/<os>-<arch>`) and checks that it is a library of that system and processor, so it needs
+  the registry (or npm's cache) at build time; a target whose binary can't be had fails the build.
+- **Text is measured with real fonts.** A browser picks, for each character, the piece of the font
+  whose `unicode-range` has it, then the next family, then its default font, then the system's. The
+  stand-in does the same: it keeps every piece Excalidraw declares and cuts each text into runs of one
+  face, at the word boundaries Blink shapes by, before the canvas measures or draws it. So text in
+  Excalidraw's own fonts has the same width as in a window: on the harness's corpus, exactly, for Latin,
+  accented Latin, Vietnamese, Cyrillic and Greek, in all eight families at all four sizes. Heights come from
+  Excalidraw's own metrics and are always equal. Text in other scripts (Chinese, Japanese, Korean, emoji,
+  Arabic, Hebrew, the Indic scripts, Thai) is in the system's fonts, in a window too, so there it follows
+  the machine: a window on Windows and a window on a Mac already store different sizes for it. The headless
+  writer measures it with the fonts of the server's machine. On macOS that matches a window, except that
+  Han and kana text is about 0.2% wider at 20 px (up to 1.3% at 36 px) because Chromium and Skia apply the
+  system's letter spacing differently. On Linux it follows fontconfig, and a machine with no CJK or emoji
+  font measures those characters as missing glyphs: install **Noto Sans CJK** and **Noto Color Emoji**
+  there ([the server's README](../scripts/remote/README.md)). Linux has not been measured against a
+  browser yet; the Mac is.
+- **Two fixes in the window.** Comparing the window with the engine showed two things in which a window
+  disagreed with itself, and they are fixed in the board view's code, so they hold in a window as well.
+  First, a page measured an agent's text before it had loaded the font piece for it, so a Cyrillic label in
+  Nunito could be stored 320.83 px wide instead of 353.26 and stay so: `apply` and `delete` now load the faces
+  their text needs first (`faces.ts`; in Node there is nothing to wait for). Second, the elements an `apply`
+  added to a board that has elements got fractional indices below those before them, which only the screen
+  repaired, so the same call stored a different `index` and `version` on screen and off it: `apply` now gives
+  what it adds valid indices (`indices.ts`).
+- **The faithfulness harness.** `cd packages/board-engine && npm run faithful` sends the same requests to
+  the board view's web build in Chromium and to the Node engine, on given elements, on the board on
+  screen, and in a page that has shown no board, and compares the elements (all but ids and seeds), the
+  replies, and the pictures (size and bounds, and the share of pixels that differ by more than a
+  quarter of a channel, which may be at most 1%), then the widths of a text corpus. It exits non-zero on a
+  difference outside its short list of known ones (CJK and Cascadia on macOS, each with the reason). It
+  needs Playwright ([`AGENTS.md`](../AGENTS.md)). What differs in the pictures is the anti-aliased edge
+  of text and strokes; no shape is displaced.
 
 ## How the app reaches the servers
 
@@ -180,9 +354,10 @@ owner and for every app connected to it, and a change of them before its first m
 there and remembered there (see [Chats on a remote server](remote-servers.md#chats-on-a-remote-server)). (A
 remote server built before the settings is [too old](remote-servers.md#a-server-that-is-too-old) to connect to.)
 
-**`get_image`** gives an agent a picture of a board (PNG), drawn by the open window that holds
-the board, so it shows colours, layout and overlaps that `read_board` does not. `scope` picks what
-is drawn: `selection` (what the user has selected; only for the board that is on their screen),
+**`get_image`** gives an agent a picture of a board (PNG), drawn by the window that holds
+the board, or by the headless writer when none does, so it shows colours, layout and overlaps that `read_board` does not. `scope` picks what
+is drawn: `selection` (what the user has selected; only for the board that is on their screen, so not while the
+headless writer answers),
 `all`, `refs` (the elements named in `refs`, by `key` or `id`, with the bound text of the chosen
 shapes and arrows; a frame's children and the elements an arrow joins are not added, so a selected
 frame is drawn alone) and `rect` (the elements completely inside a rectangle in board
@@ -263,8 +438,7 @@ marks as taking no images (`noImages`; from pi's own model list, no Claude or Cu
 marked) gets none: the composer does not let one be added and says why, and the server refuses
 such a message.
 
-The agents' board edits go through the open window, so boards can only be changed while the app
-is open. pi runs as a long-lived `pi --mode rpc` process per chat; the UDS
+pi runs as a long-lived `pi --mode rpc` process per chat; the UDS
 bridge is one listener per server keyed by a per-run, non-secret handle, and the extension presents
 only that handle. The chat token is a separate MCP credential and reaches pi only inside the
 `AIWB_MCP_CONFIG` header.

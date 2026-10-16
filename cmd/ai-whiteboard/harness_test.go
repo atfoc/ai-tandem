@@ -60,10 +60,10 @@ func smokeTest(t *testing.T) {
 	t.Parallel()
 }
 
-// The headers of a client of the server, and the level it states: an app of level 6.
+// The headers of a client of the server, and the level it states: an app of level 7.
 const (
 	testClient = "5f0c2a7e-3b1d-4c6a-9e2f-7a8b9c0d1e2f"
-	testLevel  = "6"
+	testLevel  = "7"
 )
 
 // loopbackBind is the hidden test-only override that binds a server's client listener on

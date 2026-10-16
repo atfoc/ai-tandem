@@ -127,6 +127,8 @@ const SECTION: Record<keyof typeof api, [args: unknown[], method: string, path: 
   saveScene: [["s_1~b_1", 4, { elements: [] }], "PUT", "/api/boards/b_1/scene?rev=4", { elements: [] }],
   takeBoard: [["s_1~b_1", true], "POST", "/api/boards/b_1/take", { ifFree: true }],
   releaseBoard: [["s_1~b_1"], "POST", "/api/boards/b_1/release"],
+  followBoard: [["s_1~b_1"], "POST", "/api/boards/b_1/follow"],
+  unfollowBoard: [["s_1~b_1"], "POST", "/api/boards/b_1/unfollow"],
   renameBoard: [["s_1~b_1", "Plan B"], "POST", "/api/boards/b_1/rename", { name: "Plan B" }],
   moveBoard: [["s_1~b_1", "s_1~g_1"], "PATCH", "/api/boards/b_1", { group: "g_1" }],
   seenBoard: [["s_1~b_1"], "POST", "/api/boards/b_1/seen"],
@@ -319,4 +321,21 @@ test("every api method makes the one call it is for, with a method and a path of
   assert.ok(seen.filter((c) => c.method !== "GET").length >= 25);
   // a read and the writes of one URL: a chat's view, its Delete and its change
   for (const pair of ["GET /api/chats/a", "DELETE /api/chats/a", "PATCH /api/chats/a"]) assert.ok(seen.some((c) => `${c.method} ${c.path.split("?")[0]}` === pair), pair);
+});
+
+test("followBoard, unfollowBoard and releaseBoard with ifIdle: the routes of a board on screen and the quiet release", async () => {
+  fake.reset();
+  fake.handler = (c) => (c.path.endsWith("/follow") ? ok({ rev: 4, writer: "headless" }) : c.path.endsWith("/release") ? ok({ state: "kept" }) : undefined);
+  assert.deepEqual(await api.followBoard("b_1"), { rev: 4, writer: "headless" });
+  await api.unfollowBoard("b_1");
+  assert.deepEqual(await api.releaseBoard("b_1", true), { state: "kept" });
+  await api.releaseBoard("b_1");
+  assert.deepEqual(fake.calls.map((c) => [c.server, c.method, c.path, c.body]), [
+    ["local", "POST", "/api/boards/b_1/follow", undefined], ["local", "POST", "/api/boards/b_1/unfollow", undefined],
+    ["local", "POST", "/api/boards/b_1/release", { ifIdle: true }], ["local", "POST", "/api/boards/b_1/release", undefined],
+  ]);
+  // a writer the page does not know is nobody, a missing revision is 0
+  fake.handler = () => ok({ writer: "someone else" });
+  assert.deepEqual(await api.followBoard("s_1~b_1"), { rev: 0, writer: "" });
+  assert.deepEqual([fake.calls.at(-1)!.server, fake.calls.at(-1)!.path], ["s_1", "/api/boards/b_1/follow"]);
 });

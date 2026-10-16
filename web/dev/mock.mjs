@@ -33,8 +33,14 @@
 //     whatever it names. flags.upload = { hold: true } | { delay: ms } | { fail: [status, sentence, code] } holds,
 //     delays or fails an upload's answer
 //   - a board answers a take only when the seed gave it a scene (dev/mock-ui.js); any other board is
-//     read-only with an empty scene, and no board is ever another window's. A scene is saved on the revision named
-//     (?rev=), and refused 409 "stale" on another
+//     read-only with an empty scene. The page holds a board only after a take (answered `held` with the stored revision; with
+//     {ifFree} on a board another writer holds: `busy`), and a release (`free`, `none` when the page held nothing, `kept` with
+//     {ifIdle} while a tool call of the rpc knob is open on the board). A scene is saved only by the page that holds the board
+//     (409 "not_holder" otherwise), on the revision named (?rev=), and refused 409 "stale" on another; an accepted save is a new
+//     revision, told to the page as `scene {board, rev}` when it follows the board. POST …/follow answers {rev, writer} (writer:
+//     "window" for a board the page holds or the writer knob gave to a window, "headless", or "" for nobody) and starts the
+//     follow; …/unfollow ends it; `writer {board, writer}` is told to a following page whenever who writes changes. A follow ends
+//     with the stream
 //   - remote servers: see "Remote servers" below for what is not as on the server
 //   - a subagent's record and thread stay as they were written: nothing moves by itself, and no `sub` event goes out
 //   - a call under /api/ that has no route here answers {ok: true}
@@ -124,6 +130,12 @@
 //                                           route ("/chats", "/groups/g_x/move", "/boards/b_x?…"), whose events reach
 //                                           the page as that server's. id "local": another window of this computer.
 //                                           Answers { status, body }
+//   writer(board, kind)                     the board is written by another window ("window"), by the headless writer ("headless") or
+//                                           by nobody (""): the page is told `writer` when it follows the board, and `superseded` when it held
+//                                           the board and kind is not "". The page is a reader then, until it presses Edit here (a take)
+//   othersave(board, scene)                 another writer saved `scene` (a scene, or an array of elements) on the board: a new stored
+//                                           revision, and `scene {board, rev}` to the page when it follows the board. Answers the revision
+//                                           (the board needs a scene: the seed's, or one that othersave makes)
 //   onCalls                                 every call the client was asked for: { server, method, path, body? }
 //   worlds[id]                              a machine as the mock holds it ("local": this computer)
 //   await rpc(call, { server, timeout })    a board tool call of an agent, as the server relays one: the page gets an `rpc` event
@@ -132,13 +144,15 @@
 //                                           board key on that server), runs the tool and replies with POST /api/rpc-reply; it
 //                                           answers that reply, { result } (a text, or { text, image: { mimeType, data } } for
 //                                           get_image) or { error }, and ends with an error when the page does not answer in
-//                                           `timeout` ms (20000). The replies are also in `rpcReplies`: { server, id, result | error }
+//                                           `timeout` ms (20000). The replies are also in `rpcReplies`: { server, id, result | error }.
+//                                           A board tool's call makes the page the holder of its board first (`held` before the `rpc`, as the
+//                                           server does for the headless writer it hands a free board to): the page stands for that writer
 // Not as on the server: a chat's content events (`chat_items`, `tree`) go to the page for every chat, followed or not; a
-// board is held by whoever asks, and no `superseded` or `release_request` is sent, and no `rpc` but by the knob above; no call is ever answered 401 or
+// board is never handed over by the server's hand-off (a take of a board another writer holds is granted at once: no
+// `release_request`; `superseded` goes only by the writer knob), and no `rpc` but by the knob above; no call is ever answered 401 or
 // 502 `bad_answer` or 504 (but a make that waited on flags.make while its server dropped: 504 `no_answer`); an entry
 // that waits for its next try is not made to try by a call; `defaults` are always empty, and a new chat on another machine
-// starts with that server's first agent, its default model and its default folder; a save of a board is taken from a
-// client that does not hold it (the server: 409 `not_holder`).
+// starts with that server's first agent, its default model and its default folder.
 //
 // The prompt library (plans/prompt-library.md): GET /api/library and the calls that change a library answer as the
 // server does, with its rules and its sentences, and every change goes to the page as an `own_library` event of that
@@ -247,7 +261,7 @@ const flags = {}; // switches set through /mock/eval (see the header)
 // of its own: the same id can be a chat here and a chat there.
 
 /** What one machine holds: its groups, boards and chats, and what the mock keeps per chat and per board. */
-const newWorld = (id) => ({ id, groups: [], boards: {}, chats: {}, items: {}, versions: {}, subs: {}, subItems: {}, branches: {}, sessions: {}, scenes: {}, images: {}, lastSubLimits: null });
+const newWorld = (id) => ({ id, groups: [], boards: {}, chats: {}, items: {}, versions: {}, subs: {}, subItems: {}, branches: {}, sessions: {}, scenes: {}, writers: {}, images: {}, lastSubLimits: null });
 const worlds = { local: newWorld("local") }; // by entry id of the server list
 const here = new AsyncLocalStorage();        // the machine a call works on, with everything the call starts (a timer, a held answer)
 const world = () => here.getStore() ?? worlds.local;
@@ -339,6 +353,7 @@ function setSubLimits(c, depth, cap) {
 const branches = part("branches");  // by chat id: its branches besides main, in the order they were made: { id, from, at, items }
 const sessions = part("sessions");  // by chat id, once it has a second branch: each branch's session fields, by branch id ("main" too)
 const scenes = part("scenes");      // by board id: { rev, scene } of a board that answers a take (the seed's); any other is read-only
+const writers = part("writers");    // by board id: who else holds the board, "window" or "headless" (the writer knob); the page holds it when heldBoards has it
 const extra = {};     // what the seed adds to the snapshot: servers, lists (by server), agents
 const SESSION = ["cwd", "model", "effort", "locked", "usage", "status", "statusTool", "error", "fresh", "draft", "draftRev", "subsRunning"];
 const WORKING = ["thinking", "writing", "tool", "approval"];
@@ -418,6 +433,7 @@ const treeOf = (id) => ({ current: curOf(chats[id]), branches: [treePart(id, "ma
 let sub = null;
 const up = new Set(["local"]);  // the entries that are connected: their streams are open for a subscription
 const heldBoards = new Set();   // the boards the client holds (a take), by pageKey: a server forgets them when its stream ends
+const followed = new Set();     // the boards the client follows (a follow), by pageKey: its `scene` and `writer` events reach it; ends with its stream
 const CLIENT_ID = "6d6f636b-0000-4000-8000-000000000001"; // the app's id as the mock states it
 /** Hands an envelope to the subscription; a copy, so that what changes later in the mock does not change what was told. */
 const emit = (env) => { if (sub) sub.cb(clone(env)); };
@@ -430,18 +446,53 @@ const send = (m) => {
 // the page's POST /api/rpc-reply, which `call` below hands to the knob's promise.
 const rpcWaiting = new Map(); // by the call's id
 const rpcReplies = []; // every reply the page made: { server, id, result | error }
+const rpcTargets = new Map(); // by the call's id: the board key the call is on, while the page has not answered (a release with ifIdle keeps such a board)
 let rpcSeq = 0;
+const BOARD_TOOLS = ["read_board", "get_image", "apply", "delete_elements"]; // (get_view and show_board are the Screen calls: they change no board and take none)
 function rpc(call, { server = "local", timeout = 20000 } = {}) {
   if (!sub?.opened.has(server)) return Promise.reject(new Error(`the page has no stream open for ${server}: it cannot be asked to run a tool`));
   const id = `rpc_${++rpcSeq}`;
+  if (BOARD_TOOLS.includes(call.name)) onServer(server, () => { // the page stands for the board's holder (the server's, for a free board, is the headless writer): `held` before the `rpc`, as the server sends it
+    const board = String(call.target ?? call.board ?? "").replace(/^[^~]*~/, ""), sc = scenes[board];
+    if (!sc || heldBoards.has(pageKey(board))) return;
+    const before = writerOf(board);
+    heldBoards.add(pageKey(board)); delete writers[board];
+    send({ type: "held", board, rev: sc.rev });
+    if (before !== "window") tellFollowers(board, { type: "writer", writer: "window" });
+  });
   return new Promise((ok, no) => {
-    const timer = setTimeout(() => { rpcWaiting.delete(id); no(new Error(`the page did not answer the tool call ${call.name} in ${timeout} ms`)); }, timeout);
-    rpcWaiting.set(id, (reply) => { clearTimeout(timer); ok(reply); });
+    rpcTargets.set(id, call.target);
+    const timer = setTimeout(() => { rpcWaiting.delete(id); rpcTargets.delete(id); no(new Error(`the page did not answer the tool call ${call.name} in ${timeout} ms`)); }, timeout);
+    rpcWaiting.set(id, (reply) => { clearTimeout(timer); rpcTargets.delete(id); ok(reply); });
     emit({ server, event: { type: "rpc", id, method: "tool", params: call } });
   });
 }
 /** What a page names a thing of the machine a call works on by, in the mock's own lists of what a client holds. */
 const pageKey = (id) => (world().id === "local" ? id : `${world().id}~${id}`);
+/** Who writes a board of the machine a call works on, as the server tells it: "window" for any client (the page too), "headless", or "" for nobody. */
+const writerOf = (id) => (heldBoards.has(pageKey(id)) ? "window" : writers[id] ?? "");
+/** Tells the page, if it follows the board, an event of it (`scene`, `writer`): as the server tells the clients that follow. */
+const tellFollowers = (id, m) => { if (followed.has(pageKey(id))) send({ ...m, board: id }); };
+/** The writer knob (through /mock/eval): another window (kind "window") or the headless writer ("headless") holds the board now, or nobody ("").
+ *  A board the page held goes to it: `superseded`. The page is told `writer` when it follows the board and who writes changed. */
+function writer(board, kind) {
+  if (!boards[board]) throw new Error(`the mock has no board ${board}`);
+  if (kind !== "" && kind !== "window" && kind !== "headless") throw new Error(`writer(board, kind): kind is "window", "headless" or "", not ${JSON.stringify(kind)}`);
+  const before = writerOf(board), mine = heldBoards.delete(pageKey(board));
+  if (kind) writers[board] = kind; else delete writers[board];
+  if (mine && kind) send({ type: "superseded", board });
+  if (writerOf(board) !== before) tellFollowers(board, { type: "writer", writer: writerOf(board) });
+}
+/** The othersave knob (through /mock/eval): another writer saved `scene` (a scene, or an array of its elements) on the board: a new stored revision, and
+ *  `scene {board, rev}` to the page if it follows the board. Answers the new revision. */
+function othersave(board, scene) {
+  if (!boards[board]) throw new Error(`the mock has no board ${board}`);
+  const sc = (scenes[board] ??= { rev: 0, scene: { type: "excalidraw", version: 2, elements: [], appState: {}, files: {} } });
+  sc.scene = Array.isArray(scene) ? { type: "excalidraw", version: 2, elements: scene, appState: {}, files: {} } : scene;
+  sc.rev++;
+  tellFollowers(board, { type: "scene", rev: sc.rev });
+  return sc.rev;
+}
 /** The branch records of the machine a call works on: one per branch of every chat that has more than main. */
 const statesNow = () => Object.keys(sessions).filter((id) => chats[id]).flatMap((id) => Object.keys(sessions[id]).map((b) => branchState(id, b)));
 /** The snapshot of the machine a call works on, as its stream starts with it and GET /api/state answers it (app.APISnapshot):
@@ -463,7 +514,7 @@ function dropStreams() { for (const f of faces) f.drop(); }
 /** Adds the states of the composer and chat UI work (dev/mock-ui.js, read and evaluated inside this file): all of
  *  its sections, or the ones named. It sends a snapshot and answers the list of its states. Called through
  *  /mock/eval alone; calling it again puts its states back as they were made. */
-function seedUI(...sections) { return eval(fs.readFileSync(path.resolve(HERE, "mock-ui.js"), "utf8"))(sections); }
+function seedUI(...sections) { for (const k of Object.keys(writers)) delete writers[k]; return eval(fs.readFileSync(path.resolve(HERE, "mock-ui.js"), "utf8"))(sections); }
 
 // ---- HTTP
 
@@ -532,7 +583,7 @@ function openStream(id) {
 /** The stream of an entry ends: the server forgets the boards the client held, and nothing of it is told until it opens again. */
 function closeStream(id) {
   sub?.opened.delete(id);
-  for (const k of [...heldBoards]) if (id === "local" ? !k.includes("~") : k.startsWith(id + "~")) heldBoards.delete(k);
+  for (const set of [heldBoards, followed]) for (const k of [...set]) if (id === "local" ? !k.includes("~") : k.startsWith(id + "~")) set.delete(k);
 }
 
 /** Puts a server into the list, or changes the one with its id, and gives it a machine of its own if it has none: its
@@ -991,22 +1042,36 @@ async function treeRoute(req, res, p, u) {
   if ((m = /^\/boards\/([^/]+)(\/.*)?$/.exec(p))) {
     const x = boards[m[1]], rest = m[2] ?? "", b = M === "GET" ? {} : await body(req);
     if (!x) return answer(res, fail(...ERR.board));
-    const sc = scenes[x.id], mine = heldBoards; // the seed's: a board that this client may hold, with a stored drawing
+    const sc = scenes[x.id], mine = heldBoards, key = pageKey(x.id); // the seed's: a board that this client may hold, with a stored drawing
+    if (rest === "/follow" && M === "POST") { followed.add(key); return json(res, { rev: sc?.rev ?? 0, writer: writerOf(x.id) }); }
+    if (rest === "/unfollow" && M === "POST") { followed.delete(key); return json(res, { ok: true }); }
     if (sc && rest === "/scene" && M === "GET") { res.writeHead(200, { "Content-Type": "application/json", "X-AIWB-Scene-Rev": String(sc.rev) }); return res.end(JSON.stringify(sc.scene)); }
-    if (sc && rest === "/scene" && M === "PUT") { // on the revision the drawing was read at (?rev=): one stored at another is not replaced
+    if (sc && rest === "/scene" && M === "PUT") { // only the holder writes; on the revision the drawing was read at (?rev=): one stored at another is not replaced
+      if (!mine.has(key)) return answer(res, fail(409, writers[x.id] ? "another window holds this board" : "this window does not hold the board", "not_holder"));
       const base = u.searchParams.get("rev");
       if (base !== null && Number(base) !== sc.rev) return answer(res, fail(409, "the board was changed elsewhere", "stale"));
-      sc.scene = b; return json(res, { rev: ++sc.rev });
+      sc.scene = b; sc.rev++; tellFollowers(x.id, { type: "scene", rev: sc.rev }); return json(res, { rev: sc.rev });
     }
-    if (sc && rest === "/take") { mine?.add(pageKey(x.id)); return json(res, { state: "held", rev: sc.rev }); }
-    if (sc && rest === "/release") { mine?.delete(pageKey(x.id)); return json(res, { state: "free" }); }
+    if (sc && rest === "/take") { // the page holds the board after this and only after this; the writer there was is told to let go (the mock's other windows do at once)
+      if (b.ifFree && writers[x.id]) return json(res, { state: "busy" });
+      const before = writerOf(x.id);
+      mine.add(key); delete writers[x.id];
+      if (before !== "window") tellFollowers(x.id, { type: "writer", writer: "window" });
+      return json(res, { state: "held", rev: sc.rev });
+    }
+    if (sc && rest === "/release") {
+      if (!mine.has(key)) return json(res, { state: "none" });
+      if (b.ifIdle && [...rpcTargets.values()].includes(key)) return json(res, { state: "kept" });
+      mine.delete(key); tellFollowers(x.id, { type: "writer", writer: "" });
+      return json(res, { state: "free" });
+    }
     if (rest === "/scene" && M === "GET") return json(res, { type: "excalidraw", version: 2, elements: [], appState: {}, files: {} });
     if (rest === "/rename") { x.name = b.name; send({ type: "board", board: x }); return json(res, x); }
     if (rest === "" && M === "PATCH") { x.group = b.group; send({ type: "board", board: x }); return json(res, x); }
     if (rest === "/archive" || rest === "/unarchive") { if (rest === "/archive") Object.assign(x, { archived: true, archiveOp: newId("op_") }); else { delete x.archived; delete x.archiveOp; } send({ type: "board", board: x }); return json(res, { ok: true }); }
     if (rest === "" && M === "DELETE") {
       for (const c of Object.values(chats)) if (c.board === x.id) { delete chats[c.id]; send({ type: "chat_removed", id: c.id }); }
-      delete boards[x.id]; delete scenes[x.id]; send({ type: "board_removed", id: x.id });
+      delete boards[x.id]; delete scenes[x.id]; delete writers[x.id]; followed.delete(key); mine.delete(key); send({ type: "board_removed", id: x.id });
     }
     return json(res, { ok: true });
   }
@@ -1023,7 +1088,7 @@ export const CLIENT_ROUTES = [
   "PATCH /api/chats/{id}", "POST /api/chats/{id}/messages", "POST /api/chats/{id}/interrupt", "POST /api/chats/{id}/permission", "PUT /api/chats/{id}/label", "PUT /api/chats/{id}/draft",
   "POST /api/chats/{id}/images", "GET /api/chats/{id}/images/{image}", "POST /api/chats/{id}/open", "POST /api/chats/{id}/fork", "POST /api/chats/{id}/archive",
   "POST /api/chats/{id}/unarchive", "DELETE /api/chats/{id}", "POST /api/chats/{id}/unfollow", "GET /api/dirs", "GET /api/usage/{agent}",
-  "POST /api/boards", "GET /api/boards/{id}/scene", "PUT /api/boards/{id}/scene", "POST /api/boards/{id}/take", "POST /api/boards/{id}/release", "POST /api/boards/{id}/rename",
+  "POST /api/boards", "GET /api/boards/{id}/scene", "PUT /api/boards/{id}/scene", "POST /api/boards/{id}/take", "POST /api/boards/{id}/release", "POST /api/boards/{id}/follow", "POST /api/boards/{id}/unfollow", "POST /api/boards/{id}/rename",
   "PATCH /api/boards/{id}", "POST /api/boards/{id}/archive", "POST /api/boards/{id}/unarchive", "POST /api/boards/{id}/seen", "DELETE /api/boards/{id}", "POST /api/rpc-reply",
   "GET /api/library", "POST /api/library/{server}/groups", "PATCH /api/library/{server}/groups/{id}", "DELETE /api/library/{server}/groups/{id}",
   "POST /api/library/{server}/prompts", "PATCH /api/library/{server}/prompts/{id}", "DELETE /api/library/{server}/prompts/{id}",
@@ -1064,7 +1129,7 @@ function fakeRes() {
 async function apiRoute(req, res, u) {
   const p = u.pathname, M = req.method;
   let m;
-  if (p === "/api/hello") return json(res, { app: "ai-whiteboard", version: flags.hello?.version ?? entryById(world().id)?.version ?? "dev", featureLevel: 6, instanceId: `mock-${world().id}` });
+  if (p === "/api/hello") return json(res, { app: "ai-whiteboard", version: flags.hello?.version ?? entryById(world().id)?.version ?? "dev", featureLevel: 7, instanceId: `mock-${world().id}` });
   if (p === "/api/state") return json(res, snapshot());
   if (p === "/api/client/flushed") { await body(req); return json(res, { ok: true }); }
   if (p === "/api/library" && M === "GET") return json(res, { libraries: libraries[world().id] ? [libraryView(world().id)] : [] });
@@ -1112,6 +1177,7 @@ async function call({ server, method, path: p, body: b, signal }) {
   if (!up.has(server)) { // not connected: two calls are answered whatever the state, every other is refused (C3.7 step 4)
     if (method === "POST" && /^\/api\/chats\/[^/]+\/unfollow$/.test(u.pathname)) return { status: 200, text: '{"ok":true}', sceneRev: null };
     if (method === "POST" && /^\/api\/boards\/[^/]+\/release$/.test(u.pathname)) return { status: 200, text: '{"state":"none"}', sceneRev: null };
+    if (method === "POST" && /^\/api\/boards\/[^/]+\/unfollow$/.test(u.pathname)) return { status: 200, text: '{"ok":true}', sceneRev: null };
     return synthFail(awayAnswer(entry));
   }
   const dropped = () => synth(504, `${entry.name} did not answer.`, "no_answer"); // (the server dropped while the call waited)
@@ -1248,7 +1314,7 @@ async function app(op, args) {
       return ok({ ok: true });
     }
     case "owner.status": return ok({
-      running: { build: "this", version: LOCAL.version, pid: process.pid, featureLevel: 6, instanceId: "mock-local",
+      running: { build: "this", version: LOCAL.version, pid: process.pid, featureLevel: 7, instanceId: "mock-local",
         client: { listening: true, address: "https://127.0.0.1:4748", port: 4748, names: ["localhost"], fingerprint: "AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89", secretReloads: 0 },
         mcp: { listener: { port: 6006, url: "http://localhost:6006/mcp", up: flags.mcp?.up !== false }, chats: [] } },
       files: { setUp: true, ok: true, port: 4748, names: ["localhost"], fingerprint: "AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89", notes: [] } });
@@ -1269,11 +1335,11 @@ export function createMockClient() {
       emit(serversEvent());
       for (const e of extra.servers) emit({ app: { type: "server_state", server: shown(e) } });
       for (const e of extra.servers) openStream(e.id);
-      return { close() { if (sub === mine) { sub = null; heldBoards.clear(); } } };
+      return { close() { if (sub === mine) { sub = null; heldBoards.clear(); followed.clear(); } } };
     },
     call, picture, app,
     localInfo: () => ({ home: DATA, address: "https://127.0.0.1:4748", version: LOCAL.version, pid: process.pid }),
-    async close() { sub = null; heldBoards.clear(); },
+    async close() { sub = null; heldBoards.clear(); followed.clear(); },
   };
 }
 

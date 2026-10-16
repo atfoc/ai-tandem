@@ -321,21 +321,55 @@ test("release_request: the one board's pending save is written, then it is let g
   side.forgetBoard(a); side.forgetBoard(b);
 });
 
-test("a release answered free (who asked went away): the board is asked for again, if free, and not written in between", async () => {
-  const b = await held(1, true); // on screen: a user's change is the only way to edit a board nobody holds
+test("a release answered free (who asked went away): the board is not taken back, and a change of the reader is neither kept nor written", async () => {
+  const b = await held(1, true);
   api.release = async () => ({ state: "free" });
-  let answer!: (a: Take) => void;
-  api.take = () => new Promise((r) => { answer = r; });
   asked();
   await side.handOver(b);
   assert.equal(st().roles[b], undefined);
-  await edit(b);
+  const was = side.scene(b)!.version;
+  view.draw((els) => els.map((e) => ({ ...e, version: e.version + 1 }))); // a change that got through in view mode
+  await until(() => view.told.some((m) => m.t === "changed"), "the change told");
+  await tick();
   await side.flush(b);
-  assert.deepEqual(asked(), [`release ${b}`, `take if free ${b}`]); // no write: the server holds it for nobody
-  answer({ state: "held", rev: 1 });
-  await until(() => api.log.some((l) => l.startsWith("save")), "the grant's save");
-  assert.deepEqual([st().roles[b], asked()], ["held", [`save ${b} on 1`]]); // the edit made meanwhile is saved by the grant
+  assert.deepEqual(asked(), [`release ${b}`], "no take call: the server holds it for nobody, and this window waits for the button");
+  assert.deepEqual([st().roles[b], side.scene(b)!.version, side.boardUnsaved(b), side.hasPendingSaves()], [undefined, was, false, false]);
   side.forgetBoard(b);
+});
+
+test("a reader keeps no edit: a change or a paste that gets through in view mode is not kept and not written, also after a later grant", async () => {
+  for (const role of [undefined, "other", "lost"] as const) {
+    const b = fresh(2);
+    if (role) store.setRole(b, role);
+    await showIt(b);
+    assert.equal(view.viewMode, true);
+    const sc = side.scene(b)!, was = sc.elements, version = sc.version;
+    asked();
+    const paste = { id: "pasted", type: "rectangle", x: 5, y: 5, width: 10, height: 10, version: 1 } as any;
+    view.draw((els) => [...els, paste]); // a paste that Excalidraw lets through
+    view.draw((els) => els.map((e) => (e.id === "e1" ? { ...e, x: 50, version: e.version + 1 } : e))); // and a drag
+    await until(() => view.told.filter((m) => m.t === "changed").length >= 2, "both changes told");
+    await tick();
+    assert.deepEqual([side.scene(b) === sc, sc.elements === was, sc.version, side.boardUnsaved(b), side.hasPendingSaves()], [true, true, version, false, false], `${role}: nothing kept`);
+    const snapshots = view.ops("snapshot").length;
+    await side.flush(b); // asks the view for nothing either: a reader's view is not read back
+    assert.deepEqual([view.ops("snapshot").length - snapshots, asked()], [0, []], `${role}: no snapshot request, no write`);
+
+    api.take = async () => ({ state: "held", rev: 2 });
+    await side.takeBoard(b); // the button: the grant at the revision the scene was read at
+    assert.equal(st().roles[b], "held");
+    await until(() => view.shown!.elements.length === 1 && view.viewMode === false, "the view given the kept scene again");
+    assert.deepEqual(view.shown!.elements.map((e) => [e.id, e.x]), [["e1", 0]], `${role}: the view shows the kept scene, not the reader's change`);
+    view.draw((els) => els.map((e) => ({ ...e, version: e.version + 1 }))); // now the writer draws
+    await until(() => side.boardUnsaved(b), "the writer's change kept");
+    assert.deepEqual(side.scene(b)!.elements.map((e) => e.id), ["e1"], `${role}: the paste never came into the scene`);
+    api.write = async (_, base) => base + 1;
+    await side.flush(b);
+    const written = api.written[api.written.length - 1].scene.elements;
+    assert.deepEqual(written.map((e: any) => [e.id, e.x]), [["e1", 0]], `${role}: and was never written`);
+    side.forgetBoard(b);
+    api.written.length = 0;
+  }
 });
 
 test("superseded: that board is lost with its unsaved edit; the stream's other boards are as before, and aiwbFlush is true", async () => {
@@ -506,50 +540,55 @@ test("after a reconnect nothing is written before the board is granted again", a
   const b = await cut(3, true);
   const writes: string[] = [];
   up(writes);
-  await edit(b);
+  view.draw((els) => els.map((e) => ({ ...e, version: e.version + 1 }))); // the user draws on: the view is in view mode, but a change got through
+  await until(() => view.told.some((m) => m.t === "changed"), "the change told");
+  await tick();
   await side.flush(b);
   assert.deepEqual(writes, []);
   side.forgetBoard(b);
 });
 
-test("reconnect, the board is not free: the role is other, the pending edit is dropped, the panel says so", async () => {
+test("after a snapshot nothing is taken: not the board on screen, not a board with an unsaved edit, whoever holds them", async () => {
   for (const onScreen of [true, false]) {
     const b = await cut(3, onScreen);
     const writes: string[] = [];
     up(writes);
-    api.take = async () => ({ state: "busy" });
-    side.takeAfterSnapshot();
-    await until(() => st().roles[b] === "other", "the board found busy");
-    assert.deepEqual(asked(), [`take if free ${b}`]);
-    assert.deepEqual([st().roles[b], st().dropped[b], !!side.scene(b)], ["other", true, false]);
-    assert.equal(await aiwbFlush(), true);
-    assert.deepEqual(writes, []);
+    api.take = async () => ({ state: "held", rev: 3 }); // would be free, if it were asked
+    side.afterSnapshot();
+    await tick(); await tick();
+    assert.deepEqual(asked(), []);
+    assert.deepEqual([st().roles[b], st().dropped[b], !!side.scene(b), side.boardUnsaved(b)], [undefined, undefined, true, true], "the edit made before the cut stays kept");
+    assert.equal(await aiwbFlush(), true); // (a board this window does not hold is not pending: the grant decides)
+    assert.deepEqual([writes, side.boardUnsaved(b)], [[], true], "and is not written: the window is a reader");
     side.forgetBoard(b);
   }
 });
 
-test("reconnect, the board is free at the same revision: the pending edit is saved", async () => {
+test("reconnect, the button: the board is free at the same revision, the edit kept from before the cut is saved", async () => {
   const b = await cut(3, false);
   const writes: string[] = [];
   up(writes);
   api.take = async () => ({ state: "held", rev: 3 });
-  side.takeAfterSnapshot();
+  side.afterSnapshot();
+  await tick();
+  assert.deepEqual(asked(), []);
+  await side.takeBoard(b); // the user presses the button
   await until(() => api.log.some((l) => l.startsWith("save")), "the pending edit saved");
-  assert.deepEqual(asked(), [`take if free ${b}`, `save ${b} on 3`]);
+  assert.deepEqual(asked(), [`take ${b}`, `save ${b} on 3`]);
   await until(() => !side.hasPendingSaves(), "the save done");
   assert.deepEqual([st().roles[b], st().dropped[b], side.scene(b)!.base], ["held", undefined, 4]);
   side.forgetBoard(b);
 });
 
-test("reconnect, the board is free at another revision: the pending edit is dropped, with a note on the canvas", async () => {
+test("reconnect, the button: the board is free at another revision, the edit kept from before the cut is dropped, with a note on the canvas", async () => {
   const b = await cut(3, true);
   const gen = st().sceneGen[b] ?? 0;
   const writes: string[] = [];
   up(writes);
   api.take = async () => ({ state: "held", rev: 5 }); // another window stored twice while this one was away
-  side.takeAfterSnapshot();
-  await until(() => st().roles[b] === "held", "the board granted");
-  assert.deepEqual(asked(), [`take if free ${b}`]);
+  side.afterSnapshot();
+  await side.takeBoard(b);
+  assert.deepEqual(asked(), [`take ${b}`]);
   assert.deepEqual(writes, []);                                          // the newer drawing is not overwritten
   assert.deepEqual([st().roles[b], st().dropped[b]], ["held", true]);    // held with dropped: Canvas.tsx shows the note
   assert.deepEqual([!!side.scene(b), st().sceneGen[b]], [false, gen + 1]); // and reads the stored scene
@@ -557,14 +596,27 @@ test("reconnect, the board is free at another revision: the pending edit is drop
   side.forgetBoard(b);
 });
 
-test("after a reconnect a board that showed the panel is not asked for: the window that held it is the one to get it back", async () => {
+test("reconnect, the button on a board another window holds: the edit stays kept while the take waits, and the grant decides", async () => {
+  const b = await cut(3, true);
+  const writes: string[] = [];
+  up(writes);
+  api.take = async () => ({ state: "waiting" });
+  await side.takeBoard(b);
+  assert.deepEqual([st().roles[b], st().dropped[b], side.boardUnsaved(b)], ["taking", undefined, true]);
+  side.granted(b, 3); // the holder let go without storing
+  await until(() => writes.length === 1, "the save at the grant");
+  assert.deepEqual([st().roles[b], st().dropped[b]], ["held", undefined]);
+  side.forgetBoard(b);
+});
+
+test("after a reconnect a board that showed the bar is not asked for: only the button takes it", async () => {
   for (const role of ["other", "lost"] as const) {
     const b = fresh();
     store.setRole(b, role);
     side.streamOpened();
     store.setState({ sel: { board: b, chat: null } });
     asked();
-    side.takeAfterSnapshot();
+    side.afterSnapshot();
     await tick();
     assert.deepEqual([asked(), st().roles[b]], [[], role]);
     await side.takeBoard(b); // "Use here" takes it all the same
@@ -572,7 +624,7 @@ test("after a reconnect a board that showed the panel is not asked for: the wind
   }
 });
 
-test("after a snapshot only the board on screen and the boards with an unsaved edit are asked for, each if free", async () => {
+test("after a snapshot the board on screen and the boards with an unsaved edit are asked for by nobody", async () => {
   const shown = fresh(), clean = await held(1), dirty = await cut(1, false), mine = await held(1);
   fresh(); // a board never opened
   store.setRole(clean, "held"); side.streamOpened(); // clean: held before the cut, nothing unsaved, off screen
@@ -580,10 +632,10 @@ test("after a snapshot only the board on screen and the boards with an unsaved e
   store.setState({ sel: { board: shown, chat: null } });
   api.take = async () => ({ state: "busy" });
   asked();
-  side.takeAfterSnapshot();
-  await until(() => st().roles[shown] === "other" && st().roles[dirty] === "other", "both boards found busy");
-  assert.deepEqual(asked().sort(), [`take if free ${shown}`, `take if free ${dirty}`].sort());
-  assert.deepEqual([st().roles[shown], st().roles[clean], st().roles[mine]], ["other", undefined, "held"]);
+  side.afterSnapshot();
+  await tick(); await tick();
+  assert.deepEqual(asked(), []);
+  assert.deepEqual([st().roles[shown], st().roles[clean], st().roles[dirty], st().roles[mine]], [undefined, undefined, undefined, "held"]);
   for (const b of [shown, clean, dirty, mine]) side.forgetBoard(b);
 });
 

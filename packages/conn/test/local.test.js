@@ -79,7 +79,7 @@ test('this computer is the first entry, connects with what launch and secret pri
     // the connection is as any other: HTTPS, the secret, the level, the client id
     const events = s.requests.find((r) => r.path.startsWith('/api/events'));
     assert.equal(events.headers['x-aiwb-secret'], s.secret);
-    assert.equal(events.headers['x-aiwb-level'], '6');
+    assert.equal(events.headers['x-aiwb-level'], '7');
     // calls and pictures go to 'local' as to any entry
     const r = await h.client.call({ server: 'local', method: 'GET', path: '/api/state' });
     assert.equal(r.status, 200);
@@ -228,7 +228,7 @@ test('a running server whose hello says level 5: too_old, asked again, connects 
   await withLocal(fake(running(s)), async (h) => {
     await reaches(h, 'too_old');
     assert.equal(h.rec.viewOf('local').version, '1.2.3');
-    s.level = 6;
+    s.level = 7;
     await reaches(h, 'connected');
   }, { s });
 });

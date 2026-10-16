@@ -47,7 +47,7 @@ function StandInSidebar() {
       <ScrollView>
         {Object.entries(boards).map(([key, b]) => (
           <Pressable key={"b" + key} {...tid("side-row", { kind: "board", key })} accessibilityState={{ selected: sel.board === key }} aria-selected={sel.board === key}
-            style={styles.row} onPress={() => openBoard(key, true)}><Text numberOfLines={1}>{b.name}</Text></Pressable>
+            style={styles.row} onPress={() => openBoard(key)}><Text numberOfLines={1}>{b.name}</Text></Pressable>
         ))}
         {Object.entries(chats).map(([key, c]) => (
           <Pressable key={"c" + key} {...tid("side-row", { kind: "chat", key })} accessibilityState={{ selected: sel.chat === key }} aria-selected={sel.chat === key}

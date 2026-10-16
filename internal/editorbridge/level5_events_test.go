@@ -9,7 +9,7 @@ import (
 )
 
 // What a client is sent, type by type: the list types of the server's whole tree go to every
-// client, the content types to the clients that follow the chat, and the types of nobody's (the
+// client, the content types to the clients that follow the chat or the board, and the types of nobody's (the
 // role types, the types of other servers that went with the page) to none. A client that made
 // nothing and follows nothing gets every list event of a chat and a board, and of the groups and
 // the defaults.
@@ -17,7 +17,7 @@ func TestEventsOfAClient(t *testing.T) {
 	t.Parallel()
 	list := []string{"groups", "defaults", "board", "board_removed", "chat", "chat_removed", "branch_state",
 		"catalog", "agents", "own_library"}
-	content := []string{"tree", "chat_items", "sub", "sub_items"}
+	content := []string{"tree", "chat_items", "sub", "sub_items", "scene", "writer"}
 	never := []string{"servers", "server_state", "server_lists", "library", "library_removed", "section", "server_back", "chat_reload",
 		"hello", "snapshot", "held", "release_request", "superseded", "rpc", "server_stopping"}
 
@@ -59,7 +59,7 @@ func TestEventsOfAClient(t *testing.T) {
 		}
 	}
 	// F follows the chat from here on: its removal above would have ended it.
-	if !b.Follow("F", Chat("c1")) {
+	if !b.Follow("F", Chat("c1")) || !b.Follow("F", Board("b1")) {
 		t.Fatal("Follow refused a connected client")
 	}
 	for _, typ := range content {

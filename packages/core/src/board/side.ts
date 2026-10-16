@@ -22,20 +22,20 @@ import { formatElement, formatScene, formatViewport, type FmtElement, type FmtVi
 import { boardRef, contextBlock } from "../logic/context.ts";
 import { resolveMentions, type Picked } from "../logic/mentions.ts";
 import { plainText, pointRef, selectionRef, type Ref } from "../logic/refs.ts";
-import { boardsOn, flash, getState, markBusy, markGone, reloadScene, setDropped, setOutage, setRole, setSaveSaid, setState, subscribe } from "../state/store.ts";
+import { boardsOn, flash, getState, markBusy, markGone, reloadScene, setDropped, setOutage, setRole, setSaveSaid, setState, setWriter, subscribe } from "../state/store.ts";
 import { ownId, sameServer, serverOfKey } from "../logic/keys.ts";
 import { reachable } from "../logic/sections.ts";
 import { api as serverApi, ApiError } from "../api.ts";
 import { ui, type BoardSide, type ToolCall, type ToolResult } from "../state/ports.ts";
 import { branchNameFor, editLabel } from "../logic/attribution.ts";
-import { afterReconnect, onGrant, onLost, onRefusal, onTake, type Cache, type Step } from "../logic/roles.ts";
+import { afterReconnect, onGrant, onLost, onMoved, onRefusal, onTake, type Cache, type Step } from "../logic/roles.ts";
 import { saveFailure, saveOutage, saveRefusal } from "../logic/boardsave.ts";
 import { NOT_FOUND } from "../logic/remoteview.ts";
 import { countElements, defaultScope, hasExtent, idsInsideRect, parseImageArgs, parseRect, parseRefs, resultText, withBoundText } from "../logic/image.ts";
 import { canvasFilter, canvasThemeOf } from "../logic/canvastheme.ts";
 import { chromeOf } from "../logic/canvaschrome.ts";
 import { flavourOf } from "../logic/theme.ts";
-import { LOCAL_SERVER, type AgentKind } from "../types.ts";
+import { LOCAL_SERVER, type AgentKind, type Writer } from "../types.ts";
 
 export type { ToolCall, ToolResult };
 
@@ -48,7 +48,12 @@ export type BoardApi = {
   scene(id: string): Promise<{ scene: any; rev: number }>;
   saveScene(id: string, base: number, scene: unknown): Promise<number>;
   takeBoard(id: string, ifFree?: boolean): Promise<{ state: "held" | "waiting" | "busy"; rev?: number }>;
-  releaseBoard(id: string): Promise<{ state: string }>;
+  releaseBoard(id: string, ifIdle?: boolean): Promise<{ state: string }>;
+  /** Follows a board that is on screen (its `scene` and `writer` events reach this client); answers the stored revision and who writes.
+   *  Absent for a side that shows no board (the headless writer's): it follows nothing. */
+  followBoard?(id: string): Promise<{ rev: number; writer: Writer }>;
+  /** Ends the follow. */
+  unfollowBoard?(id: string): Promise<unknown>;
 };
 
 export type BoardSideOptions = {
@@ -68,7 +73,8 @@ export type BoardApp = BoardSide & {
   attachView(ch: BoardChannel): () => void;
   /** Where work on a board that is not on screen goes; null (the default): the attached view. */
   setEngine(get: (() => Promise<BoardChannel>) | null): void;
-  /** Shows a board in the view: its scene is read (or the kept one taken) and sent. Rejects as loadScene does; a later show
+  /** Shows a board in the view: its scene is read (or the kept one taken) and sent. The board is followed from now on, held or not
+   *  (the server tells its revisions and its writer), until it is hidden. Rejects as loadScene does; a later show
    *  or hide makes it do nothing. The board shown before is written first (flush). Called again when the store's sceneGen of
    *  the board moves: the kept scene was dropped, and is read again. */
   show(id: string): Promise<void>;
@@ -143,6 +149,7 @@ export function createBoardSide(options: BoardSideOptions = {}): BoardApp {
   const loading = new Map<string, Promise<Scene>>();
   const voided = new Map<string, number>(); // by board id: how often a read in flight was made void (a dropped scene)
   const voidLoad = (id: string) => { voided.set(id, (voided.get(id) ?? 0) + 1); };
+  const heardRev = new Map<string, number>();   // by board id: the highest stored revision heard of (a read, a `scene` event, a `follow` answer)
   const grants = new Map<string, { n: number; rev: number }>(); // by board id: how often it was granted to this window, and the stored revision of the last grant
 
   // ---- the view
@@ -188,14 +195,17 @@ export function createBoardSide(options: BoardSideOptions = {}): BoardApp {
   // (a flavour has its own filter, so the filter's id says which chrome the theme has)
   const themeKey = (t: ThemeMsg) => `${t.mode}:${t.filter?.id ?? ""}`;
 
-  function sendLoad(id: string, sc: Scene) {
+  /** keepLoaded: the view draws the board it already shows anew in place (board-view applies such a `load` without a new canvas), so the
+   *  status stays `loaded` and the screen shows no loading state; `loaded` comes again when it has. */
+  function sendLoad(id: string, sc: Scene, keepLoaded = shown?.board === id && shown.loaded) {
     if (!view) return;
     const theme = themeOf(), viewMode = viewModeOf(id);
     shown = { board: id, scene: sc, loaded: false, stale: false, viewMode, theme: themeKey(theme) };
     sent.set(id, sc);
+    diverged.delete(id);
     selectedIds = [];
     view.send({ t: "load", board: id, scene: { elements: sc.elements, files: sc.files ?? {}, appState: savedOf(sc.appState) }, viewMode, theme, style: { ...styleMemory } });
-    setStatus({ board: id, loaded: false, error: "" });
+    setStatus({ board: id, loaded: keepLoaded, error: "" });
   }
 
   /** The role or the theme changed: the view is told what it shows them as. */
@@ -215,10 +225,21 @@ export function createBoardSide(options: BoardSideOptions = {}): BoardApp {
     return s && sent.get(board) === s && !getState().boards[board]?.archived ? s : null;
   };
 
+  /** The boards whose view told a change while this window did not hold them (a paste or a drop that Excalidraw lets through
+   *  in view mode): the view shows what the kept scene does not. The view is sent the kept scene again when the window is
+   *  granted the board, so nothing of it is ever written. */
+  const diverged = new Set<string>();
+
   /** The mirror: the kept scene takes the scene the view has, and a scene that did not change is not saved. The one place
-   *  it is updated: `changed` hands it the delta applied, `snapshot` the whole scene. `elements` are in scene order. */
+   *  it is updated: `changed` hands it the delta applied, `snapshot` the whole scene. `elements` are in scene order.
+   *  Only the holder's board is mirrored: a reader keeps no edit (the view is in view mode for it, and what gets through is
+   *  not kept), so nothing of a board this window does not hold can be saved by a later grant. */
   function keep(s: Scene, board: string, elements: El[], appState: SavedAppState, files: Files, filesChanged: boolean) {
     const v = sceneVersion(elements);
+    if (getState().roles[board] !== "held") {
+      if (v !== s.version || filesChanged) diverged.add(board);
+      return;
+    }
     s.appState = { ...s.appState, ...appState };
     s.files = files;
     if (v === s.version && !filesChanged) return;
@@ -243,7 +264,7 @@ export function createBoardSide(options: BoardSideOptions = {}): BoardApp {
     switch (m.t) {
       case "ready": { // the view is up (again: a web view loaded anew has nothing): the board wanted is sent
         const sc = wanted ? scenes.get(wanted) : undefined;
-        if (wanted && sc) sendLoad(wanted, sc);
+        if (wanted && sc) sendLoad(wanted, sc, false); // (it has drawn nothing)
         return;
       }
       case "loaded": {
@@ -286,7 +307,7 @@ export function createBoardSide(options: BoardSideOptions = {}): BoardApp {
     const waiting = engineWaiters; engineWaiters = [];
     for (const w of waiting) w(ch);
     const sc = wanted ? scenes.get(wanted) : undefined;
-    if (wanted && sc && ch.ready()) sendLoad(wanted, sc);
+    if (wanted && sc && ch.ready()) sendLoad(wanted, sc, false);
     return () => {
       off(); unsub();
       if (view !== ch) return;
@@ -304,16 +325,18 @@ export function createBoardSide(options: BoardSideOptions = {}): BoardApp {
 
   /** Lets the board on screen go: what it holds is written (the view is asked for its scene first), the view shows nothing. */
   function leave() {
-    const was = shown;
+    const was = shown, wasWanted = wanted;
     if (was) { void flush(was.board); view?.send({ t: "unload" }); pendingScroll.delete(was.board); }
     shown = null; wanted = null; selectedIds = [];
     setStatus({ board: null, loaded: false, error: "" });
+    if (wasWanted) unfollowSoon(wasWanted);
   }
 
   async function show(id: string): Promise<void> {
     const seq = ++showSeq;
     if (wanted !== id) leave();
     wanted = id;
+    follow(id);
     const sc = await loadScene(id);
     if (seq !== showSeq) return;
     if (shown?.board === id && shown.scene === sc) return;
@@ -322,10 +345,11 @@ export function createBoardSide(options: BoardSideOptions = {}): BoardApp {
 
   function hide() { ++showSeq; leave(); }
 
-  /** The scene of the board on screen as the view has it now, mirrored into the kept one (`snapshot`). */
+  /** The scene of the board on screen as the view has it now, mirrored into the kept one (`snapshot`). Nothing for a board this
+   *  window does not hold: a reader keeps no edit, so the view is not asked. */
   async function syncLive(id: string) {
     const ch = view;
-    if (!ch || !isLive(id)) return;
+    if (!ch || !isLive(id) || getState().roles[id] !== "held") return;
     let v: EngineValues["snapshot"];
     try { v = await ch.request({ op: "snapshot" }); } catch (e) { console.error(`reading board ${id} from its view:`, e); return; }
     if (v.board !== id) return;
@@ -350,7 +374,7 @@ export function createBoardSide(options: BoardSideOptions = {}): BoardApp {
     if (pending) return pending;
     const p = (async () => {
       for (;;) {
-        const at = voided.get(id) ?? 0, grant = grants.get(id)?.n ?? 0;
+        const at = voided.get(id) ?? 0, grant = grants.get(id)?.n ?? 0, heard = heardRev.get(id) ?? 0;
         let data: any, base = 0;
         try { ({ scene: data, rev: base } = await api.scene(id)); }
         catch (e: any) {
@@ -363,6 +387,9 @@ export function createBoardSide(options: BoardSideOptions = {}): BoardApp {
         const stored = Array.isArray(data?.elements) ? data.elements : [];
         const elements = stored.length ? (await (await engine()).request({ op: "restore", elements: stored })).elements as El[] : [];
         if ((voided.get(id) ?? 0) !== at) continue;
+        const now = heardRev.get(id) ?? 0;
+        if (now !== heard && now > base) continue; // the board moved to a newer revision while this was read (a `scene` event, a `follow` answer)
+        if (base > now) heardRev.set(id, base);
         const g = grants.get(id);
         if (g && g.n !== grant && g.rev !== base) continue; // granted meanwhile, at another revision than the one read
         const s: Scene = { elements, appState: data?.appState ?? {}, files: data?.files ?? {}, version: sceneVersion(elements), rev: 0, base };
@@ -381,9 +408,12 @@ export function createBoardSide(options: BoardSideOptions = {}): BoardApp {
     saving.delete(id);
     scenes.delete(id);
     sent.delete(id);
+    diverged.delete(id);
     pendingScroll.delete(id);
     asking.delete(id);
     turns.delete(id);
+    heardRev.delete(id);
+    following.delete(id); // (a removed board ends the follow on the server)
     outageDrops.delete(id);
     setOutage(id, false);
     setSaveSaid(id, "");
@@ -495,6 +525,7 @@ export function createBoardSide(options: BoardSideOptions = {}): BoardApp {
     saving.delete(id);
     scenes.delete(id);
     sent.delete(id);
+    diverged.delete(id);
     voidLoad(id);
     setOutage(id, false); // nothing waits for the board's server any more
     setSaveSaid(id, "");
@@ -503,8 +534,7 @@ export function createBoardSide(options: BoardSideOptions = {}): BoardApp {
 
   /** Whether the edit of a board waits for the board's server: a board under an outage. Such an edit
    *  outlives the loss of the board (the board's server answers `busy` at the return when the board is merely open
-   *  there): it stays, with the outage, until a grant saves or drops it by the revision. The banner does not show
-   *  meanwhile, the panel being in place of the canvas. */
+   *  there): it stays, with the outage, until a grant saves or drops it by the revision. */
   const waitsForServer = (id: string) => !!getState().outage[id];
 
   /** The boards whose last dropped edit had waited for the board's server (the outage): the note says so. */
@@ -516,16 +546,22 @@ export function createBoardSide(options: BoardSideOptions = {}): BoardApp {
     if (st.forget) dropScene(id);
     if (st.dropped) setDropped(id, true);
     setRole(id, st.role);
+    // (the view of a reader showed a change that was not kept: it is given the kept scene again, before the holder edits on it)
+    if (st.role === "held" && diverged.has(id)) {
+      const sc = scenes.get(id);
+      if (sc && shown?.board === id && view?.ready()) sendLoad(id, sc);
+      diverged.delete(id);
+    }
     // (a write that was on its way while the board was not this window's has failed by then: it is made once more)
     if (st.flush) void flush(id).then(() => { if (saving.get(id)?.failed) return flush(id); });
   }
 
-  /** Asks for a board. Not if free (the user picked the board, or pressed "Use here"): a window that holds it is asked to
-   *  hand it over, and the panel shows the wait. If free (after a snapshot, for an agent's show_board): a board another
-   *  window holds stays there, and the panel shows in place of its canvas. An archived board is not asked for: nobody
-   *  writes it. Nor is a board of a section whose server is not connected, or that is gone there: the take would be
-   *  refused, and the board is asked for when its section's tree arrives (sectionBack). Resolves when the server
-   *  answered, and never rejects: after a failed take the role is as before. */
+  /** Asks for a board. This is the one way this window becomes the writer of a board, and it is the user's act (the button
+   *  of the reader's bar, or the window that made the board): nothing here takes a board by itself. Not if free: a window that
+   *  holds it is asked to hand it over, and the bar shows the wait. If free: a board another window holds stays there. An
+   *  archived board is not asked for: nobody writes it. Nor is a board of a section whose server is not connected, or that is
+   *  gone there: the take would be refused. Resolves when the server answered, and never rejects: after a failed take the
+   *  role is as before. */
   function takeBoard(id: string, ifFree = false): Promise<void> {
     const b = getState().boards[id];
     if (!b || b.archived || !reachable(getState(), id)) return Promise.resolve();
@@ -556,8 +592,8 @@ export function createBoardSide(options: BoardSideOptions = {}): BoardApp {
     step(id, onGrant(cacheOf(id), rev));
   }
 
-  /** `superseded`: the board went to another window (or the wait for it ended). Only this board's canvas gives way to the
-   *  panel; the stream and the other boards stay. An edit that waits for the board's server is kept (waitsForServer). */
+  /** `superseded`: the board went to another window (or the wait for it ended). Only this board turns into a reader (the
+   *  role bar says another window took it); the stream and the other boards stay. An edit that waits for the board's server is kept (waitsForServer). */
   function boardLost(id: string) {
     if (!getState().boards[id]) return;
     turns.set(id, turnOf(id) + 1);
@@ -571,23 +607,80 @@ export function createBoardSide(options: BoardSideOptions = {}): BoardApp {
   }
 
   /** `release_request`: another window asks for the board. Its pending save is written first, then it is let go; the
-   *  `superseded` that follows shows the panel. When nobody waits for it by then (the other window went away) the server
-   *  has freed it all the same: it is asked for again, if free. */
+   *  `superseded` that follows shows the bar. When nobody waits for it by then (the other window went away) the server
+   *  has freed it all the same: this window is a reader of a free board, and takes it back only when the user presses the
+   *  button. */
   async function handOver(id: string) {
     await flush(id);
     let state: string | undefined;
     try { state = (await api.releaseBoard(id))?.state; } catch { return; }
     if (state !== "free" || getState().roles[id] !== "held") return;
     turns.set(id, turnOf(id) + 1);
-    setRole(id, null); // not written until the answer: the server holds it for nobody now
-    void takeBoard(id, true);
+    setRole(id, null); // not written: the server holds it for nobody now
   }
+
+  // ---- following: a board on screen is followed, whoever holds it. The server then tells this window the new revision of its stored
+  // scene after each write (`scene`) and who writes it (`writer`). A reader reads a scene that moved again; the writer ignores the
+  // event of its own write. A follow ends with the stream, with `unfollow` and with the board's removal.
+
+  const following = new Set<string>();                  // by board id: followed (asked for, the answer may be on its way)
+  const followOps = new Map<string, Promise<void>>();   // by board id: the follow or unfollow calls in order, so the server sees them as they were made
+
+  const inOrder = (id: string, op: () => Promise<void>) => {
+    const p = (followOps.get(id) ?? Promise.resolve()).then(op);
+    followOps.set(id, p);
+    void p.finally(() => { if (followOps.get(id) === p) followOps.delete(id); });
+  };
+
+  /** Follows a board that comes on screen (again is no call), and learns from the answer who writes it and whether the scene kept for
+   *  it is the stored one. A board of a section whose server is not connected is followed when its tree is back (sectionBack). */
+  function follow(id: string) {
+    if (!api.followBoard || following.has(id) || !getState().boards[id] || !reachable(getState(), id)) return;
+    following.add(id);
+    const of = streamOf(serverOfKey(id));
+    inOrder(id, async () => {
+      let a: { rev: number; writer: Writer };
+      try { a = await api.followBoard!(id); }
+      catch (e) {
+        if (following.has(id) && of === streamOf(serverOfKey(id))) following.delete(id); // asked for again when the board is shown again
+        if (!(e instanceof ApiError && (e.status === 404 || e.status === 503))) console.error(`following board ${id}:`, e);
+        return;
+      }
+      if (of !== streamOf(serverOfKey(id)) || !following.has(id)) return; // the stream ended or the board left the screen meanwhile
+      setWriter(id, a.writer);
+      moved(id, a.rev);
+    });
+  }
+
+  /** The board left the screen: unless it is shown again at once (a reload of the screen hides and shows it in one go), the follow ends. */
+  function unfollowSoon(id: string) {
+    queueMicrotask(() => {
+      if (wanted === id || !following.delete(id)) return;
+      if (api.unfollowBoard) inOrder(id, async () => { try { await api.unfollowBoard!(id); } catch (e) { if (!(e instanceof ApiError && (e.status === 404 || e.status === 503))) console.error(`unfollowing board ${id}:`, e); } });
+    });
+  }
+
+  /** The stored scene of a board is at the revision rev (a `scene` event, or the answer of a follow). The holder wrote it (or a write
+   *  of its own is on its way): nothing to do. For a reader the kept scene at another revision is dropped, with the edit that waited
+   *  on it (D16), and the screen reads the stored one; a read in flight is made again if it is older (loadScene). */
+  function moved(id: string, rev: number) {
+    const role = getState().roles[id] ?? null;
+    if (role === "held") return;
+    if (rev < (heardRev.get(id) ?? 0)) return; // an answer that is older than what was heard since
+    heardRev.set(id, rev);
+    const st = onMoved(cacheOf(id), rev, role);
+    if (st) step(id, st);
+  }
+
+  /** `scene` event. */
+  const sceneMoved = (id: string, rev: number) => moved(id, rev);
 
   /** `hello` of a server's stream: a new stream of that server (an entry id; this computer's by default). The server keeps nothing
    *  of the one before, so no board of it is held and none is waited for. The boards of the other servers are not touched. */
   function streamOpened(server: string = LOCAL_SERVER) {
     streams.set(server, streamOf(server) + 1);
     for (const id of [...asking.keys()]) if (serverOfKey(id) === server) asking.delete(id);
+    for (const id of [...following]) if (serverOfKey(id) === server) following.delete(id); // the server ended the follows with the stream before
     const mine = (id: string) => serverOfKey(id) === server;
     for (const id of Object.keys(getState().roles)) if (mine(id)) turns.set(id, turnOf(id) + 1);
     setState((s) => {
@@ -596,34 +689,22 @@ export function createBoardSide(options: BoardSideOptions = {}): BoardApp {
     });
   }
 
-  /** After a snapshot (the app loaded, or its stream came back): the board on screen and every board with an edit that
-   *  waits are asked for, if free. Free at the revision its scene is kept at, the edit is saved; at another one it is
-   *  dropped with a note on the canvas; not free, it is dropped and the panel shows (logic/roles.ts). A board that showed
-   *  the panel before the stream was cut is not asked for: after a restart of the server every window comes back at once,
-   *  and the one that held the board, which may have an edit to save, is the one to get it; "Use here" still takes it. */
-  function takeAfterSnapshot() {
-    const st = getState();
-    const ids = new Set<string>(st.sel.board ? [st.sel.board] : []);
-    for (const id of saving.keys()) if (unsaved(id)) ids.add(id);
-    for (const id of ids) if (!st.roles[id]) void takeBoard(id, true);
+  /** After a snapshot (the app loaded, or its stream came back): nothing is taken. A new stream holds no board, so a board
+   *  this window held is a reader's now (streamOpened); an edit of it that waited stays in the kept scene, and the button
+   *  saves it at the same revision or drops it at another (onGrant). The board on screen is followed again (this computer's;
+   *  a section's when its tree arrives, sectionBack): the follow's answer says whether the kept scene is the stored one. */
+  function afterSnapshot() {
+    if (wanted && serverOfKey(wanted) === LOCAL_SERVER) follow(wanted);
   }
 
-  /** A section's tree arrived: its server is connected, for the first time or again. The board on screen, when it is
-   *  of that server: with no scene kept (the view that said the server is not connected showed) it is read now. It, and
-   *  every board of that server with an edit that waits, is asked for, if free, when this window does not hold it: after
-   *  a restart of this computer's server during the outage the new stream holds no board, and the window still has the
-   *  drawing and its revision. A board it holds is taken there again by this computer's server. Either way the `held`
-   *  that follows saves the edit that waited at the same revision, and drops it at another (granted). */
+  /** A section's tree arrived: its server is connected, for the first time or again. The board on screen, when it is of
+   *  that server: with no scene kept (the view that said the server is not connected showed) it is read now, and it is followed
+   *  again (the answer says whether the scene kept is the stored one). Nothing is taken: the board of a window that held it is a reader's, with the edit that waited kept in its scene for the button
+   *  (a grant saves it at the same revision and drops it at another, granted). */
   function sectionBack(server: string) {
     const st = getState(), on = st.sel.board;
-    const ids = new Set<string>(on && serverOfKey(on) === server ? [on] : []);
-    for (const id of saving.keys()) if (serverOfKey(id) === server && unsaved(id)) ids.add(id);
-    for (const id of ids) {
-      if (!st.boards[id] || st.gone[id]) continue;
-      if (id === on && !scenes.has(id)) reloadScene(id);
-      const role = st.roles[id];
-      if (role !== "held" && role !== "taking") void takeBoard(id, true);
-    }
+    if (on && serverOfKey(on) === server && st.boards[on] && !st.gone[on] && !scenes.has(on)) reloadScene(on);
+    if (wanted && serverOfKey(wanted) === server && !st.gone[wanted]) follow(wanted); // (the server ended the follows with the connection)
   }
 
   // ---- reading
@@ -760,12 +841,10 @@ export function createBoardSide(options: BoardSideOptions = {}): BoardApp {
     return id;
   }
 
-  /** The board a call reads or draws on, which this window holds: the server asks a board's holder. One it holds without
-   *  having been told (the server gives a new board to the window that made it) is asked for first, which also tells the
-   *  revision; a board that went to another window meanwhile is not touched. */
-  async function heldTarget(call: ToolCall): Promise<string> {
+  /** The board a call reads or draws on, which this window holds: the server asks a board's holder. A board this window does
+   *  not hold is never taken for a call (NOT_HOLDER): an agent's wish does not make a window the writer. */
+  function heldTarget(call: ToolCall): string {
     const id = targetOf(call);
-    if (getState().roles[id] !== "held") await takeBoard(id, true);
     if (getState().roles[id] !== "held") throw new RpcError("NOT_HOLDER", "this window does not hold the board");
     return id;
   }
@@ -791,7 +870,7 @@ export function createBoardSide(options: BoardSideOptions = {}): BoardApp {
     const p = parseImageArgs(call.args);
     if (!p.ok) throw new RpcError(p.code, p.message);
     const { scale, background } = p.value;
-    const id = await heldTarget(call);
+    const id = heldTarget(call);
     const sc = await heldScene(id);
     const name = boardRef(getState().boards[id]);
     await syncLive(id);
@@ -858,7 +937,7 @@ export function createBoardSide(options: BoardSideOptions = {}): BoardApp {
     const args = call.args ?? {};
     switch (call.name) {
       case "read_board": {
-        const id = await heldTarget(call);
+        const id = heldTarget(call);
         const sc = await heldScene(id);
         markBusy(id, call.chat, call.branch);
         await syncLive(id);
@@ -885,7 +964,7 @@ export function createBoardSide(options: BoardSideOptions = {}): BoardApp {
       case "get_image": return getImage(call);
 
       case "apply": {
-        const id = await heldTarget(call);
+        const id = heldTarget(call);
         writable(id);
         const sc = await heldScene(id);
         markBusy(id, call.chat, call.branch);
@@ -900,7 +979,7 @@ export function createBoardSide(options: BoardSideOptions = {}): BoardApp {
       }
 
       case "delete_elements": {
-        const id = await heldTarget(call);
+        const id = heldTarget(call);
         writable(id);
         const sc = await heldScene(id);
         markBusy(id, call.chat, call.branch);
@@ -923,7 +1002,7 @@ export function createBoardSide(options: BoardSideOptions = {}): BoardApp {
         // another board opens without a chat panel: the chat is not that board's
         const cur = getState().sel.chat;
         const keep = id === call.board && cur && getState().chats[cur]?.board === id ? cur : null;
-        ui().select({ board: id, chat: keep }, { ifFree: true }); // an agent's wish takes the board from no other window
+        ui().select({ board: id, chat: keep }); // (it selects the board and never takes it: an agent's wish does not make a window the writer)
         const refs: any[] = Array.isArray(args.refs) ? args.refs : [];
         if (refs.length) {
           // brought into view once the board is drawn (now, when it is on screen already)
@@ -937,7 +1016,7 @@ export function createBoardSide(options: BoardSideOptions = {}): BoardApp {
   }
 
   return {
-    runTool, flushAll, boardLost, granted, handOver, streamOpened, takeAfterSnapshot, sectionBack, forgetBoard, boardUnsaved,
+    runTool, flushAll, boardLost, sceneMoved, granted, handOver, streamOpened, afterSnapshot, sectionBack, forgetBoard, boardUnsaved,
     attachView, setEngine: (get) => { engineGet = get; }, show, hide,
     viewStatus: () => status,
     watchView: (f) => { statusWatchers.add(f); return () => { statusWatchers.delete(f); }; },

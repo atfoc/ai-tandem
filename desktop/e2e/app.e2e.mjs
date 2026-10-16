@@ -103,7 +103,7 @@ if (cmd === 'launch' || cmd === 'relaunch') {
 }
 
 const launchOutput = (s, home) => ({
-  state: 'running', address: s.address, fingerprint: s.fingerprint, version: s.version, featureLevel: 6,
+  state: 'running', address: s.address, fingerprint: s.fingerprint, version: s.version, featureLevel: 7,
   instanceId: s.instanceId, pid: 4242, home,
 });
 
@@ -386,7 +386,7 @@ async function main() {
       const r = s.requests.findLast((x) => x.path === '/api/groups');
       assert.equal(r.headers['x-aiwb-secret'], s.secret);
       assert.match(r.headers['x-aiwb-client'], /^[0-9a-f-]{36}$/);
-      assert.equal(r.headers['x-aiwb-level'], '6');
+      assert.equal(r.headers['x-aiwb-level'], '7');
     });
 
     await step('the transport of the bridge: a call with its own identifier, a Blob body, a picture address', async () => {

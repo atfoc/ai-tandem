@@ -1,6 +1,6 @@
 # Troubleshooting the board MCP
 
-How to check that the board MCP listener is up and an agent has connected, how to probe the endpoint by hand, what the server log says, and what to do when Cursor shows no board tools, port 6006 is taken, or this computer's server does not start.
+How to check that the board MCP listener is up and an agent has connected, how to probe the endpoint by hand, what the server log says, and what to do when Cursor shows no board tools, an agent says a board is not open, a board is view only, port 6006 is taken, or this computer's server does not start.
 
 The board tools reach agents over one fixed MCP endpoint. Cursor hides MCP load failures in its
 ACP layer, so check the app side first.
@@ -79,6 +79,66 @@ are not logged.
    signature.
 4. URL audit: a unit test pins the exact `http://localhost:6006/mcp` string for every spawner, so
    an accidental query, path, trailing slash or host spelling fails CI.
+
+## An agent says the board is not open, or nobody is editing it
+
+An agent can read and change a board with no window open, because the server runs the headless
+writer for the boards no window holds ([Who changes a board](architecture.md#who-changes-a-board)).
+When it cannot, the board tool answers with one of these, and the agent stops and tells you:
+
+| The agent is told | What it means |
+| ----------------- | ------------- |
+| "The board isn't open: the AI Whiteboard window is closed. Board work needs the window open. …" | the headless writer is not available on this server and no window is connected |
+| "Nobody is editing this board in a window, and this server cannot edit a board without one. Tell the user that they can press Edit here on the board; …" | the headless writer is not available, and a window is connected: press **Edit here** on the board, and ask the agent again |
+| "The board's background editor stopped while it ran this call, so the call did not finish. …" | the headless writer died or was killed during the call; the board is as it was after the last finished change and has no writer. The agent's next call starts a new one |
+| "The board was taken over in a window while this call ran, so the call did not finish. …" | someone pressed **Edit here** (or the board was archived or deleted) during the call; the earlier changes are saved |
+| "TAKEN: … is being taken over in a window; call again in a moment and that window answers." | the headless writer was giving the board up when the call came |
+| "SAVE_FAILED: the change was made but could not be saved: …" | the headless writer made the change and could not write it; the board file does not have it |
+
+If the first two come when you expect the headless writer to work, ask the server:
+
+```sh
+~/Applications/AI\ Whiteboard.app/Contents/MacOS/ai-whiteboard status    # the line "Headless writer: …"
+```
+
+`Headless writer: not available: <reason>` names what is missing:
+
+- **No Node.** The server uses, in this order, the program of `-headless-node` (or the variable
+  `AIWB_HEADLESS_NODE`), the desktop app's own Electron when the server runs from inside the Mac
+  app, and `node` on the `PATH` of the server, which must be version 22 or later. A server started from a
+  launcher may have a shorter `PATH` than your terminal: give the full path with `-headless-node`.
+- **No bundle, or one of another version.** The folder with `headless.mjs` and `manifest.json` is
+  `-headless-dir`, else `Resources/headless/` of the Mac app, else `headless/` beside the server
+  program. A bundle whose `manifest.json` names another version than the server is not used: the
+  reason names both versions. Put the bundle of the server's build there. A server built from source
+  without a version (`dev`) takes any bundle.
+- **A start that failed.** The reason is the one the process gave. The usual ones are in its engine:
+  a file of `engine/` is missing (the reason names it), or the native canvas
+  (`engine/node_modules/skia-canvas/lib/skia.node`) does not load because the folder was built for
+  another system or processor than the machine's. Copy the whole folder that
+  `scripts/build-server.sh` made for this machine. A failed start is remembered for a minute, and calls in that minute fail at once; after
+  that the next call tries again, and looks for Node and the bundle again. The server log has one line
+  with the reason, and every line of the process starts with `headless:`.
+
+An agent's picture or a text's size can be wrong on a Linux server although the writer runs: text outside
+Excalidraw's own fonts (Chinese, Japanese, Korean, emoji, Arabic, Hebrew, Thai) is measured with the
+machine's fonts, and a bare Linux server has none for CJK or emoji. Install **Noto Sans CJK** and
+**Noto Color Emoji** (on Debian and Ubuntu `sudo apt install fonts-noto-cjk fonts-noto-color-emoji`). Latin,
+accented Latin, Cyrillic and Greek need nothing: they are in the app's own fonts.
+
+`Headless writer: available, not running` is the usual state when no agent is working away: it
+starts at the first call that needs it and stops by itself, a few seconds after it holds no board.
+
+## A board is "View only"
+
+That is a reader: the board is shown, and follows its writer live, and the bar over it says who writes
+(another window, an agent, or nobody). Press **Edit here** to become the writer; the writer, a window or
+the headless writer, saves what it has and lets go. Opening a board, switching to it or connecting never
+makes a window the writer, and neither does a restart of the server or a lost connection: a window that
+was drawing on a board comes back as a reader. A change made while the connection was down is kept in
+the window and saved when you press **Edit here** if the board has not moved on meanwhile; if it has,
+the window says that the change was dropped. If the writer does not let go within 10 seconds, the board
+is taken from it and its later saves are refused.
 
 ## Port 6006 is taken
 

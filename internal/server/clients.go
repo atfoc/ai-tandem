@@ -39,15 +39,17 @@ const (
 // Level 5 serves a client as the server's own page: its snapshot and its events are the server's
 // whole tree, whoever made what is in it. Level 6 is the client listener as the one API of the
 // server, for the app on this machine as for one on another: no loopback listener, no page, no
-// list of other servers, and the secret from every client.
-// A client does not connect to a server below level 6, and a server of level 6 serves no client
-// below it (MinClientLevel).
-const FeatureLevel = 6
+// list of other servers, and the secret from every client. Level 7 is the headless board: an
+// agent call for a board no page holds goes to the board's own writer, a reader follows a board
+// live (POST /api/boards/{id}/follow, /unfollow, the "scene" event) and a board is held only after
+// an explicit take. A client does not connect to a server below level 7, and a server of level 7
+// serves no client below it (MinClientLevel).
+const FeatureLevel = 7
 
 // MinClientLevel is the lowest level of a client (LevelHeader: the feature level of the app that
 // calls) this server serves anything but hello to: an app of before would file the server's
 // whole tree as its own.
-const MinClientLevel = 6
+const MinClientLevel = 7
 
 // clientTooOld is the refusal of a client below MinClientLevel, or of one that states no level.
 const clientTooOld = "This app is too old for this server: update AI Whiteboard on the machine that connects."
@@ -95,6 +97,8 @@ var ClientRoutes = []string{
 	"PUT /api/boards/{id}/scene",
 	"POST /api/boards/{id}/take",
 	"POST /api/boards/{id}/release",
+	"POST /api/boards/{id}/follow",
+	"POST /api/boards/{id}/unfollow",
 	"POST /api/boards/{id}/rename",
 	"PATCH /api/boards/{id}",
 	"POST /api/boards/{id}/archive",

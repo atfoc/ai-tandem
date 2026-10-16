@@ -3,12 +3,13 @@
 // HTTP layer.
 //
 // The bridge keeps one record per open stream: the boards that client holds and waits for, the
-// chats it follows, and the board calls it was asked. One client at a time holds a
+// chats and boards it follows, and the board calls it was asked. One client at a time holds a
 // board. A client that takes a held board waits: the holder is asked to release (so it can save
 // its pending changes) and loses the board after a short handover delay if it does not answer.
 // Events go only to the clients they concern (see Events): the list events of every item, and
-// the content events of what a client follows. A client holds a board only by its own take: no
-// board call gives it one.
+// the content events of what a client follows. A client holds a board by its own take; the one
+// other way is a board call with Away set, which gives a free board to the away client (the
+// headless writer, see SetAway).
 //
 // The package imports nothing from this project.
 package editorbridge
@@ -44,6 +45,8 @@ type Bridge struct {
 	PingEvery time.Duration
 
 	mu      sync.Mutex
+	away    string                   // the id of the headless writer's client; "" for none
+	followN int64                    // the last follow sequence number given
 	clients map[string]*client       // by client id: the open streams
 	holders map[string]*client       // by board
 	waiters map[string]*waiter       // by board
@@ -66,7 +69,7 @@ type client struct {
 
 	holds   map[string]bool  // boards held
 	waits   map[string]bool  // boards waited for
-	follows map[Item]bool    // chats followed
+	follows map[Item]int64   // chats and boards followed, with the sequence number of the follow
 	calls   map[string]*call // open board calls by rpc id
 	flushed bool             // answered server_stopping
 }
@@ -82,7 +85,7 @@ type waiter struct {
 type call struct {
 	client, board string
 	reply         chan RPCReply
-	lost          bool // failed by the bridge with ErrNoClient; set before the reply is queued
+	err           error // set when the bridge failed the call (ErrNoClient, ErrTaken, ErrAwayLost); before the reply is queued
 }
 
 // RPCReply is a client's answer to an rpc event (POST /api/rpc-reply).
@@ -96,15 +99,30 @@ type CallSpec struct {
 	Method string
 	Params any
 	Board  string // the board the call is about: its holder is asked
-	// ChatBoard is the calling chat's board. Its holder is asked when nobody holds Board, and
-	// is then given Board; it is also who a Screen call asks.
+	// ChatBoard is the calling chat's board. Only a Screen call uses it: it says which window
+	// is asked.
 	ChatBoard string
 	Screen    bool // a call about one screen, not about Board
+	// Away says that the call may be given to the away client: when nobody holds Board and the
+	// away client is connected, the bridge makes it the holder of Board and asks it. Ignored
+	// for a Screen call.
+	Away bool
 }
 
 // ErrNoClient is returned by CallBoard when there is no client to ask, and given to the calls
-// of a client that goes away or loses the board they are about.
+// of a window whose stream ends.
 var ErrNoClient = errors.New("the board isn't open: the AI Whiteboard window is closed")
+
+// ErrTaken is returned by CallBoard for a call whose board changed hands while it ran: a
+// hand-off, an archive or a delete.
+var ErrTaken = errors.New("the board was taken over while the call ran")
+
+// ErrAwayLost is returned by CallBoard for a call of the away client whose stream ended.
+var ErrAwayLost = errors.New("the board's background editor stopped while the call ran")
+
+// ErrTimeout is wrapped by the error CallBoard returns when the client did not answer in time; its text
+// is "the board did not answer <method> in <timeout>".
+var ErrTimeout = errors.New("the board did not answer")
 
 // ErrUnknownClient is returned by TakeBoard for an id with no open stream.
 var ErrUnknownClient = errors.New("unknown_client")
@@ -193,7 +211,7 @@ func (b *Bridge) Serve(w http.ResponseWriter, r *http.Request, id string, snapsh
 func newClient(id string) *client {
 	return &client{
 		id: id, ch: make(chan []byte, 4096), done: make(chan struct{}),
-		holds: map[string]bool{}, waits: map[string]bool{}, follows: map[Item]bool{}, calls: map[string]*call{},
+		holds: map[string]bool{}, waits: map[string]bool{}, follows: map[Item]int64{}, calls: map[string]*call{},
 	}
 }
 
@@ -212,13 +230,67 @@ func (b *Bridge) Known(clientID string) bool {
 	return b.clients[clientID] != nil
 }
 
+// SetAway names the client id of the headless writer ("" for none). The bridge routes the calls
+// with Away to it, calls its holding "headless" in the writer events, and keeps the Screen calls
+// away from it. Set it before the process opens its stream.
+func (b *Bridge) SetAway(clientID string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.away = clientID
+}
+
+// WriterOf returns the kind of the writer of the board: "headless" when the away client holds
+// it, "window" when any other client does, "" when nobody does. A client id is never returned.
+func (b *Bridge) WriterOf(board string) string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.writerLocked(board)
+}
+
+// HoldsAny reports whether the client holds a board.
+func (b *Bridge) HoldsAny(clientID string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	c := b.clients[clientID]
+	return c != nil && len(c.holds) > 0
+}
+
+// HeldCount returns how many boards the client holds; 0 for an id with no open stream.
+func (b *Bridge) HeldCount(clientID string) int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if c := b.clients[clientID]; c != nil {
+		return len(c.holds)
+	}
+	return 0
+}
+
+// HasCalls reports whether the client has a board call open: an rpc sent and not answered.
+func (b *Bridge) HasCalls(clientID string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	c := b.clients[clientID]
+	return c != nil && len(c.calls) > 0
+}
+
+// WindowsConnected reports whether a client other than the away one has an open stream.
+func (b *Bridge) WindowsConnected() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for id, c := range b.clients {
+		if id != b.away && !c.closed {
+			return true
+		}
+	}
+	return false
+}
+
 // TakeBoard gives the board to the client, or starts the hand-off. state is "held" when the
 // board was free or already the client's (rev is then its scene revision), "busy" when ifFree
 // is set and another client holds it (nothing is sent), and "waiting" when the hand-off runs:
 // an older waiter is sent superseded and replaced, the holder is asked once to release, and
 // the client is sent held when the holder released, went away or stayed silent for the
-// handover delay, which is longer for a holder that is an API client. The error is
-// ErrUnknownClient for an id with no open stream.
+// handover delay. The error is ErrUnknownClient for an id with no open stream.
 func (b *Bridge) TakeBoard(clientID, board string, ifFree bool) (state string, rev int64, err error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -229,7 +301,9 @@ func (b *Bridge) TakeBoard(clientID, board string, ifFree bool) (state string, r
 	h := b.holders[board]
 	switch {
 	case h == nil:
-		return "held", b.grantLocked(c, board), nil
+		rev = b.grantLocked(c, board)
+		b.writerChangedLocked(board, nil)
+		return "held", rev, nil
 	case h == c:
 		return "held", b.revLocked(board), nil
 	case ifFree:
@@ -271,11 +345,25 @@ func (b *Bridge) CloseAll() int {
 // (or FreeBoard) was waiting for it: the caller is then sent superseded as well. It answers
 // "free" when nobody was, and "none" when the caller did not hold the board.
 func (b *Bridge) ReleaseBoard(clientID, board string) string {
+	return b.ReleaseBoardIf(clientID, board, false)
+}
+
+// ReleaseBoardIf is ReleaseBoard with ifIdle: when it is set, nobody waits for the board (no
+// take and no FreeBoard) and the caller has a board call open on it, nothing changes and the
+// answer is "kept". Without ifIdle it is ReleaseBoard.
+func (b *Bridge) ReleaseBoardIf(clientID, board string, ifIdle bool) string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	c := b.clients[clientID]
 	if c == nil || !c.holds[board] {
 		return "none"
+	}
+	if ifIdle && b.waiters[board] == nil && b.freeing[board] == nil {
+		for _, k := range c.calls {
+			if k.board == board {
+				return "kept"
+			}
+		}
 	}
 	if b.passLocked(board, false) {
 		return "handed"
@@ -380,11 +468,14 @@ func (b *Bridge) SendTo(clientID string, ev any) bool {
 
 // CallBoard asks one client to run method (a board tool) and waits for its answer.
 //
-// A call about spec.Board goes to the board's holder. When nobody holds it, the holder of
-// spec.ChatBoard is asked, a call about no board, which no later hand-off fails; the client
-// behind it takes the board itself. A Screen call goes to the holder of spec.ChatBoard and is
-// about no board. With no such client the call fails with ErrNoClient at once. An open call fails with ErrNoClient when its client loses the board the
-// call is about, or when its client's stream ends.
+// A call about spec.Board goes to the board's holder. When nobody holds it and spec.Away is set
+// and the away client is connected, the away client is made the holder (it is sent held, then
+// the call), and is asked; with Away unset, or no away client, there is no client to ask. A
+// Screen call is about no board: it goes to the window that holds spec.ChatBoard if that window
+// follows it, else to the window that followed it last, else to the window that holds it, and
+// never to the away client. With no such client the call fails with ErrNoClient at once. An
+// open call fails when its client loses the board the call is about (ErrTaken), when the stream
+// of the away client ends (ErrAwayLost) or when the stream of a window ends (ErrNoClient).
 func (b *Bridge) CallBoard(spec CallSpec, timeout time.Duration) (json.RawMessage, error) {
 	id := fmt.Sprintf("rpc_%d", b.seq.Add(1))
 	msg, err := json.Marshal(event{"type": "rpc", "id": id, "method": spec.Method, "params": spec.Params})
@@ -397,9 +488,6 @@ func (b *Bridge) CallBoard(spec CallSpec, timeout time.Duration) (json.RawMessag
 		b.mu.Unlock()
 		return nil, ErrNoClient
 	}
-	if b.holders[board] == nil {
-		board = ""
-	}
 	k := &call{client: c.id, board: board, reply: make(chan RPCReply, 1)}
 	b.rpcs[id] = k
 	c.calls[id] = k
@@ -410,8 +498,8 @@ func (b *Bridge) CallBoard(spec CallSpec, timeout time.Duration) (json.RawMessag
 	defer t.Stop()
 	select {
 	case r := <-k.reply:
-		if k.lost {
-			return nil, ErrNoClient
+		if k.err != nil {
+			return nil, k.err
 		}
 		if r.Error != "" {
 			return nil, errors.New(r.Error)
@@ -422,26 +510,68 @@ func (b *Bridge) CallBoard(spec CallSpec, timeout time.Duration) (json.RawMessag
 		delete(b.rpcs, id)
 		delete(c.calls, id)
 		b.mu.Unlock()
-		return nil, fmt.Errorf("the board did not answer %s in %s", spec.Method, timeout)
+		return nil, &timeoutError{method: spec.Method, after: timeout}
 	}
 }
 
+// timeoutError is the error of a call that was not answered in time. It is ErrTimeout, with the words of
+// the call.
+type timeoutError struct {
+	method string
+	after  time.Duration
+}
+
+func (e *timeoutError) Error() string {
+	return fmt.Sprintf("%s %s in %s", ErrTimeout.Error(), e.method, e.after)
+}
+func (e *timeoutError) Unwrap() error { return ErrTimeout }
+
 // chooseLocked returns the client a call is for, and the board the call is about ("" for a
-// call about one screen). A call about no holder's board goes to the holder of the calling
-// chat's board; with none the client is nil.
+// call about one screen). See CallBoard for the rules. A free board given to the away client is
+// granted here, under the lock that found it free, so that no window can be overtaken.
 func (b *Bridge) chooseLocked(spec CallSpec) (c *client, board string) {
-	if !spec.Screen && spec.Board != "" {
-		board = spec.Board
-		if h := b.holders[board]; h != nil {
-			return h, board
-		}
+	if spec.Screen {
+		return b.screenLocked(spec.ChatBoard), ""
 	}
-	if spec.ChatBoard != "" {
-		if h := b.holders[spec.ChatBoard]; h != nil {
-			return h, board
-		}
+	if spec.Board == "" {
+		return nil, ""
+	}
+	board = spec.Board
+	if h := b.holders[board]; h != nil {
+		return h, board
+	}
+	if a := b.clients[b.away]; spec.Away && a != nil && !a.closed {
+		rev := b.grantLocked(a, board)
+		b.sendLocked(a, heldEvent(board, rev))
+		b.writerChangedLocked(board, nil)
+		return a, board
 	}
 	return nil, board
+}
+
+// screenLocked returns the window a Screen call about the chat's board is for, or nil.
+func (b *Bridge) screenLocked(chatBoard string) *client {
+	if chatBoard == "" {
+		return nil
+	}
+	it := Board(chatBoard)
+	h := b.holders[chatBoard]
+	if h != nil && (h.id == b.away || h.closed) {
+		h = nil
+	}
+	if h != nil && h.follows[it] > 0 {
+		return h
+	}
+	var last *client
+	for _, f := range b.clients {
+		if f.id != b.away && !f.closed && f.follows[it] > 0 && (last == nil || f.follows[it] > last.follows[it]) {
+			last = f
+		}
+	}
+	if last != nil {
+		return last
+	}
+	return h
 }
 
 // ReplyFrom serves POST /api/rpc-reply: it resolves the call with that id, and reports true,
@@ -532,6 +662,7 @@ func (b *Bridge) handover(board string, w *waiter) {
 }
 
 // grantLocked makes c the holder of a board that nobody holds, and returns its scene revision.
+// The caller sends the writer event (writerChangedLocked) after the held event.
 func (b *Bridge) grantLocked(c *client, board string) int64 {
 	b.holders[board] = c
 	c.holds[board] = true
@@ -548,8 +679,9 @@ func (b *Bridge) revLocked(board string) int64 {
 // passLocked ends the hold of the board, if there is one, and gives the board to who waits for
 // it. A waiting client becomes the holder and is sent held. For a waiting FreeBoard the board
 // stays free, and a client that waited too is sent superseded. It reports whether somebody
-// waited. The old holder's calls on the board fail; it is sent superseded when somebody
-// waited, or when tell is set.
+// waited. The old holder's calls on the board fail with ErrTaken; it is sent superseded when
+// somebody waited, or when tell is set. The followers of the board are sent one writer event
+// when the holder changed.
 func (b *Bridge) passLocked(board string, tell bool) bool {
 	w := b.waiters[board]
 	if w != nil {
@@ -558,14 +690,16 @@ func (b *Bridge) passLocked(board string, tell bool) bool {
 		delete(w.c.waits, board)
 	}
 	gone := b.freeing[board]
-	if h := b.holders[board]; h != nil {
+	old := b.holders[board]
+	if old != nil {
 		delete(b.holders, board)
-		delete(h.holds, board)
+		delete(old.holds, board)
 		if tell || w != nil || gone != nil {
-			b.sendLocked(h, roleEvent("superseded", board))
+			b.sendLocked(old, roleEvent("superseded", board))
 		}
-		b.failCallsLocked(h, board, false)
+		b.failCallsLocked(old, board, false, ErrTaken)
 	}
+	passed := false
 	switch {
 	case gone != nil:
 		delete(b.freeing, board)
@@ -573,13 +707,48 @@ func (b *Bridge) passLocked(board string, tell bool) bool {
 		if w != nil {
 			b.sendLocked(w.c, roleEvent("superseded", board))
 		}
-		return true
+		passed = true
 	case w != nil:
 		rev := b.grantLocked(w.c, board)
 		b.sendLocked(w.c, heldEvent(board, rev))
-		return true
+		passed = true
 	}
-	return false
+	b.writerChangedLocked(board, old)
+	return passed
+}
+
+// writerLocked is WriterOf.
+func (b *Bridge) writerLocked(board string) string {
+	h := b.holders[board]
+	switch {
+	case h == nil:
+		return ""
+	case h.id == b.away:
+		return "headless"
+	}
+	return "window"
+}
+
+// writerChangedLocked sends the followers of the board a writer event when its holder is not
+// prev, the holder before the change. Nothing is sent when the holder stayed.
+func (b *Bridge) writerChangedLocked(board string, prev *client) {
+	if b.holders[board] == prev {
+		return
+	}
+	b.sendFollowersLocked(Board(board), event{"type": "writer", "board": board, "writer": b.writerLocked(board)})
+}
+
+// sendFollowersLocked queues ev for every client that follows it.
+func (b *Bridge) sendFollowersLocked(it Item, ev any) {
+	msg, err := json.Marshal(ev)
+	if err != nil {
+		return
+	}
+	for _, c := range b.clients {
+		if c.follows[it] > 0 {
+			b.sendRawLocked(c, msg)
+		}
+	}
 }
 
 // endLocked ends the record of c, whose stream ended or was replaced: its boards are freed
@@ -597,10 +766,15 @@ func (b *Bridge) endLocked(c *client) {
 		}
 	}
 	clear(c.waits)
+	// Its calls fail first, with the error of its kind; passLocked then finds none.
+	if c.id == b.away {
+		b.failCallsLocked(c, "", true, ErrAwayLost)
+	} else {
+		b.failCallsLocked(c, "", true, ErrNoClient)
+	}
 	for board := range c.holds {
 		b.passLocked(board, false)
 	}
-	b.failCallsLocked(c, "", true)
 	clear(c.follows)
 	b.poke()
 }
@@ -665,16 +839,15 @@ func (b *Bridge) resolveLocked(id string, k *call, r RPCReply) {
 	}
 }
 
-// failCallsLocked ends c's calls about the board with ErrNoClient; with all set, every call of
-// c.
-func (b *Bridge) failCallsLocked(c *client, board string, all bool) {
+// failCallsLocked ends c's calls about the board with err; with all set, every call of c.
+func (b *Bridge) failCallsLocked(c *client, board string, all bool, err error) {
 	for id, k := range c.calls {
 		if all || k.board == board {
 			delete(b.rpcs, id)
 			delete(c.calls, id)
-			k.lost = true
+			k.err = err
 			select {
-			case k.reply <- RPCReply{Error: ErrNoClient.Error()}:
+			case k.reply <- RPCReply{Error: err.Error()}:
 			default:
 			}
 		}

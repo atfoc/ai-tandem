@@ -31,7 +31,7 @@ class StandIn {
     this.secret = opts.secret || 'secret-one';
     this.instanceId = opts.instanceId || uuid4();
     this.version = opts.version || '1.2.3';
-    this.level = opts.level === undefined ? 6 : opts.level;
+    this.level = opts.level === undefined ? 7 : opts.level;
     this.snapshotBody = opts.snapshot || SNAPSHOT_BODY;
     this.requests = []; // {method, path, headers, body: Buffer}
     this.routes = new Map(); // "METHOD /path" → (req, res, body) => void | {status, json|text|body, headers}

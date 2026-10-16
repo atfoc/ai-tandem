@@ -177,7 +177,7 @@ function coreCases(): Case[] {
   test("too old: the state and the version, and it connects once the server was updated", () => withEntry({ server: { level: 5 }, timing: { tooOld: 120 } }, async (h, v) => {
     await h.reaches(v.id, "too_old");
     equal(h.rec.viewOf(v.id).version, "1.2.3", "the version");
-    h.s.level = 6;
+    h.s.level = 7;
     await h.reaches(v.id, "connected");
   }));
 

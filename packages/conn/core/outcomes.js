@@ -5,8 +5,8 @@
 
 // MIN_FEATURE_LEVEL is the lowest hello featureLevel the app connects to, and CLIENT_LEVEL the level
 // it states in X-AIWB-Level on every request.
-const MIN_FEATURE_LEVEL = 6;
-const CLIENT_LEVEL = 6;
+const MIN_FEATURE_LEVEL = 7;
+const CLIENT_LEVEL = 7;
 
 const HELLO_PATH = '/api/hello';
 const STATE_PATH = '/api/state';

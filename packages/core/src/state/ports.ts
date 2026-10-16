@@ -28,7 +28,7 @@ export type Ui = {
   /** Opens a chat: selects it (and its board) unless something else is chosen already. */
   openChat(c: ChatView): void;
   /** Sets what is on screen: a board, a chat, or neither (the store's `sel`). */
-  select(sel: Sel, o?: { ifFree?: boolean; row?: boolean }): void;
+  select(sel: Sel): void;
   /** Puts the caret in the composer of the chat on screen. */
   focusComposer(): void;
   /** Shows an error the user should see. */
@@ -62,12 +62,14 @@ export type BoardSide = {
   boardLost(id: string): void;
   /** A board was handed to this window (its revision), or given for a tool call. */
   granted(id: string, rev: number): void;
+  /** The stored scene of a board moved to the revision rev (a `scene` event): a reader's kept scene at another revision is dropped. */
+  sceneMoved(id: string, rev: number): void;
   /** Another window asks for a board: writes it, then lets it go. */
   handOver(id: string): Promise<void>;
   /** A stream of a server opened (this computer's, without a server). */
   streamOpened(server?: string): void;
-  /** After a snapshot: takes the board on screen and those with an unsaved edit, if no other window holds them. */
-  takeAfterSnapshot(): void;
+  /** After a snapshot: takes nothing (a window becomes the writer of a board only by the user's button). */
+  afterSnapshot(): void;
   /** A section's server is back. */
   sectionBack(server: string): void;
   /** The store let go of a board: drops what the board side kept of it (its scene, its save). */
@@ -79,7 +81,7 @@ export type BoardSide = {
 const noBoard: BoardSide = {
   runTool: () => Promise.reject(new Error("no board here")),
   flushAll: async () => {},
-  boardLost() {}, granted() {}, handOver: async () => {}, streamOpened() {}, takeAfterSnapshot() {}, sectionBack() {},
+  boardLost() {}, sceneMoved() {}, granted() {}, handOver: async () => {}, streamOpened() {}, afterSnapshot() {}, sectionBack() {},
   forgetBoard() {}, boardUnsaved: () => false,
 };
 let theBoardSide: BoardSide = noBoard;

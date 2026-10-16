@@ -4,16 +4,17 @@
 //
 // What it does for the page's Canvas.tsx and board.ts, with no server: shows the scene it is given (`load`), tells the app
 // about changes (`changed`, a delta, at most every 250 ms), the view (`view`) and the selection (`selection`), runs the app's
-// requests (`req`: apply, delete, restore, export, snapshot) with apply.ts on the live canvas or on elements it is handed,
+// requests (`req`: apply, delete, restore, export, snapshot) with apply.ts on the live canvas, or with engine.ts on elements it is handed,
 // and draws a PNG on request. The reply of a request that changes the live scene comes after the `changed` it causes.
 import { createElement, type ReactElement } from "react";
-import { FONT_FAMILY, newElementWith, restoreElements } from "@excalidraw/excalidraw";
+import { CaptureUpdateAction, FONT_FAMILY } from "@excalidraw/excalidraw";
 import type {
-  ApplyValue, CurrentItemStyle, El, EngineOp, ExportValue, FromBoard, RestoreValue, SavedAppState, SnapshotValue, ThemeMsg, ToBoard,
+  ApplyValue, CurrentItemStyle, El, EngineOp, ExportValue, FromBoard, SavedAppState, SnapshotValue, ThemeMsg, ToBoard,
 } from "@aiwb/board-bridge/messages.ts";
 import { createBaseline, filesAdded } from "@aiwb/board-bridge/delta.ts";
-import { applyChanges, RpcError } from "./apply.ts";
+import { RpcError } from "./apply.ts";
 import { Board, type BoardCanvas, type BoardHooks, type BoardState, type BoardStore } from "./Board.tsx";
+import { answer, applyOn, deleteOn, engineOps, type GivenOp } from "./engine.ts";
 import { exportPicture } from "./export.ts";
 import { themeCss } from "./theme.ts";
 
@@ -75,18 +76,6 @@ function styleOf(a: Record<string, any>): CurrentItemStyle {
     if (v === null || typeof v === "string" || typeof v === "boolean" || (typeof v === "number" && Number.isFinite(v))) out[k as `currentItem${string}`] = v;
   }
   return out;
-}
-
-/** The elements an operation works on when the board is not the one on screen (board.ts engineFor): the given elements. */
-function elementsEngine(elements: El[]) {
-  let current: El[] = elements;
-  return {
-    getSceneElementsIncludingDeleted: () => current,
-    updateScene: ({ elements: next }: { elements?: El[] }) => { if (next) current = next; },
-    getAppState: () => ({ selectedElementIds: {} }),
-    scrollToContent: () => {},
-    elements: () => current,
-  };
 }
 
 export function createEndpoint(post: (m: FromBoard) => void, options: EndpointOptions = {}): Endpoint {
@@ -183,7 +172,36 @@ export function createEndpoint(post: (m: FromBoard) => void, options: EndpointOp
 
   // ---- the messages of the app
 
+  /** D6b: a `load` of the board that is shown (and drawn) is carried out in place: the same Excalidraw, so no flicker, and the
+   *  reader's own scroll and zoom stay. The scene, the files not there yet, the background and the style of the message are put
+   *  in with no undo step (and the undo stacks of the old scene are dropped); the baseline is the loaded scene before the update
+   *  runs, so the `onChange` it causes tells nothing; `loaded` is posted again. */
+  function loadInPlace(m: Extract<ToBoard, { t: "load" }>) {
+    sendChanged(); // (what the board has not told yet goes first, as for any load)
+    const { elements, files, appState } = m.scene;
+    told(elements, files);
+    set({ viewMode: m.viewMode, theme: m.theme });
+    const have = api.getFiles() as Record<string, unknown>;
+    const added = Object.entries(files).filter(([id]) => !(id in have)).map(([, f]) => f);
+    if (added.length) api.addFiles(added);
+    const alive = new Set(elements.filter((e) => !e.isDeleted).map((e) => e.id));
+    const chosen = (api.getAppState().selectedElementIds ?? {}) as Record<string, boolean>;
+    api.updateScene({
+      elements,
+      appState: {
+        viewBackgroundColor: appState.viewBackgroundColor ?? "#ffffff",
+        selectedElementIds: Object.fromEntries(Object.keys(chosen).filter((id) => alive.has(id)).map((id) => [id, true])),
+        ...CLEAN, ...m.style,
+      },
+      captureUpdate: CaptureUpdateAction.NEVER,
+    });
+    api.history?.clear?.();
+    capture();
+    void drawn(gen, m.board);
+  }
+
   function load(m: Extract<ToBoard, { t: "load" }>) {
+    if (api && state.shown?.board === m.board) return loadInPlace(m);
     sendChanged(); // what the board shown so far has not told yet goes first
     const g = ++gen;
     api = null; latest = null; selectionKey = ""; selected = null; lastView = ""; starting = g;
@@ -228,52 +246,29 @@ export function createEndpoint(post: (m: FromBoard) => void, options: EndpointOp
 
   const noBoard = () => new RpcError("NO_BOARD", "no board is shown");
 
-  /** The engine of a target: the live canvas, or the elements given. */
-  function engineOf(target: "live" | { elements: El[] }): { eng: Api; given: ReturnType<typeof elementsEngine> | null } {
-    if (target === "live") { if (!api) throw noBoard(); return { eng: api, given: null }; }
-    const given = elementsEngine(target.elements);
-    return { eng: given, given };
-  }
-
   /** After a change of the live scene: the app hears of it (`changed`) before it hears the reply. */
   function tellApp() { capture(); sendChanged(); }
 
-  const ops: { [Op in EngineOp["op"]]: (m: Extract<EngineOp, { op: Op }>) => unknown } = {
-    apply(m): ApplyValue {
-      const { eng, given } = engineOf(m.target);
-      const res = applyChanges(eng, m.params as never, { pushUndo() {}, onChange() {}, saveNow() {}, rev: () => m.rev });
-      if (given) return { ...res, elements: given.elements() };
+  /** A request on the live canvas (`target: "live"`) or the screen-only `snapshot`; on given elements it is engine.ts's. */
+  const live = {
+    async apply(m: Extract<GivenOp, { op: "apply" }>): Promise<ApplyValue> {
+      if (!api) throw noBoard();
+      const res = await applyOn(api, m); // (the faces its text needs load first)
       tellApp();
       return res;
     },
 
-    delete(m): ApplyValue {
-      const { eng, given } = engineOf(m.target);
-      const res = applyChanges(eng, { delete: m.refs.map((ref) => ({ ref, cascade: m.cascade })) } as never, { pushUndo() {}, onChange() {}, saveNow() {}, rev: () => m.rev });
-      // a cascaded arrow keeps its bound label alive; take it with it
-      const els: El[] = eng.getSceneElementsIncludingDeleted();
-      const gone = new Set(els.filter((e) => e.isDeleted).map((e) => e.id));
-      const orphans = els.filter((e) => !e.isDeleted && e.containerId && gone.has(e.containerId as string));
-      if (orphans.length) eng.updateScene({ elements: els.map((e) => (orphans.includes(e) ? newElementWith(e as never, { isDeleted: true } as never) as unknown as El : e)) });
-      if (given) return { ...res, elements: given.elements() };
+    async delete(m: Extract<GivenOp, { op: "delete" }>): Promise<ApplyValue> {
+      if (!api) throw noBoard();
+      const res = await deleteOn(api, m);
       tellApp();
       return res;
     },
 
-    restore(m): RestoreValue {
-      return { elements: restoreElements(m.elements as never, null) as unknown as El[] };
-    },
-
-    async export(m): Promise<ExportValue> {
-      if (m.target === "live") {
-        if (!api) throw noBoard();
-        return exportPicture({
-          elements: api.getSceneElementsIncludingDeleted(), files: api.getFiles(), viewBackgroundColor: api.getAppState().viewBackgroundColor,
-          ids: m.ids, scale: m.scale, background: m.background,
-        });
-      }
+    export(m: Extract<GivenOp, { op: "export" }>): Promise<ExportValue> {
+      if (!api) throw noBoard();
       return exportPicture({
-        elements: m.target.elements, files: m.target.files, viewBackgroundColor: m.target.appState.viewBackgroundColor,
+        elements: api.getSceneElementsIncludingDeleted(), files: api.getFiles(), viewBackgroundColor: api.getAppState().viewBackgroundColor,
         ids: m.ids, scale: m.scale, background: m.background,
       });
     },
@@ -287,13 +282,41 @@ export function createEndpoint(post: (m: FromBoard) => void, options: EndpointOp
     },
   };
 
-  async function request(id: number, op: EngineOp) {
-    try {
-      const value = await (ops[op.op] as (m: EngineOp) => unknown)(op);
-      post({ t: "res", id, ok: true, value });
-    } catch (e) {
-      post({ t: "res", id, ok: false, code: e instanceof RpcError ? e.code : "FAILED", message: (e as Error)?.message ?? String(e) });
+  // A request on the live canvas may wait for fonts (apply, delete), so the requests on it are carried out one after the other, in the
+  // order they came: one that has nothing to wait for does not overtake one that has. With none pending, `inOrder` runs the function at
+  // once, in the same tick (a `snapshot` that `unload` follows must see the board; `load` and `unload` go through `afterLive`, below);
+  // only behind a pending one does it queue. (On given elements the requests are independent.)
+  let liveTail: Promise<unknown> = Promise.resolve();
+  let pending = 0;                         // the queued or unfinished requests on the live canvas
+  const inOrder = <T,>(f: () => T | Promise<T>): Promise<T> => {
+    let r: Promise<T>;
+    if (pending) {
+      r = liveTail.then(f);
+    } else {
+      try {
+        const v = f();
+        if (!(v && typeof (v as PromiseLike<T>).then === "function")) return Promise.resolve(v); // done: nothing is pending
+        r = Promise.resolve(v);
+      } catch (e) { return Promise.reject(e); }
     }
+    ++pending;
+    const done = () => { --pending; };
+    r.then(done, done);
+    liveTail = r.catch(() => {});
+    return r;
+  };
+
+  /** The messages that change what is shown wait for the requests on the live canvas that came before them (a `snapshot` is answered
+   *  from the board before `unload` takes it away); with none pending they run at once. */
+  const afterLive = (f: () => void): void => {
+    if (!pending) return f();
+    inOrder(f).catch((e) => warn(`board view: ${(e as Error)?.message ?? e}`));
+  };
+
+  function run(op: EngineOp): unknown {
+    if (op.op === "snapshot") return inOrder(() => live.snapshot());
+    if (op.op !== "restore" && op.target === "live") return inOrder<unknown>(() => live[op.op](op as never));
+    return engineOps[op.op](op as never);
   }
 
   const canvas = options.canvas ?? SVG_CANVAS;
@@ -302,13 +325,13 @@ export function createEndpoint(post: (m: FromBoard) => void, options: EndpointOp
   return {
     receive(m) {
       switch (m.t) {
-        case "load": return load(m);
-        case "unload": return unload();
-        case "viewMode": return set({ viewMode: m.on });
-        case "theme": return set({ theme: m.theme as ThemeMsg });
-        case "select": return select(m.ids);
-        case "scrollTo": return scrollTo(m.ids, m.animate);
-        case "req": return void request(m.id, m.op);
+        case "load": return afterLive(() => load(m));
+        case "unload": return afterLive(unload);
+        case "viewMode": return afterLive(() => set({ viewMode: m.on }));
+        case "theme": return afterLive(() => set({ theme: m.theme as ThemeMsg }));
+        case "select": return afterLive(() => select(m.ids));
+        case "scrollTo": return afterLive(() => scrollTo(m.ids, m.animate));
+        case "req": return void answer(m.id, m.op, post, run);
       }
     },
     refuse(raw, error) {

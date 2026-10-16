@@ -118,7 +118,7 @@ function serverCases(connector: Connector, cfg: NetSelfTestConfig, native: boole
   const test = (name: string, fn: Case["fn"]) => cases.push({ name: `real server: ${name}`, fn });
   const port = String(cfg.port);
   const dial = { host: cfg.host, port, dialMs: 5 * SECOND, handshakeMs: 5 * SECOND };
-  const headers = (extra: Record<string, string> = {}) => ({ "x-aiwb-secret": cfg.secret, "x-aiwb-client": CLIENT, "x-aiwb-level": "6", ...extra });
+  const headers = (extra: Record<string, string> = {}) => ({ "x-aiwb-secret": cfg.secret, "x-aiwb-client": CLIENT, "x-aiwb-level": "7", ...extra });
   const open = async (sessions: Session[], pin = cfg.fingerprint) => {
     const s = await connector.open({ ...dial, trust: { selfSigned: true, pin } });
     sessions.push(s);
@@ -142,7 +142,7 @@ function serverCases(connector: Connector, cfg: NetSelfTestConfig, native: boole
 
   test("the secret goes only where the caller puts it: without it a route answers 401, with it 200", withSessions(async (open) => {
     const s = await open();
-    equal((await s.fetch({ method: "GET", path: "/api/state", headers: { "x-aiwb-client": CLIENT, "x-aiwb-level": "6" }, body: null, limitMs: 10 * SECOND })).status, 401, "no secret");
+    equal((await s.fetch({ method: "GET", path: "/api/state", headers: { "x-aiwb-client": CLIENT, "x-aiwb-level": "7" }, body: null, limitMs: 10 * SECOND })).status, 401, "no secret");
     equal((await s.fetch({ method: "GET", path: "/api/state", headers: headers({ "x-aiwb-secret": "not-the-secret" }), body: null, limitMs: 10 * SECOND })).status, 401, "a wrong secret");
     const r = await s.fetch({ method: "GET", path: "/api/state", headers: headers(), body: null, limitMs: 10 * SECOND });
     equal(r.status, 200, "the secret");
@@ -264,7 +264,7 @@ function serverCases(connector: Connector, cfg: NetSelfTestConfig, native: boole
       for (const method of ["GET", "POST"] as const) {
         const s = await mirrored(connector, ctl).open({ host: cfg.host, port: String(st.port), trust: { selfSigned: true, pin: st.fingerprint }, dialMs: 5 * SECOND, handshakeMs: 5 * SECOND });
         const before = ctl.requests.filter((r) => r.path === "/api/drop").length;
-        const e = await rejection(s.fetch({ method, path: "/api/drop", headers: { "x-aiwb-secret": st.secret, "x-aiwb-level": "6" }, body: method === "POST" ? encode("{}") : null, limitMs: 20 * SECOND }), `${method}`);
+        const e = await rejection(s.fetch({ method, path: "/api/drop", headers: { "x-aiwb-secret": st.secret, "x-aiwb-level": "7" }, body: method === "POST" ? encode("{}") : null, limitMs: 20 * SECOND }), `${method}`);
         await sleep(500);
         await ctl.refresh();
         const attempts = ctl.requests.filter((r) => r.path === "/api/drop").length - before;

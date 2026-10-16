@@ -149,7 +149,7 @@ ports.setKv(localStorageKv);
 ports.setUi({ openChat() {}, select() {}, focusComposer() {}, reportError: (title: string, e: any) => { fake.errors.push(title + ": " + (e?.message ?? e)); }, confirm() {} });
 ports.setBoardSide({
   runTool: async () => ({}), flushAll: async () => {}, forgetBoard() {}, boardLost() {}, granted() {}, handOver: async () => {}, streamOpened() {},
-  takeAfterSnapshot() {}, sectionBack() {}, boardUnsaved: () => false,
+  afterSnapshot() {}, sectionBack() {}, boardUnsaved: () => false,
 });
 fs.rmSync(path.dirname(out), { recursive: true, force: true });
 

@@ -3,7 +3,7 @@
 // is split here: the entry id is the server the call goes to (the transport's argument, no part of the path) and
 // every id in the path and in the body is that server's own. What a section's call answers gets the page's keys
 // (logic/sectionwire.ts). Nothing else on the page builds a path or writes an id into a body.
-import { LOCAL_SERVER } from "./types.ts";
+import { LOCAL_SERVER, type Writer } from "./types.ts";
 import type { AgentKind, Board, BranchState, Catalog, ChatImage, ChatView, ContextSplit, Defaults, Draft, Group, Item, PlanUsage, Reference,
   Subagent, Target, TreeLabel, TreeView } from "./types.ts";
 import type { PermAnswer } from "./logic/perms.ts";
@@ -144,8 +144,18 @@ export const api = {
    *  `held` event follows. busy (only with ifFree): another client holds it, and nothing was asked. */
   takeBoard: (id: string, ifFree = false) =>
     thing<{ state: "held" | "waiting" | "busy"; rev?: number }>("boards", id, "POST", "/take", ifFree ? { ifFree: true } : undefined),
-  /** Lets a board go. handed: to who waited for it. free: nobody did. none: it was not this client's. */
-  releaseBoard: (id: string) => thing<{ state: "handed" | "free" | "none" }>("boards", id, "POST", "/release"),
+  /** Lets a board go. handed: to who waited for it. free: nobody did. none: it was not this client's. With ifIdle (the headless writer's
+   *  quiet time): kept when nobody waits for the board and a call on it is open; nothing changes then. */
+  releaseBoard: (id: string, ifIdle = false) =>
+    thing<{ state: "handed" | "free" | "none" | "kept" }>("boards", id, "POST", "/release", ifIdle ? { ifIdle: true } : undefined),
+  /** Follows a board from now on (its `scene` and `writer` events reach this client), whether or not this client holds it: the board is
+   *  on its screen. Again is no change. Answers the stored revision and who writes now. */
+  followBoard: (id: string) =>
+    thing<{ rev?: number; writer?: string }>("boards", id, "POST", "/follow").then((r): { rev: number; writer: Writer } => ({
+      rev: typeof r?.rev === "number" ? r.rev : 0, writer: r?.writer === "window" || r?.writer === "headless" ? r.writer : "",
+    })),
+  /** Ends the follow of a board; no follow is no error. */
+  unfollowBoard: (id: string) => thing("boards", id, "POST", "/unfollow"),
   renameBoard: (id: string, name: string) => thing<Board>("boards", id, "POST", "/rename", { name }).then((b) => boardIn(serverOfKey(id), b)),
   /** group: a group of the board's own server. */
   moveBoard: (id: string, group: string) => (sameServer(id, group) ? thing("boards", id, "PATCH", "", { group: ownId(group) }) : notAcross()),

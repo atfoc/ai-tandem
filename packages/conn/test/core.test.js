@@ -101,7 +101,7 @@ test('every request states the secret, the client id, the level and the entry as
     for (const r of h.s.requests) {
       assert.equal(r.headers['x-aiwb-secret'], h.s.secret);
       assert.equal(r.headers['x-aiwb-client'], h.client.clientId);
-      assert.equal(r.headers['x-aiwb-level'], '6');
+      assert.equal(r.headers['x-aiwb-level'], '7');
       assert.equal(r.headers[':authority'], `${h.s.host}:${h.s.port}`);
     }
     assert.equal(h.s.sessions.size, 1);
@@ -323,7 +323,7 @@ test('too old: the state, the version, hello asked again every tooOld and nothin
     const call = await h.client.call({ server: v.id, method: 'GET', path: '/api/state' });
     assert.equal(call.status, 503);
     assert.match(call.text, /too old: update the server on that machine/);
-    h.s.level = 6; // updated on its machine
+    h.s.level = 7; // updated on its machine
     await h.reaches(v.id, 'connected');
     assert.ok(eventsRequests(h.s) >= 1);
   });
@@ -423,7 +423,7 @@ test('Test connection: the five steps, hello without the secret and the state wi
     const form = (extra = {}) => ({ address: h.s.address, secret: h.s.secret, selfSigned: true, pin: h.s.fingerprint, ...extra });
     h.rec.secrets.add(h.s.secret);
     let a = await h.app('servers.test', { form: form() });
-    assert.deepEqual(a.body, { ok: true, step: 5, outcome: 'connected', message: 'Connected', version: '1.2.3', instanceId: h.s.instanceId, featureLevel: 6, agents: ['claude'] });
+    assert.deepEqual(a.body, { ok: true, step: 5, outcome: 'connected', message: 'Connected', version: '1.2.3', instanceId: h.s.instanceId, featureLevel: 7, agents: ['claude'] });
     const [hello, state] = h.s.requests;
     assert.equal(hello.path, '/api/hello');
     assert.equal(hello.headers['x-aiwb-secret'], undefined);

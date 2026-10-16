@@ -63,10 +63,10 @@ func TestAgentAndServerAreFixedForAForkAndABranch(t *testing.T) {
 	}
 }
 
-// A server of this build is at level 6, and it serves no client below that level.
+// A server of this build is at level 7, and it serves no client below that level.
 func TestFeatureLevel(t *testing.T) {
 	t.Parallel()
-	if FeatureLevel != 6 || MinClientLevel != 6 || LevelHeader != "X-AIWB-Level" {
-		t.Fatalf("the level %d, the lowest client level served %d, in the header %q; want 6, 6 and X-AIWB-Level", FeatureLevel, MinClientLevel, LevelHeader)
+	if FeatureLevel != 7 || MinClientLevel != 7 || LevelHeader != "X-AIWB-Level" {
+		t.Fatalf("the level %d, the lowest client level served %d, in the header %q; want 7, 7 and X-AIWB-Level", FeatureLevel, MinClientLevel, LevelHeader)
 	}
 }

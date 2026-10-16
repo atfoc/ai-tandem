@@ -47,6 +47,7 @@ import (
 	"ai-whiteboard/internal/claude"
 	"ai-whiteboard/internal/cursor"
 	"ai-whiteboard/internal/editorbridge"
+	"ai-whiteboard/internal/headless"
 	"ai-whiteboard/internal/model"
 	"ai-whiteboard/internal/pi"
 	"ai-whiteboard/internal/pibridge"
@@ -62,8 +63,13 @@ type options struct {
 	claudeBin, cursorBin string
 	cursorCostBin        string
 	piBin, piNamerModel  string
-	json                 bool // launch and relaunch: write one JSON line for the app
-	paths                store.Paths
+	// headlessNode, headlessDir and headlessQuiet are the headless writer's: the program that runs
+	// it, the folder of its bundle ("" for each: look for it, architecture D33, D34) and how long it
+	// keeps a board after an agent's last call on it (D26).
+	headlessNode, headlessDir string
+	headlessQuiet             time.Duration
+	json                      bool // launch and relaunch: write one JSON line for the app
+	paths                     store.Paths
 	// serveArgs are the flags the server that launch starts gets: the data folder, and every flag
 	// that was given, as it was.
 	serveArgs []string
@@ -110,10 +116,17 @@ func parseFlags(cmd string, args []string) options {
 	fs.StringVar(&o.cursorCostBin, "cursor-cost", "cursor-cost", "cursor-cost binary, for the Cursor plan's usage (~/bin is tried too)")
 	fs.StringVar(&o.piBin, "pi", "pi", "pi binary")
 	fs.StringVar(&o.piNamerModel, "pi-namer-model", "", "pi model for chat titles (empty = pi's default)")
+	fs.StringVar(&o.headlessNode, "headless-node", "", "program that runs the headless writer, which edits boards while no window is open (empty = the desktop app's Electron, else node 22+ on PATH; or AIWB_HEADLESS_NODE)")
+	fs.StringVar(&o.headlessDir, "headless-dir", "", "folder of the headless writer's bundle (empty = headless/ beside the server, or Resources/headless of the Mac app)")
+	fs.DurationVar(&o.headlessQuiet, "headless-quiet", headless.QuietDefault, "how long the headless writer keeps a board after an agent's last call on it")
 	if cmd != "serve" {
 		fs.BoolVar(&o.json, "json", false, "write one JSON line for the app")
 	}
 	fs.Parse(args)
+	if o.headlessQuiet <= 0 {
+		fmt.Fprintf(os.Stderr, "-headless-quiet %v: the time must be above 0\n", o.headlessQuiet)
+		os.Exit(2)
+	}
 
 	home, _ := os.UserHomeDir()
 	root, err := filepath.Abs(expand(o.home, home))
@@ -168,6 +181,9 @@ func serve(o options) {
 	br := editorbridge.New()
 	waits := readTestWaits() // zero outside the tests
 	br.PingEvery = waits.ping
+	if waits.hov > 0 {
+		br.SetHandoverDelay(waits.hov)
+	}
 	bs := boards.New(st, br)
 	br.SceneRev = bs.Rev
 	bins := map[model.AgentKind]string{model.Claude: o.claudeBin, model.Cursor: o.cursorBin, model.Pi: o.piBin}
@@ -238,6 +254,13 @@ func serve(o options) {
 			model.Cursor: (&agent.UsageCache{Fetch: (&cursor.CostReader{Bin: o.cursorCostBin, Home: home}).Usage, TTL: time.Minute}).Get,
 		},
 		MCPPort: mcpBoundPort, MCPURL: boardapi.Endpoint(mcpBoundPort), MCPUp: mcpUp.Load}
+	// The headless writer, for the board calls no window answers: nothing is looked up or started
+	// until the first of them. It connects as a client, so it needs the instance id and the secret
+	// that attach gives the server, and the relay has it before the MCP listener serves a call.
+	rem.attach(srv)
+	hm := headless.New(br, headless.Listener{Port: port, Fingerprint: rem.rep.Fingerprint,
+		Secret: rem.currentSecret, InstanceID: srv.InstanceID}, waits.headlessOptions(o))
+	relay.Away = hm
 	mcpHandler := srv.MCPHandler(mcpBoundPort)
 	mcpUp.Store(true)
 	go func() {
@@ -246,7 +269,6 @@ func serve(o options) {
 			mcpUp.Store(false)
 		}
 	}()
-	rem.attach(srv)
 	ctl, controlPath, err := bindControl(p.Root)
 	if errors.Is(err, errControlAnswers) {
 		fmt.Printf("AI Whiteboard is already running (its control socket %s answers)\n", controlPath)
@@ -258,12 +280,13 @@ func serve(o options) {
 		log.Printf("server.json: %v", err)
 	}
 	go func() {
-		if err := http.Serve(ctl, srv.ControlHandler(p.Root)); err != nil && !errors.Is(err, net.ErrClosed) {
+		if err := http.Serve(ctl, withHeadlessStatus(srv.ControlHandler(p.Root), hm)); err != nil && !errors.Is(err, net.ErrClosed) {
 			log.Printf("control socket: %v", err)
 		}
 	}()
 	go onSignal(func() {
-		br.StopAndFlush(2 * time.Second) // the client writes pending board changes
+		br.StopAndFlush(2 * time.Second) // the clients write pending board changes, the headless writer's too
+		hm.Close()                       // then it ends
 		cm.Shutdown()                    // history written; agents end
 		agent.EndAll(2 * time.Second)    // agents still running, and whatever they started
 		pb.Close()                       // the extension bridge: no more connections, socket removed

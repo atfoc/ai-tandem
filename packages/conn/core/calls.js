@@ -27,6 +27,8 @@ const START = new Set([
   'GET /api/chats/{id}/context', 'POST /api/groups/{id}/archive',
 ]);
 const SCENE = new Set(['GET /api/boards/{id}/scene', 'PUT /api/boards/{id}/scene']);
+// The calls that stop a reading: they have their own limit, and a server that is not connected has nothing to stop.
+const UNFOLLOW = new Set(['POST /api/chats/{id}/unfollow', 'POST /api/boards/{id}/unfollow']);
 
 // matchRoute returns the row of routes.json a call names, or null. A {name} matches one non-empty
 // segment that is not "." or ".."; the path begins with /api/ and has no fragment.
@@ -86,7 +88,7 @@ function limitFor(tm, raw, pathAndQuery) {
   }
   if (raw === 'GET /api/dirs') return tm.dirs;
   if (raw === 'GET /api/usage/{agent}') return tm.usage;
-  if (raw === 'POST /api/chats/{id}/unfollow') return tm.unfollow;
+  if (UNFOLLOW.has(raw)) return tm.unfollow;
   return tm.call;
 }
 
@@ -128,7 +130,7 @@ async function call(mgr, req) {
   // 4: the entry is not connected.
   const link = conn.link;
   if (conn.shown.state !== 'connected' || !link) {
-    if (raw === 'POST /api/chats/{id}/unfollow') return { status: 200, text: '{"ok":true}', sceneRev: null };
+    if (UNFOLLOW.has(raw)) return { status: 200, text: '{"ok":true}', sceneRev: null };
     if (raw === 'POST /api/boards/{id}/release') return { status: 200, text: '{"state":"none"}', sceneRev: null };
     conn.retryIfBackingOff();
     return notConnected(conn);

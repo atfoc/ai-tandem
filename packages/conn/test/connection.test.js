@@ -58,7 +58,7 @@ test('every request states the secret, the client id, the level and the entry as
     for (const r of s.requests) {
       assert.equal(r.headers['x-aiwb-secret'], s.secret);
       assert.equal(r.headers['x-aiwb-client'], h.client.clientId);
-      assert.equal(r.headers['x-aiwb-level'], '6');
+      assert.equal(r.headers['x-aiwb-level'], '7');
       assert.equal(r.headers[':authority'], `127.0.0.1:${s.port}`);
     }
     assert.equal(events.headers.accept, 'text/event-stream');
@@ -302,7 +302,7 @@ test('too_old is the one stopped state that asks again by itself, in that state,
     await until(() => helloRequests(s) >= 3, 'hello asked again');
     assert.equal(stateOf(h, v.id), 'too_old');
     assert.equal(h.rec.states(v.id).filter((x) => x === 'connecting').length, 0, 'the state is not put back on connecting meanwhile');
-    s.level = 6;
+    s.level = 7;
     await reaches(h, v.id, 'connected');
   }, { timing: { ...T, tooOld: 100 } });
 });

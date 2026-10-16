@@ -4,7 +4,7 @@
 // reach a canvas that no mouse clicked) and drags. It first waits for the screen's sign that the view has drawn the board (`board-canvas`
 // in the state `ready`): until then the app covers the stage (`canvas-empty`, so no other board's drawing shows) and a press at the
 // canvas lands on the cover, so a drawing made at once is lost whole. The canvas of Excalidraw is there (LIVE) a few ms before that.
-import { touchDrag, touchNow } from "./sel.mjs";
+import { byTid, press, touchDrag, touchNow } from "./sel.mjs";
 
 export const LIVE = ".excalidraw:not(.excalidraw--view-mode) canvas.interactive";
 const DRAWN = '[data-testid="board-canvas"][data-state="ready"]';
@@ -29,4 +29,14 @@ export function drawer(page) {
       await page.mouse.move(x, y); await page.mouse.down(); await page.mouse.move(x + 40, y + 30, { steps: 4 }); await page.mouse.move(x + 80, y + 60, { steps: 4 }); await page.mouse.up();
     }
   };
+}
+
+/** The reader's button, pressed (headless-board W11): a board opens as a reader's, in view mode, and only "Edit here" makes the window its writer.
+ *  Waits for the button (the bar of a reader), presses it, and waits for the writer's signs: the "Editing" mark and the canvas that can be drawn on. */
+export async function editHere(page, { timeout = 20000 } = {}) {
+  const take = byTid(page, "board-take").first();
+  await take.waitFor({ state: "visible", timeout });
+  await press(page, take);
+  await page.waitForSelector(LIVE, { timeout });
+  await byTid(page, "board-editing").first().waitFor({ state: "attached", timeout });
 }

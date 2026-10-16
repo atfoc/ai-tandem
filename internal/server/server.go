@@ -406,9 +406,37 @@ func (s *Server) routes() *routeMux {
 		writeJSON(w, map[string]any{"state": state})
 	})
 	// Ends the client's hold: "handed" (to the client that waited for the board), "free", or
-	// "none" (the client did not hold it).
+	// "none" (the client did not hold it). With {"ifIdle": true}, a board nobody waits for, on
+	// which the client has a board call open, is kept: "kept", and nothing changes.
 	mux.HandleFunc("POST /api/boards/{id}/release", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, map[string]any{"state": s.Bridge.ReleaseBoard(r.Header.Get(ClientHeader), r.PathValue("id"))})
+		var body struct {
+			IfIdle bool `json:"ifIdle"`
+		}
+		if !readOptionalJSON(w, r, &body) {
+			return
+		}
+		writeJSON(w, map[string]any{"state": s.Bridge.ReleaseBoardIf(r.Header.Get(ClientHeader), r.PathValue("id"), body.IfIdle)})
+	})
+	// The client follows the board from now on: its scene and writer events reach it. The answer
+	// is the stored revision and the writer ("window", "headless" or ""), so that the client need
+	// not wait for an event to know them. A board followed again stays so; an archived one may be
+	// followed.
+	mux.HandleFunc("POST /api/boards/{id}/follow", func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		if _, found := a.Boards.Get(id); !found {
+			fail(w, boards.ErrNotFound, http.StatusInternalServerError)
+			return
+		}
+		rev, writer, followed := s.Bridge.FollowBoard(r.Header.Get(ClientHeader), id)
+		if !followed { // no open stream: nothing to follow with, the answer is the same
+			rev, writer = a.Boards.Rev(id), s.Bridge.WriterOf(id)
+		}
+		writeJSON(w, map[string]any{"rev": rev, "writer": writer})
+	})
+	// Ends the follow of a board; a board that was not followed is no error.
+	mux.HandleFunc("POST /api/boards/{id}/unfollow", func(w http.ResponseWriter, r *http.Request) {
+		s.unfollow(r, editorbridge.Board(r.PathValue("id")))
+		ok(w)
 	})
 	// Ends the events of a chat that a read started for the client (see the reads).
 	mux.HandleFunc("POST /api/chats/{id}/unfollow", func(w http.ResponseWriter, r *http.Request) {
@@ -574,6 +602,8 @@ func (s *Server) routes() *routeMux {
 		// The board may have gone to another client since the check above, with a grant that
 		// named the revision before this write: that holder is told the new one.
 		s.Bridge.Regrant(id, r.Header.Get(ClientHeader))
+		// The followers read the scene when they like: the event names the revision only.
+		s.Bridge.SendBoard(id, map[string]any{"type": "scene", "board": id, "rev": rev})
 		writeJSON(w, map[string]any{"ok": true, "rev": rev})
 	})
 	mux.HandleFunc("POST /api/boards/{id}/rename", func(w http.ResponseWriter, r *http.Request) {

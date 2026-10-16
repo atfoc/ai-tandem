@@ -32,7 +32,7 @@ test('connected: step 5, the version, the instance id, the level and the agents'
   try {
     const { r } = await run(pinned(s));
     assert.deepEqual(r, {
-      ok: true, step: 5, outcome: 'connected', message: 'Connected', version: '1.2.3', instanceId: s.instanceId, featureLevel: 6, agents: ['claude'],
+      ok: true, step: 5, outcome: 'connected', message: 'Connected', version: '1.2.3', instanceId: s.instanceId, featureLevel: 7, agents: ['claude'],
     });
     // hello is asked without the secret (A10); the state with it; both state the client and the level
     const [hello, state] = s.requests;
@@ -40,7 +40,7 @@ test('connected: step 5, the version, the instance id, the level and the agents'
     assert.equal(hello.headers['x-aiwb-secret'], undefined);
     assert.equal(state.path, '/api/state');
     assert.equal(state.headers['x-aiwb-secret'], s.secret);
-    assert.equal(state.headers['x-aiwb-level'], '6');
+    assert.equal(state.headers['x-aiwb-level'], '7');
     assert.match(state.headers['x-aiwb-client'], /^[0-9a-f-]{36}$/);
     assert.equal(state.headers[':authority'], `127.0.0.1:${s.port}`);
   } finally { await s.close(); }
@@ -157,9 +157,9 @@ test('step 4: secret_refused, bad_host, not_aiwb in each form, too_old', async (
     for (const answer of [
       { status: 200, text: 'not json' },
       { status: 200, text: '[]' },
-      { status: 200, text: JSON.stringify({ app: 'other', instanceId: s.instanceId, featureLevel: 6 }) },
-      { status: 200, text: JSON.stringify({ app: 'ai-whiteboard', instanceId: 'x', featureLevel: 6 }) },
-      { status: 200, text: JSON.stringify({ app: 'ai-whiteboard', featureLevel: 6 }) },
+      { status: 200, text: JSON.stringify({ app: 'other', instanceId: s.instanceId, featureLevel: 7 }) },
+      { status: 200, text: JSON.stringify({ app: 'ai-whiteboard', instanceId: 'x', featureLevel: 7 }) },
+      { status: 200, text: JSON.stringify({ app: 'ai-whiteboard', featureLevel: 7 }) },
       { status: 200, text: 'x'.repeat(100 << 10) },
     ]) {
       s.helloAnswer = () => answer;
@@ -178,6 +178,9 @@ test('step 4: secret_refused, bad_host, not_aiwb in each form, too_old', async (
     s.level = 5;
     ({ r } = await run(pinned(s)));
     assert.deepEqual([r.step, r.outcome, r.version, r.featureLevel], [4, 'too_old', '1.2.3', 5]);
+    s.level = 6; // the level before this one is refused the same way
+    ({ r } = await run(pinned(s)));
+    assert.deepEqual([r.step, r.outcome, r.version, r.featureLevel], [4, 'too_old', '1.2.3', 6]);
     s.level = undefined;
     ({ r } = await run(pinned(s)));
     assert.deepEqual([r.outcome, r.featureLevel], ['too_old', undefined]);

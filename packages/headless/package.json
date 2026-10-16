@@ -1,0 +1,25 @@
+{
+  "name": "@aiwb/headless",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The headless writer (goal headless-board): the app's board side and the board engine in a Node process, a client of the server's client API that edits boards while no window is open.",
+  "scripts": {
+    "test": "node --test --experimental-strip-types 'test/*.test.ts'",
+    "check": "tsc --noEmit",
+    "build": "node build.mjs"
+  },
+  "dependencies": {
+    "@aiwb/board-bridge": "*",
+    "@aiwb/conn": "*",
+    "@aiwb/core": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2"
+  },
+  "engines": {
+    "node": ">=22.19"
+  }
+}

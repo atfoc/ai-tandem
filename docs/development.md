@@ -46,8 +46,12 @@ scripts/build-app.sh    # makes bin/AI Whiteboard.app
 scripts/install-app.sh  # copies it to ~/Applications, so Spotlight finds it
 ```
 
-The web build is built into the bundle (`Contents/Resources/web`), so the macOS app is one build of
-the app, its web build and the server program.
+The web build is built into the bundle (`Contents/Resources/web`), and so is the headless writer
+(`Contents/Resources/headless`: its program, its manifest and the board engine with its fonts and the
+native canvas, [The board engine in Node](architecture.md#the-board-engine-in-node)), so the macOS app is
+one build of the app, its web build, the server program and the headless writer, all of one version. The
+script builds the writer for this Mac's processor and fails, saying so, if that build fails. For a server on
+another machine see [Build the server for another machine](remote-servers.md#build-the-server-for-another-machine).
 
 ## Install the app on a phone or tablet
 
@@ -236,7 +240,7 @@ simulator, an emulator or a device; the native folders are generated, never comm
 ```sh
 go test ./...                                  # server tests, default set: fast, for while you work (about 15 seconds)
 AIWB_TEST_FULL=1 go test -timeout 20m ./...    # server tests, full set: every test in full (about 40 seconds)
-npm test && npm run check                      # at the root: the unit tests and the type checks of app/ and packages/* (core, conn, board-bridge, board-view)
+npm test && npm run check                      # at the root: the unit tests and the type checks of app/ and packages/* (core, conn, board-bridge, board-view, board-engine, headless)
 cd web && npm test                             # the test host, the mock's face, the browser checks' own helpers
 cd web && npm run uicheck                      # the browser checks of the app's web build on the mock (dev/checks; builds its own export; long)
 cd web && npm run uicheck:electron             # the same checks drawn by the desktop app's own Chromium (dev/electron); with no check named: L8

@@ -1,7 +1,7 @@
 // App state: one small store, read with getState/subscribe (each UI makes its own useStore over them: the old page's useStore.ts).
 // Scenes (element arrays) live outside it, in the board side, because they change on every stroke and nothing but the
 // canvas renders from them.
-import { AGENT_ORDER, LOCAL_SERVER, type AgentKind, type Board, type BranchState, type Catalog, type ChatView, type Defaults, type Draft, type Group, type PendingMove, type SectionTree, type ServerLists, type Subagent, type TreeView } from "../types.ts";
+import { AGENT_ORDER, LOCAL_SERVER, type AgentKind, type Board, type BranchState, type Catalog, type ChatView, type Defaults, type Draft, type Group, type PendingMove, type SectionTree, type ServerLists, type Subagent, type TreeView, type Writer } from "../types.ts";
 import type { Snapshot } from "../api.ts";
 import { boardSide, theKv } from "./ports.ts";
 import { parseSideHidden, parseWidths, type Widths } from "../logic/layout.ts";
@@ -93,7 +93,8 @@ export type State = {
 
   // The role per board: several windows work on one server, and each board is held by one of them (board.ts).
   roles: Record<string, BoardRole>;   // by board id; absent = not asked for
-  dropped: Record<string, true>;      // the boards whose pending edit was dropped (the take-over panel and the canvas say so)
+  writers: Record<string, Writer>;    // by board key: who writes the board, from the `follow` answer and the `writer` events; absent = nobody (or not known)
+  dropped: Record<string, true>;      // the boards whose pending edit was dropped (the role bar and the canvas say so)
   sceneGen: Record<string, number>;   // by board id; raised to make the canvas load the scene again
   outage: Record<string, true>;       // the boards of sections whose last save did not reach their server (the canvas says so)
   saveSaid: Record<string, string>;   // by board: what its last save was refused with, when waiting does not mend it (logic/boardsave.ts saveRefusal); the canvas says so
@@ -128,7 +129,7 @@ function initialState(): State {
     servers: [LOCAL_ENTRY], serversNotice: "", serversDialog: null,
     libraries: [], libraryDialog: null, insertPopup: null,
     restart: NO_RESTART,
-    roles: {}, dropped: {}, sceneGen: {}, outage: {}, saveSaid: {},
+    roles: {}, writers: {}, dropped: {}, sceneGen: {}, outage: {}, saveSaid: {},
     dropAt: NO_MARK,
   };
 }
@@ -215,7 +216,7 @@ export function applySnapshot(s: Snapshot, sending: string[] = []) {
       waits: Object.fromEntries(Object.entries(st.waits).filter(([id]) => chats[id])), // what is on its way stays, but for a chat that is gone
       collapsed,
       treeNav: st.treeNav && chats[st.treeNav.chat] ? st.treeNav : null,
-      sel, busyOn, roles: kept(st.roles), dropped: kept(st.dropped), sceneGen: kept(st.sceneGen), outage: kept(st.outage), saveSaid: kept(st.saveSaid),
+      sel, busyOn, roles: kept(st.roles), writers: kept(st.writers), dropped: kept(st.dropped), sceneGen: kept(st.sceneGen), outage: kept(st.outage), saveSaid: kept(st.saveSaid),
     };
   });
   for (const id of Object.keys(before)) if (!cur().boards[id]) boardSide().forgetBoard(id);
@@ -360,7 +361,7 @@ function without(s: State, dead: ReadonlySet<string>): Partial<State> {
   else if (sel.chat && dead.has(sel.chat)) sel = { ...sel, chat: null };
   if (sel !== s.sel) safeSet("aiwb.sel", JSON.stringify(sel));
   return {
-    boards: cut(s.boards), busyOn: cut(s.busyOn), roles: cut(s.roles), dropped: cut(s.dropped), sceneGen: cut(s.sceneGen), outage: cut(s.outage), saveSaid: cut(s.saveSaid),
+    boards: cut(s.boards), busyOn: cut(s.busyOn), roles: cut(s.roles), writers: cut(s.writers), dropped: cut(s.dropped), sceneGen: cut(s.sceneGen), outage: cut(s.outage), saveSaid: cut(s.saveSaid),
     flashes: s.flashes.some((f) => dead.has(f.board)) ? s.flashes.filter((f) => !dead.has(f.board)) : s.flashes,
     chats: cut(s.chats), trees: cut(s.trees), moves: cut(s.moves), shown: cut(s.shown),
     threadErrors: cut(s.threadErrors), waits: cut(s.waits),
@@ -414,6 +415,23 @@ export function setRole(board: string, role: BoardRole | null) {
     if ((s.roles[board] ?? null) === role) return {};
     const { [board]: _, ...roles } = s.roles;
     return { roles: role ? { ...roles, [board]: role } : roles };
+  });
+}
+
+/** Sets who writes a board (the `follow` answer, a `writer` event): another window, the headless writer, or nobody (""). */
+export function setWriter(board: string, writer: Writer) {
+  setState((s) => {
+    if ((s.writers[board] ?? "") === writer) return {};
+    const { [board]: _, ...writers } = s.writers;
+    return { writers: writer ? { ...writers, [board]: writer } : writers };
+  });
+}
+
+/** A server's stream opened: who writes its boards is told anew (by the `follow` answer of the board on screen), so what was known goes. */
+export function clearWriters(server: string) {
+  setState((s) => {
+    if (!Object.keys(s.writers).some((k) => serverOfKey(k) === server)) return {};
+    return { writers: Object.fromEntries(Object.entries(s.writers).filter(([k]) => serverOfKey(k) !== server)) };
   });
 }
 

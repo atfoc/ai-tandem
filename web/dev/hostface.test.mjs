@@ -438,6 +438,54 @@ describe("the mock's fake client", () => {
     assert.equal(await mock(`return heldBoards.size;`), 0);
   });
 
+  test("a board is held after a take only, followed after a follow, and the knobs of another writer tell the page", async () => {
+    await mock(`return seedUI("A1");`);
+    const kinds = () => seen.filter((e) => e.event?.board === "b_ui").map((e) => e.event.type + (e.event.writer !== undefined ? `=${e.event.writer}` : "") + (e.event.rev !== undefined ? `@${e.event.rev}` : ""));
+    seen.length = 0;
+    const scene = { type: "excalidraw", version: 2, elements: [], appState: {}, files: {} };
+    // a page that holds nothing does not write; it is told nothing before it follows
+    const refused = await call("local", "PUT", "/api/boards/b_ui/scene?rev=1", scene);
+    assert.equal(refused.status, 409);
+    assert.equal(parse(refused).code, "not_holder");
+    assert.equal(await mock(`return othersave("b_ui", [])`), 2);
+    assert.deepEqual(kinds(), [], "nobody follows the board yet");
+    assert.deepEqual(parse(await call("local", "POST", "/api/boards/b_ui/follow")), { rev: 2, writer: "" });
+    await mock(`writer("b_ui", "headless")`);
+    assert.deepEqual(parse(await call("local", "POST", "/api/boards/b_ui/follow")), { rev: 2, writer: "headless" });
+    assert.equal(await mock(`return othersave("b_ui", [])`), 3);
+    assert.deepEqual(kinds(), ["writer=headless", "scene@3"]);
+    // a take answers held with the revision; busy when it asks only for a free board
+    assert.deepEqual(parse(await call("local", "POST", "/api/boards/b_ui/take", { ifFree: true })), { state: "busy" });
+    seen.length = 0;
+    assert.deepEqual(parse(await call("local", "POST", "/api/boards/b_ui/take")), { state: "held", rev: 3 });
+    assert.deepEqual(kinds(), ["writer=window"]);
+    assert.equal(await mock(`return heldBoards.size;`), 1);
+    // a save of the holder is a new revision, told to the followers; on another revision it is stale
+    assert.equal((await call("local", "PUT", "/api/boards/b_ui/scene?rev=2", scene)).status, 409);
+    seen.length = 0;
+    assert.deepEqual(parse(await call("local", "PUT", "/api/boards/b_ui/scene?rev=3", scene)), { rev: 4 });
+    assert.deepEqual(kinds(), ["scene@4"]);
+    // another window takes the board: superseded, and the page is a reader again
+    seen.length = 0;
+    await mock(`writer("b_ui", "window")`);
+    assert.deepEqual(kinds(), ["superseded"], "the writer stays a window: no writer event");
+    assert.equal(await mock(`return heldBoards.size;`), 0);
+    assert.equal(parse(await call("local", "POST", "/api/boards/b_ui/release")).state, "none");
+    // a release with ifIdle keeps a board a tool call is open on
+    await call("local", "POST", "/api/boards/b_ui/take");
+    await mock(`rpcTargets.set("rpc_x", "b_ui");`);
+    assert.equal(parse(await call("local", "POST", "/api/boards/b_ui/release", { ifIdle: true })).state, "kept");
+    await mock(`rpcTargets.clear();`);
+    seen.length = 0;
+    assert.equal(parse(await call("local", "POST", "/api/boards/b_ui/release", { ifIdle: true })).state, "free");
+    assert.deepEqual(kinds(), ["writer="]);
+    // after an unfollow nothing is told; a stream that ends ends the follow
+    await call("local", "POST", "/api/boards/b_ui/unfollow");
+    seen.length = 0;
+    await mock(`othersave("b_ui", [])`);
+    assert.deepEqual(kinds(), []);
+  });
+
   test("the prompt library: a change is an own_library event of that server before the answer; a library is its server's own", async () => {
     seen.length = 0;
     const a = await call("local", "POST", "/api/library/local/groups", { name: "git", parent: "" });

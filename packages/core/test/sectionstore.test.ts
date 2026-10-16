@@ -39,7 +39,7 @@ await esbuild.build({
 const { store, ports, localStorageKv } = await import(pathToFileURL(out).href);
 ports.setKv(localStorageKv);
 ports.setBoardSide({
-  runTool: async () => ({}), flushAll: async () => {}, boardLost() {}, granted() {}, handOver: async () => {}, streamOpened() {}, takeAfterSnapshot() {}, sectionBack() {},
+  runTool: async () => ({}), flushAll: async () => {}, boardLost() {}, granted() {}, handOver: async () => {}, streamOpened() {}, afterSnapshot() {}, sectionBack() {},
   forgetBoard: (id: string) => { fake.forgotten.push(id); }, boardUnsaved: (id: string) => fake.unsaved.has(id),
 });
 fs.rmSync(path.dirname(out), { recursive: true, force: true });

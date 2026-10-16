@@ -36,6 +36,8 @@
   "PUT /api/boards/{id}/scene",
   "POST /api/boards/{id}/take",
   "POST /api/boards/{id}/release",
+  "POST /api/boards/{id}/follow",
+  "POST /api/boards/{id}/unfollow",
   "POST /api/boards/{id}/rename",
   "PATCH /api/boards/{id}",
   "POST /api/boards/{id}/archive",

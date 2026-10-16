@@ -182,8 +182,8 @@ func getImageTool(t *testing.T) Tool {
 func TestGetImageDescription(t *testing.T) {
 	d := getImageTool(t).Description
 	for _, want := range []string{
-		"selection (the elements the user has selected; only for the board on the user's screen",
-		"for any other board use all, refs or rect",
+		"selection (the elements the user has selected; needs a window that shows the board",
+		"for any other board, or with no window open, use all, refs or rect",
 		"all (everything on the board",
 		"refs (the elements in refs, with their bound text",
 		"a frame's children and the elements an arrow joins are not added",
@@ -204,6 +204,25 @@ func TestGetImageDescription(t *testing.T) {
 		if !strings.Contains(d, want) {
 			t.Errorf("get_image description lost %q:\n%s", want, d)
 		}
+	}
+}
+
+// The screen tools say in their descriptions that they need a window, and that the board can be worked on without one.
+func TestScreenToolDescriptionsNeedAWindow(t *testing.T) {
+	want := map[string]string{
+		"get_view":   "Needs a window that shows this chat's board; if none does, it says so, and read_board still works.",
+		"show_board": "Needs a window that shows this chat's board; if none does, it says so, and your changes are saved in the board all the same.",
+	}
+	for _, tool := range Tools {
+		if w, ok := want[tool.Name]; ok {
+			if !strings.Contains(tool.Description, w) {
+				t.Errorf("%s description lost %q:\n%s", tool.Name, w, tool.Description)
+			}
+			delete(want, tool.Name)
+		}
+	}
+	for name := range want {
+		t.Errorf("no %s tool", name)
 	}
 }
 

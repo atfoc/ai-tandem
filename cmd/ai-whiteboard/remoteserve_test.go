@@ -160,7 +160,7 @@ func TestHelloInstanceIDSurvivesRestart(t *testing.T) {
 }
 
 // The client listener of a real server: HTTPS, the secret for every route but hello, a listed
-// Host, a client of level 6; no page at any address; two TCP listeners, the clients' and the MCP
+// Host, a client of level 7; no page at any address; two TCP listeners, the clients' and the MCP
 // one.
 func TestClientListenerServes(t *testing.T) {
 	smokeTest(t)
@@ -179,8 +179,8 @@ func TestClientListenerServes(t *testing.T) {
 	if body["instanceId"] != local["instanceId"] || body["instanceId"] == nil {
 		t.Fatalf("the client hello's instanceId is %v, the control socket's %v", body["instanceId"], local["instanceId"])
 	}
-	if body["featureLevel"] != float64(6) || local["featureLevel"] != float64(6) || server.FeatureLevel != 6 {
-		t.Fatalf("the feature level is %v in the client hello, %v in the control socket's and %d in the server; want 6", body["featureLevel"], local["featureLevel"], server.FeatureLevel)
+	if body["featureLevel"] != float64(7) || local["featureLevel"] != float64(7) || server.FeatureLevel != 7 {
+		t.Fatalf("the feature level is %v in the client hello, %v in the control socket's and %d in the server; want 7", body["featureLevel"], local["featureLevel"], server.FeatureLevel)
 	}
 	// The first question is answered without the secret.
 	if status, body := in.helloWith(t, "", ""); status != http.StatusOK || body["app"] != "ai-whiteboard" {

@@ -140,6 +140,8 @@ test('an entry that is not connected: 503 server_unreachable and nothing sent; u
     assert.deepEqual(JSON.parse(r.text), { error: 'Down is not connected.', code: 'server_unreachable' });
     r = await h.client.call({ server: id, method: 'POST', path: '/api/chats/c1/unfollow' });
     assert.deepEqual([r.status, r.text], [200, '{"ok":true}']);
+    r = await h.client.call({ server: id, method: 'POST', path: '/api/boards/b_1/unfollow' });
+    assert.deepEqual([r.status, r.text], [200, '{"ok":true}']);
     r = await h.client.call({ server: id, method: 'POST', path: '/api/boards/b_1/release' });
     assert.deepEqual([r.status, r.text], [200, '{"state":"none"}']);
     // a bad path is a bad path whatever the state
@@ -197,7 +199,7 @@ test('the time limit of each route of the table', async () => {
   const limits = { call: 300, start: 1500, scene: 900, imageCall: 1200, delete: 2100, dirs: 600, usage: 1800, unfollow: 450 };
   await connected(async ({ s, call }) => {
     for (const p of ['/api/chats/c1/messages', '/api/chats/c1/fork', '/api/chats/c1/open', '/api/chats/c1/context', '/api/groups/g1/archive',
-      '/api/boards/b_1/scene', '/api/chats/c1/images', '/api/groups/g1', '/api/dirs', '/api/usage/claude', '/api/chats/c1/unfollow', '/api/chats/c1/label']) s.hangPaths.add(p);
+      '/api/boards/b_1/scene', '/api/chats/c1/images', '/api/groups/g1', '/api/dirs', '/api/usage/claude', '/api/chats/c1/unfollow', '/api/boards/b_1/unfollow', '/api/chats/c1/label']) s.hangPaths.add(p);
     const rows = [
       ['POST', '/api/chats/c1/messages', 'start'], ['POST', '/api/chats/c1/fork', 'start'], ['POST', '/api/chats/c1/open', 'start'],
       ['GET', '/api/chats/c1/context', 'start'], ['POST', '/api/groups/g1/archive', 'start'],
@@ -205,6 +207,7 @@ test('the time limit of each route of the table', async () => {
       ['POST', '/api/chats/c1/images', 'imageCall'],
       ['DELETE', '/api/groups/g1?contents=delete', 'delete'], ['DELETE', '/api/groups/g1', 'call'], ['DELETE', '/api/groups/g1?contents=move', 'call'],
       ['GET', '/api/dirs', 'dirs'], ['GET', '/api/usage/claude', 'usage'], ['POST', '/api/chats/c1/unfollow', 'unfollow'],
+      ['POST', '/api/boards/b_1/unfollow', 'unfollow'],
       ['PUT', '/api/chats/c1/label', 'call'],
     ];
     await Promise.all(rows.map(async ([method, path, name]) => {

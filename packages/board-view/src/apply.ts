@@ -10,6 +10,7 @@
 // API does not do (routing arrows, moving bound text, re-measuring a label,
 // keeping `boundElements` in sync) the page does itself, and this is where.
 import { convertToExcalidrawElements, newElementWith, CaptureUpdateAction, FONT_FAMILY, ROUNDNESS } from "@excalidraw/excalidraw";
+import { validIndices } from "./indices.ts";
 
 export type El = any;
 export type Ref = { id: string } | { key: string };
@@ -219,7 +220,7 @@ export function applyChanges(api: any, p: ApplyParams, hooks: ApplyHooks): Apply
   // ---- keep arrows attached to anything that moved or resized
   for (const id of touched) for (const b of byId.get(id).boundElements ?? []) if (b.type === "arrow" && !rerouted.has(b.id)) { reroute(b.id); rerouted.add(b.id); }
 
-  const elements = [...byId.values()];
+  const elements = validIndices([...byId.values()], (e, index) => newElementWith(e, { index } as never));
   hooks.pushUndo(current, null);
   api.updateScene({ elements, captureUpdate: CaptureUpdateAction.IMMEDIATELY }); // one undo step
   if (p.select) api.updateScene({ appState: { selectedElementIds: Object.fromEntries(p.select.map((r: Ref) => [resolveId(r, "select"), true])) } });

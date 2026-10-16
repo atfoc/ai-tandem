@@ -1,7 +1,7 @@
 // A board of a section: what a failed save does, what shows for the board, and the texts (src/logic/boardsave.ts).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { saveFailure, saveOutage, saveRefusal, notSaved, notSavedYet, bannerText, droppedText, DROPPED_TEXT, boardView, offText, takeoverText, serverNameOf } from "../src/logic/boardsave.ts";
+import { saveFailure, saveOutage, saveRefusal, notSaved, notSavedYet, bannerText, droppedText, DROPPED_TEXT, boardView, offText, serverNameOf } from "../src/logic/boardsave.ts";
 import { inSection, keyOn } from "../src/logic/keys.ts";
 
 /** The board b_1 of this computer, and the board with the same id of the section s_1. */
@@ -74,16 +74,6 @@ test("the view in place of the canvas", () => {
   assert.deepEqual(offText("unreachable", "Studio"),
     { title: "Studio is not connected", body: "This whiteboard is on Studio. It opens when the server is connected again." });
   assert.deepEqual(offText("gone", "Studio"), { title: "No longer on Studio", body: "This whiteboard was on Studio and is not there any more." });
-});
-
-test("takeoverText: a local board, and a board of a section, which another computer that uses that server may hold", () => {
-  assert.deepEqual(takeoverText(false, "Studio"),
-    { title: "Open in another window", body: "This whiteboard is in use in another tab or window. Only one can draw on it at a time." });
-  assert.deepEqual(takeoverText(inSection(LOCAL), "This computer"),
-    { title: "Open in another window", body: "This whiteboard is in use in another tab or window. Only one can draw on it at a time." });
-  assert.deepEqual(takeoverText(true, "Studio"),
-    { title: "In use elsewhere", body: "This whiteboard is in use in another window or on Studio. Only one can draw on it at a time." });
-  assert.deepEqual(takeoverText(inSection(FAR), "Studio"), takeoverText(true, "Studio"));
 });
 
 test("serverNameOf: the name of the entry the board's key names", () => {

@@ -58,17 +58,18 @@ var Tools = []Tool{
 		Summary:     `{"board"?: "<board id>"}`,
 	},
 	{
-		Name:        "get_view",
-		Description: "What the user sees right now: the board on screen, the visible area and the selected elements.",
-		Schema:      obj(props{}),
-		Summary:     "{}",
+		Name: "get_view",
+		Description: "What the user sees right now: the board on screen, the visible area and the selected elements. " +
+			"Needs a window that shows this chat's board; if none does, it says so, and read_board still works.",
+		Schema:  obj(props{}),
+		Summary: "{}",
 	},
 	{
 		Name: "get_image",
 		Description: "Look at a board as a picture (PNG): what a human sees, with colours, layout and overlaps, which read_board does not show. " +
 			"The result is an image plus one line of text with the scope used, the bounds of what is drawn in board coordinates and the element count. " +
-			"scope picks what is drawn: selection (the elements the user has selected; only for the board on the user's screen, " +
-			"for any other board use all, refs or rect), all (everything on the board, the default when nothing is selected), " +
+			"scope picks what is drawn: selection (the elements the user has selected; needs a window that shows the board; " +
+			"for any other board, or with no window open, use all, refs or rect), all (everything on the board, the default when nothing is selected), " +
 			"refs (the elements in refs, with their bound text; a frame's children and the elements an arrow joins are not added), " +
 			"rect (the elements completely inside rect, in board coordinates, a rotated one by its rotated box; one that sticks out is left out; " +
 			"the bound text of a contained shape or arrow is drawn with it; rect compares exact coordinates while read_board prints rounded numbers, so leave a margin). " +
@@ -134,8 +135,9 @@ var Tools = []Tool{
 		Summary:     `{"name": "<board name>"}`,
 	},
 	{
-		Name:        "show_board",
-		Description: "Bring a board to the user's screen and scroll to some elements. Only when the user asked to see something.",
+		Name: "show_board",
+		Description: "Bring a board to the user's screen and scroll to some elements. Only when the user asked to see something. " +
+			"Needs a window that shows this chat's board; if none does, it says so, and your changes are saved in the board all the same.",
 		Schema: obj(props{
 			"board": str(boardDesc),
 			"refs":  arr(ref),

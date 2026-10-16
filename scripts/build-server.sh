@@ -8,8 +8,13 @@
 #   setup-remote.sh    sets remote access up and prints address, fingerprint and secret
 #   start-server.sh    starts the server in the background
 #   README.md          how to install and run it (scripts/remote/README.md)
+#   headless/          the headless writer for the target (packages/headless): headless.mjs, manifest.json and
+#                      engine/ with the native canvas for the target; the server finds it next to its binary and
+#                      runs it with Node 22 or later, so boards can be edited with no window open
 # The server serves no page, so the folder holds none and its making needs no build of the web
-# client. One version (git describe) is stamped into the Go binary, as scripts/build-app.sh does.
+# client. One version (git describe) is stamped into the Go binary and into headless/manifest.json,
+# as scripts/build-app.sh does. The headless writer's native canvas is fetched from its npm package
+# for the target (packages/board-engine); a target whose binary can't be had fails the script.
 # There is no installer and no service file: copy the folder.
 set -euo pipefail
 
@@ -27,9 +32,19 @@ arch="${target#*/}"
 out="$root/bin/ai-whiteboard-server-$os-$arch"
 version="$(git -C "$root" describe --tags --always --dirty 2>/dev/null || echo dev)"
 
-echo "==> server for $os/$arch ($version)"
 rm -rf "$out"
 mkdir -p "$out"
+
+[ -d "$root/node_modules" ] || (cd "$root" && npm ci)
+case "$arch" in amd64) jsarch=x64 ;; *) jsarch="$arch" ;; esac
+echo "==> headless writer for $os/$jsarch ($version)"
+node "$root/packages/headless/build.mjs" --os "$os" --arch "$jsarch" --version "$version" --out "$out/headless" ||
+  { echo "the headless writer's build for $os/$jsarch failed (see above)" >&2; rm -rf "$out"; exit 1; }
+for f in headless.mjs manifest.json engine/engine.mjs engine/node_modules/skia-canvas/lib/skia.node; do
+  [ -f "$out/headless/$f" ] || { echo "the headless build has no $f; the board engine is not built or not complete" >&2; rm -rf "$out"; exit 1; }
+done
+
+echo "==> server for $os/$arch ($version)"
 CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -C "$root" \
   -ldflags "-X ai-whiteboard/internal/version.Version=$version" \
   -o "$out/ai-whiteboard" ./cmd/ai-whiteboard

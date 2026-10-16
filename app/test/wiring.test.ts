@@ -437,20 +437,43 @@ test("the composer shows a refusal by refusalShown, and nothing stands in the th
 
 // ---- the shell: the board taken on a select, where a new chat is made, the menus
 
-test("the sidebar's select takes its decision from takeOnSelect, and a chat is opened with the board taken if free", () => {
-  assert.ok(nav.includes("takeOnSelect(getState().roles[sel.board], sel.board === prev.board, !!o.ifFree, !!o.row)"));
-  assert.ok(nav.includes('if (sel.board && take) void boardApp.takeBoard(sel.board, take === "free");'));
-  assert.ok(/export function openChat\(c: ChatView\): void \{\s+select\(selOf\(c\), \{ ifFree: true \}\);/.test(nav), "a chat's row and a chat reference");
-  assert.ok(nav.includes("export function openBoard(id: string, row = false") && /select\(\{ board: id, chat: withChat \? [^\n]*\}, \{ row \}\);/.test(nav), "a board's row takes as before");
+test("selecting a board never takes it: select, a chat's row, a board's row and the board's bar ask nothing of the server; making a board takes it", () => {
+  const select = nav.slice(nav.indexOf("export function select("), nav.indexOf("/** Opens a board with the last chat"));
+  assert.ok(!/take|ifFree/i.test(select), "select asks for no board");
+  assert.ok(!nav.includes("takeOnSelect") && !nav.includes("ifFree") && !/row = false|o\.row|\{ row \}/.test(nav), "no take decision, no row");
+  assert.ok(/export function openChat\(c: ChatView\): void \{\s+select\(selOf\(c\)\);/.test(nav), "a chat's row and a chat reference");
+  assert.ok(nav.includes("export function openBoard(id: string, withChat") && /select\(\{ board: id, chat: withChat \? [^\n]*\}\);/.test(nav));
+  // making a board is the one explicit take outside the button (D12)
+  assert.ok(/upsertBoard\(b\);\s+select\(\{ board: b\.id, chat: null \}\);\s+void boardApp\.takeBoard\(b\.id\);/.test(nav), "newBoard takes the board it made");
+  assert.equal(count(nav, /takeBoard\(/g), 1);
+});
+
+test("the one take in the screens is the button of the reader's bar; the canvas takes nothing and shows for every role", () => {
+  const canvas = file("screens/board/BoardCanvas.tsx"), bar = file("screens/board/RoleBar.tsx");
+  assert.ok(!canvas.includes("takeBoard") && !canvas.includes("showsPanel") && !canvas.includes("TakeoverPanel"));
+  assert.ok(canvas.includes("const wanted = known && off === \"canvas\" && !err;"), "the canvas is wanted whatever the role");
+  const all = ["board", "shell", "sidebar", "chat", "composer"].map((d) => dir(`screens/${d}`)).join("\n");
+  assert.equal(count(all, /\.takeBoard\(/g), 2, "the bar's button, and newBoard");
+  assert.ok(bar.includes("void boardApp.takeBoard(board);") && bar.includes('{...tid("board-take")}') && !bar.includes("ifFree"));
+  assert.ok(!fs.existsSync(path.join(appSrc, "screens/board/TakeoverPanel.tsx")));
+});
+
+test("a reload of the board on screen (its scene kept was dropped) does not hide it first", () => {
+  const canvas = file("screens/board/BoardCanvas.tsx");
+  const first = canvas.slice(canvas.indexOf("owner = me;"), canvas.indexOf("}, [board, wanted, channel]);"));
+  assert.ok(first.includes("boardApp.hide()"));
+  assert.ok(canvas.includes("}, [board, wanted, channel]);") && !/\[[^\]]*\bgen\b[^\]]*\]\);\n\n  \/\/ The scene kept/.test(canvas) && canvas.includes("}, [gen]);"));
+  const second = canvas.slice(canvas.indexOf("// The scene kept for the board was dropped"), canvas.indexOf("}, [gen]);"));
+  assert.ok(second.includes("ask(") && !second.includes("hide()"), "the second effect only asks again");
 });
 
 test("only the board's own row in the sidebar opens it as a row click", () => {
-  // the sidebar's row (screens/sidebar/rows.tsx) and the side rail's list of boards (screens/shell/slots.tsx) are the places that give openBoard its second
-  // argument true; a reference to a board and the board's bar are no row click
-  assert.equal(count(dir("screens/sidebar"), /openBoard\(b\.id, true\)/g), 1);
-  assert.equal(count(file("screens/shell/slots.tsx"), /openBoard\(key, true\)/g), 1);
-  assert.ok(file("screens/shell/BoardBar.tsx").includes("openBoard(board, false, true)"), "the board's bar");
-  for (const [name, text] of [["the markdown", dir("screens/markdown")], ["the chat view", chatView]] as const) assert.ok(!/openBoard\([^)]*,/.test(text), `${name}: a reference to a board is no row click`);
+  // a board's row (screens/sidebar/rows.tsx), the side rail's list of boards (screens/shell/slots.tsx) and the board's bar open a board with its chat or alone;
+  // a reference to a board takes its own default
+  assert.equal(count(dir("screens/sidebar"), /openBoard\(b\.id\)/g), 1);
+  assert.equal(count(file("screens/shell/slots.tsx"), /openBoard\(key\)/g), 1);
+  assert.ok(file("screens/shell/BoardBar.tsx").includes("openBoard(board, true)"), "the board's bar");
+  for (const [name, text] of [["the markdown", dir("screens/markdown")], ["the chat view", chatView]] as const) assert.ok(!/openBoard\([^)]*,/.test(text), `${name}: a reference to a board has no second argument`);
   assert.ok(file("screens/chat/env.ts").includes("openBoard: (id) => openBoard(id),"), "a reference to a board in a message");
 });
 

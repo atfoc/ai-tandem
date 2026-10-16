@@ -1,6 +1,6 @@
 // A board of any server of the server list, this computer's included: what a failed save does to the edit,
 // what shows in place of its canvas while that server is not connected or the board is gone there,
-// and the texts of the banner, the notice and the take-over panel. DOM-free.
+// and the texts of the banner and the notice. DOM-free.
 import { serverOfKey } from "./keys.ts";
 
 /** What a failed save does to the edit. drop: the server refused it for good (the scene was changed elsewhere, or
@@ -35,7 +35,7 @@ export const notSavedYet = (name: string): string => `Not saved yet, waiting for
 /** The banner's words. connected: the page holds the tree of the board's server. */
 export const bannerText = (name: string, connected: boolean): string => (connected ? notSavedYet(name) : notSaved(name));
 
-/** Said in the take-over panel, and in the note on the canvas of a board that is held. */
+/** Said in the role bar of a board, and in the note on the canvas of a board that is held. */
 export const DROPPED_TEXT = "A change made here was not saved in time and was dropped.";
 /** The note after an edit was dropped; outage: it had waited for the board's server, which stored another scene meanwhile. */
 export const droppedText = (outage: boolean, name: string): string =>
@@ -55,13 +55,6 @@ export const offText = (view: Exclude<BoardView, "canvas">, name: string): { tit
   view === "gone"
     ? { title: `No longer on ${name}`, body: `This whiteboard was on ${name} and is not there any more.` }
     : { title: `${name} is not connected`, body: `This whiteboard is on ${name}. It opens when the server is connected again.` };
-
-/** The take-over panel of a board another client holds: for a board of a section that may be a window there, or
- *  another computer that uses that server. */
-export const takeoverText = (remote: boolean, name: string): { title: string; body: string } =>
-  remote
-    ? { title: "In use elsewhere", body: `This whiteboard is in use in another window or on ${name}. Only one can draw on it at a time.` }
-    : { title: "Open in another window", body: "This whiteboard is in use in another tab or window. Only one can draw on it at a time." };
 
 /** The name of a board's server for these texts. board: its key. */
 export const serverNameOf = (board: string | undefined, servers: { id: string; name: string }[]): string =>

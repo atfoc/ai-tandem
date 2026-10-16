@@ -106,8 +106,8 @@ function fakeBoardSide() {
   const side: BoardSide = {
     runTool: (call) => { calls.push(["runTool", call]); return tool(call) as ReturnType<BoardSide["runTool"]>; },
     flushAll: async (server) => { calls.push(server === undefined ? ["flushAll"] : ["flushAll", server]); },
-    boardLost: told("boardLost"), granted: told("granted"), handOver: async (id) => { calls.push(["handOver", id]); },
-    streamOpened: told("streamOpened"), takeAfterSnapshot: told("takeAfterSnapshot"), sectionBack: told("sectionBack"),
+    boardLost: told("boardLost"), sceneMoved: told("sceneMoved"), granted: told("granted"), handOver: async (id) => { calls.push(["handOver", id]); },
+    streamOpened: told("streamOpened"), afterSnapshot: told("afterSnapshot"), sectionBack: told("sectionBack"),
     forgetBoard: told("forgetBoard"), boardUnsaved: (id) => unsaved.has(id),
   };
   return { side, calls, unsaved, onTool: (f: typeof tool) => { tool = f; } };
@@ -134,17 +134,55 @@ test("conn.ts calls the registered board side for the stream's events, with the 
   await ev({ type: "release_request", board: "b_2" });
   await ev({ type: "server_stopping" });
   assert.deepEqual(b.calls, [
-    ["streamOpened", "local"], ["takeAfterSnapshot"], ["granted", "b_1", 7], ["boardLost", "b_1"], ["handOver", "b_2"], ["flushAll", "local"],
+    ["streamOpened", "local"], ["afterSnapshot"], ["granted", "b_1", 7], ["boardLost", "b_1"], ["handOver", "b_2"], ["flushAll", "local"],
   ]);
   // a section's thing is named by its key (the entry's id and the thing's), and its server's stream-open and return are told with the entry
   b.calls.length = 0;
   await ev({ ...snapshot(), servers: [{ id: "local", local: true, name: "This computer", state: "connected" }, { id: S1, name: "Lab", state: "connected" }], sections: { [S1]: snapshot() } });
-  assert.deepEqual(b.calls.map((c) => c[0]), ["takeAfterSnapshot", "sectionBack"]);
+  assert.deepEqual(b.calls.map((c) => c[0]), ["afterSnapshot", "sectionBack"]);
   assert.deepEqual(b.calls.at(-1), ["sectionBack", S1]);
   b.calls.length = 0;
   await ev({ type: "held", server: S1, board: "b_1", rev: 2 });
   await ev({ type: "superseded", server: S1, board: "b_1" });
   assert.deepEqual(b.calls, [["granted", `${S1}~b_1`, 2], ["boardLost", `${S1}~b_1`]]);
+});
+
+test("`scene` tells the board side the new revision, `writer` sets who writes the board; a hello clears a server's writers; a removed board's go", async () => {
+  const b = fakeBoardSide();
+  setBoardSide(b.side);
+  fake.reset();
+  connect();
+  const S1 = "s_aaaaaaaaaaaa";
+  await ev({ type: "hello" });
+  await ev({ ...snapshot({ boards: [{ id: "b_1", name: "Plan", group: "", created: "" }] }), servers: [{ id: "local", local: true, name: "This computer", state: "connected" }, { id: S1, name: "Lab", state: "connected" }],
+    sections: { [S1]: snapshot({ boards: [{ id: "b_1", name: "Plan", group: "", created: "" }] }) } });
+  b.calls.length = 0;
+  await ev({ type: "scene", board: "b_1", rev: 4 });
+  await ev({ type: "scene", server: S1, board: "b_1", rev: 2 });
+  await ev({ type: "scene", board: "b_1" }); // (no revision: nothing to tell)
+  assert.deepEqual(b.calls, [["sceneMoved", "b_1", 4], ["sceneMoved", `${S1}~b_1`, 2]]);
+  await ev({ type: "writer", board: "b_1", writer: "headless" });
+  await ev({ type: "writer", server: S1, board: "b_1", writer: "window" });
+  assert.deepEqual([store.getState().writers["b_1"], store.getState().writers[`${S1}~b_1`]], ["headless", "window"]);
+  await ev({ type: "writer", board: "b_1", writer: "" });
+  assert.equal("b_1" in store.getState().writers, false, "nobody");
+  await ev({ type: "writer", board: "b_1", writer: "somebody" });
+  assert.equal("b_1" in store.getState().writers, false, "a writer the page does not know is nobody");
+  await ev({ type: "writer", board: "b_1", writer: "headless" });
+  // a new stream of one server: what was told of its boards goes, the other server's stays
+  await ev({ type: "hello", server: S1 });
+  assert.deepEqual([store.getState().writers["b_1"], store.getState().writers[`${S1}~b_1`]], ["headless", undefined]);
+  await ev({ type: "writer", server: S1, board: "b_1", writer: "window" });
+  await ev({ type: "hello" });
+  assert.deepEqual([store.getState().writers["b_1"], store.getState().writers[`${S1}~b_1`]], [undefined, "window"]);
+  // the board's removal takes its writer
+  await ev({ type: "board_removed", server: S1, id: "b_1" });
+  assert.equal(`${S1}~b_1` in store.getState().writers, false);
+  // an event of a section that has no tree is dropped, as the other events of a thing are
+  b.calls.length = 0;
+  await ev({ type: "writer", server: "s_cccccccccccc", board: "b_9", writer: "window" });
+  await ev({ type: "scene", server: "s_cccccccccccc", board: "b_9", rev: 1 });
+  assert.deepEqual([b.calls, store.getState().writers["s_cccccccccccc~b_9"]], [[], undefined]);
 });
 
 test("a board tool call of the stream is run by the board side, and its result or its error goes back to the server", async () => {

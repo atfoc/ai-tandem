@@ -36,13 +36,13 @@ func TestLaunchAndRelaunchOutput(t *testing.T) {
 		t.Fatalf("launch wrote %q, want %q", got, want)
 	}
 	first := in.hello(t)
-	if first.InstanceID == "" || first.FeatureLevel != 6 {
+	if first.InstanceID == "" || first.FeatureLevel != 7 {
 		t.Fatalf("hello: %+v", first)
 	}
 
 	l := in.launchJSON(t, "launch")
 	if l.State != "running" || l.Address != in.base() || l.Fingerprint != in.fpr || l.PID != first.Pid || l.InstanceID != first.InstanceID ||
-		l.FeatureLevel != 6 || l.Version != first.Version || l.Home != in.dir {
+		l.FeatureLevel != 7 || l.Version != first.Version || l.Home != in.dir {
 		t.Fatalf("launch -json: %+v, hello %+v", l, first)
 	}
 	// The fingerprint it states is the certificate the server presents, and the address is

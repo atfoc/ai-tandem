@@ -74,7 +74,7 @@ type standIn struct {
 	home       string // the data folder it states; the instance folder's when ""
 	instanceID string // standInID when ""
 	version    string // "dev" when ""
-	level      int    // 6 for this build, 5 for the one before, when 0
+	level      int    // 7 for this build, 5 for the older one of older(), when 0
 	listening  bool   // this build: the client listener serves
 	reloadsOn  bool   // this build: the secret reloads count rises with the signal that ended the pid
 	pid        int
@@ -83,6 +83,8 @@ type standIn struct {
 	port        int // the client port it states (this build) or its own port (the build before)
 	fingerprint string
 	names       []string
+
+	headless any // this build: the "headless" of its /status, left out when nil
 
 	hit atomic.Int64 // the requests it got
 }
@@ -119,8 +121,12 @@ func (s *standIn) this(t *testing.T, root string, serverFile bool) string {
 			client = map[string]any{"listening": true, "address": fmt.Sprintf("https://127.0.0.1:%d", s.port), "port": s.port,
 				"names": s.names, "fingerprint": s.fingerprint, "secretReloads": reloads()}
 		}
-		json.NewEncoder(w).Encode(map[string]any{"client": client, "mcp": map[string]any{
-			"listener": map[string]any{"port": 6006, "url": "http://localhost:6006/mcp", "up": true}, "chats": []any{}}})
+		status := map[string]any{"client": client, "mcp": map[string]any{
+			"listener": map[string]any{"port": 6006, "url": "http://localhost:6006/mcp", "up": true}, "chats": []any{}}}
+		if s.headless != nil {
+			status["headless"] = s.headless
+		}
+		json.NewEncoder(w).Encode(status)
 	})
 	srv := &http.Server{Handler: s.whileAlive(mux)}
 	go srv.Serve(ln)
@@ -193,7 +199,7 @@ func (s *standIn) defaults(root string) {
 		s.version = "dev"
 	}
 	if s.level == 0 {
-		s.level = 6
+		s.level = 7
 	}
 	if s.port == 0 {
 		s.port = 4748

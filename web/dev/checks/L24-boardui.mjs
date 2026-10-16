@@ -14,7 +14,7 @@
 // The pixels of a screenshot are read by the browser's own decoder, in a page of its own (as P7.5-canvas.mjs does).
 import { check, mockEval, seed, until } from "../shot.mjs";
 import { act, byTid, press, tidSel } from "./sel.mjs";
-import { drawer, LIVE } from "./boarddraw.mjs";
+import { drawer, editHere, LIVE } from "./boarddraw.mjs";
 
 export const viewports = ["desktop", "tablet", "phone"];
 
@@ -43,7 +43,7 @@ await check("L24 the board's selection controls and outline follow the view, and
     await none.ctx.close();
     await seed(url, "A2");
     const { ctx, page } = await open({ sel: { board: BOARD, chat: null }, wait: READY });
-    await page.waitForSelector(LIVE, { timeout: 20000 });
+    await editHere(page); // (a board opens as a reader's: the button makes the window its writer)
     await act(page, "select");
     await press(page, byTid(page, "board-chats").first()); // (beside the board; on the phone the chat's screen over it)
     const selection = byTid(page, "ctx-act", { kind: "selection" }).first(), point = byTid(page, "ctx-act", { kind: "point" }).first();
@@ -95,7 +95,7 @@ await check("L24 the board's selection controls and outline follow the view, and
   {
     await seed(url, "A2");
     const { ctx, page } = await open({ sel: { board: BOARD, chat: null }, wait: READY });
-    await page.waitForSelector(LIVE, { timeout: 20000 });
+    await editHere(page); // (a board opens as a reader's: the button makes the window its writer)
     /** The bounds of the pixels of a screenshot that are `GREEN` (the stroke of the shape made by the agent), in CSS pixels, or null. */
     const greenBox = async () => {
       const png = (await page.screenshot({ scale: "css" })).toString("base64");
@@ -162,7 +162,7 @@ await check("L24 the board's selection controls and outline follow the view, and
       await seed(url, "A2");
       const { ctx, page } = await open({ sel: { board: BOARD, chat: null }, ls: { "aiwb.theme": theme }, wait: READY });
       try {
-        await page.waitForSelector(LIVE, { timeout: 20000 });
+        await editHere(page); // (a board opens as a reader's: the button makes the window its writer)
         const count = () => mockEval("return scenes.b_ui.scene.elements.filter((e) => !e.isDeleted).length;", url);
         await drawer(page)();
         if (!await until(async () => await count() === 4, 15000)) { fail(`${theme}: the shape drawn was not stored (${await count()} shapes)`); continue; }

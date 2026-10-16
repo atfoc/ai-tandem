@@ -6,8 +6,13 @@
 // phone is the app's own file), so:
 // - EXCALIDRAW_ASSET_PATH is set here, to the folder of the page, before Excalidraw reads it;
 // - the CDN source is taken out of every FontFace it makes. Without this each font reports a policy violation (or, with no
-//   policy, falls back to the CDN when a file is missing).
-const g = globalThis as { EXCALIDRAW_ASSET_PATH?: string | string[]; FontFace?: typeof FontFace; __aiwbFonts?: boolean };
+//   policy, falls back to the CDN when a file is missing);
+// - every FontFace it makes is kept in `madeFaces`, so that faces.ts can put them in document.fonts and load the pieces a request's
+//   text needs before Excalidraw measures it.
+const g = globalThis as { EXCALIDRAW_ASSET_PATH?: string | string[]; FontFace?: typeof FontFace; __aiwbFonts?: boolean; __aiwbMadeFaces?: FontFace[] };
+
+/** Every FontFace Excalidraw made, in the order it made them (one list per page, whatever the number of bundles that import this). */
+export const madeFaces: FontFace[] = (g.__aiwbMadeFaces ??= []);
 
 if (!g.EXCALIDRAW_ASSET_PATH && typeof location !== "undefined") g.EXCALIDRAW_ASSET_PATH = new URL("./", location.href).href;
 
@@ -21,7 +26,9 @@ if (g.FontFace && !g.__aiwbFonts) {
   g.__aiwbFonts = true;
   const Native = g.FontFace;
   const Wrapped = function (this: unknown, family: string, source: string | BufferSource, descriptors?: FontFaceDescriptors) {
-    return new Native(family, typeof source === "string" ? withoutCdn(source) : source, descriptors);
+    const face = new Native(family, typeof source === "string" ? withoutCdn(source) : source, descriptors);
+    madeFaces.push(face);
+    return face;
   } as unknown as typeof FontFace;
   Wrapped.prototype = Native.prototype;
   g.FontFace = Wrapped;

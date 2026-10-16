@@ -15,7 +15,7 @@
 // where the check had only accepted it).
 import { callMatcher, check, dragResizer, mockEval, seed, until } from "../shot.mjs";
 import { byTid, openChat, press, showList } from "./sel.mjs";
-import { drawer, LIVE } from "./boarddraw.mjs";
+import { drawer, editHere } from "./boarddraw.mjs";
 import { section, sectionToggle } from "./side.mjs";
 
 export const viewports = ["desktop", "tablet", "phone"];
@@ -149,7 +149,7 @@ await check("SEC.9 the app's storage holds nothing of a section's chat or whiteb
   {
     await seed(url, "SEC");
     const q = await open({ sel: { board: `${STUDIO}~b_loose`, chat: null }, wait: '[data-testid="board-bar"]' }), pg = q.page;
-    await pg.waitForSelector(LIVE, { timeout: 20000 });
+    await editHere(pg); // (a board opens as a reader's: the button makes the window its writer)
     const count = () => mockEval(`return onServer("${STUDIO}", () => scenes.b_loose.scene.elements.filter((e) => !e.isDeleted).length);`, url);
     const draw = drawer(pg);
     /** Whether the page, asked whether it may unload, asks the user not to (a `beforeunload` nobody has prevented is not asking). */
@@ -182,7 +182,7 @@ await check("SEC.9 the app's storage holds nothing of a section's chat or whiteb
     pg.on("dialog", (d) => { dialogs.push(d.type()); void d.accept().catch(() => {}); });
     await pg.reload(); await byTid(pg, "side-section").first().waitFor({ state: "attached", timeout: 15000 });
     if (!dialogs.includes("beforeunload")) fail(`a drawing waits for its server and the reload was not met by the browser's dialog (dialogs: ${J(dialogs)})`);
-    if (await pg.locator(".excalidraw").count() || await byTid(pg, "board-off").count() || await byTid(pg, "takeover-panel").count() || await byTid(pg, "board-canvas").count()) fail("after a reload during the outage the section's board is on the page");
+    if (await pg.locator(".excalidraw").count() || await byTid(pg, "board-off").count() || await byTid(pg, "board-role").count() || await byTid(pg, "board-canvas").count()) fail("after a reload during the outage the section's board is on the page");
     await clean("after a reload during the board's outage", pg);
     await mockEval(`setServerState("${STUDIO}", "connected");`, url);
   }

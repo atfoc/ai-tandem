@@ -20,7 +20,7 @@ export type Step = {
   role: BoardRole | null; // the board's role from here on; null: not asked
   forget: boolean;        // the kept scene and its save state go: the scene is read again when wanted
   flush: boolean;         // the edit that waits is written now
-  dropped: boolean;       // an edit that waited is lost: the panel or the note on the canvas says so
+  dropped: boolean;       // an edit that waited is lost: the note on the canvas or the reader's bar says so
 };
 
 /** The board is this window's (a take answered `held`, or a `held` event), at the stored
@@ -31,6 +31,15 @@ export function onGrant(cache: Cache, rev: number): Step {
   if (!cache) return { role: "held", forget: false, flush: false, dropped: false };
   if (cache.base === rev) return { role: "held", forget: false, flush: cache.unsaved, dropped: false };
   return { role: "held", forget: true, flush: false, dropped: cache.unsaved };
+}
+
+/** The stored scene of a board this window does not hold moved to the revision rev (a `scene` event, or the answer of a `follow`):
+ *  a scene kept at another revision is older than the stored one, so it goes (the screen reads the stored one) and an edit that
+ *  waited on it with it, since saving it would overwrite the newer drawing (D16). A scene at that revision, or none, stays.
+ *  The role stays. null: nothing changes. */
+export function onMoved(cache: Cache, rev: number, role: BoardRole | null): Step | null {
+  if (!cache || cache.base === rev) return null;
+  return { role, forget: true, flush: false, dropped: cache.unsaved };
 }
 
 /** The board is not this window's to write: an edit that waits can no longer be saved, so it
@@ -48,7 +57,7 @@ const kept = (role: BoardRole): Step => ({ role, forget: false, flush: false, dr
  *  for the board's server, see kept. */
 export const onLost = (cache: Cache, keep = false): Step => keep ? kept("lost") : without("lost", cache);
 
-/** The answer of a take, also of the one made if free after a reconnect. `held`: the grant.
+/** The answer of a take (the user's button). `held`: the grant.
  *  `busy` (only if free): another window holds the board. `waiting`: the holder was asked, and
  *  a `held` event follows; nothing is dropped until then. null: the answer changes nothing (a
  *  take if free that was overtaken by a take). keep: the edit was kept at a loss (onLost), and a
@@ -69,35 +78,18 @@ export const onRefusal = (code: "stale" | "not_holder", role: BoardRole | null):
   ({ role: code === "not_holder" ? "other" : role, forget: true, flush: false, dropped: true });
 
 /** A new stream holds nothing and waits for nothing on the server: the boards that were held or
- *  being taken are not asked for any more. What is known of the other windows stays until the
- *  take that follows the snapshot. */
+ *  being taken are not asked for any more, and nothing asks for them again by itself: they are a
+ *  reader's until the user presses the button. What is known of the other windows stays. */
 export function afterReconnect(roles: Record<string, BoardRole>): Record<string, BoardRole> {
   return Object.fromEntries(Object.entries(roles).filter(([, r]) => r === "other" || r === "lost"));
 }
 
-/** Whether the take-over panel shows in place of the board's canvas. */
-export const showsPanel = (role: BoardRole | null | undefined): role is "taking" | "other" | "lost" =>
-  role === "taking" || role === "other" || role === "lost";
-
-/** What selecting a board asks of the server. "take": a window that holds the board is asked to
- *  hand it over; that is for the user's action on the board itself, a click on its row or on a
- *  reference to it. "free": the board is taken only when no window holds it; that is for a
- *  selection that names one of its chats (ifFree: a click on a chat's row or on a reference to a
- *  chat, an agent's show_board), since a window that does not hold a board uses its chats fully.
- *  null: nothing is asked. A board this window holds or is taking needs no take. One that is on
- *  screen already (same) is taken from another window only by a click on its own row in the
- *  sidebar (row) or by "Use here" on its panel: any other selection asks for it only when it was
- *  not asked for yet, if free. */
-export function takeOnSelect(role: BoardRole | null | undefined, same: boolean, ifFree: boolean, row = false): "take" | "free" | null {
-  if (role === "held" || role === "taking") return null;
-  if (row) return "take";
-  if (same) return role ? null : "free";
-  return ifFree ? "free" : "take";
-}
+/** Whether the view of a board is in view mode, and nothing of it is kept or written: every role but `held`. */
+export const readOnly = (role: BoardRole | null | undefined): boolean => role !== "held";
 
 /** How many selected elements the composer of a chat on `board` offers for its message. The page
  *  keeps one count, of the canvas last drawn on: it is this board's only while the board is on
- *  screen (onScreen) and its canvas shows, which is when this window holds it. Behind the
- *  take-over panel, or with another board on screen, the composer is as with nothing selected. */
+ *  screen (onScreen) and this window holds it. As a reader (the canvas is in view mode), or with
+ *  another board on screen, the composer is as with nothing selected. */
 export const selectedOn = (count: number, board: string | null | undefined, onScreen: string | null | undefined, role: BoardRole | null | undefined): number =>
   board && board === onScreen && role === "held" ? count : 0;

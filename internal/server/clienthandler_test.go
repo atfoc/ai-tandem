@@ -164,7 +164,7 @@ func TestClientIDAndLevel(t *testing.T) {
 	wantReply(t, clientDoAs(h, own, "GET", "/api/hello", testHost, "", ""), "hello with the server's own id", 200, "")
 
 	// A level below the server's, or none, is refused with the sentence; hello still answers.
-	for _, level := range []string{"", "5", "0", "-1", "six", "6.5", " 6"} {
+	for _, level := range []string{"", "6", "5", "0", "-1", "six", "7.5", " 7"} {
 		req := httptest.NewRequest("GET", "/api/state", nil)
 		req.Host = testHost
 		req.Header.Set(SecretHeader, testSecret)
@@ -190,7 +190,7 @@ func TestClientIDAndLevel(t *testing.T) {
 		t.Errorf("a client of level 5 on /api/events: %d %s", w.Code, w.Body)
 	}
 	wantReply(t, clientDoAs(h, "", "GET", "/api/hello", testHost, "", ""), "hello for a client of level 5", 200, "")
-	for _, level := range []string{"6", "7", "100"} {
+	for _, level := range []string{"7", "8", "100"} {
 		req := httptest.NewRequest("GET", "/api/state", nil)
 		req.Host = testHost
 		req.Header.Set(SecretHeader, testSecret)
@@ -239,7 +239,7 @@ var wantRoutes = []string{
 	"POST /api/chats/{id}/archive", "POST /api/chats/{id}/unarchive", "DELETE /api/chats/{id}", "POST /api/chats/{id}/unfollow",
 	"GET /api/dirs", "GET /api/usage/{agent}",
 	"POST /api/boards", "GET /api/boards/{id}/scene", "PUT /api/boards/{id}/scene", "POST /api/boards/{id}/take",
-	"POST /api/boards/{id}/release", "POST /api/boards/{id}/rename", "PATCH /api/boards/{id}", "POST /api/boards/{id}/archive",
+	"POST /api/boards/{id}/release", "POST /api/boards/{id}/follow", "POST /api/boards/{id}/unfollow", "POST /api/boards/{id}/rename", "PATCH /api/boards/{id}", "POST /api/boards/{id}/archive",
 	"POST /api/boards/{id}/unarchive", "POST /api/boards/{id}/seen", "DELETE /api/boards/{id}",
 	"POST /api/rpc-reply",
 	"GET /api/library", "POST /api/library/{server}/groups", "PATCH /api/library/{server}/groups/{id}",
@@ -338,8 +338,8 @@ func TestClientAPIIsTheTable(t *testing.T) {
 			t.Errorf("%s (%s %s): status %d body %q, want 404 not found", p, method, path, w.Code, w.Body)
 		}
 	}
-	if served != len(ClientRoutes) || served != 51 {
-		t.Errorf("%d routes of the table were asked for, the table has %d, want 51", served, len(ClientRoutes))
+	if served != len(ClientRoutes) || served != 53 {
+		t.Errorf("%d routes of the table were asked for, the table has %d, want 53", served, len(ClientRoutes))
 	}
 	if n := len(e.s.Bridge.Followers(editorbridge.Chat("x"))); n != 0 {
 		t.Errorf("%d followers of the chat the reads named: a read with no open stream follows nothing", n)

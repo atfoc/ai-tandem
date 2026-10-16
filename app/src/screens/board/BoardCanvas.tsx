@@ -1,17 +1,17 @@
 // The canvas of an open board (the old page's Canvas.tsx on the old page): the board view where the stand-in of the shell was, and
-// over it what the app draws (Overlays.tsx). A board another window holds shows the take-over panel in its place; a board of a
+// over it what the app draws (Overlays.tsx). The canvas shows for every role (in view mode unless this window holds the board),
+// with the bar that says which it is and offers "Edit here" (RoleBar.tsx); a board of a
 // section whose server is not connected, with no scene kept here, or that is no longer on that server, the view that says so
 // (BoardOff). A board that is open when its server drops stays open and is drawn on: its edit waits in this window, under the
 // banner (SaveBanner). The board side (AD-55, `boardApp`) reads the scene and sends it to the view; this tells it which board
 // is wanted and gives it the view's channel.
 import { NavigationContext } from "@react-navigation/native";
-import { useContext, useEffect, useState, useSyncExternalStore } from "react";
+import { useContext, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Linking, StyleSheet, View } from "react-native";
 
 import { boardView } from "@aiwb/core/logic/boardsave.ts";
 import { ApiError } from "@aiwb/core/api.ts";
 import { serverOfKey } from "@aiwb/core/logic/keys.ts";
-import { showsPanel } from "@aiwb/core/logic/roles.ts";
 import { serverConnected } from "@aiwb/core/logic/serverlists.ts";
 import { getState, setRole } from "@aiwb/core/state/store.ts";
 
@@ -30,7 +30,7 @@ import { engine } from "./engine.ts";
 import { onPhone } from "./phone.ts";
 import { DroppedNote, FlashLayer, PickLayer, Presence } from "./Overlays.tsx";
 import { setPickGo } from "./refs.ts";
-import { TakeoverPanel } from "./TakeoverPanel.tsx";
+import { RoleBar } from "./RoleBar.tsx";
 import { FILL } from "./fill.ts";
 
 // The view of the board on screen (where it is scrolled and how far it is zoomed), for the browser checks of the pick layer (P7.4-board.mjs): a build
@@ -63,12 +63,9 @@ export function BoardCanvas({ board }: { board: string }) {
   const b = useStore((s) => s.boards[board]);
   const role = useStore((s) => s.roles[board]);
   const gen = useStore((s) => s.sceneGen[board] ?? 0); // raised when the scene kept for the board was dropped: it is read again
-  const dropped = useStore((s) => !!s.dropped[board]);
   const connected = useStore((s) => serverConnected(s, serverOfKey(board))); // the page holds the tree of the board's server
   const gone = useStore((s) => !!s.gone[board]); // the board is no longer on its server
   const known = !!b, archived = !!b?.archived;
-  // An archived board is nobody's to write: it shows read-only whatever window held it last.
-  const panel = known && !archived && showsPanel(role);
   const [err, setErr] = useState("");
   const [away, setAway] = useState(false); // the read of the scene was answered 503: the board's server is not connected
   const [channel, setChannel] = useState<HostChannel | null>(null);
@@ -78,36 +75,46 @@ export function BoardCanvas({ board }: { board: string }) {
   useEffect(() => onKey(boardKeyHandler(onPhone)), []);
   useEffect(() => { setPickGo(select); }, []); // (the phone's wait for a point goes between the chat and the board by the shell's own selection)
 
-  // A board on screen that was not asked for (it was unarchived, or it was let go because nobody waited for it) is taken
-  // if no other window holds it. An archived one has no role: once unarchived it is asked for anew.
-  useEffect(() => {
-    if (!known) return;
-    if (archived) { if (role) setRole(board, null); }
-    else if (!role) void boardApp.takeBoard(board, true);
-  }, [board, known, archived, role]);
+  // An archived board is nobody's to write: it shows read-only whatever window held it last, and has no role. A board on screen
+  // that is not archived is never taken here: a window takes it when the user presses the button of the bar.
+  useEffect(() => { if (known && archived && role) setRole(board, null); }, [board, known, archived, role]);
 
   // (a board of a section: gone there; or that server is away and this window keeps no scene of it. When the section's
   // tree arrives the scene is read again: sectionBack)
   const off = boardView({ connected: connected && !away, gone }, boardApp.scene(board) !== undefined);
-  const wanted = known && !panel && off === "canvas" && !err;
+  const wanted = known && off === "canvas" && !err;
 
   // A read that failed is tried again for another board, and once the scene kept for the board was dropped (the section is back).
   useEffect(() => { setErr(""); setAway(false); }, [board, gen]);
 
   // The board is shown in the view once the view is there; a read that fails says why. Declared before the attach below: on
   // the way out the board is written first (the view is asked for its scene), then the view is let go.
+  const shownGen = useRef(-1); // the gen the board was last asked for with
+  const ask = (live: () => boolean) => {
+    shownGen.current = gen;
+    boardApp.show(board).catch((e: unknown) => {
+      if (!live()) return;
+      setErr((e as Error)?.message ?? String(e));
+      setAway(e instanceof ApiError && e.status === 503);
+    });
+  };
   useEffect(() => {
     if (!wanted || !channel) return;
     let live = true;
     const me = Symbol();
     owner = me;
-    boardApp.show(board).catch((e: unknown) => {
-      if (!live) return;
-      setErr((e as Error)?.message ?? String(e));
-      setAway(e instanceof ApiError && e.status === 503);
-    });
+    ask(() => live);
     return () => { live = false; if (owner === me) { owner = null; boardApp.hide(); } };
-  }, [board, gen, wanted, channel]);
+  }, [board, wanted, channel]);
+
+  // The scene kept for the board was dropped (gen): the board shown is read again and applied in place, not hidden first (the
+  // view keeps its scroll and zoom, and a reader following a new revision sees no loading state).
+  useEffect(() => {
+    if (!wanted || !channel || shownGen.current === gen) return;
+    let live = true;
+    ask(() => live);
+    return () => { live = false; };
+  }, [gen]);
 
   useEffect(() => {
     if (!channel) return;
@@ -120,7 +127,6 @@ export function BoardCanvas({ board }: { board: string }) {
   let content: React.ReactNode;
   if (!b) { state = "empty"; content = <View {...tid("canvas-empty")} style={styles.fill} />; }
   else if (off === "gone") { state = "off"; content = <BoardOff board={board} view="gone" />; }
-  else if (panel) { state = "takeover"; content = <TakeoverPanel board={board} role={role as "taking" | "other" | "lost"} dropped={dropped} />; }
   else if (off !== "canvas") { state = "off"; content = <BoardOff board={board} view={off} />; }
   else {
     const mine = status.board === board;
@@ -140,6 +146,7 @@ export function BoardCanvas({ board }: { board: string }) {
           <FlashLayer board={board} />
           <Presence board={board} />
         </PickLayer>
+        {!archived && <RoleBar board={board} />}
         <SaveBanner board={board} />
         <DroppedNote board={board} />
       </>

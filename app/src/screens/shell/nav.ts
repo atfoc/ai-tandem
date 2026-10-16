@@ -8,7 +8,6 @@ import { api, type ChatPlace } from "@aiwb/core/api.ts";
 import { sideSaved } from "@aiwb/core/logic/layout.ts";
 import { selOf } from "@aiwb/core/logic/sel.ts";
 import { reachable } from "@aiwb/core/logic/sections.ts";
-import { takeOnSelect } from "@aiwb/core/logic/roles.ts";
 import { boardChats } from "@aiwb/core/logic/tree.ts";
 import { dropLeft, loadItems, loadTree } from "@aiwb/core/state/conn.ts";
 import type { Ui } from "@aiwb/core/state/ports.ts";
@@ -41,20 +40,15 @@ export { attempt, confirm, reportError };
 
 // ---------------------------------------------------------------- selection
 
-/** Selects a board, with one of its chats in the panel, or a plain chat alone. A board this window does not hold is asked for:
- *  taken from a window that holds it, or with ifFree (the selection is not the user's own, or it is of one of the board's chats
- *  and not of the board) only when no window does (logic/roles.ts takeOnSelect). row: the press was on the board's own row, which
- *  takes the board also when it is the one on screen.
+/** Selects a board, with one of its chats in the panel, or a plain chat alone. Selecting never takes a board: the canvas shows it in
+ *  view mode (the bar over it offers "Edit here"), and a window becomes its writer only when the user presses that button (or
+ *  has made the board: newBoard).
  *  What was on screen of a section whose server is not connected, or that is no longer on its server, was kept only for being on
  *  screen: left, it goes, and cannot be opened again until that server is back (conn.ts dropLeft). */
-export function select(sel: Sel, o: { ifFree?: boolean; row?: boolean } = {}): void {
+export function select(sel: Sel): void {
   const prev = getState().sel;
   if (prev.board && prev.board !== sel.board) void boardApp.flush(prev.board); // closing a board writes it
   setState({ sel }); safeSet("aiwb.sel", JSON.stringify(sel));
-  // (the board that is on screen already is never taken from another window by picking one of its chats: those are used without
-  // the board, and its own row or "Use here" is what takes it)
-  const take = sel.board ? takeOnSelect(getState().roles[sel.board], sel.board === prev.board, !!o.ifFree, !!o.row) : null;
-  if (sel.board && take) void boardApp.takeBoard(sel.board, take === "free");
   if (sel.chat !== prev.chat) setState({ subDrawer: null });
   if (sel.board && getState().boards[sel.board]?.new && reachable(getState(), sel.board)) void api.seenBoard(sel.board).catch(() => {});
   if (sel.board && sel.chat) lastChat.set(sel.board, sel.chat);
@@ -70,20 +64,18 @@ export function select(sel: Sel, o: { ifFree?: boolean; row?: boolean } = {}): v
   }
 }
 
-/** Opens a board with the last chat opened on it if it still exists, else its newest chat, else none. row: the press was on
- *  the board's own row in the sidebar (select). On the phone a board opens alone, with the canvas on screen (the stack's chat screen
+/** Opens a board with the last chat opened on it if it still exists, else its newest chat, else none. On the phone a board opens alone, with the canvas on screen (the stack's chat screen
  *  would hide it): its chat is one press away on the bar ("Chats N"); `withChat` says otherwise. */
-export function openBoard(id: string, row = false, withChat = layoutOf(Dimensions.get("window").width) !== "phone"): void {
+export function openBoard(id: string, withChat = layoutOf(Dimensions.get("window").width) !== "phone"): void {
   const s = getState();
   const last = lastChat.get(id);
   const lc = last && s.chats[last]?.board === id && (s.showArchived || !s.chats[last].archived) ? last : null;
-  select({ board: id, chat: withChat ? lc ?? boardChats(s.chats, id, s.showArchived)[0]?.id ?? null : null }, { row });
+  select({ board: id, chat: withChat ? lc ?? boardChats(s.chats, id, s.showArchived)[0]?.id ?? null : null });
 }
 
-/** A board chat opens on its board; a plain chat opens alone. The chat's board is taken only if no window holds it: the chat is
- *  what was picked, and it is used without the board. */
+/** A board chat opens on its board; a plain chat opens alone. */
 export function openChat(c: ChatView): void {
-  select(selOf(c), { ifFree: true });
+  select(selOf(c));
 }
 
 /** "New chat": made at once where it was asked for, in a group or on a board. That place decides the server the chat lives on,
@@ -97,11 +89,13 @@ export async function newChat(where: ChatPlace): Promise<void> {
   } catch (e) { reportError(CHAT_FAILED, e); }
 }
 
-/** Returns the new board's key. The board is made on the server its group is on. */
+/** Returns the new board's key. The board is made on the server its group is on, and this window takes it at once: making a board
+ *  is the person's own act, and a new empty board opened view-only would ask for a second press (D12). */
 export async function newBoard(group: string): Promise<string> {
   const b = await api.newBoard(group);
   upsertBoard(b);
   select({ board: b.id, chat: null });
+  void boardApp.takeBoard(b.id);
   return b.id;
 }
 

@@ -236,7 +236,7 @@ describe("the test host", () => {
     // (what the server program prints for the app: `launch -json` one line, `secret` the secret)
     fs.writeFileSync(bin, `#!${process.execPath}
 const a = process.argv.slice(2);
-if (a.includes("launch")) console.log(JSON.stringify({ state: "running", address: ${JSON.stringify(local.address)}, fingerprint: ${JSON.stringify(local.fingerprint)}, version: "1.2.3", featureLevel: 6, instanceId: ${JSON.stringify(local.instanceId)}, pid: 1, home: ${JSON.stringify(home)} }));
+if (a.includes("launch")) console.log(JSON.stringify({ state: "running", address: ${JSON.stringify(local.address)}, fingerprint: ${JSON.stringify(local.fingerprint)}, version: "1.2.3", featureLevel: 7, instanceId: ${JSON.stringify(local.instanceId)}, pid: 1, home: ${JSON.stringify(home)} }));
 else if (a.includes("secret")) console.log("local-secret-0123456789");
 else process.exit(2);
 `, { mode: 0o755 });

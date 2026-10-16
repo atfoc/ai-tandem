@@ -63,7 +63,7 @@ test("fake: a stream sends chunk and end events by request; a cut ends it with r
   const events: Array<[string, unknown]> = [];
   for (const name of ["chunk", "end", "closed"] as const) fake.addListener(name, ((e: unknown) => { events.push([name, e]); }) as any);
   const { session } = await fake.openSession({ request: "o", host: server.host, port: server.port, selfSigned: true, pin: server.fingerprint, ...open });
-  const head = await fake.stream({ session, request: "a", method: "GET", path: "/api/events", headers: { "x-aiwb-secret": server.secret, "x-aiwb-level": "6" }, headersMs: 0 });
+  const head = await fake.stream({ session, request: "a", method: "GET", path: "/api/events", headers: { "x-aiwb-secret": server.secret, "x-aiwb-level": "7" }, headersMs: 0 });
   assert.equal(head.status, 200);
   server.write("data: é\n\n");
   await new Promise((r) => setTimeout(r, 10));

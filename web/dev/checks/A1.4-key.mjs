@@ -13,6 +13,7 @@
 import { check, seed, until } from "../shot.mjs";
 import { act, byTid, IDS, press } from "./sel.mjs";
 import { sideMenu } from "./side.mjs";
+import { editHere } from "./boarddraw.mjs";
 
 export const viewports = ["desktop", "tablet"];
 
@@ -70,6 +71,7 @@ await check("A1.4 ⌘B reaches neither the canvas nor the composer, and does not
   // ---- the canvas of a board this window may edit, its three shapes selected
   await run({ sel: { board: "b_ui" } }, async (page) => {
     await byTid(page, "board-canvas", { state: "ready" }).first().waitFor({ state: "attached", timeout: 20000 }); // (a select-all before the scene is drawn selects nothing)
+    await editHere(page); // (a board opens as a reader's: the button makes the window its writer, and its canvas takes the keys)
     await act(page, "select");
     // (the shapes are selected when Excalidraw draws the panel of their properties, or, in its narrow layout, shows the bottom bar's Edit button, which is
     // hidden while nothing is selected; the hidden sidebar widens the stage to the wide layout, which has the panel)

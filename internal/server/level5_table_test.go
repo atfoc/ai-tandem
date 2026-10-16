@@ -37,6 +37,7 @@ var l5Table = []string{
 	"GET /api/dirs", "GET /api/usage/{agent}",
 	"POST /api/boards",
 	"GET /api/boards/{id}/scene", "PUT /api/boards/{id}/scene", "POST /api/boards/{id}/take", "POST /api/boards/{id}/release",
+	"POST /api/boards/{id}/follow", "POST /api/boards/{id}/unfollow",
 	"POST /api/boards/{id}/rename", "POST /api/boards/{id}/archive", "POST /api/boards/{id}/unarchive", "POST /api/boards/{id}/seen",
 	"DELETE /api/boards/{id}", "PATCH /api/boards/{id}",
 	"POST /api/rpc-reply",
@@ -161,7 +162,7 @@ func TestLevel5TableRoutesServeAClient(t *testing.T) {
 	ask := rows.ask
 	const done = `{"ok":true}`
 
-	ask("GET /api/hello", "", "", nil, 200, `"featureLevel":6`)
+	ask("GET /api/hello", "", "", nil, 200, `"featureLevel":7`)
 	ask("GET /api/state", "", "", nil, 200, chat)
 	ask("POST /api/client/flushed", "", "", nil, 200, done)
 
@@ -212,6 +213,8 @@ func TestLevel5TableRoutesServeAClient(t *testing.T) {
 	ask("POST /api/boards/{id}/take", board, "", nil, 200, `"state":"held"`)
 	ask("PUT /api/boards/{id}/scene", board, "?rev=0", `{"type":"excalidraw","elements":[{"id":"by-x"}]}`, 200, `"rev":1`)
 	ask("POST /api/boards/{id}/release", board, "", nil, 200, `{"state":"free"}`)
+	ask("POST /api/boards/{id}/follow", board, "", nil, 200, `{"rev":1,"writer":""}`)
+	ask("POST /api/boards/{id}/unfollow", board, "", nil, 200, done)
 	ask("POST /api/boards/{id}/rename", board, "", `{"name":"renamed-by-x"}`, 200, `"name":"renamed-by-x"`)
 	ask("PATCH /api/boards/{id}", board, "", `{"group":"`+model.Ungrouped+`"}`, 200, done)
 	ask("POST /api/boards/{id}/seen", board, "", nil, 200, done)

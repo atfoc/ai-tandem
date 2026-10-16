@@ -139,6 +139,9 @@ func TestBoardRoutesOfAnAPIClient(t *testing.T) {
 		}
 		return decode[obj](t, string(out))
 	}
+	if got := call(200, "POST /api/boards/{id}/follow", nil); got["rev"] != 0.0 || got["writer"] != "window" {
+		t.Fatalf("the follow: %v", got)
+	}
 	if got := call(200, "POST /api/boards/{id}/release", nil); got["state"] != "free" {
 		t.Fatalf("the release of the new board: %v", got)
 	}
@@ -179,6 +182,9 @@ func TestBoardRoutesOfAnAPIClient(t *testing.T) {
 	}
 	if got := call(400, "PATCH /api/boards/{id}", obj{"group": "g_nowhere1"}); got["error"] != `no such group "g_nowhere1"` || got["code"] != nil {
 		t.Fatalf("the move into a group that is not there: %v", got)
+	}
+	if got := call(200, "POST /api/boards/{id}/unfollow", nil); got["ok"] != true {
+		t.Fatalf("the unfollow: %v", got)
 	}
 	if got := call(200, "POST /api/boards/{id}/seen", nil); got["ok"] != true {
 		t.Fatalf("seen: %v", got)
@@ -338,8 +344,11 @@ func TestBoardRoutesServeEveryBoard(t *testing.T) {
 			body = drawing("nowhere")
 		}
 		status, out := x.Do(method, path, body)
-		if route == "POST /api/boards/{id}/release" {
-			if status != 200 || strings.TrimSpace(string(out)) != `{"state":"none"}` {
+		if want, ends := map[string]string{
+			"POST /api/boards/{id}/release":  `{"state":"none"}`,
+			"POST /api/boards/{id}/unfollow": `{"ok":true}`,
+		}[route]; ends {
+			if status != 200 || strings.TrimSpace(string(out)) != want {
 				t.Errorf("%s of a board that is not there: %d %s", route, status, out)
 			}
 			continue

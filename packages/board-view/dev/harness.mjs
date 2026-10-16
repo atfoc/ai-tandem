@@ -442,6 +442,7 @@ async function checks(p, ctx) {
 // parity inventory), on boards of its own: nothing here depends on the steps before it but the page being up.
 async function behaviours(p, ctx) {
   const t = (name) => console.log(`  ${p.name}: ${name}`);
+  await coldFaces(p, t);
   let rev = 200;
   const snap = async () => (await p.ok({ op: "snapshot" })).value;
   const byKey = (s, k) => s.elements.find((e) => !e.isDeleted && e.customData?.key === k);
@@ -459,6 +460,31 @@ async function behaviours(p, ctx) {
   const gapTo = (pt, b) => Math.hypot(Math.max(b.x - pt[0], 0, pt[0] - (b.x + b.width)), Math.max(b.y - pt[1], 0, pt[1] - (b.y + b.height)));
   const FONT = { hand: 5, normal: 6, code: 8 }; // Excalidraw's FONT_FAMILY: Excalifont, Nunito, Comic Shanns
   const ROUND = 3;                              // ROUNDNESS.ADAPTIVE_RADIUS
+
+  // ---- what an apply adds has valid fractional indices, so the board on screen and the same requests on given elements end with the
+  // same `index` and `version` per element (src/indices.ts; Excalidraw's own repair on screen has nothing left to do)
+  {
+    await board("bi");
+    const steps = [
+      { create: [{ type: "rectangle", key: "i1", x: 0, y: 0, width: 160, height: 80, label: "One" }, { type: "ellipse", key: "i2", x: 300, y: 0, width: 100, height: 60 }] },
+      { create: [{ type: "rectangle", key: "i3", x: 0, y: 200, width: 160, height: 80 }, { type: "text", key: "i4", x: 300, y: 200, text: "four" }] },
+      { update: [{ ref: { key: "i1" }, label: "Relabelled" }] },
+    ];
+    let given = [];
+    for (const params of steps) {
+      await apply(params);
+      given = (await p.ok({ op: "apply", target: { elements: given }, rev: ++rev, params })).value.elements;
+    }
+    const shape = (els) => {
+      const keyOfId = new Map(els.filter((e) => e.customData?.key).map((e) => [e.id, e.customData.key]));
+      return els.map((e) => ({ what: e.customData?.key ?? (e.containerId ? `label of ${keyOfId.get(e.containerId)}` : e.type), index: e.index, version: e.version, isDeleted: e.isDeleted }));
+    };
+    const live = shape((await snap()).elements), off = shape(given);
+    assert.ok(live.length >= 6, `the board has its elements, labels and the old label (${live.length})`);
+    assert.deepEqual(live, off, "on screen and on given elements, every element has the same index and version");
+    assert.ok(live.every((e, n) => typeof e.index === "string" && (n === 0 || e.index > live[n - 1].index)), `the indices are strictly increasing: ${live.map((e) => e.index)}`);
+    t("two creates and a relabel: the same index and version on screen and on given elements, strictly increasing");
+  }
 
   // ---- shapes an agent makes start clean, unless it asks for another look; an update never gets the defaults (D-AG-02)
   await board("b4");
@@ -761,6 +787,90 @@ async function behaviours(p, ctx) {
   const refused = await p.page.evaluate(() => { const v = window.__csp ?? []; window.__csp = []; return v; });
   assert.deepEqual(refused.filter((x) => x !== "script-src: wasm-eval"), [], "a picture dropped on the board broke no rule of the page's policy but the one against WebAssembly");
   t("a dropped scene file is blocked; a dropped picture is added");
+
+  // ---- a reader's board follows a `load` of the board it shows in place: the same Excalidraw, the reader's scroll and zoom, no `changed` (D6b)
+  {
+    // (a stored board's elements have their fractional index, as Excalidraw gave it: an element without one is given one by updateScene, which is a new version)
+    const rect = (id, x0, y0, version = 1) => ({ ...box(id, x0, y0), version, isDeleted: false, index: id === "w1" ? "a0" : "a1" });
+    const scene = (elements, files = {}, appState = {}) => ({ elements, files, appState });
+    const [r0] = (await p.ok({ op: "restore", elements: [rect("w1", 100, 100)] })).value.elements;
+    const [r1] = (await p.ok({ op: "restore", elements: [{ ...rect("w1", 100, 100), version: 2, x: 140 }] })).value.elements;
+    const [r2] = (await p.ok({ op: "restore", elements: [rect("w2", 300, 200)] })).value.elements;
+    let mark = await p.mark();
+    await p.send({ t: "load", board: "rd", viewMode: true, theme: { mode: "light", filter: null }, style: {}, scene: scene([r0], {}, { scrollX: 0, scrollY: 0, zoom: { value: 1 } }) });
+    await p.until((m) => m.t === "loaded" && m.board === "rd", "loaded rd", { from: mark });
+    // the reader looks around: scrolls the board
+    const at = await p.page.evaluate(() => { const r = document.querySelector("canvas.interactive").getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; });
+    mark = await p.mark();
+    await p.page.mouse.move(at.x, at.y);
+    await p.page.mouse.wheel(0, 240);
+    const scrolled = (await p.until((m) => m.t === "view" && m.board === "rd" && m.scrollY !== 0, "the reader's scroll", { from: mark })).m;
+    await p.page.evaluate(() => { document.querySelector(".excalidraw").__same = true; }); // (a new Excalidraw would be a new element)
+    const quiet = await p.mark();
+    // the writer saved: the app sends the board again, with the stored (other) scroll
+    const files = { f1: { mimeType: "image/png", id: "f1", dataURL: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==", created: 1 } };
+    await p.send({ t: "load", board: "rd", viewMode: true, theme: { mode: "light", filter: null }, style: {}, scene: scene([r1, r2], files, { scrollX: 0, scrollY: 0, zoom: { value: 1 }, viewBackgroundColor: "#ffec99" }) });
+    const again = await p.until((m) => m.t === "loaded" && m.board === "rd", "loaded again", { from: quiet });
+    await p.page.waitForTimeout(700);
+    const after = (await p.out()).slice(quiet);
+    assert.equal(await p.page.evaluate(() => document.querySelector(".excalidraw").__same === true), true, "the same Excalidraw: no remount");
+    assert.deepEqual(after.filter((m) => m.t === "changed"), [], "the update itself changed nothing");
+    assert.deepEqual(after.filter((m) => m.t === "view" && m.scrollY === 0), [], "the stored scroll did not throw the reader back");
+    const sn = await snap();
+    assert.deepEqual(sn.elements.filter((e) => !e.isDeleted).map((e) => [e.id, e.x]), [["w1", 140], ["w2", 300]], "the scene is the loaded one");
+    assert.equal(sn.appState.scrollY, scrolled.scrollY, "the reader's scroll stays");
+    assert.equal(sn.appState.viewBackgroundColor, "#ffec99", "the background of the message");
+    assert.ok(sn.files.f1, "the new file is added");
+    // (no undo step: undo has nothing to take back)
+    await p.page.keyboard.press("ControlOrMeta+z");
+    await p.page.waitForTimeout(200);
+    assert.deepEqual((await snap()).elements.filter((e) => !e.isDeleted).map((e) => e.id), ["w1", "w2"], "undo does not take the loaded scene back");
+    assert.equal(again.m.board, "rd");
+    t("a reader's board follows a load in place, keeps its scroll");
+  }
+}
+
+/** A text is measured with the faces it needs even in a page that has shown no board (EN2, 8.1 of plans/headless-board/engine.md): a page that
+ *  has not drawn a text of a font in a script measures it in a fallback font (Nunito, Cyrillic and Latin Extended: 320.83 px for 353.26).
+ *  The width `apply` answers in such a page is the one after the faces were loaded, on given elements and on the live canvas. */
+async function coldFaces(p, t) {
+  const text = "Сервис авторизации — Žluťoučký kůň";
+  const params = (key) => ({ create: [{ type: "text", key, x: 0, y: 0, text, fontFamily: "normal" }, { type: "rectangle", key: key + "-box", x: 0, y: 100, width: 160, height: 60, label: { text, fontFamily: "normal" } }] });
+  const widths = (els) => els.filter((e) => !e.isDeleted && e.type === "text").map((e) => e.width);
+  const fresh = async () => {
+    const c = await p.cold();
+    await c.until((m) => m.t === "ready", "ready");
+    return c;
+  };
+
+  // a page that has shown no board: the engine path (given elements) first, then the same request after the faces were loaded
+  const a = await fresh();
+  try {
+    const cold = widths((await a.ok({ op: "apply", target: { elements: [] }, rev: 1, params: params("cold") })).value.elements);
+    assert.equal(cold.length, 2, "the text and the label");
+    const mark = await a.mark();
+    await a.send({ t: "load", board: "warm", viewMode: false, theme: { mode: "light", filter: null }, style: {}, scene: { elements: [], files: {}, appState: {} } });
+    await a.until((m) => m.t === "loaded" && m.board === "warm", "loaded warm", { from: mark });
+    await a.page.evaluate((text) => document.fonts.load('16px "Nunito"', text), text); // (a board is shown: Excalidraw's faces are in document.fonts)
+    const warm = widths((await a.ok({ op: "apply", target: { elements: [] }, rev: 2, params: params("warm") })).value.elements);
+    assert.deepEqual(cold, warm, "a page that has shown no board measures the text as one with its faces loaded");
+    assert.ok(Math.abs(warm[0] - 353.26) < 0.5, `the width with the faces loaded is Nunito's (${warm[0]})`);
+  } finally { await a.close(); }
+
+  // a page that shows an empty board and has drawn no text: the live canvas
+  const b = await fresh();
+  try {
+    const mark = await b.mark();
+    await b.send({ t: "load", board: "live", viewMode: false, theme: { mode: "light", filter: null }, style: {}, scene: { elements: [], files: {}, appState: {} } });
+    await b.until((m) => m.t === "loaded" && m.board === "live", "loaded live", { from: mark });
+    await b.ok({ op: "apply", target: "live", rev: 3, params: params("live") });
+    const live = widths((await b.ok({ op: "snapshot" })).value.elements);
+    await b.page.waitForTimeout(500); // (nothing corrects a size later: this is the size the file keeps)
+    const later = widths((await b.ok({ op: "snapshot" })).value.elements);
+    assert.deepEqual(live, later, "the size does not change after the apply");
+    assert.ok(live.length === 2 && Math.abs(live[0] - 353.26) < 0.5, `a text applied on a board that has drawn none is measured in its own font (${live[0]} for 353.26)`);
+  } finally { await b.close(); }
+  t("a text is measured with its faces in a page that has shown no board (given elements and the live canvas)");
 }
 
 /** Waits for the keys of the live elements to be these (the person's own are "(user)"). */
@@ -849,13 +959,17 @@ try {
   // 1. the web view's page, from file://
   if (!only) {
   console.log("web view page (dist-webview/board.html from file://)");
-  const wv = await open("webview", pathToFileURL(path.join(dist, "board.html")).href, () => {
+  const wvUrl = pathToFileURL(path.join(dist, "board.html")).href;
+  const wvInit = () => {
     window.__out = [];
     window.ReactNativeWebView = { postMessage: (text) => window.__out.push(JSON.parse(text)) };
     // what a web view does with its `postMessage(json)`: a `message` event with no source window (here on window, as iOS does)
     window.__sendRaw = (m) => window.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(m) }));
-  });
-  const wvPage = new Page(wv.page, "webview", (m) => wv.page.evaluate((m) => window.__sendRaw(m), m));
+  };
+  const wv = await open("webview", wvUrl, wvInit);
+  const wvSend = (page) => (m) => page.evaluate((m) => window.__sendRaw(m), m);
+  const wvPage = new Page(wv.page, "webview", wvSend(wv.page));
+  wvPage.cold = async () => { const o = await open("webview (cold)", wvUrl, wvInit); return Object.assign(new Page(o.page, "webview (cold)", wvSend(o.page)), { close: () => o.context.close() }); };
   const html = fs.readFileSync(path.join(dist, "board.html"), "utf8");
   const policy = /http-equiv="Content-Security-Policy" content="([^"]*)"/.exec(html)?.[1] ?? "";
   assert.match(policy, /default-src 'none'/, "the web view's page has its policy");
@@ -895,7 +1009,10 @@ try {
 <link rel="stylesheet" href="./board/board.css"><script src="./board/board.js" defer></script>
 <div id="root"></div><script src="./driver.js" defer></script></html>`);
   const ip = await open("web", pathToFileURL(path.join(site, "index.html")).href);
-  const ipPage = new Page(ip.page, "web", (m) => ip.page.evaluate((x) => window.__send(x), m));
+  const webUrl = pathToFileURL(path.join(site, "index.html")).href;
+  const webSend = (page) => (m) => page.evaluate((x) => window.__send(x), m);
+  const ipPage = new Page(ip.page, "web", webSend(ip.page));
+  ipPage.cold = async () => { const o = await open("web (cold)", webUrl); return Object.assign(new Page(o.page, "web (cold)", webSend(o.page)), { close: () => o.context.close() }); };
   assert.equal(await ip.page.evaluate(() => typeof window.aiwbBoardView?.mount), "function", "board.js defines window.aiwbBoardView.mount");
   assert.equal(await ip.page.evaluate(() => window.EXCALIDRAW_ASSET_PATH), pathToFileURL(path.join(site, "board")).href + "/", "Excalidraw's assets are the folder board.js was loaded from");
   await checks(ipPage, {});

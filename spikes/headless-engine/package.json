@@ -1,0 +1,10 @@
+{
+  "name": "headless-engine-spike",
+  "private": true,
+  "type": "module",
+  "description": "Spike: the board engine of @aiwb/board-view in Node (stand-in page, native canvas, Excalidraw's fonts), compared with Chromium. Not shipped; plans/headless-board/engine.md has the findings.",
+  "dependencies": {
+    "@napi-rs/canvas": "1.0.11",
+    "skia-canvas": "4.0.0"
+  }
+}

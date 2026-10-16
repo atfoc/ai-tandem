@@ -581,7 +581,7 @@ func TestFreeBoard(t *testing.T) {
 	}
 	expectBoard(t, a, "superseded", "b2") // and no second release_request before it
 	expectBoard(t, c, "superseded", "b2")
-	if r := expectResult(t, onB2); !errors.Is(r.err, ErrNoClient) {
+	if r := expectResult(t, onB2); !errors.Is(r.err, ErrTaken) {
 		t.Fatalf("the call on b2 ended with %v", r.err)
 	}
 	if _, ok := b.HolderOf("b2"); ok {
@@ -797,28 +797,30 @@ func TestCallGoesToHolderOfTarget(t *testing.T) {
 	}
 }
 
-// A call about a target nobody holds goes to the holder of the chat's board, a call about no
-// board: the holder is given no board, and no hand-off of the target fails the call.
-func TestCallOnFreeTargetGoesToHolderOfChatBoard(t *testing.T) {
+// A call about a target nobody holds is asked of nobody, whoever holds the chat's board: a
+// window is never given a board by an agent's call. A call on a held target goes to its holder.
+func TestCallOnFreeTargetHasNoClient(t *testing.T) {
 	t.Parallel()
 	b, srv := newTestServer(t, nil)
 	a, c := open(t, srv, "A"), open(t, srv, "B")
 	take(t, b, "A", "chat", false, "held")
-	done := goCall(b, CallSpec{Method: "tool", Board: "target", ChatBoard: "chat"}, 5*time.Second)
-	ev := a.Expect("rpc") // and no held before it
+	start := time.Now()
+	if _, err := b.CallBoard(CallSpec{Method: "tool", Board: "target", ChatBoard: "chat"}, 5*time.Second); !errors.Is(err, ErrNoClient) {
+		t.Fatalf("err = %v", err)
+	}
+	if time.Since(start) > time.Second {
+		t.Fatal("CallBoard did not fail at once")
+	}
 	if _, ok := b.HolderOf("target"); ok || !b.Holds("A", "chat") {
 		t.Fatal("the call gave the target to a client, or took the chat's board")
 	}
-	c.ExpectNone(50 * time.Millisecond)
-	b.ReplyFrom("A", ev["id"].(string), RPCReply{})
-	if r := expectResult(t, done); r.err != nil {
-		t.Fatal(r.err)
-	}
+	a.ExpectNone(50 * time.Millisecond)
+	c.ExpectNone(10 * time.Millisecond)
 
 	// A call on the target once its holder is a client: it goes to the holder.
 	take(t, b, "B", "target", false, "held")
-	done = goCall(b, CallSpec{Method: "tool", Board: "target", ChatBoard: "chat"}, 5*time.Second)
-	ev = c.Expect("rpc")
+	done := goCall(b, CallSpec{Method: "tool", Board: "target", ChatBoard: "chat"}, 5*time.Second)
+	ev := c.Expect("rpc")
 	b.ReplyFrom("B", ev["id"].(string), RPCReply{})
 	expectResult(t, done)
 	a.ExpectNone(50 * time.Millisecond)
@@ -831,7 +833,7 @@ func TestCallOnFreeTargetGoesToHolderOfChatBoard(t *testing.T) {
 	if _, ok := b.HolderOf("b9"); ok {
 		t.Fatal("a screen call gave a board")
 	}
-	// With nobody holding the chat's board there is no client to ask, at once.
+	// With nobody holding or following the chat's board there is no client to ask, at once.
 	b.ReleaseBoard("A", "chat")
 	for _, spec := range []CallSpec{
 		{Method: "tool", Screen: true, ChatBoard: "chat"},
@@ -865,7 +867,7 @@ func TestCallBoardTimeout(t *testing.T) {
 	a := open(t, srv, "A")
 	take(t, b, "A", "b1", false, "held")
 	_, err := b.CallBoard(CallSpec{Method: "tool", Board: "b1"}, 100*time.Millisecond)
-	if err == nil || err.Error() != "the board did not answer tool in 100ms" {
+	if err == nil || err.Error() != "the board did not answer tool in 100ms" || !errors.Is(err, ErrTimeout) {
 		t.Fatalf("err = %v", err)
 	}
 	ev := a.Expect("rpc")
@@ -926,7 +928,7 @@ func TestLosingBoardFailsItsCallsOnly(t *testing.T) {
 	expectOpen(t, onB) // not before the hand-off
 	b.ReleaseBoard("A", "bB")
 	expectBoard(t, a, "superseded", "bB")
-	if r := expectResult(t, onB); !errors.Is(r.err, ErrNoClient) {
+	if r := expectResult(t, onB); !errors.Is(r.err, ErrTaken) {
 		t.Fatalf("the call on bB ended with %v", r.err)
 	}
 	expectOpen(t, onC)
@@ -946,7 +948,7 @@ func TestLosingBoardFailsItsCallsOnly(t *testing.T) {
 	if got := b.ReleaseBoard("A", "bC"); got != "free" {
 		t.Fatalf("ReleaseBoard = %q", got)
 	}
-	if r := expectResult(t, onC); !errors.Is(r.err, ErrNoClient) {
+	if r := expectResult(t, onC); !errors.Is(r.err, ErrTaken) {
 		t.Fatalf("the call on bC ended with %v", r.err)
 	}
 }
@@ -990,6 +992,7 @@ func TestEventsRows(t *testing.T) {
 		"rpc": {Role, PerNone}, "server_stopping": {Role, PerNone},
 		"groups": {List, PerNone}, "defaults": {List, PerNone},
 		"board": {List, PerBoard}, "board_removed": {List, PerBoard},
+		"scene": {Content, PerBoard}, "writer": {Content, PerBoard},
 		"catalog": {List, PerNone}, "agents": {List, PerNone},
 		"own_library": {List, PerNone},
 		"chat":        {List, PerChat}, "chat_removed": {List, PerChat}, "branch_state": {List, PerChat},

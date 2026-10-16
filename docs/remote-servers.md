@@ -10,9 +10,14 @@ scripts/build-server.sh linux/amd64  # or darwin/arm64, darwin/amd64, linux/arm6
 ```
 
 It makes `bin/ai-whiteboard-server-<os>-<arch>/`: the server binary, `setup-remote.sh`,
-`start-server.sh` and a `README.md` with the steps for that machine. The server serves no page, so
+`start-server.sh`, a `README.md` with the steps for that machine, and `headless/`, the program that
+edits boards while no window is open, with the board engine and its native canvas for that target
+([The board engine in Node](architecture.md#the-board-engine-in-node)). The server serves no page, so
 the folder holds none and making it needs no build of the web client. Every target builds on any
-of them, without cgo. There is no installer and no service file: copy the folder to the machine.
+of them, without cgo; the canvas of a target other than the machine's own is fetched from npm, so
+that build needs the registry (or npm's cache), and it fails if a target's canvas can't be had.
+The machine that runs the server needs Node 22 or later for `headless/`; without it the server works
+as before. There is no installer and no service file: copy the folder to the machine.
 See [Use a server on another machine](#use-a-server-on-another-machine).
 
 ## Use a server on another machine
@@ -236,9 +241,10 @@ the chat's draft kept on the server (`PUT /api/chats/{id}/draft`) and the images
 with their upload and fetch (`/api/chats/{id}/images`), 5 the server's whole tree: a client
 is given every group, whiteboard and chat of the server and changes them with the calls of the
 [client API](#the-client-api), and 6 the client API as the server's only API: it serves its
-clients over HTTPS and nothing else, and answers the first question without the secret. A server
-of this version reports 6, and the app connects to no server below 6, this computer's included.
-A server of level 6 in turn serves no app below 6 (see
+clients over HTTPS and nothing else, and answers the first question without the secret, and 7
+the headless board: a board no page holds is written by the server's own writer, and a reader
+follows a board live. A server of this version reports 7, and the app connects to no server below
+7, this computer's included. A server of level 7 in turn serves no app below 7 (see
 [The client API](#the-client-api)).
 
 Such a server shows in **Servers**, and in the head of its section of the sidebar, as **Too
@@ -379,7 +385,9 @@ What a server offers the apps that connect to it is in [The client API](#the-cli
   opens it again. An event about a thing is the server's own event: `groups`, `defaults`, `board`,
   `board_removed`, `chat`, `chat_removed` and `branch_state` go to every connected app, in that
   server's order; `tree`, `chat_items`, `sub` and `sub_items` to the apps that follow the chat;
-  `held`, `release_request`, `superseded` and `rpc` to the one app concerned. An app follows a chat
+  `held`, `release_request`, `superseded` and `rpc` to the one app concerned; `scene` and `writer`
+  to the apps that follow the board (`POST /api/boards/{id}/follow`, while it is on their screen).
+  An app follows a chat
   from its first read of the thread, the tree or a subagent's thread until `…/unfollow`, and the
   app's connection follows the thing on its server for all its windows together. Every follow
   ends when the connection drops: after the snapshot that comes with the next one, the page reads
@@ -400,29 +408,30 @@ board; its drawing is stored on that server only, and its chats run there.
   shows there as the others do. Rename, move, archive, unarchive and delete are made on that
   server and show to every connected app. A chat made on such a board is on the
   board's server, and is made there at once.
-- **Holding.** One window draws on a board at a time, among the windows of every app connected to
-  that server; to the server your app is one user of the board. When the board is taken by
-  another app, your window is asked to save and let go, and shows the take-over panel; **Use here**
-  takes it back. The agents' board tools are answered by the window that holds the board, so
-  the board has to be open in a window, of the app on the server's machine or of a connected app,
-  for an agent to draw on it. A board that no window holds is answered as it is with no window
-  open.
+- **Holding.** One window changes a board at a time, among the windows of every app connected to
+  that server; to the server your app is one user of the board. Every other window that shows the
+  board shows it read-only and follows it live, with the bar "View only." and the button **Edit here**.
+  When another app presses its button, your window is asked to save and let go, and its bar says that
+  another window took over the board; **Edit here** takes it back. The agents' board tools are
+  answered by the window that holds the board; when no window of any app holds it, the server's
+  headless writer answers them, if that machine can run it
+  ([Who changes a board](architecture.md#who-changes-a-board)), and otherwise the agent is told that
+  no board is open.
 - **Outage.** While the server is not connected you keep drawing in the window that has the
   board open: a save is answered 503 `server_unreachable`, the changes stay in that window and a
   banner says they are not saved. The board's row leaves the sidebar with the rest of its
   section, and the window stays. No other window gets the board, and a board that is not open in
   a window cannot be opened: a take and a read are answered 503 too. When the server is back,
-  the page takes the board there again for the window that holds it: the changes are saved if
-  nobody changed the board there meanwhile, and dropped, with a notice, if somebody did. When
-  somebody else holds the board by then, the window shows the take-over panel and keeps the
-  changes until **Use here**. Closing the window while changes are not saved asks first, and
+  the window is a reader of the board and keeps the changes until you press **Edit here**: they are
+  saved if nobody changed the board there meanwhile, and dropped, with a notice, if somebody did.
+  Closing the window while changes are not saved asks first, and
   closing it anyway loses them. A board that was deleted there meanwhile says that it is no longer
   on that server.
 - **The calls** are those of the [client API](#the-client-api), with the answers and the events of
   [Chats on a remote server](#chats-on-a-remote-server). The server alone decides which window
   holds the board, and holds the board for as long as one of them does. An agent's board tool on
-  that server reaches the window that holds the board as an `rpc` event, and the window answers
-  with `POST /api/rpc-reply`.
+  that server reaches the window that holds the board, or the headless writer when none does, as an
+  `rpc` event, and it answers with `POST /api/rpc-reply`.
 - **Limits.** A drawing saved on a server is at most 128 MB, images included; a larger one is
   refused (413, `too_large`) and stays in the window. Two people cannot draw on a board at the same
   time.

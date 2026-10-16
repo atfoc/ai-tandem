@@ -24,12 +24,14 @@
 import { FLAVOURS } from "../../../packages/core/src/logic/theme.ts";
 import { check, colourOf, seed, until } from "../shot.mjs";
 import { openBoard, press, showList } from "./sel.mjs";
+import { editHere } from "./boarddraw.mjs";
 
 export const viewports = ["desktop", "tablet", "phone"];
 
 const BTN = '[data-testid="theme-btn"]', MENU = '[data-testid="theme-menu"]';
 const THEMES = ["light", "dark", ...FLAVOURS];
 const LIVE = ".excalidraw:not(.excalidraw--view-mode) canvas.interactive";
+const VIEW = ".excalidraw canvas.interactive"; // (a board opens as a reader's, in view mode: editHere makes the window its writer, for the panel of properties)
 const OUT = process.env.OUT;
 const TOLERANCE = 3;
 const EXCALIDRAW_STROKE = ["#1e1e1e", "#e03131", "#2f9e44", "#1971c2", "#f08c00"]; // Excalidraw's own quick picks, as it passes them
@@ -96,7 +98,8 @@ await check("P7.5 the canvas takes each theme's ground and filter, on load and w
 
   // each theme on a page of its own
   for (const theme of THEMES) {
-    const { ctx, page } = await open({ sel: BOARD, ls: { "aiwb.theme": theme }, wait: LIVE, still: true });
+    const { ctx, page } = await open({ sel: BOARD, ls: { "aiwb.theme": theme }, wait: VIEW, still: true });
+    await editHere(page);
     try {
       const [got, want] = await settles(page);
       grounds[theme] = got;
@@ -113,7 +116,8 @@ await check("P7.5 the canvas takes each theme's ground and filter, on load and w
   if (new Set(THEMES.map((t) => hex(grounds[t] ?? [0, 0, 0]))).size !== THEMES.length) fail(`two themes have the same ground: ${THEMES.map((t) => `${t} ${hex(grounds[t] ?? [0, 0, 0])}`).join(", ")}`);
 
   // one page put in each theme by the picker, with no reload
-  const { ctx, page } = await open({ sel: BOARD, wait: LIVE, still: true, scheme: "light" });
+  const { ctx, page } = await open({ sel: BOARD, wait: VIEW, still: true, scheme: "light" });
+  await editHere(page);
   try {
     let [was] = await settles(page);
     await page.evaluate(() => { window.__sameLoad = true; });
@@ -143,7 +147,8 @@ await check("P7.5 the canvas takes each theme's ground and filter, on load and w
 
   // the choice is "System" (nothing saved): the open canvas follows the OS's colour scheme
   {
-    const { ctx, page } = await open({ sel: BOARD, wait: LIVE, still: true, scheme: "light" });
+    const { ctx, page } = await open({ sel: BOARD, wait: VIEW, still: true, scheme: "light" });
+    await editHere(page);
     try {
       let [was] = await settles(page);
       await page.evaluate(() => { window.__sameLoad = true; });
@@ -162,7 +167,8 @@ await check("P7.5 the canvas takes each theme's ground and filter, on load and w
     finally { await ctx.close(); }
     // a flavour is not the OS's to change: Mocha (dark) under an OS that goes light, Latte (light) under an OS that goes dark
     for (const [flavour, scheme] of [["mocha", "light"], ["latte", "dark"]]) {
-      const { ctx, page } = await open({ sel: BOARD, ls: { "aiwb.theme": flavour }, wait: LIVE, still: true, scheme: scheme === "light" ? "dark" : "light" });
+      const { ctx, page } = await open({ sel: BOARD, ls: { "aiwb.theme": flavour }, wait: VIEW, still: true, scheme: scheme === "light" ? "dark" : "light" });
+      await editHere(page);
       try {
         const [first] = await settles(page);
         await page.emulateMedia({ colorScheme: scheme });

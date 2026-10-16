@@ -3,7 +3,7 @@
 // decisions through board.ts with a fake server.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { afterReconnect, onGrant, onLost, onRefusal, onTake, selectedOn, showsPanel, takeOnSelect, type BoardRole, type Cache } from "../src/logic/roles.ts";
+import { afterReconnect, onGrant, onLost, onMoved, onRefusal, onTake, readOnly, selectedOn, type BoardRole, type Cache } from "../src/logic/roles.ts";
 
 const clean = (base: number): Cache => ({ base, unsaved: false });
 const dirty = (base: number): Cache => ({ base, unsaved: true });
@@ -103,50 +103,10 @@ test("a reconnect: what this window held or waited for is not asked for any more
   assert.deepEqual(afterReconnect({}), {});
 });
 
-test("the panel shows in place of the canvas for every role but held and not asked", () => {
-  assert.deepEqual((["held", "taking", "other", "lost", null, undefined] as const).map((r) => showsPanel(r)), [false, true, true, true, false, false]);
-});
+const ROLES: (BoardRole | null | undefined)[] = [undefined, null, "held", "taking", "other", "lost"];
 
-// ---- what selecting a board asks of the server (Sidebar.tsx select)
-
-const ROLES: (BoardRole | undefined)[] = [undefined, "held", "taking", "other", "lost"];
-
-test("a click on a board's own row takes the board from the window that holds it", () => {
-  // (another board than the one on screen, the selection being of the board: openBoard)
-  assert.deepEqual(ROLES.map((r) => takeOnSelect(r, false, false)), ["take", null, null, "take", "take"]);
-});
-
-test("picking a chat of another board takes that board only if it is free", () => {
-  // (openChat, an agent's show_board): the window that holds the board keeps it, and the chat is used without the board
-  assert.deepEqual(ROLES.map((r) => takeOnSelect(r, false, true)), ["free", null, null, "free", "free"]);
-});
-
-test("a selection on the board that is on screen takes it from no window: only one not asked for yet is asked for, if free", () => {
-  for (const ifFree of [true, false]) assert.deepEqual(ROLES.map((r) => takeOnSelect(r, true, ifFree)), ["free", null, null, null, null]);
-});
-
-test("a click on a board's own row takes the board also when it is on screen already, behind the take-over panel", () => {
-  // (plan lines 494-496: a take is made on a click on the board in the sidebar or on "Use here")
-  assert.equal(takeOnSelect("other", true, false, true), "take"); // another window holds it, and this one shows its chat and the panel
-  assert.equal(takeOnSelect("lost", true, false, true), "take");
-  assert.equal(takeOnSelect(undefined, true, false, true), "take");
-  assert.equal(takeOnSelect("held", true, false, true), null); // this window holds it: nothing is asked
-  assert.equal(takeOnSelect("taking", true, false, true), null); // asked already
-  assert.deepEqual(ROLES.map((r) => takeOnSelect(r, false, false, true)), ["take", null, null, "take", "take"]); // from another board, as before
-});
-
-test("a click on a chat of a board another window holds takes the board only if it is free, whichever board is on screen", () => {
-  assert.equal(takeOnSelect("other", false, true), "free");
-  assert.equal(takeOnSelect("other", true, true), null); // asked before, and found busy: the chat is used without the board
-  assert.equal(takeOnSelect(undefined, true, true), "free");
-});
-
-test("a board this window holds or is taking is never asked for again", () => {
-  for (const same of [true, false]) for (const ifFree of [true, false]) {
-    assert.equal(takeOnSelect("held", same, ifFree), null);
-    assert.equal(takeOnSelect("taking", same, ifFree), null);
-  }
-  assert.equal(takeOnSelect(null, false, true), "free");
+test("readOnly: the view of a board is in view mode for every role but held", () => {
+  assert.deepEqual(ROLES.map((r) => readOnly(r)), [true, true, false, true, true, true]);
 });
 
 // ---- the selection the composer offers (Composer.tsx)
@@ -160,4 +120,12 @@ test("selectedOn: the page's selection counts only for the board whose canvas th
   assert.equal(selectedOn(1, "b_1", "b_2", "held"), 0); // another board is on screen
   assert.equal(selectedOn(1, "b_1", null, "held"), 0);
   assert.equal(selectedOn(1, undefined, null, undefined), 0); // a plain chat
+});
+
+test("the stored scene moved (a scene event, a follow's answer): a scene kept at another revision goes, with the edit that waited on it; the role stays", () => {
+  assert.equal(onMoved(null, 4, null), null, "no scene kept: it is read at the new revision when wanted");
+  assert.equal(onMoved(clean(4), 4, "other"), null, "the revision it has");
+  assert.equal(onMoved(dirty(4), 4, null), null, "an edit made on that revision waits for the button");
+  assert.deepEqual(onMoved(clean(3), 4, "other"), { role: "other", forget: true, flush: false, dropped: false });
+  assert.deepEqual(onMoved(dirty(3), 4, null), { role: null, forget: true, flush: false, dropped: true }, "the note");
 });

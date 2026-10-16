@@ -504,11 +504,12 @@ test("get_image selection: the selection the view told, on the board on screen",
   assert.deepEqual((view.ops("export")[0] as any).ids, ["e2"]);
 });
 
-test("show_board selects the board if free and brings the refs into view once it is drawn", async () => {
+test("show_board selects the board, never takes it, and brings the refs into view once it is drawn", async () => {
   const b = newBoard();
   api.read = stored(0);
   assert.equal(await call(b, "show_board", { refs: [{ id: "e1" }] }), `showing Board ${b}`);
-  assert.deepEqual(selects, [[{ board: b, chat: null }, { ifFree: true }]]);
+  assert.deepEqual(selects, [[{ board: b, chat: null }]], "no take option");
+  assert.deepEqual(api.asked(), [], "and no take call");
   await side.show(b); // the screen shows what was selected
   await until(() => view.sent("scrollTo").length === 1, "the scroll");
   assert.deepEqual(view.sent("scrollTo")[0], { t: "scrollTo", ids: ["e1"], animate: true });

@@ -207,12 +207,14 @@ test("a board that is not reachable is not asked for: its section has no tree, o
   section(S1, null);
   await side.takeBoard(b);
   await side.takeBoard(b, true);
-  side.takeAfterSnapshot();
+  side.afterSnapshot();
   await tick();
   assert.deepEqual([asked(), st().roles[b]], [[], undefined]);
-  section(S1, [b]); // reachable again: the board on screen is asked for, if free
+  section(S1, [b]); // reachable again: the board on screen is not taken (the button does)
   await tick();
-  assert.deepEqual([asked(), st().roles[b]], [[`take if free ${b}`], "held"]);
+  assert.deepEqual([asked(), st().roles[b]], [[], undefined]);
+  await side.takeBoard(b); // the user's button: now it is reachable
+  assert.deepEqual([asked(), st().roles[b]], [[`take ${b}`], "held"]);
 
   store.setRole(b, null);
   const gen = st().sceneGen[b];
@@ -412,15 +414,15 @@ test("superseded under an outage, then \"Use here\" at another revision: the kep
   side.forgetBoard(b);
 });
 
-test("an edit kept at the loss stays kept when a take if free finds the board busy (a `section` with a tree), and is saved at the grant", async () => {
+test("an edit kept at the loss stays kept when the section's tree comes back (nothing is taken), and is saved at the grant", async () => {
   const b = await outage(3);
   side.boardLost(b);
   store.setState({ sel: { board: b, chat: null } });
   api.take = async () => ({ state: "busy" });
   section(S1, [b]);
   await tick(); await tick();
-  assert.deepEqual(asked(), [`take if free ${b}`]);
-  assert.deepEqual([st().roles[b], st().dropped[b], side.scene(b) !== undefined], ["other", undefined, true]);
+  assert.deepEqual(asked(), [], "a window does not take a board by itself");
+  assert.deepEqual([st().roles[b], st().dropped[b], side.scene(b) !== undefined], ["lost", undefined, true]);
   const writes: string[] = [];
   up(writes);
   side.granted(b, 3);
@@ -462,7 +464,7 @@ test("a scene read answered 404 names the board by its own id on its server", as
   await assert.rejects(side.loadScene(b), { code: "NO_BOARD", message: `no board with id ${ownId(b)}; call list_boards to find ids` });
 });
 
-test("a `section` with a tree: the board on screen of that server is read again when no scene is kept, and asked for if free", async () => {
+test("a `section` with a tree: the board on screen of that server is read again when no scene is kept, and not taken", async () => {
   const b = remote(3);
   store.setState({ sel: { board: b, chat: null } });
   const gen = st().sceneGen[b] ?? 0;
@@ -472,8 +474,8 @@ test("a `section` with a tree: the board on screen of that server is read again 
   assert.deepEqual([asked(), st().sceneGen[b] ?? 0], [[], gen]);
   section(S1, [b]);
   await tick(); await tick();
-  assert.deepEqual(asked(), [`take if free ${b}`]);
-  assert.deepEqual([st().sceneGen[b], st().roles[b]], [gen + 1, "held"]);
+  assert.deepEqual(asked(), []);
+  assert.deepEqual([st().sceneGen[b], st().roles[b]], [gen + 1, undefined]);
   side.forgetBoard(b);
 });
 
@@ -501,11 +503,11 @@ test("a `section` with a tree: a kept scene is not read again, a board this wind
   side.forgetBoard(clean);
 });
 
-test("after a restart of this computer's server during the outage the board with the edit is asked for when the tree arrives, on screen or not, and the revision decides", async () => {
+test("after a restart of this computer's server during the outage the boards with an edit are not taken when the tree arrives; the button's grant decides by the revision", async () => {
   const same = await outage(3), other = await outage(3);
   section(S1, null);
   side.streamOpened(S1); // the new stream of that server holds no board: the window still has both drawings and their revisions
-  side.takeAfterSnapshot();
+  side.afterSnapshot();
   await tick();
   assert.deepEqual(asked(), [], "the section has no tree yet: nothing is asked");
   assert.deepEqual([st().roles[same], st().roles[other], side.scene(same) !== undefined, side.scene(other) !== undefined, st().outage[same], st().outage[other]], [undefined, undefined, true, true, true, true]);
@@ -514,8 +516,11 @@ test("after a restart of this computer's server during the outage the board with
   up(writes);
   api.take = async (b) => ({ state: "held", rev: b === same ? 3 : 5 }); // the other one was drawn on there meanwhile
   section(S1, [same, other]);
+  await tick(); await tick();
+  assert.deepEqual([asked(), writes, st().roles[same], st().roles[other], side.boardUnsaved(same), side.boardUnsaved(other)], [[], [], undefined, undefined, true, true], "nothing is taken, nothing is written");
+  await Promise.all([side.takeBoard(same), side.takeBoard(other)]); // the user presses the button on each
   await until(() => writes.length === 1 && !side.boardUnsaved(same) && st().dropped[other] === true, "the return settled");
-  assert.deepEqual(asked().sort(), [`take if free ${same}`, `take if free ${other}`, `save ${same} on 3`].sort());
+  assert.deepEqual(asked().sort(), [`take ${same}`, `take ${other}`, `save ${same} on 3`].sort());
   assert.deepEqual(writes, [same]);
   assert.deepEqual([st().roles[same], st().dropped[same], st().outage[same], side.scene(same)!.base], ["held", undefined, undefined, 4]);
   assert.deepEqual([st().roles[other], st().dropped[other], st().outage[other], side.scene(other) !== undefined, side.droppedInOutage(other)], ["held", true, undefined, false, true]);
@@ -533,23 +538,26 @@ test("a tool call works on params.target, not on a board the page resolves", asy
   await assert.rejects(call("list_boards"), { code: "UNKNOWN_TOOL" });      // the server answers these itself
   await assert.rejects(call("create_board", { target }), { code: "UNKNOWN_TOOL" });
   assert.equal(await call("show_board", { target }), `showing Board ${target}`);
-  assert.deepEqual(selects, [[{ board: target, chat: null }, { ifFree: true }]]);
+  assert.deepEqual(selects, [[{ board: target, chat: null }]]);
   side.forgetBoard(own); side.forgetBoard(target);
 });
 
-test("a tool call for a board this window was given without being told asks for it first; one it does not hold is refused", async () => {
-  const made = fresh(7); // the server gives a new board to the window that made it
-  api.take = async () => ({ state: "held", rev: 7 });
-  const call = (target: string) => side.runTool({ chat: "c_1", branch: "main", board: made, target, name: "read_board", args: {} });
+test("a tool call for a board this window does not hold is refused NOT_HOLDER, with no take and no read, whoever holds it or nobody", async () => {
+  const call = (target: string, name = "read_board", args: unknown = {}) => side.runTool({ chat: "c_1", branch: "main", board: target, target, name, args: args as any });
+  api.take = async () => ({ state: "held", rev: 7 }); // would hold it, if it were asked
+  for (const role of [undefined, "taking", "other", "lost"] as const) {
+    const b = fresh(7);
+    if (role) store.setRole(b, role);
+    for (const [name, args] of [["read_board", {}], ["apply", { create: [{ type: "rectangle", x: 0, y: 0, width: 1, height: 1 }] }], ["delete_elements", { refs: [{ id: "e1" }] }], ["get_image", {}]] as const)
+      await assert.rejects(call(b, name, args), { code: "NOT_HOLDER" }, `${role} ${name}`);
+    assert.deepEqual([asked(), st().roles[b]], [[], role], `${role}: nothing is asked of the server`);
+    side.forgetBoard(b);
+  }
+  const made = fresh(7); // the board this window holds (it took it after making it) is read as before
+  store.setRole(made, "held");
   await call(made);
-  assert.deepEqual(asked(), [`take if free ${made}`, `read ${made}`]);
-  assert.equal(st().roles[made], "held");
-
-  const theirs = fresh();
-  api.take = async () => ({ state: "busy" });
-  await assert.rejects(call(theirs), { code: "NOT_HOLDER" });
-  assert.deepEqual(asked(), [`take if free ${theirs}`]); // nothing of it is read
-  side.forgetBoard(made); side.forgetBoard(theirs);
+  assert.deepEqual(asked(), [`read ${made}`]);
+  side.forgetBoard(made);
 });
 
 test("the tools of a section's agent name a board by its own id on that server, never by the page's key", async () => {
@@ -566,7 +574,7 @@ test("the tools of a section's agent name a board by its own id on that server, 
   const deleted = JSON.parse(await call("delete_elements", { args: { refs: [{ id: "e1" }] } }) as string);
   assert.deepEqual([deleted.board, deleted.id], [`Board ${ownId(target)}`, ownId(target)]);
   assert.equal(await call("show_board"), `showing Board ${ownId(target)}`);
-  assert.deepEqual(selects, [[{ board: target, chat: null }, { ifFree: true }]], "the page selects it by its key");
+  assert.deepEqual(selects, [[{ board: target, chat: null }]], "the page selects it by its key");
   // a board the page does not have: the id the agent gave, as it gave it
   await assert.rejects(call("read_board", { target: `${S1}~b_none` }), { code: "NO_BOARD", message: "no board with id b_none; call list_boards to find ids" });
   // the same id on this computer is another board: a call of that server's agent never reaches it
