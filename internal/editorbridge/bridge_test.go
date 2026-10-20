@@ -861,18 +861,24 @@ func TestCallBoardNoClient(t *testing.T) {
 	}
 }
 
+// The away client that does not answer keeps the board, and the call fails with ErrTimeout (a
+// window that does not answer loses it: unanswered_test.go).
 func TestCallBoardTimeout(t *testing.T) {
 	t.Parallel()
 	b, srv := newTestServer(t, nil)
-	a := open(t, srv, "A")
-	take(t, b, "A", "b1", false, "held")
-	_, err := b.CallBoard(CallSpec{Method: "tool", Board: "b1"}, 100*time.Millisecond)
-	if err == nil || err.Error() != "the board did not answer tool in 100ms" || !errors.Is(err, ErrTimeout) {
+	b.SetAway("H")
+	h := open(t, srv, "H")
+	_, err := b.CallBoard(CallSpec{Method: "tool", Board: "b1", Away: true}, 100*time.Millisecond)
+	if err == nil || err.Error() != "the board did not answer tool in 100ms" || !errors.Is(err, ErrTimeout) || errors.Is(err, ErrUnanswered) {
 		t.Fatalf("err = %v", err)
 	}
-	ev := a.Expect("rpc")
-	if b.ReplyFrom("A", ev["id"].(string), RPCReply{}) {
+	h.Expect("held")
+	ev := h.Expect("rpc")
+	if b.ReplyFrom("H", ev["id"].(string), RPCReply{}) {
 		t.Fatal("ReplyFrom took a reply to a call that had ended")
+	}
+	if id, ok := b.HolderOf("b1"); !ok || id != "H" {
+		t.Fatalf("the away client lost the board it did not answer for: %q, %v", id, ok)
 	}
 }
 

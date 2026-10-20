@@ -120,9 +120,18 @@ var ErrTaken = errors.New("the board was taken over while the call ran")
 // ErrAwayLost is returned by CallBoard for a call of the away client whose stream ended.
 var ErrAwayLost = errors.New("the board's background editor stopped while the call ran")
 
-// ErrTimeout is wrapped by the error CallBoard returns when the client did not answer in time; its text
-// is "the board did not answer <method> in <timeout>".
+// ErrTimeout is wrapped by the error CallBoard returns when the client did not answer in time and
+// kept the board (the away client, or a call about one screen); its text is "the board did not
+// answer <method> in <timeout>". A window that holds the board and does not answer loses it
+// instead, and the error is ErrUnanswered, never ErrTimeout.
 var ErrTimeout = errors.New("the board did not answer")
+
+// ErrUnanswered is wrapped by the error CallBoard returns when the window that held the board did
+// not answer in time and lost the board for it; its text is "the window that held the board did
+// not answer <method> in <timeout>". The same error is given to the other calls of that window
+// on the board, with the text of ErrUnanswered alone. The board is free by then, and a person
+// who waited for it holds it.
+var ErrUnanswered = errors.New("the window that held the board did not answer in time")
 
 // ErrUnknownClient is returned by TakeBoard for an id with no open stream.
 var ErrUnknownClient = errors.New("unknown_client")
@@ -476,6 +485,14 @@ func (b *Bridge) SendTo(clientID string, ev any) bool {
 // never to the away client. With no such client the call fails with ErrNoClient at once. An
 // open call fails when its client loses the board the call is about (ErrTaken), when the stream
 // of the away client ends (ErrAwayLost) or when the stream of a window ends (ErrNoClient).
+//
+// A call not answered within timeout fails. When it was about a board and its client is a window
+// that still holds the board, the window loses the board as a holder that does not release does
+// (passLocked): it is sent superseded, a client waiting for the board gets it, the followers are
+// sent a writer event, and the window's other calls on the board fail too. The error is then
+// ErrUnanswered, and the board may be given to the away client by the next call. A call of the
+// away client, a Screen call, or a client that no longer holds the board fails with ErrTimeout and
+// changes nothing. A call answered or failed while the timer ran has that result.
 func (b *Bridge) CallBoard(spec CallSpec, timeout time.Duration) (json.RawMessage, error) {
 	id := fmt.Sprintf("rpc_%d", b.seq.Add(1))
 	msg, err := json.Marshal(event{"type": "rpc", "id": id, "method": spec.Method, "params": spec.Params})
@@ -498,24 +515,44 @@ func (b *Bridge) CallBoard(spec CallSpec, timeout time.Duration) (json.RawMessag
 	defer t.Stop()
 	select {
 	case r := <-k.reply:
-		if k.err != nil {
-			return nil, k.err
-		}
-		if r.Error != "" {
-			return nil, errors.New(r.Error)
-		}
-		return r.Result, nil
+		return resultOf(k, r)
 	case <-t.C:
 		b.mu.Lock()
+		defer b.mu.Unlock()
+		if b.rpcs[id] == nil { // answered or failed as the timer fired: the reply is queued
+			select {
+			case r := <-k.reply:
+				return resultOf(k, r)
+			default:
+			}
+		}
 		delete(b.rpcs, id)
 		delete(c.calls, id)
-		b.mu.Unlock()
+		if board != "" && c.id != b.away && b.holders[board] == c {
+			// Its other calls on the board fail first, with the error of this one; passLocked then
+			// finds none.
+			b.failCallsLocked(c, board, false, ErrUnanswered)
+			b.passLocked(board, true)
+			return nil, &unansweredError{method: spec.Method, after: timeout}
+		}
 		return nil, &timeoutError{method: spec.Method, after: timeout}
 	}
 }
 
-// timeoutError is the error of a call that was not answered in time. It is ErrTimeout, with the words of
-// the call.
+// resultOf is the outcome of a call whose reply was queued: the bridge's error, the client's error
+// or the result.
+func resultOf(k *call, r RPCReply) (json.RawMessage, error) {
+	if k.err != nil {
+		return nil, k.err
+	}
+	if r.Error != "" {
+		return nil, errors.New(r.Error)
+	}
+	return r.Result, nil
+}
+
+// timeoutError is the error of a call that was not answered in time and changed nothing. It is
+// ErrTimeout, with the words of the call.
 type timeoutError struct {
 	method string
 	after  time.Duration
@@ -525,6 +562,18 @@ func (e *timeoutError) Error() string {
 	return fmt.Sprintf("%s %s in %s", ErrTimeout.Error(), e.method, e.after)
 }
 func (e *timeoutError) Unwrap() error { return ErrTimeout }
+
+// unansweredError is the error of a call whose window did not answer in time and lost the board
+// for it. It is ErrUnanswered, with the words of the call.
+type unansweredError struct {
+	method string
+	after  time.Duration
+}
+
+func (e *unansweredError) Error() string {
+	return fmt.Sprintf("the window that held the board did not answer %s in %s", e.method, e.after)
+}
+func (e *unansweredError) Unwrap() error { return ErrUnanswered }
 
 // chooseLocked returns the client a call is for, and the board the call is about ("" for a
 // call about one screen). See CallBoard for the rules. A free board given to the away client is

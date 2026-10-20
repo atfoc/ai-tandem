@@ -184,6 +184,9 @@ func serve(o options) {
 	if waits.hov > 0 {
 		br.SetHandoverDelay(waits.hov)
 	}
+	if waits.calls > 0 {
+		boardapi.SetCallTimeout(waits.calls)
+	}
 	bs := boards.New(st, br)
 	br.SceneRev = bs.Rev
 	bins := map[model.AgentKind]string{model.Claude: o.claudeBin, model.Cursor: o.cursorBin, model.Pi: o.piBin}

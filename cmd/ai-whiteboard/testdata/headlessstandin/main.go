@@ -12,6 +12,9 @@
 //	config   the configuration line, without the secret
 //	rpcs     the method and the tool name of each rpc, a line each
 //	released the board of each release the server answered
+//
+// $STANDIN_SILENT is the path of a file the test writes board ids to, a line each: an rpc about a
+// board in it is noted and never answered, as a headless writer that is stuck.
 package main
 
 import (
@@ -161,6 +164,9 @@ func (s *standIn) read(body io.ReadCloser) {
 
 func (s *standIn) answer(id, method, name, board string) {
 	s.note("rpcs", method+" "+name+" "+board)
+	if board != "" && s.silent(board) {
+		return
+	}
 	s.request("POST", "/api/rpc-reply", map[string]any{"id": id, "result": Answer})
 	if board == "" {
 		return
@@ -172,6 +178,20 @@ func (s *standIn) answer(id, method, name, board string) {
 		t.Stop()
 	}
 	s.timers[board] = time.AfterFunc(time.Duration(s.cfg.QuietMs)*time.Millisecond, func() { s.release(board) })
+}
+
+// silent reports whether the board is one the test named in $STANDIN_SILENT.
+func (s *standIn) silent(board string) bool {
+	raw, err := os.ReadFile(os.Getenv("STANDIN_SILENT"))
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		if strings.TrimSpace(line) == board {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *standIn) release(board string) {

@@ -416,7 +416,8 @@ board; its drawing is stored on that server only, and its chats run there.
   answered by the window that holds the board; when no window of any app holds it, the server's
   headless writer answers them, if that machine can run it
   ([Who changes a board](architecture.md#who-changes-a-board)), and otherwise the agent is told that
-  no board is open.
+  no board is open. A window that does not answer a call in time loses the board the same way, and
+  the headless writer answers the next call.
 - **Outage.** While the server is not connected you keep drawing in the window that has the
   board open: a save is answered 503 `server_unreachable`, the changes stay in that window and a
   banner says they are not saved. The board's row leaves the sidebar with the rest of its

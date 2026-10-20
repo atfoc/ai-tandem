@@ -367,7 +367,9 @@ func TestCallTimedOutIsReportedToTheAwayEditor(t *testing.T) {
 		t.Fatalf("CallTimedOut was called %d times", timedOut)
 	}
 
-	if got := e.wait(e.callAsync("apply", `{}`)); !got.isErr || !strings.HasPrefix(got.text, "the board did not answer") {
+	// A window that does not answer loses the board (ErrUnanswered, not ErrTimeout) and the agent is
+	// told so.
+	if got := e.wait(e.callAsync("apply", `{}`)); !got.isErr || got.text != UnansweredText {
 		t.Fatalf("window: %+v", got)
 	}
 	if _, timedOut := away.counts(); timedOut != 2 {

@@ -92,6 +92,8 @@ When it cannot, the board tool answers with one of these, and the agent stops an
 | "Nobody is editing this board in a window, and this server cannot edit a board without one. Tell the user that they can press Edit here on the board; …" | the headless writer is not available, and a window is connected: press **Edit here** on the board, and ask the agent again |
 | "The board's background editor stopped while it ran this call, so the call did not finish. …" | the headless writer died or was killed during the call; the board is as it was after the last finished change and has no writer. The agent's next call starts a new one |
 | "The board was taken over in a window while this call ran, so the call did not finish. …" | someone pressed **Edit here** (or the board was archived or deleted) during the call; the earlier changes are saved |
+| "The window that held the board did not answer in time, so this call did not finish, and that window no longer holds the board. The board is as it was after its last saved change, which may or may not include this call's change. Read the board again (read_board) before you change it." | a change (`apply`, `delete_elements`) was given to a window that holds the board and did not answer within 30 seconds; that window lost the board, which has no writer now, and the call is not repeated, since the window may have made the change. The agent's next call goes to the headless writer or to a window that took the board. A read is not told this: it is given again to the headless writer and answered late |
+| "The window that held the board did not answer in time, so this read did not finish, and that window no longer holds the board. Nothing was changed. Call it again." | a read (`read_board`, `get_image`) was given again after a window did not answer it, to a window that had pressed **Edit here** meanwhile, and that window did not answer within 30 seconds either; it lost the board too, and the agent's next call goes to the headless writer |
 | "TAKEN: … is being taken over in a window; call again in a moment and that window answers." | the headless writer was giving the board up when the call came |
 | "SAVE_FAILED: the change was made but could not be saved: …" | the headless writer made the change and could not write it; the board file does not have it |
 
@@ -138,7 +140,9 @@ makes a window the writer, and neither does a restart of the server or a lost co
 was drawing on a board comes back as a reader. A change made while the connection was down is kept in
 the window and saved when you press **Edit here** if the board has not moved on meanwhile; if it has,
 the window says that the change was dropped. If the writer does not let go within 10 seconds, the board
-is taken from it and its later saves are refused.
+is taken from it and its later saves are refused. So is a board whose window does not answer an agent's
+call within 30 seconds: the window is a reader from then on, and the agent's next call goes to the headless
+writer.
 
 ## Port 6006 is taken
 

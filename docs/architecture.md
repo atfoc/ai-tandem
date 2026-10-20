@@ -141,6 +141,25 @@ writes.
   headless writer, and when no window shows it the agent is told so in plain words, which is no failure of the board. A call cut by a
   hand-off, an archive or a delete of its board fails with a text of its own (the board was taken over in
   a window while the call ran; the earlier changes are saved).
+- **A call that gets no answer.** A board call given to a window that holds the board and does not
+  answer within the call time (30 seconds) is not left to fail again and again. The window loses the
+  board the way a writer that does not release in a hand-off loses it: it is told at once that it is a
+  reader now (`superseded`), its other open calls on that board end, and the windows that show the board
+  get one `writer` event. A window waiting for the board (someone pressed **Edit here**) gets it as in a
+  hand-off; otherwise the board has no writer. The board is as it was after its last saved change, and a
+  late answer or a late save from that window is refused. A call that only reads (`read_board`,
+  `get_image`) is then given again, in the same call of the agent, with the headless writer allowed: it
+  starts if it must, answers, and the agent gets its answer late and is not told of the window. Where the
+  headless writer cannot run, the second try ends as any call with no client does; it is the last one, and a
+  window that took the board meanwhile and does not answer it either loses the board too. A call that changes
+  the board (`apply`, `delete_elements`) is not repeated, because the window may have made
+  the change and saved it before it went silent: the agent is told that the call did not finish, that the
+  window no longer holds the board, and to read the board again before it changes it. The next call of
+  the chat on that board goes to the headless writer, or to a window that took the board, with no wait.
+  `get_view` and `show_board` free nothing and never go to the headless writer. This is not a way to
+  find a dead connection sooner: a window that is gone costs an agent one late or failed call, not one
+  for each call until the connection is found dead. A call to the headless writer that does not answer is
+  as before ([Failure](#the-headless-writer)).
 - **Feature level 7.** Both ends need these rules: a server reports 7 and the app connects to no server
   below 7, this computer's included (see [A server that is too old](remote-servers.md#a-server-that-is-too-old)).
 

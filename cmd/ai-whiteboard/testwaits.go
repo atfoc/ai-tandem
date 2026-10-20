@@ -29,9 +29,13 @@ import (
 //	linger   how often the headless writer is looked at for the idle stop (headless.Options.Linger, 5 s)
 //	handover how long the holder of a board has to release it after another client took it
 //	         (the bridge's 10 s); the headless writer gets four fifths of it, as its 8 s are of 10 s
+//	calls    how long an agent's board call waits for the answer of the client it was given to
+//	         (boardapi's 30 s); it is also how long a window that holds a board may stay silent
+//	         before it loses the board
 type testWaits struct {
 	ping, agents, images       time.Duration
 	quiet, hstart, linger, hov time.Duration
+	calls                      time.Duration
 }
 
 // readTestWaits is the AIWB_TEST_WAITS of this process; a value that cannot be read ends it.
@@ -49,12 +53,12 @@ func parseTestWaits(v string) (w testWaits, err error) {
 		return w, nil
 	}
 	fields := map[string]*time.Duration{"ping": &w.ping, "agents": &w.agents, "images": &w.images,
-		"quiet": &w.quiet, "hstart": &w.hstart, "linger": &w.linger, "handover": &w.hov}
+		"quiet": &w.quiet, "hstart": &w.hstart, "linger": &w.linger, "handover": &w.hov, "calls": &w.calls}
 	for _, part := range strings.Split(v, ",") {
 		name, value, ok := strings.Cut(strings.TrimSpace(part), "=")
 		f := fields[name]
 		if !ok || f == nil {
-			return testWaits{}, fmt.Errorf("%q is not name=duration with one of the names ping, agents, images, quiet, hstart, linger, handover", part)
+			return testWaits{}, fmt.Errorf("%q is not name=duration with one of the names ping, agents, images, quiet, hstart, linger, handover, calls", part)
 		}
 		d, err := time.ParseDuration(value)
 		if err != nil || d <= 0 {

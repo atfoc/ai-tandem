@@ -53,6 +53,15 @@ const (
 	// TakenText is the answer to a call cut by a hand-off, an archive or a delete of its board.
 	TakenText = "The board was taken over in a window while this call ran, so the call did not finish. " +
 		"Your earlier changes are saved. Read the board again before you change it."
+	// UnansweredText is the answer to a call that changes the board when the window that held the
+	// board did not answer in time and lost the board for it.
+	UnansweredText = "The window that held the board did not answer in time, so this call did not finish, and that window no longer holds the board. " +
+		"The board is as it was after its last saved change, which may or may not include this call's change. " +
+		"Read the board again (read_board) before you change it."
+	// UnansweredReadText is the answer to a read that was given twice and not answered either time:
+	// the window that took the board from the first one did not answer it either.
+	UnansweredReadText = "The window that held the board did not answer in time, so this read did not finish, and that window no longer holds the board. " +
+		"Nothing was changed. Call it again."
 )
 
 // AwayEditor is the headless writer as the relay sees it: the server's background editor of boards
@@ -78,8 +87,9 @@ type Relay struct {
 	// means an hour. Both are agent.ImageFiles' own.
 	ImageDir    string
 	ImageMaxAge time.Duration
-	// Away is the background editor that works on the boards no window holds. Nil: there is none, and
-	// a board call that no window holds fails with NoClientText.
+	// Away is the background editor that works on the boards no window holds, also on a board a window
+	// lost by not answering. Nil: there is none, and a board call that no window holds fails with
+	// NoClientText.
 	Away AwayEditor
 }
 
@@ -93,6 +103,14 @@ func (r *Relay) Call(token, tool string, args json.RawMessage) (text string, isE
 }
 
 // CallResult is Call with the whole result: the text and, for a tool that draws, the picture.
+//
+// A board call goes to the window that holds the board, else (with a background editor) to the
+// editor, which is given the board. A window that holds the board and does not answer in time loses
+// it (editorbridge.ErrUnanswered). Then read_board and get_image, which only read, are given again
+// once, as the first call was given, and the agent is told nothing of the window; every other board
+// call is not repeated, since the window may have made its change, and the agent is told
+// UnansweredText. The second go is answered like any call, so an editor that cannot run gives the
+// agent its usual text; a read whose second go is not answered either is told UnansweredReadText.
 func (r *Relay) CallResult(token, tool string, args json.RawMessage) ToolResult {
 	caller, ok := r.Chats.ResolveToken(token)
 	if !ok {
@@ -152,20 +170,19 @@ func (r *Relay) CallResult(token, tool string, args json.RawMessage) ToolResult 
 	screen := tool == "get_view" || tool == "show_board" // asked of the screen that shows the chat's board
 	if screen {
 		spec.Board, spec.Screen = "", true
-	} else if r.Away != nil {
-		// A board that no window holds is worked on by the background editor, which is started only
-		// now; the bridge hands it the board, unless a window took it meanwhile.
-		spec.Away = true
-		if _, held := r.Bridge.HolderOf(target); !held {
-			ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
-			_, err := r.Away.Ensure(ctx)
-			cancel()
-			if err != nil {
-				return errResult(r.noBoardText())
-			}
-		}
+	} else if !r.routeToAway(&spec, target) {
+		return errResult(r.noBoardText())
 	}
 	out, err := r.Bridge.CallBoard(spec, callTimeout)
+	if errors.Is(err, editorbridge.ErrUnanswered) && readsBoard(tool) {
+		// The window that held the board lost it by not answering. A call that only reads is safe to
+		// give again, once, as the first one was given: the board is free now, or a person holds it.
+		// The agent is told nothing of the window when this works.
+		if !r.routeToAway(&spec, target) {
+			return errResult(r.noBoardText())
+		}
+		out, err = r.Bridge.CallBoard(spec, callTimeout)
+	}
 	switch {
 	case err == nil:
 		return pageResult(tool, out)
@@ -181,11 +198,42 @@ func (r *Relay) CallResult(token, tool string, args json.RawMessage) ToolResult 
 		return errResult(TakenText)
 	case errors.Is(err, editorbridge.ErrAwayLost):
 		return errResult(AwayLostText)
+	case errors.Is(err, editorbridge.ErrUnanswered) && readsBoard(tool):
+		return errResult(UnansweredReadText)
+	case errors.Is(err, editorbridge.ErrUnanswered):
+		return errResult(UnansweredText)
 	}
 	if !screen && r.Away != nil && timedOut(err) && r.Bridge.WriterOf(target) == "headless" {
 		r.Away.CallTimedOut()
 	}
 	return errResult(err.Error())
+}
+
+// routeToAway prepares a call about a board for the background editor, when the server has one: the
+// call may be given to it if no window holds the board, and the editor is started now unless a
+// window holds the board. It returns false when the editor cannot run (the agent is then told
+// noBoardText). With no background editor it changes nothing.
+func (r *Relay) routeToAway(spec *editorbridge.CallSpec, target string) bool {
+	if r.Away == nil {
+		return true
+	}
+	// A board that no window holds is worked on by the background editor, which is started only
+	// now; the bridge hands it the board, unless a window took it meanwhile.
+	spec.Away = true
+	if _, held := r.Bridge.HolderOf(target); !held {
+		ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
+		defer cancel()
+		if _, err := r.Away.Ensure(ctx); err != nil {
+			return false
+		}
+	}
+	return true
+}
+
+// readsBoard reports whether a board tool only reads the board, so that a call of it that a window
+// did not answer may be given again.
+func readsBoard(tool string) bool {
+	return tool == "read_board" || tool == "get_image"
 }
 
 // noBoardText is what an agent is told when no client can work on a board that no window holds:
