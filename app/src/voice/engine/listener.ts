@@ -27,11 +27,9 @@ export type ListenerEvents = {
 };
 
 export interface Listener {
-  /** Whether the platform gave echo cancellation to this microphone (VC-9 reads it with `audio.voiceBargeIn`). */
-  readonly echoCancel: boolean;
   /** The person's Mute: no chunk goes up, the socket stays. */
   mute(on: boolean): void;
-  /** The session's gate: closed while nothing the person says may count (a turn on its way, a reply spoken without voice barge-in).
+  /** The session's gate: closed while nothing the person says may count (a turn on its way, its reply, a message read aloud).
    *  Chunks captured while it was closed are not sent later. */
   gate(open: boolean): void;
   /** Asks the service to commit what it heard (Send with a guess not committed yet). Nothing when no socket is open. */
@@ -192,7 +190,6 @@ export async function startListener(o: {
   }
 
   const listener: Listener = {
-    get echoCancel() { return mic?.echoCancel ?? false; },
     mute(on) {
       if (stopped) return;
       muted = on;

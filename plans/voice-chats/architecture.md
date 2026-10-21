@@ -543,6 +543,10 @@ no listening in the background (goal §5).
 **VC-9. Echo cancellation and voice barge-in (goal 7.3).** `AudioPort.voiceBargeIn` is true on iOS and on an Android device
 whose `startMic` answered `echoCancel: true`; false on the desktop and the web build. Tap barge-in ships everywhere.
 
+2026-10-21: superseded. Voice barge-in is removed on every platform, and `AudioPort.voiceBargeIn` with it, because the echo
+of the reply was transcribed as the person's words. The mic sends nothing until the reply is over or tapped
+(`docs/architecture.md`, "Interrupting").
+
 - **Shipped where `voiceBargeIn`:** in speech mode and the pill, while the reply is spoken, the mic keeps sending chunks (with
   voice processing on); a `partial_transcript` of at least 2 words that is not mostly the words being spoken (fewer than
   half its words are in the current sentence: the echo that leaked) interrupts: the player stops, the queue clears, the TTS

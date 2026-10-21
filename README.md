@@ -69,8 +69,8 @@ is off until you add a key, and the app does not touch the microphone until you 
   sent until you press Send.
 - **Speech mode.** Talk to a chat turn by turn. Your words are sent as an ordinary message after a pause (or when you press
   Send, if you switch **Auto-send** off), and the agent's reply is spoken sentence by sentence as it is written. Mute and End
-  are in the speech bar; a tap on its waveform interrupts the reply, and on an iPhone or an Android phone you can also just
-  start talking.
+  are in the speech bar; a tap on its waveform interrupts the reply. While the reply is spoken the app does not listen; it
+  listens again when the reply is over.
 - **Read aloud.** Any message has a **Read aloud** action; it skips code blocks unless you switch that off in Settings.
 - **The pill on a board.** A small control at the bottom of a board: speak to the board's chats without opening one, with the
   selection on the board added to what you say. On a desktop, hold Space to talk and let go to send.

@@ -58,15 +58,11 @@ test("startMic asks the person when undetermined, then starts 16 kHz chunks of c
   assert.equal(chunks[0][0], pcm, "the same string, not decoded and encoded again");
 });
 
-test("voiceBargeIn is what startMic answered: the device's echo cancellation (VC-9)", async () => {
+test("the microphone's echoCancel is what startMic answered: the device's echo cancellation", async () => {
   const yes = setUp({ echo: true });
-  assert.equal(yes.port.voiceBargeIn, false, "nothing started yet");
-  await yes.port.startMic({ chunkMs: 100, echoCancel: true, onChunk: yes.onChunk });
-  assert.equal(yes.port.voiceBargeIn, true);
+  assert.equal((await yes.port.startMic({ chunkMs: 100, echoCancel: true, onChunk: yes.onChunk })).echoCancel, true);
   const no = setUp({ echo: false });
-  const mic = await no.port.startMic({ chunkMs: 100, echoCancel: true, onChunk: no.onChunk });
-  assert.equal(mic.echoCancel, false);
-  assert.equal(no.port.voiceBargeIn, false, "a device without a canceller: tap barge-in only");
+  assert.equal((await no.port.startMic({ chunkMs: 100, echoCancel: true, onChunk: no.onChunk })).echoCancel, false, "a device without a canceller");
 });
 
 test("a refused microphone is mic_blocked: refused now, refused before, or refused by the device", async () => {
@@ -243,7 +239,6 @@ test("a build without the module: every call that needs the device fails plainly
     port.player.on(() => {})();
     port.onInterrupted(() => {})();
     assert.equal(port.canOpenMicSettings, false);
-    assert.equal(port.voiceBargeIn, false);
   }
 });
 

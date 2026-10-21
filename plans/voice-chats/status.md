@@ -40,3 +40,4 @@ All packages of `packages.md` (P0–P18), the follow-ups P14F, P19, A4F and FX1 
 - On a narrow composer row the voice pair goes to the "more" popup; the chip it brings can take the meter's text
   (415–460 px panels show the ring) and on the phone the effort chip moves into the popup.
 - Interrupting by speaking ships on iOS and Android only (echo cancellation); a tap interrupts everywhere.
+  2026-10-21: superseded, see VC-9 in `architecture.md`: voice barge-in is removed, a tap is the only interrupt.

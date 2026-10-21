@@ -1,4 +1,4 @@
-// The listening sessions (architecture VC-18 to VC-22, VC-9, §8.1): dictation, speech mode and the board's pill, one at a time. A session
+// The listening sessions (architecture VC-18 to VC-22, §8.1): dictation, speech mode and the board's pill, one at a time. A session
 // is the microphone and the STT socket (`listener.ts`), the turn machine (`logic/turn.ts`) with its timer, the sending of a turn through
 // the function the screen gave, the reply follower (`reply.ts`) and the speaker; `end`, a problem in any of them, or the system taking
 // the audio ends them all together, in this order: no more audio goes up, the timer stops, the reply's sound stops, the session's state
@@ -6,9 +6,11 @@
 //
 // Nothing is sent without the person's act (goal 4.7): a turn goes when the turn machine says so (Auto-send's pause ran out, or Send),
 // and dictation's machine never says so. Nothing is heard while it cannot count: from the moment a turn is on its way until its reply is
-// over, no chunk goes up, except while the reply is spoken on a platform that ships voice barge-in (VC-9), where what is heard either
-// interrupts the reply (two words or more, fewer than half of them in the sentences being spoken: not their echo) or is dropped. A turn
-// already handed to the screen's `send` is never taken back; a `send` that fails gives the words back to the person to send again.
+// over, on every platform, no chunk goes up and what is heard is dropped, so the speaker's words are never taken for the person's. The
+// reply is over when it has played (and then `REPLY_TAIL_MS` more, for the last of its sound in the room), was stopped, failed, or the
+// person tapped to interrupt it (no tail: listening is at once); a message read aloud closes the gate the same way while it plays. Speaking
+// does not interrupt the reply; a tap does. A turn already handed to the screen's `send` is never taken back; a `send` that fails gives
+// the words back to the person to send again.
 //
 // The engine imports no screen: speech mode is given the composer's `sendMessage(chat, text)` for its chat, the pill its own `send` and
 // `target` (VC-21, VC-29).
@@ -38,8 +40,8 @@ export const sessionDeps = {
 };
 const DEPS_AT_START = { ...sessionDeps };
 
-/** After a reply has played, what is heard for this long and is mostly its words is its echo (where voice barge-in ships). */
-export const ECHO_TAIL_MS = 1500;
+/** After a reply has played to its end, the gate stays closed this long more: the last of the speaker's sound and its echo in the room. */
+export const REPLY_TAIL_MS = 500;
 /** How long the pill's turn waits for its chat's list to load before it is sent all the same. */
 export const LOAD_WAIT_MS = 3000;
 
@@ -59,7 +61,8 @@ type Session = {
   listener: Listener | null;
   turn: TurnState;
   timer: unknown;
-  /** Past the turn machine: the turn is on its way, the agent works, the reply is spoken. null: the turn machine decides. */
+  /** Past the turn machine: the turn is on its way, the agent works, the reply is spoken (or its tail runs). null: the turn machine
+   *  decides. */
   stage: "sending" | "thinking" | "speaking" | null;
   /** The screen's `send` has not answered yet. */
   sending: boolean;
@@ -67,13 +70,9 @@ type Session = {
   said: string;
   reply: ReplyFollower | null;
   muted: boolean;
-  /** Speaking may interrupt the reply here (VC-9). */
-  bargeIn: boolean;
-  /** The sentences being spoken, the last two: what an echo would repeat. */
-  recent: string[];
   spoken: string;
-  /** `ports.now()` until which what is heard is checked for the echo of the reply that has just played. */
-  echoUntil: number;
+  /** The timer of the tail after a reply played (`REPLY_TAIL_MS`); null when none runs. */
+  tail: unknown;
   level: number;
   target: string | null;
   /** What the dictation sink was last shown. */
@@ -96,12 +95,11 @@ function phaseOf(s: Session): Phase {
   return s.stage ?? TURN_PHASE[s.turn.phase];
 }
 
-/** Audio may go up: the turn listens, or the reply is spoken where speaking may interrupt it. Where it may not (no echo cancellation), a
- *  message read aloud meanwhile closes the gate too: the microphone would take the speaker's words for the person's. */
+/** Audio may go up: the turn listens. A turn on its way, its reply and the reply's tail, and a message read aloud close the gate: the
+ *  microphone would take the speaker's words for the person's. */
 function gateOpen(s: Session): boolean {
   if (s.starting) return true;
-  if (!s.bargeIn && readingStore.get().key !== null) return false;
-  if (s.stage === "speaking") return s.bargeIn;
+  if (readingStore.get().key !== null) return false;
   if (s.stage) return false;
   return s.turn.phase !== "committing" && s.turn.phase !== "sent";
 }
@@ -158,38 +156,9 @@ function stepTurn(s: Session, input: TurnInput): void {
   render(s);
 }
 
-const wordsOf = (text: string): string[] => text.toLowerCase().replace(/[^\p{L}\p{N}\s']/gu, " ").split(/\s+/).filter(Boolean);
-
-/** How many of the words of `text` are in the sentences being spoken, and how many words it has. */
-function overlap(text: string, recent: readonly string[]): { words: number; said: number } {
-  const words = wordsOf(text);
-  const spoken = new Set(recent.flatMap(wordsOf));
-  return { words: words.length, said: words.filter((w) => spoken.has(w)).length };
-}
-
-/** What is heard while the reply is spoken interrupts it (VC-9): two words or more, fewer than half of them in what is being spoken. */
-export function bargesIn(text: string, recent: readonly string[]): boolean {
-  const o = overlap(text, recent);
-  return o.words >= 2 && o.said * 2 < o.words;
-}
-
-/** What is heard just after the reply played is its echo: half of its words or more are the reply's. */
-function isEcho(text: string, recent: readonly string[]): boolean {
-  const o = overlap(text, recent);
-  return o.words > 0 && o.said * 2 >= o.words;
-}
-
 function heard(s: Session, kind: "partial" | "committed", text: string): void {
   if (current !== s || s.starting) return;
-  if (s.stage === "sending" || s.stage === "thinking") return; // the turn went: what is heard now does not count
-  if (s.stage === "speaking") {
-    if (!s.bargeIn || !bargesIn(text, s.recent)) return;
-    // Voice barge-in: the reply stops, and what was said starts the next turn.
-    stopReply(s);
-    s.stage = null;
-  } else if (s.bargeIn && now() < s.echoUntil && isEcho(text, s.recent)) {
-    return;
-  }
+  if (s.stage) return; // the turn went and its reply is not over: what is heard now does not count
   stepTurn(s, kind === "partial" ? { type: "partial", text } : { type: "committed", text });
 }
 
@@ -201,8 +170,15 @@ function stopReply(s: Session): void {
   r?.stop();
 }
 
+function clearTail(s: Session): void {
+  if (s.tail === null) return;
+  sessionDeps.clearTimer(s.tail);
+  s.tail = null;
+}
+
 /** The words of a turn whose `send` failed are the person's again: the turn waits for Send. */
 function giveBack(s: Session, text: string): void {
+  clearTail(s);
   s.stage = null;
   s.turn = { ...s.turn, phase: "waiting", committed: [text], partial: "", quietAt: null, countdown: null, commitBy: null };
   schedule(s);
@@ -253,7 +229,6 @@ async function sendTurn(s: Session, text: string): Promise<void> {
       if (current !== s || s.reply !== follower) return;
       s.stage = "speaking";
       s.spoken = sentence;
-      s.recent = [...s.recent, sentence].slice(-2);
       s.level = 0;
       render(s);
     },
@@ -278,8 +253,9 @@ async function sendTurn(s: Session, text: string): Promise<void> {
   s.sending = false;
   if (current !== s) return;
   s.turn = step(s.turn, { type: "reset" }, now()).state;
-  // (The stage may have moved while `send` ran: the reply's first sentence may already be heard.)
-  if (s.reply !== follower) s.stage = null; // the reply is already over (or was interrupted)
+  // (The stage may have moved while `send` ran: the reply's first sentence may already be heard, or the reply has played and its tail
+  // runs: the tail ends it.)
+  if (s.reply !== follower) { if (s.tail === null) s.stage = null; } // the reply is already over (or was interrupted)
   else if ((s.stage as Session["stage"]) !== "speaking") s.stage = "thinking";
   schedule(s);
   render(s);
@@ -290,8 +266,18 @@ function afterReply(s: Session, follower: ReplyFollower, r: ReplyResult): void {
   s.reply = null;
   if (current !== s) return;
   if (typeof r === "object") { endSession(); return; } // the speaker showed the problem
-  if (r === "played" && s.bargeIn) s.echoUntil = now() + ECHO_TAIL_MS;
   s.level = 0;
+  if (r === "played" && s.stage === "speaking") {
+    // Its sound has ended: the speaking phase stays, and the gate closed, for the tail.
+    s.tail = sessionDeps.setTimer(() => {
+      s.tail = null;
+      if (current !== s) return;
+      s.stage = s.sending ? "sending" : null; // the turn's own send answers after its reply: it decides then
+      render(s);
+    }, REPLY_TAIL_MS);
+    render(s);
+    return;
+  }
   if (s.sending) { s.stage = "sending"; render(s); return; } // the turn's own send answers after its reply: it decides then
   s.stage = null;
   render(s);
@@ -314,6 +300,7 @@ export function endSession(): void {
   s.listener?.stop();
   s.listener = null;
   if (s.timer !== null) { sessionDeps.clearTimer(s.timer); s.timer = null; }
+  clearTail(s);
   for (const off of s.offs.splice(0)) off();
   stopReply(s);
   if (s.how.kind === "dictation") s.how.sink.done(turnText(s.turn));
@@ -326,8 +313,8 @@ async function start(owner: SessionOwner, anchor: string, how: How, retry: () =>
   const s: Session = {
     owner, anchor, how, retry, ctl: new AbortController(), starting: true, listener: null,
     turn: initTurn({ sends: how.kind !== "dictation", autoSend: settings.autoSend, pauseMs: settings.pauseMs }),
-    timer: null, stage: null, sending: false, said: "", reply: null, muted: false, bargeIn: false, recent: [], spoken: "",
-    echoUntil: 0, level: 0, target: null, shown: `\u0000`, offs: [],
+    timer: null, stage: null, sending: false, said: "", reply: null, muted: false, spoken: "", tail: null,
+    level: 0, target: null, shown: `\u0000`, offs: [],
   };
   current = s;
   sessionStore.set({ ...IDLE_SESSION, owner, phase: "starting" });
@@ -362,7 +349,6 @@ async function start(owner: SessionOwner, anchor: string, how: How, retry: () =>
   }
   if (!listener || current !== s) { listener?.stop(); return; }
   s.listener = listener;
-  s.bargeIn = how.kind !== "dictation" && voicePorts().audio.voiceBargeIn && listener.echoCancel;
   if (s.muted) listener.mute(true);
   s.starting = false;
   s.offs.push(readingStore.subscribe(() => render(s)));
@@ -418,11 +404,12 @@ export function cancelCountdown(): void {
 }
 
 /** A tap barge-in: whatever plays stops (the reply, or a message read aloud), and a session whose reply was coming or being spoken listens
- *  again. The agent's turn goes on (goal §5: barge-in stops speech, not the turn). */
+ *  again at once (no tail). The agent's turn goes on (goal §5: barge-in stops speech, not the turn). */
 export function interrupt(): void {
   const s = current;
-  if (s && s.reply) {
+  if (s && (s.reply || s.tail !== null)) {
     stopReply(s);
+    clearTail(s);
     s.level = 0;
     s.stage = s.sending ? "sending" : null;
     render(s);

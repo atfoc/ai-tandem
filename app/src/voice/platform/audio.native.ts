@@ -20,8 +20,6 @@ export function audioOver(source: AudioModuleSource): AudioPort {
   const interruptedListeners = new Set<() => void>();
   /** The microphone that runs now: its chunks go to `onChunk` until it is stopped. */
   let mic: { onChunk(b64: string, level: number): void; muted: boolean } | null = null;
-  /** What the last `startMic` answered: the device cancels the echo of what it plays (VC-9). */
-  let echoCancel = false;
 
   /** The module, loaded and listened to on the first call; null when the build has none. */
   const load = (): AiwbAudioModule | null => {
@@ -73,7 +71,6 @@ export function audioOver(source: AudioModuleSource): AudioPort {
       if ((err as { code?: unknown } | null)?.code === MIC_BLOCKED) throw new VoiceProblemError("mic_blocked");
       throw new Error("voice: the microphone did not start"); // the device's text is not passed on
     }
-    echoCancel = answer.echoCancel;
     let stopped = false;
     const handle: MicHandle = {
       echoCancel: answer.echoCancel,
@@ -120,7 +117,6 @@ export function audioOver(source: AudioModuleSource): AudioPort {
       },
     },
     playClip,
-    get voiceBargeIn() { return echoCancel; },
     get canOpenMicSettings() { return load() !== null; },
     async openMicSettings() { await need().openSettings(); },
     onInterrupted(f) {

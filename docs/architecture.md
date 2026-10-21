@@ -535,15 +535,15 @@ never used voice opens no socket, asks for no microphone, makes no audio context
   player does not stretch the sound.
 - **Interrupting.** A tap interrupts everywhere: a tap on the speech bar's waveform or on the pill's orb while a reply is
   spoken, and the **Stop reading** control of a message, each stop the sound and the open requests at once (and in a session
-  the microphone goes on listening). Interrupting **by speaking** is on the phones only. On iOS the microphone and the
-  speaker are one engine with Apple's voice processing, and on Android the microphone asks for the platform's echo canceller
-  and voice barge-in is on when the device gave one; there the microphone stays open while the reply is spoken, and a
-  transcript of at least two words that is not mostly the sentence being spoken (the echo of the speaker) stops the sound and
-  starts the next turn. On the desktop and in the web build it is off: whether Chromium's echo cancellation covers what Web
-  Audio plays on macOS is not established, and a model that interrupts itself is worse than no voice barge-in. There, while a
-  reply is spoken or a message is read, **no audio is sent** (the engine mutes the microphone), and the person interrupts
-  with a tap. Whether the phones' echo cancellation holds with a loud speaker is checked by a person on a phone, not by a
-  test.
+  the microphone goes on listening at once). Speaking does not interrupt, on any platform. From the moment a spoken turn is
+  on its way until its reply is over (played to its end, stopped, failed or tapped), **no audio is sent** and nothing heard
+  counts, in speech mode and in the pill, on the phones, the desktop and the web build alike; a message read aloud during a
+  session closes the microphone the same way until it ends. After a reply has played to its end the microphone stays closed
+  for a short tail (`REPLY_TAIL_MS`, 500 ms, in `engine/session.ts`), so the last of the speaker's sound is not taken for the
+  next turn. The microphone still asks the platform for echo cancellation (Apple's voice processing on iOS, the platform's
+  echo canceller on Android, `echoCancellation` in Chromium), but nothing depends on it: voice barge-in, which kept the
+  microphone open on the phones while the reply was spoken, was removed because the echo of the reply was transcribed as the
+  person's words.
 - **A turn.** Listening opens one socket to the speech-to-text service (`commit_strategy=vad`, 100 ms chunks of 16 kHz
   PCM) and keeps it between the turns of a session; there is one session at a time (starting another ends the one
   running). With **Auto-send** on, a pause (1.2 s by default) after the words starts a countdown that sends the turn,

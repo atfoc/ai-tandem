@@ -311,7 +311,6 @@ export type FakeAudio = AudioPort & {
   auto: boolean;
   /** The system takes the audio (a call): the listeners of `onInterrupted` are told. */
   interrupt(): void;
-  voiceBargeIn: boolean;
   canOpenMicSettings: boolean;
 };
 
@@ -325,7 +324,7 @@ export function createFakeAudio(log: (s: string) => void, now: () => number): Fa
 
   const a: FakeAudio = {
     writes: [], marks: [], stops: 0, playerLog: [], clips: [], mics: [],
-    permission: "granted", micSettingsOpened: 0, clipMs: null, auto: true, voiceBargeIn: false, canOpenMicSettings: true,
+    permission: "granted", micSettingsOpened: 0, clipMs: null, auto: true, canOpenMicSettings: true,
     endClip() { clipEnd?.resolve(); },
     reach(id) { unreached = unreached.filter((x) => x !== id); emit({ kind: "mark", id }); },
     drain() { emit({ kind: "drained" }); },

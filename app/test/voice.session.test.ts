@@ -17,7 +17,7 @@ import type { DictationSink, SessionState } from "../src/voice/index.ts";
 import { setVoiceSettings, useSpokenMark, useVoiceSession, voice } from "../src/voice/index.ts";
 import { speaker } from "../src/voice/engine/speaker.ts";
 import { problemStore, resetEngine, sessionStore, flags, waits } from "../src/voice/engine/state.ts";
-import { bargesIn, ECHO_TAIL_MS, sessionDeps } from "../src/voice/engine/session.ts";
+import { REPLY_TAIL_MS, sessionDeps } from "../src/voice/engine/session.ts";
 import { marksStore, noteSpoken, spokenMark, turnWords } from "../src/voice/engine/marks.ts";
 import { createFakePorts, ERR, serveVoice, settle, waitFor } from "./fixtures/voice/fakeports.ts";
 import type { FakePorts, FakeSocket } from "./fixtures/voice/fakeports.ts";
@@ -103,6 +103,13 @@ async function dictation() {
   sock.open();
   await p;
   return { ...log, sock, mic: f.audio.mics[0] };
+}
+
+/** Waits for a reply that is spoken to play to its end, runs out its tail on the fake clock, and waits for listening. */
+async function listeningAgain() {
+  await waitFor(() => session().phase === "speaking" && f.timers.pending === 1, "the reply's tail");
+  f.advance(REPLY_TAIL_MS);
+  await waitFor(() => session().phase === "listening", "listening again");
 }
 
 /** Says a turn and lets Auto-send's pause run out: the turn is sent. */
@@ -529,7 +536,7 @@ describe("the reply", () => {
     setItems([user("Earlier."), reply("Earlier reply.", true), user("Tell me."), reply("The first sentence is here. The second one is longer now. And a third without an end", true)]);
     setItems([user("Earlier."), reply("Earlier reply.", true), user("Tell me."), reply("The first sentence is here. The second one is longer now. And a third without an end", true), { kind: "end" }]);
     setChat("ready");
-    await waitFor(() => session().phase === "listening", "listening again");
+    await listeningAgain();
     assert.deepEqual(ttsTexts(), ["The first sentence is here.", "The second one is longer now.", "And a third without an end"]);
     assert.equal(session().spoken, "");
   });
@@ -542,7 +549,7 @@ describe("the reply", () => {
     await waitFor(() => ttsTexts().length === 1, "the first request");
     setItems([user("Rewrite."), reply("Something else entirely here now. Gamma is a new sentence.", true)]);
     setChat("ready");
-    await waitFor(() => session().phase === "listening", "listening again");
+    await listeningAgain();
     const texts = ttsTexts();
     assert.equal(texts[0], "Alpha is the first sentence.");
     assert.equal(texts.filter((t) => t.includes("Alpha")).length, 1);
@@ -555,7 +562,7 @@ describe("the reply", () => {
     await sayAndSend(sock, "Two items.");
     setItems([user("Two items."), reply("Looking at the board first"), { kind: "tool", name: "read" }, reply("Done with the board now.", true), { kind: "end" }]);
     setChat("ready");
-    await waitFor(() => session().phase === "listening", "listening again");
+    await listeningAgain();
     assert.deepEqual(ttsTexts(), ["Looking at the board first", "Done with the board now."]);
   });
 
@@ -564,7 +571,7 @@ describe("the reply", () => {
     setChat("ready");
     await sayAndSend(sock, "No end item.");
     setItems([user("No end item."), reply("A reply that a server finishes without an end.", true)]);
-    await waitFor(() => session().phase === "listening", "listening again");
+    await listeningAgain();
     assert.deepEqual(ttsTexts(), ["A reply that a server finishes without an end."]);
   });
 
@@ -584,7 +591,7 @@ describe("the reply", () => {
     await sayAndSend(sock, "First turn.");
     setItems([user("First turn."), reply("Short answer here.", true), { kind: "end" }]);
     setChat("ready");
-    await waitFor(() => session().phase === "listening", "listening again");
+    await listeningAgain();
     await sayAndSend(sock, "Second turn.");
     assert.deepEqual(sent, ["First turn.", "Second turn."]);
     assert.equal(f.net.sockets.length, 1);
@@ -606,8 +613,7 @@ describe("the reply", () => {
 
 describe("barge-in", () => {
   /** Speech mode with a reply being spoken: the first sentence's sound has begun, its request still streams. */
-  async function speaking(bargeIn: boolean) {
-    f.audio.voiceBargeIn = bargeIn;
+  async function speaking() {
     serveVoice(f.net, { manual: true });
     const s = await speech();
     setChat("thinking");
@@ -622,65 +628,95 @@ describe("barge-in", () => {
     return s;
   }
 
-  test("the echo rule: two words or more, fewer than half of them in what is being spoken", () => {
-    const said = ["The weather today is sunny and warm."];
-    assert.equal(bargesIn("weather today is sunny", said), false);
-    assert.equal(bargesIn("stop", said), false);
-    assert.equal(bargesIn("wait stop please", said), true);
-    assert.equal(bargesIn("the weather stop please now", said), true);
-    assert.equal(bargesIn("the weather is stop", said), false);
-  });
-
-  test("with voice barge-in: chunks go up while the reply plays; its echo does not interrupt, new words do", async () => {
-    const { sock, mic } = await speaking(true);
-    assert.equal(mic.opts.echoCancel, true);
-    const n = audioFrames(sock).length;
-    mic.chunk("WHILE");
-    assert.equal(audioFrames(sock).length, n + 1, "the microphone is heard while the reply plays");
-    partial(sock, "weather today is sunny");
-    assert.equal(session().phase, "speaking", "the echo of the sentence playing does not interrupt");
-    const stopsBefore = f.audio.stops;
-    partial(sock, "wait a moment");
-    assert.equal(session().phase, "listening");
-    assert.equal(session().partial, "wait a moment", "what interrupted starts the next turn");
-    assert.ok(f.audio.stops > stopsBefore, "the sound stopped");
-    assert.ok(f.net.to(TTS).every((q) => q.aborted || q.finished), "the requests were cancelled");
-  });
-
-  test("after the reply played, its echo is not taken for a new turn", async () => {
-    f.audio.voiceBargeIn = true;
-    const { sent, sock } = await speech();
+  /** Speech mode whose one-sentence reply has played to its end: its tail runs (the only timer of the session then). */
+  async function inTail(o: { send?: (text: string) => Promise<unknown> } = {}) {
+    const s = await speech(o);
     setChat("thinking");
-    await sayAndSend(sock, "Short one.");
+    await sayAndSend(s.sock, "Short one.");
     setItems([user("Short one."), reply("Here is the short reply.", true), { kind: "end" }]);
     setChat("ready");
-    await waitFor(() => session().phase === "listening", "listening again");
-    committed(sock, "the short reply");
-    assert.equal(session().committed, "");
-    f.advance(ECHO_TAIL_MS);
-    committed(sock, "the short reply");
-    assert.equal(session().committed, "the short reply", "after the tail it is the person's");
-    assert.deepEqual(sent, ["Short one."]);
-  });
+    await waitFor(() => session().spoken === "Here is the short reply.", "the sentence spoken");
+    await waitFor(() => f.timers.pending === 1, "the reply's tail");
+    return s;
+  }
 
-  test("without voice barge-in: no chunk goes up while the reply plays, and nothing heard interrupts", async () => {
-    const { sock, mic } = await speaking(false);
+  test("speaking does not interrupt: with the device's echo cancellation, no chunk goes up while the reply plays and nothing heard counts", async () => {
+    const { sent, sock, mic } = await speaking();
+    assert.equal(mic.opts.echoCancel, true, "the microphone asks for the platform's echo cancellation, and this device gives it");
     assert.equal(mic.muted, true, "the engine mutes the microphone while the reply plays");
     const n = audioFrames(sock).length;
     mic.chunk("WHILE");
-    assert.equal(audioFrames(sock).length, n);
+    assert.equal(audioFrames(sock).length, n, "no chunk goes up");
+    const stopsBefore = f.audio.stops;
+    partial(sock, "weather today is sunny");
     partial(sock, "wait a moment please");
-    assert.equal(session().phase, "speaking");
+    committed(sock, "wait a moment please");
+    assert.equal(session().phase, "speaking", "neither the echo nor new words interrupt");
+    assert.equal(session().partial, "");
+    assert.equal(session().committed, "");
+    assert.equal(f.audio.stops, stopsBefore, "the sound goes on");
+    f.advance(5000);
+    await settle();
+    assert.deepEqual(sent, ["Weather please."], "what was heard started no turn");
   });
 
-  test("a tap interrupts: the sound stops, the requests are cancelled, the session listens again", async () => {
-    const { sock, mic } = await speaking(false);
+  test("after the reply played, nothing goes up and nothing heard counts for REPLY_TAIL_MS; then the next turn is heard", async () => {
+    const { sent, sock, mic } = await inTail();
+    assert.equal(session().phase, "speaking", "the tail shows the speaking phase");
+    assert.equal(session().level, 0);
+    assert.equal(mic.muted, true);
+    const n = audioFrames(sock).length;
+    mic.chunk("TAIL");
+    assert.equal(audioFrames(sock).length, n, "no chunk goes up in the tail");
+    partial(sock, "the short reply");
+    committed(sock, "the short reply");
+    assert.equal(session().committed, "");
+    f.advance(REPLY_TAIL_MS - 1);
+    assert.equal(session().phase, "speaking");
+    f.advance(1);
+    assert.equal(session().phase, "listening");
+    assert.equal(mic.muted, false);
+    mic.chunk("AFTER");
+    assert.equal(audioFrames(sock).at(-1)?.audio_base_64, "AFTER");
+    await sayAndSend(sock, "Next turn.");
+    assert.deepEqual(sent, ["Short one.", "Next turn."]);
+  });
+
+  test("the turn's own send answers after its reply played: the tail still ends the reply", async () => {
+    const answers: (() => void)[] = [];
+    const { sock } = await inTail({ send: () => new Promise<void>((r) => { answers.push(r); }) });
+    answers[0]();
+    await settle();
+    assert.equal(session().phase, "speaking", "the tail runs on");
+    f.advance(REPLY_TAIL_MS);
+    assert.equal(session().phase, "listening");
+    partial(sock, "next words");
+    assert.equal(session().partial, "next words");
+  });
+
+  test("the tail ends before the turn's own send answers: the turn is still being sent, then listening", async () => {
+    const answers: (() => void)[] = [];
+    const { sock } = await inTail({ send: () => new Promise<void>((r) => { answers.push(r); }) });
+    f.advance(REPLY_TAIL_MS);
+    assert.equal(session().phase, "sending");
+    partial(sock, "too soon");
+    assert.equal(session().partial, "");
+    answers[0]();
+    await settle();
+    assert.equal(session().phase, "listening");
+  });
+
+  test("a tap interrupts: the sound stops, the requests are cancelled, the session listens again at once", async () => {
+    const { sock, mic } = await speaking();
     voice.interrupt();
     assert.equal(session().phase, "listening");
+    assert.equal(f.timers.pending, 0, "no tail after a tap");
     assert.ok(f.net.to(TTS).every((q) => q.aborted || q.finished));
     assert.equal(mic.muted, false, "listening again: the microphone is open");
     mic.chunk("AGAIN");
     assert.equal(audioFrames(sock).at(-1)?.audio_base_64, "AGAIN");
+    partial(sock, "wait a moment");
+    assert.equal(session().partial, "wait a moment", "the next words count");
     // the reply goes on growing: nothing more is spoken of it
     const asked = f.net.to(TTS).length;
     setItems([user("Weather please."), reply("The weather today is sunny and warm. Tomorrow brings heavy rain to the coast. And more after that.", true)]);
@@ -688,9 +724,29 @@ describe("barge-in", () => {
     assert.equal(f.net.to(TTS).length, asked);
   });
 
-  test("without voice barge-in, a message read aloud during the session closes the gate until it ends", async () => {
+  test("a tap in the tail listens at once", async () => {
+    const { sock } = await inTail();
+    voice.interrupt();
+    assert.equal(session().phase, "listening");
+    assert.equal(f.timers.pending, 0);
+    partial(sock, "right away");
+    assert.equal(session().partial, "right away");
+  });
+
+  test("End in the tail leaves no timer", async () => {
+    const { mic } = await inTail();
+    voice.end();
+    assert.equal(f.timers.pending, 0);
+    assert.equal(session().phase, "idle");
+    f.advance(REPLY_TAIL_MS);
+    assert.equal(session().phase, "idle");
+    assert.equal(mic.stopped, true);
+  });
+
+  test("a message read aloud during the session closes the gate until it ends, on every platform", async () => {
     serveVoice(f.net, { manual: true });
     const { sock, mic } = await speech();
+    assert.equal(mic.opts.echoCancel, true);
     const reading = voice.readAloud({ chat: CHAT, branch: BR, index: 0, text: "A message read aloud here.", anchor: "read:c1:main:0" });
     await waitFor(() => f.net.to(TTS).length === 1, "the request");
     const n = audioFrames(sock).length;
@@ -714,7 +770,7 @@ describe("barge-in", () => {
   });
 
   test("End while the reply plays stops it", async () => {
-    const { sock } = await speaking(false);
+    const { sock } = await speaking();
     voice.end();
     assert.ok(f.net.to(TTS).every((q) => q.aborted || q.finished));
     assert.equal(sock.closedByEngine, true);
@@ -742,7 +798,7 @@ describe("the pill", () => {
     assert.equal(session().target, CHAT);
     setItems([user("<selection ids=\"a\" label=\"1 element\">box</selection> Draw a box."), reply("I drew the box for you.", true), { kind: "end" }]);
     setChat("ready");
-    await waitFor(() => session().phase === "listening", "listening again");
+    await listeningAgain();
     assert.deepEqual(ttsTexts(), ["I drew the box for you."]);
     assert.equal(spokenMark(CHAT, BR, 0), true, "the mark is set on the message that carries the selection tag before the words");
   });

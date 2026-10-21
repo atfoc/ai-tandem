@@ -240,5 +240,5 @@ simulator's microphone is silence or the Mac's input, so the stand-in voice serv
   allowed to use the microphone once (System Settings > Privacy & Security > Microphone). The prompt, Read aloud, the refused permission, the relaunch and Remove key need no microphone and run anywhere.
 - Two things the flow works around: a tap on the answer's "⋯" by its id (`fk-more`) does not open the menu on the device, a tap at its place does (and a first tap just after the chat opens is sometimes
   lost, so it is repeated); and the toolbar's "more" sheet, where the phone keeps Dictate, stays open after Dictate is pressed (`_voice-dictate.yaml`, `_voice-close-sheet.yaml`).
-- Not covered by a simulator: echo cancellation and voice barge-in (no acoustic echo), Bluetooth routes, a phone call taking the audio; the person confirms them on a real iPhone and
+- Not covered by a simulator: echo cancellation and the reply's sound not being heard as the next turn (no acoustic echo), Bluetooth routes, a phone call taking the audio; the person confirms them on a real iPhone and
   Android phone. Android runs this flow only with the emulator lock held (see Android); otherwise its module is proven by `./gradlew :aiwb-audio:compileDebugKotlin` and on a phone.

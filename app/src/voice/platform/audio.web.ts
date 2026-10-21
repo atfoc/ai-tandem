@@ -237,7 +237,6 @@ export function audioWeb(): AudioPort {
     },
     player,
     playClip: (bytes, signal) => player.playClip(bytes, signal),
-    voiceBargeIn: false,           // Chromium's echo cancellation is not established for Web Audio output (VC-9): a tap interrupts
     get canOpenMicSettings() { return desktop() !== undefined; },
     async openMicSettings() { await desktop()?.mic.openSettings(); },
     onInterrupted(f) {

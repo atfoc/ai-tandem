@@ -77,8 +77,6 @@ export interface AudioPort {
   player: PcmPlayer;
   /** A preview clip (MP3 or WAV bytes), through the same output; resolves when it ends or is stopped. */
   playClip(bytes: Uint8Array, signal: AbortSignal): Promise<void>;
-  /** Speaking may interrupt the model here (VC-9): the platform gives echo cancellation. */
-  readonly voiceBargeIn: boolean;
   readonly canOpenMicSettings: boolean;
   openMicSettings(): Promise<void>;
   /** The system took the audio (a call, another app): the engine ends listening and speaking quietly. */
@@ -100,7 +98,6 @@ const notSet: VoicePorts = {
     startMic: rejects,
     player: { write: notSetUp, mark: notSetUp, stop() {}, on: () => () => {} },
     playClip: rejects,
-    voiceBargeIn: false,
     canOpenMicSettings: false,
     openMicSettings: rejects,
     onInterrupted: () => () => {},

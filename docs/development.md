@@ -291,7 +291,7 @@ ordinary message, the reply is spoken sentence by sentence, the key is found now
 used voice makes no request to `/voice`) and the voice part of `desktop/e2e/app.e2e.mjs` (an Electron app at a standalone
 stand-in through `AIWB_VOICE_BASE`: the key file, no key on the page, Read aloud through the main process, Remove) run on it too.
 The microphone and the audio session of a phone are tested by a device flow, `voice-mic` (`app/e2e/README.md`), on a simulator;
-echo cancellation and voice barge-in need a real phone and a real speaker, and are tried by a person.
+that no reply is heard as the person's words needs a real phone and a real speaker, and is tried by a person.
 
 ## Development
 

@@ -24,8 +24,8 @@ What the app does not do, or does not do fully, and the limits it enforces.
   and Han text on a Mac can come out up to 1.3% wider than a window's.
 - Voice (speech mode, dictation, read aloud) needs your own ElevenLabs key. The mic mark on a message
   you spoke is kept on the device that sent the turn: another device, a fork of the chat or a
-  reinstalled app does not show it. Speaking over the model interrupts it only on the phones (iOS and
-  Android); everywhere else a tap on the waveform or the orb does. Voice in the web build exists for
+  reinstalled app does not show it. Speaking over the model does not interrupt it: while a reply is
+  spoken nothing you say is heard, and a tap on the waveform or the orb interrupts it. Voice in the web build exists for
   tests only. Speech mode's send clears nothing but the turn: the text you typed in the box stays.
 - With the app closed nothing is connected, to any server. Servers and their agents run on; each
   section fills again when the app opens.
