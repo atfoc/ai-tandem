@@ -11,7 +11,7 @@ import { closeVoiceSettings, setVoiceSettings, useVoiceSettings, useVoiceSetting
 import type { VoiceSettings } from "../../voice/index.ts";
 import {
   ADVANCED_LANGUAGE, ADVANCED_LANGUAGE_AUTO, ADVANCED_PAUSE, ADVANCED_PAUSE_VALUE, ADVANCED_SKIP_CODE, ADVANCED_SPEED, ADVANCED_SPEED_VALUE,
-  ADVANCED_STT_MODEL, ADVANCED_STT_SCRIBE, ADVANCED_TITLE, ADVANCED_TTS_FLASH, ADVANCED_TTS_MODEL, ADVANCED_TTS_MULTILINGUAL, AUTOSEND_NOTE,
+  ADVANCED_STT_MODEL, ADVANCED_STT_SCRIBE, ADVANCED_TITLE, ADVANCED_TTS_FLASH, ADVANCED_TTS_MODEL, ADVANCED_TTS_MULTILINGUAL, ADVANCED_TTS_V4_TURBO, AUTOSEND_NOTE,
   AUTOSEND_OFF, AUTOSEND_ON, AUTOSEND_TITLE, KEY_BAD, KEY_HIDE, KEY_PLACEHOLDER, KEY_PLACEHOLDER_SAVED, KEY_REMOVE, KEY_REMOVE_BODY,
   KEY_REMOVE_DO, KEY_REMOVE_TITLE, KEY_REMOVED, KEY_SAVE, KEY_SAVED, KEY_SHOW, KEY_STORED_NOTE, KEY_TEST, KEY_TESTING, KEY_TITLE, LANGUAGES,
   PROBLEM_WORDS, SETTINGS_CLOSE, SETTINGS_TITLE, SETTINGS_VOICE_TITLE, VOICES_TITLE, keyWorks,
@@ -143,7 +143,8 @@ function AutoSendSection() {
 }
 
 const TTS_OPTIONS: Option<VoiceSettings["ttsModel"]>[] = [
-  { value: "eleven_flash_v2_5", label: ADVANCED_TTS_FLASH }, { value: "eleven_multilingual_v2", label: ADVANCED_TTS_MULTILINGUAL },
+  { value: "eleven_flash_v2_5", label: ADVANCED_TTS_FLASH }, { value: "eleven_v4_turbo", label: ADVANCED_TTS_V4_TURBO },
+  { value: "eleven_multilingual_v2", label: ADVANCED_TTS_MULTILINGUAL },
 ];
 const STT_OPTIONS: Option<VoiceSettings["sttModel"]>[] = [{ value: "scribe_v2_realtime", label: ADVANCED_STT_SCRIBE }];
 const LANGUAGE_OPTIONS: Option<string | null>[] = [{ value: null, label: ADVANCED_LANGUAGE_AUTO }, ...LANGUAGES.map(([code, name]) => ({ value: code, label: name }))];

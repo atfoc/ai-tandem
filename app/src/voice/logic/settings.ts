@@ -6,8 +6,8 @@ export type VoiceSettings = {
   autoSend: boolean;            // default true
   voiceId: string | null;       // null: the first voice at first use
   voiceName: string;
-  ttsModel: "eleven_flash_v2_5" | "eleven_multilingual_v2";   // default flash
-  sttModel: "scribe_v2_realtime";
+  ttsModel: (typeof TTS_MODELS)[number];   // default flash
+  sttModel: (typeof STT_MODELS)[number];
   language: string | null;      // null = auto-detect
   pauseMs: number;              // default 1200, clamp 600..3000
   speed: number;                // default 1.0, one of 0.8..1.2

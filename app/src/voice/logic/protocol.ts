@@ -8,7 +8,7 @@ export const STT_PATH = "/v1/speech-to-text/realtime";
 export const TOKEN_PATH = "/v1/single-use-token/realtime_scribe";
 export const VOICES_PATH = "/v2/voices";
 
-export const TTS_MODELS = ["eleven_flash_v2_5", "eleven_multilingual_v2"] as const;
+export const TTS_MODELS = ["eleven_flash_v2_5", "eleven_v4_turbo", "eleven_multilingual_v2"] as const;
 export const STT_MODELS = ["scribe_v2_realtime"] as const;
 
 /** What the microphone sends: 16 kHz mono s16le in chunks of this many milliseconds (1600 samples, 3200 bytes). */
@@ -44,8 +44,8 @@ export function sttQuery(s: Pick<VoiceSettings, "sttModel" | "language">): Query
 export const ttsPath = (voiceId: string): string => `/v1/text-to-speech/${voiceId}/stream`;
 export const ttsQuery = (): Query => ({ output_format: TTS_OUTPUT_FORMAT });
 
-/** The body for one sentence (§2.3): only the sentence and the model, the language when set (the multilingual model ignores it, so it is
- *  not sent to it), and the speed only when it is not 1.0. */
+/** The body for one sentence (§2.3): only the sentence and the model, the language when set (to every model but the multilingual one,
+ *  which ignores it), and the speed only when it is not 1.0. */
 export function ttsBody(text: string, s: Pick<VoiceSettings, "ttsModel" | "language" | "speed">): Record<string, unknown> {
   const body: Record<string, unknown> = { text, model_id: s.ttsModel };
   if (s.language && s.ttsModel !== "eleven_multilingual_v2") body.language_code = s.language;

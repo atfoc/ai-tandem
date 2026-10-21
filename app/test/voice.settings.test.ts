@@ -67,6 +67,8 @@ describe("clampSettings", () => {
   it("accepts only the models the app offers", () => {
     assert.equal(clampSettings({ ttsModel: "eleven_turbo_v2_5" }).ttsModel, "eleven_flash_v2_5");
     assert.equal(clampSettings({ ttsModel: "eleven_multilingual_v2" }).ttsModel, "eleven_multilingual_v2");
+    assert.equal(clampSettings({ ttsModel: "eleven_v4_turbo" }).ttsModel, "eleven_v4_turbo");
+    for (const m of ["eleven_v3", "eleven_v4", "eleven_turbo_v2", 4]) assert.equal(clampSettings({ ttsModel: m }).ttsModel, "eleven_flash_v2_5");
     assert.equal(clampSettings({ sttModel: "scribe_v1" }).sttModel, "scribe_v2_realtime");
   });
   it("takes a language as a lower-case code or auto-detect", () => {

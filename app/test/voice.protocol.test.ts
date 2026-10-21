@@ -13,7 +13,7 @@ import { DEFAULTS } from "../src/voice/logic/settings.ts";
 
 describe("constants (VC-19)", () => {
   it("name the models of arch 2.5 and the chunk and silence of VC-19", () => {
-    assert.deepEqual([...TTS_MODELS], ["eleven_flash_v2_5", "eleven_multilingual_v2"]);
+    assert.deepEqual([...TTS_MODELS], ["eleven_flash_v2_5", "eleven_v4_turbo", "eleven_multilingual_v2"]);
     assert.deepEqual([...STT_MODELS], ["scribe_v2_realtime"]);
     assert.equal(CHUNK_MS, 100);
     assert.equal(VAD_SILENCE_S, 0.6);
@@ -38,8 +38,9 @@ describe("the STT query and the TTS request", () => {
     });
     assert.deepEqual(ttsBody("Hello.", { ...DEFAULTS, speed: 0.8 }).voice_settings, { speed: 0.8 });
   });
-  it("ttsBody sends the language to the flash model and not to the multilingual one, which ignores it", () => {
+  it("ttsBody sends the language to the flash and v4 Turbo models and not to the multilingual one, which ignores it", () => {
     assert.equal(ttsBody("Hi.", { ...DEFAULTS, language: "de" }).language_code, "de");
+    assert.deepEqual(ttsBody("Hi.", { ...DEFAULTS, language: "de", ttsModel: "eleven_v4_turbo" }), { text: "Hi.", model_id: "eleven_v4_turbo", language_code: "de" });
     assert.equal("language_code" in ttsBody("Hi.", { ...DEFAULTS, language: "de", ttsModel: "eleven_multilingual_v2" }), false);
   });
 });
