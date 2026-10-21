@@ -118,17 +118,18 @@ Source: <https://elevenlabs.io/docs/api-reference/voices/search>
 
 ### 2.5 Model ids
 
-Source: <https://elevenlabs.io/docs/models>
+Source: <https://elevenlabs.io/docs/overview/models>
 
 | Use | Id | Note |
 |---|---|---|
 | TTS default ("Flash v2.5, fastest and cheapest") | `eleven_flash_v2_5` | ~75 ms, 32 languages |
-| TTS alternative in Advanced | `eleven_multilingual_v2` | richer, slower; ignores `language_code` |
-| STT realtime ("Scribe, realtime") | `scribe_v2_realtime` | the only realtime model |
+| TTS alternative in Advanced ("v4 Turbo") | `eleven_v4_turbo` | the real-time v4 model, ~100 ms median inference, 90+ languages; takes `language_code` |
+| TTS alternative in Advanced ("Multilingual v2") | `eleven_multilingual_v2` | richer, slower; ignores `language_code` |
+| STT realtime ("Scribe v2 Realtime") | `scribe_v2_realtime` | the only realtime model |
 | Deprecated, not offered | `eleven_turbo_v2_5`, `eleven_turbo_v2`, `scribe_v1` | |
 
-The Advanced list is fixed in code (`protocol.ts` `TTS_MODELS`, `STT_MODELS`) `[proposed]`: two TTS models, one STT model.
-`eleven_v3`/`eleven_v4*` are not offered: their streaming latency for one sentence is not documented.
+The Advanced list is fixed in code (`protocol.ts` `TTS_MODELS`, `STT_MODELS`) `[proposed]`: three TTS models (Flash v2.5, v4 Turbo, Multilingual v2, in that order), one STT model.
+`eleven_v3` and `eleven_v4` are not offered: their streaming latency for one sentence is not documented.
 
 ### 2.6 Errors
 
@@ -620,8 +621,8 @@ page with the goal's sections in order, testIDs `vs-*`:
    button (`vs-voice-play`) that plays `preview_url` (no credits), the radio (`vs-voice`). **Show all voices**
    (`vs-voices-all`) opens the full list with search and paging. Without a key: "Add your key to choose a voice."
 4. **Speech mode sends my turn** (`vs-autosend`): Auto-send / Tap to send.
-5. **Advanced options** (`vs-advanced`, collapsed): speech model (Flash v2.5 / Multilingual v2), transcription model (Scribe,
-   realtime — one choice, shown), language (Auto-detect / a list of ISO 639-1 codes the two models share), pause before
+5. **Advanced options** (`vs-advanced`, collapsed): speech model (Flash v2.5 / v4 Turbo / Multilingual v2), transcription model
+   (Scribe v2 Realtime — one choice, shown), language (Auto-detect / a list of ISO 639-1 codes the models share), pause before
    auto-send (0.6–3.0 s, step 0.2), playback speed (0.8×–1.2×), skip code blocks when reading (switch).
 
 **VC-14. The voice settings are one stored value, `aiwb.voice.settings` in the kv port** (JSON), read and written only through
@@ -633,7 +634,7 @@ export type VoiceSettings = {
   autoSend: boolean;            // default true
   voiceId: string | null;       // null: the first voice at first use
   voiceName: string;
-  ttsModel: "eleven_flash_v2_5" | "eleven_multilingual_v2";   // default flash
+  ttsModel: "eleven_flash_v2_5" | "eleven_v4_turbo" | "eleven_multilingual_v2";   // default flash
   sttModel: "scribe_v2_realtime";
   language: string | null;      // null = auto-detect
   pauseMs: number;              // default 1200, clamp 600..3000
