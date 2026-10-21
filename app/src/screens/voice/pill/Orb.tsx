@@ -5,10 +5,11 @@
 //   waiting     Tap to send is waiting: a small ↑ badge on the orb sends the turn
 //   thinking    the turn is sent and the agent works: a spinner (the board shows the edits as they happen)
 //   speaking    the reply is spoken: the wave; a tap interrupts
+//   paused      (voice devices VD-12) the headphones went away and the next sound would be out loud: a pause glyph, no ring; a tap continues
 // `onPress` is what a tap on the orb does in that state (the pill decides); `onSend` is the badge's.
 import { useEffect, useState, type RefObject } from "react";
 import { ActivityIndicator, Pressable, StyleSheet, View } from "react-native";
-import Svg, { Circle } from "react-native-svg";
+import Svg, { Circle, Rect } from "react-native-svg";
 
 import { MicIcon, SendUpIcon, WaveIcon } from "../../../ui/icons.tsx";
 import { useTokens } from "../../../ui/theme.tsx";
@@ -67,10 +68,21 @@ export function Orb({ state, level, countdown, onPress, onSend, anchor, muted }:
         ]}>
         {state === "thinking" ? <ActivityIndicator size="small" color={t.onAccent} />
           : state === "speaking" ? <WaveIcon size={18} color={t.onAccent} />
+          : state === "paused" ? <PauseGlyph color={t.onAccent} />
           : <MicIcon size={18} color={t.onAccent} />}
       </Pressable>
       {state === "waiting" && <Badge onPress={onSend} />}
     </View>
+  );
+}
+
+/** Two bars: the orb's pause glyph (the app's icons have none). */
+function PauseGlyph({ color }: { color: string }) {
+  return (
+    <Svg width={18} height={18} viewBox="0 0 16 16">
+      <Rect x="3.5" y="2.5" width="3" height="11" rx="1" fill={color} />
+      <Rect x="9.5" y="2.5" width="3" height="11" rx="1" fill={color} />
+    </Svg>
   );
 }
 

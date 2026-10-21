@@ -17,10 +17,11 @@ import { Text } from "../../../ui/Text.tsx";
 import { useLayout } from "../../../ui/useLayout.ts";
 import { useTheme } from "../../../ui/theme.tsx";
 import { tid } from "../../../ui/tid.ts";
+import { noticeText } from "../../../voice/logic/devices.ts";
 import {
-  PILL_AUTOSEND, PILL_CANCEL, PILL_COLLAPSE, PILL_COUNTDOWN, PILL_EXPAND, PILL_LISTENING, PILL_NEW_CHAT, PILL_SEND, PILL_STARTING, PILL_TO, PILL_TO_NONE,
+  VOICE_CONTINUE, PILL_AUTOSEND, PILL_CANCEL, PILL_COLLAPSE, PILL_COUNTDOWN, PILL_EXPAND, PILL_LISTENING, PILL_NEW_CHAT, PILL_SEND, PILL_STARTING, PILL_TO, PILL_TO_NONE,
 } from "../../../voice/words.ts";
-import { setVoiceSettings, useVoiceSession, useVoiceSettings, voice } from "../../../voice/index.ts";
+import { setVoiceSettings, useVoiceNotice, useVoiceSession, useVoiceSettings, voice } from "../../../voice/index.ts";
 import type { SessionState } from "../../../voice/index.ts";
 import { useStore } from "../../../state/useStore.ts";
 import { ProblemPopover } from "../ProblemPopover.tsx";
@@ -32,7 +33,7 @@ import { Switch } from "./Switch.tsx";
 import { Waveform } from "./Waveform.tsx";
 import { usePillCollapsed, setPillCollapsed } from "./collapse.ts";
 import { newPillChat, pillAnchor, startPill, targetNow } from "./control.ts";
-import { captionTexts, orbState, pillSize } from "./logic.ts";
+import { captionTexts, orbStateFor, pillSize } from "./logic.ts";
 import { useHoldSpace } from "./useHoldSpace.ts";
 
 /** The session, when it is this board's pill session; otherwise it is as good as idle. */
@@ -47,14 +48,17 @@ export function Pill({ board }: { board: string }) {
   const committed = useVoiceSession((s) => (own(s, board) ? s.committed : ""));
   const partial = useVoiceSession((s) => (own(s, board) ? s.partial : ""));
   const spoken = useVoiceSession((s) => (own(s, board) ? s.spoken : ""));
+  const paused = useVoiceSession((s) => (own(s, board) ? s.paused : null));
+  const notice = useVoiceNotice({ kind: "board", board });
   const collapsed = usePillCollapsed();
   const orbRef = useRef<View>(null);
   const layout = useLayout(); // (on the phone the board has its own bar along the bottom: the pill rides above it)
 
-  const state = orbState(phase);
-  const size = pillSize(phase, collapsed);
+  const state = orbStateFor(phase, !!paused);
+  const size = pillSize(phase, collapsed, !!paused);
   const press = () => {
     if (state === "idle") void startPill(board);
+    else if (state === "paused") voice.resume();
     else if (state === "speaking") voice.interrupt();
     else voice.end();
   };
@@ -74,7 +78,7 @@ export function Pill({ board }: { board: string }) {
 
   return (
     <View pointerEvents="box-none" style={[styles.row, { bottom: layout === "phone" ? 78 : 62 }]}>
-      <Captions {...captions} />
+      <Captions {...captions} notice={notice ?? ""} />
       <SelectionChip board={board} />
       <View {...tid("pill", { size, state, collapsed, held: held || undefined })} pointerEvents="box-none" style={size === "orb" ? styles.alone : [styles.card, size === "listening" ? styles.bar : styles.compact, card]}>
         {size === "orb" ? (
@@ -83,7 +87,7 @@ export function Pill({ board }: { board: string }) {
             <View style={[styles.corner, card]}>{collapse}</View>
           </>
         ) : size === "listening" ? (
-          <ListeningBar board={board} phase={phase} orb={orb} collapse={collapse} level={level} countdown={countdown} words={{ committed, partial }} />
+          <ListeningBar board={board} phase={phase} orb={orb} collapse={collapse} level={level} countdown={countdown} words={{ committed, partial }} paused={paused} />
         ) : (
           <View style={styles.line}>
             <ChatChip board={board} />
@@ -99,9 +103,9 @@ export function Pill({ board }: { board: string }) {
 }
 
 /** The listening bar: the target, the waveform and the words, and under them the Auto-send toggle with the countdown or Send. */
-function ListeningBar({ board, phase, orb, collapse, level, countdown, words }: {
+function ListeningBar({ board, phase, orb, collapse, level, countdown, words, paused }: {
   board: string; phase: SessionState["phase"]; orb: React.ReactNode; collapse: React.ReactNode; level: number;
-  countdown: SessionState["countdown"]; words: { committed: string; partial: string };
+  countdown: SessionState["countdown"]; words: { committed: string; partial: string }; paused: SessionState["paused"];
 }) {
   const { tokens: t } = useTheme();
   const autoSend = useVoiceSettings((s) => s.autoSend);
@@ -117,15 +121,21 @@ function ListeningBar({ board, phase, orb, collapse, level, countdown, words }: 
         {collapse}
       </View>
       <View style={styles.barTalk}>
-        <Waveform level={level} />
-        <Text {...tid("pill-words")} size={13} numberOfLines={3} tone={heard ? "text" : "muted"} style={styles.grow}>
-          {words.committed}{words.committed && words.partial ? " " : ""}<Text size={13} tone="muted">{words.partial}</Text>{heard ? "" : phase === "starting" ? PILL_STARTING : PILL_LISTENING}
-        </Text>
+        <Waveform level={paused ? 0 : level} />
+        {paused ? (
+          <Text {...tid("pill-words", { paused: true })} size={13} numberOfLines={3} tone="warn" style={styles.grow}>{noticeText("paused", { device: paused.device })}</Text>
+        ) : (
+          <Text {...tid("pill-words")} size={13} numberOfLines={3} tone={heard ? "text" : "muted"} style={styles.grow}>
+            {words.committed}{words.committed && words.partial ? " " : ""}<Text size={13} tone="muted">{words.partial}</Text>{heard ? "" : phase === "starting" ? PILL_STARTING : PILL_LISTENING}
+          </Text>
+        )}
         {orb}
       </View>
       <View style={styles.barFoot}>
         <Switch testID="pill-autosend" label={PILL_AUTOSEND} on={autoSend} onChange={(on) => setVoiceSettings({ autoSend: on })} />
-        {phase === "countdown" ? (
+        {paused ? (
+          <Button {...tid("pill-continue")} size="sm" tone="primary" label={VOICE_CONTINUE} onPress={voice.resume} />
+        ) : phase === "countdown" ? (
           <View {...tid("pill-countdown", { left: run ? run.left.toFixed(1) : "" })} style={styles.count}>
             <View style={[styles.track, { backgroundColor: t.line2 }]}><View {...tid("pill-countdown-bar")} style={[styles.fill, { backgroundColor: t.accent, width: `${Math.round((run?.frac ?? 0) * 100)}%` }]} /></View>
             <Text size={12} tone="muted" style={styles.secs}>{PILL_COUNTDOWN(run?.left ?? 0)}</Text>

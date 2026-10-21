@@ -45,6 +45,7 @@ export const MIC_MARK = "Spoken";
 
 export const READ_ALOUD = "Read aloud";
 export const READ_STOP = "Stop reading";
+export const READ_CONTINUE = "Continue reading";
 
 // ---- the board's pill (VC-28)
 
@@ -75,13 +76,14 @@ export const PILL_SELECTION_REMOVE = "Do not send the selection";
 export const PILL_SAID = "You said";
 export const PILL_SPOKEN = "Reply";
 /** What the orb does when it is pressed, by its state (its tooltip and its label). */
-export const PILL_ORB: Record<"idle" | "listening" | "countdown" | "waiting" | "thinking" | "speaking", string> = {
+export const PILL_ORB: Record<"idle" | "listening" | "countdown" | "waiting" | "thinking" | "speaking" | "paused", string> = {
   idle: "Talk to a chat of this board",
   listening: "Stop listening",
   countdown: "Stop listening",
   waiting: "Stop listening",
   thinking: "Stop and put the voice away",
   speaking: SPEECH_WAVE_TIP,
+  paused: "Continue",
 };
 
 // ---- Settings > Voice (architecture §7)
@@ -157,3 +159,56 @@ export const LANGUAGES: readonly (readonly [code: string, name: string])[] = [
   ["pt", "Portuguese"], ["ro", "Romanian"], ["ru", "Russian"], ["sk", "Slovak"], ["sr", "Serbian"], ["sv", "Swedish"], ["tr", "Turkish"],
   ["uk", "Ukrainian"], ["vi", "Vietnamese"], ["zh", "Chinese"],
 ];
+
+// ---- Voice devices (voice-devices architecture VD-5, VD-7, VD-12, VD-13, VD-16, VD-17; wording to confirm, status.md)
+
+/** The pause (VD-12): the button that goes on, in the speech bar and the pill. Read aloud's is READ_CONTINUE, the orb's is PILL_ORB.paused. */
+export const VOICE_CONTINUE = "Continue";
+
+/** The card of Settings > Voice (VD-17) and its two rows. */
+export const DEVICES_TITLE = "Microphone and speaker";
+/** Where the devices card stands before a key is saved (voice-devices goal 6.6: nothing is listed until voice is set up). */
+export const DEVICES_NO_KEY = "Add your key to choose a microphone and a speaker.";
+export const DEVICES_MIC = "Microphone";
+export const DEVICES_SPEAKER = "Speaker";
+/** The first option of both pickers, and with the device the system uses now. */
+export const DEVICE_SYSTEM = "System default";
+export const DEVICE_SYSTEM_NAMED = (name: string): string => `System default (${name})`;
+/** A saved device that is not listed now: still shown, still selected (goal 6.3). */
+export const DEVICE_MISSING = (name: string): string => `${name} (not connected)`;
+/** What a saved device without a name is called in the picker. */
+export const DEVICE_UNNAMED = "Saved device";
+/** Where the platform decides, instead of a picker (VD-17). */
+export const SPEAKER_FOLLOWS = "Follows the system: headphones or a headset when connected, otherwise the speaker.";
+export const MIC_FOLLOWS = "Follows the system: the microphone the system uses.";
+/** Neither can be chosen: the card holds this line and no control. */
+export const DEVICES_NEITHER = "Voice uses the system's microphone and speaker. Change them in the system's settings.";
+/** The notes under the card's title: Android 12+, and the web build before the microphone is allowed (VD-7). */
+export const DEVICES_LINKED_NOTE = "A headset is used for both listening and speaking while you talk to a chat.";
+export const DEVICES_HIDDEN_NOTE = "Allow the microphone to see your other devices.";
+
+/** The checks (VD-15, VD-16). */
+export const MIC_TEST = "Test microphone";
+export const MIC_TEST_STOP = "Stop test";
+export const MIC_TEST_BUSY = "Voice is listening.";
+export const SPEAKER_TEST = "Test speaker";
+
+/** The names the Android module gives its built-in devices, which the system names after the phone's model (VD-5). */
+export const BUILTIN_MIC_NAME = "Phone microphone";
+export const BUILTIN_SPEAKER_NAME = "Phone speaker";
+
+/** The notices (VD-13). A name arrives already cut and is put in curly quotes here. A start says "isn't connected", a loss "was disconnected".
+ *  A variant without a name is for a device whose name is not known. `logic/devices.ts` `noticeText` chooses among them. */
+const q = (name: string): string => `“${name}”`;
+export const NOTICE_START_MIC = (mic: string): string => `${q(mic)} isn't connected. Using the system microphone.`;
+export const NOTICE_START_MIC_UNNAMED = "The microphone isn't connected. Using the system microphone.";
+export const NOTICE_START_SPEAKER = (speaker: string): string => `${q(speaker)} isn't connected. Using the system speaker.`;
+export const NOTICE_START_SPEAKER_UNNAMED = "The speaker isn't connected. Using the system speaker.";
+export const NOTICE_START_BOTH = (mic: string, speaker: string): string => `${q(mic)} and ${q(speaker)} aren't connected. Using the system's own.`;
+export const NOTICE_START_BOTH_UNNAMED = "The microphone and the speaker aren't connected. Using the system's own.";
+export const NOTICE_LOST_MIC = (name: string): string => `${q(name)} was disconnected. Listening with the system microphone.`;
+export const NOTICE_LOST_MIC_UNNAMED = "The microphone was disconnected. Listening with the system microphone.";
+export const NOTICE_LOST_SPEAKER = (name: string): string => `${q(name)} was disconnected. Speaking through the system speaker.`;
+export const NOTICE_LOST_SPEAKER_UNNAMED = "The speaker was disconnected. Speaking through the system speaker.";
+export const NOTICE_PAUSED = (name: string): string => `${q(name)} was disconnected. Paused so nothing is played out loud.`;
+export const NOTICE_PAUSED_UNNAMED = "Your headphones were disconnected. Paused so nothing is played out loud.";

@@ -30,6 +30,17 @@
 // storage, its text, its globals, what main sent it); Read aloud on the chat's reply plays through main's relay and the stand-in sees the key as the
 // header alone; Remove key deletes the file. Nothing calls ElevenLabs: the stand-in is the only voice service, and only sk_test_ keys work.
 //
+// Voice devices (voice-devices goal 6.1, 6.2, 6.4, 6.5; architecture §12.3): the window started with Chromium's own fake devices (--use-fake-device-for-media-stream
+// --use-fake-ui-for-media-stream, added to the launch): Settings > Voice lists "System default", "Fake Audio Input 1" and "2" and the same for the output (the window lists
+// names without any permission, so there is no note); a pick of the second of each is kept in the page's settings and is still there after the app is quit and started
+// again on one AIWB_USER_DATA; Test speaker plays on the chosen output's sinkId and asks the voice service for nothing; Dictate opens the chosen input (the track's
+// getSettings().deviceId); Read aloud plays on a context whose sinkId is the chosen output's id; neither the ids nor the names are in any request to the server or the
+// voice service. Then, in a second window, the stand-in devices of the browser checks (web/dev/checks/devices.mjs) take the place of the browser's list and an output
+// is unplugged during Read aloud: a public one (speakers) moves the sound to the system default with one notice, and no sentence is spoken twice; a private one
+// (headphones) pauses the reading with its reason and Continue reading, and no sound plays until it is pressed. The page's AudioContext and getUserMedia are watched by a
+// small recorder (nothing is changed in what they do). The recorder and the layer are put in by the Electron context's addInitScript and the page is reloaded; the
+// run says which way it went. macOS's microphone prompt belongs to the app: its two calls (getMediaAccessStatus, askForMediaAccess) are answered "granted" in main.
+//
 // The window itself (A.13): where it opens the first time (1280 × 800) and where the person left it (the app is quit and started again on one
 // AIWB_USER_DATA), the error box of a page that cannot be loaded (its `dialog.showErrorBox` is replaced by a recorder), the server log offered in the
 // section of this computer, and the page's `window.aiwbFlush`.
@@ -126,7 +137,7 @@ async function step(name, fn) {
 }
 
 // run starts the app against the stand-in and hands the page to body.
-async function withApp({ _electron }, { waits, config, env: more = {}, snapshot }, body) {
+async function withApp({ _electron }, { waits, config, env: more = {}, args: extraArgs = [], snapshot }, body) {
   const dir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'aiwb-app-e2e-'));
   const s = await standin({ secret: 'e2e-secret-' + crypto.randomBytes(6).toString('hex'), ...(snapshot ? { snapshot } : {}) });
   const server = fakeServer(dir);
@@ -141,7 +152,7 @@ async function withApp({ _electron }, { waits, config, env: more = {}, snapshot 
   if (!packaged) env.AIWB_PAGE = pageFile;
   else delete env.AIWB_PAGE; // the packaged app has its own page
   const executablePath = packaged || path.join(desktop, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron');
-  const args = packaged ? [] : [desktop];
+  const args = [...(packaged ? [] : [desktop]), ...extraArgs];
   let app = await _electron.launch({ executablePath, args, env, timeout: 60000 });
   // relaunch closes the app (as a person quits it) and starts it again with the same user data; it resolves to the new app and its page.
   const relaunch = async () => {
@@ -193,7 +204,7 @@ async function startVoiceStandin() {
     const r = await fetch(`${base}/_control/${name}`, body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     return r.json();
   };
-  return { base, out: () => out, log: () => control('log'), reset: () => control('reset', null), stop: async () => { child.kill(); await new Promise((r) => child.once('exit', r)); } };
+  return { base, out: () => out, log: () => control('log'), reset: () => control('reset', null), pace: (p) => control('pace', p), stop: async () => { child.kill(); await new Promise((r) => child.once('exit', r)); } };
 }
 
 // filesWith lists the files under dir that hold needle.
@@ -270,6 +281,106 @@ async function watch(page) {
 }
 const seen = (page) => page.evaluate(() => window.__seen);
 const localStates = (all) => all.filter((e) => e.app && e.app.type === 'server_state' && e.app.server.id === 'local').map((e) => e.app.server);
+
+// ---- voice devices (the part of main() after the key's)
+
+// recorder is put into the page before the app (serialised, so it names nothing outside itself): it only watches. Every AudioContext the page makes is kept (its
+// `sinkId` is read when asked), and every audio track getUserMedia hands out is noted with the device it came from.
+function recorder() {
+  if (window.__devrec) return;
+  const rec = (window.__devrec = { contexts: [], tracks: [] });
+  const Base = window.AudioContext;
+  window.AudioContext = class extends Base { constructor(...a) { super(...a); rec.contexts.push(this); } };
+  const md = navigator.mediaDevices;
+  const get = md.getUserMedia.bind(md);
+  md.getUserMedia = async (c) => {
+    const stream = await get(c);
+    for (const t of stream.getAudioTracks()) rec.tracks.push({ deviceId: t.getSettings().deviceId, label: t.label });
+    return stream;
+  };
+}
+const recorded = (page) => page.evaluate(() => ({
+  sinks: window.__devrec.contexts.map((c) => ({ state: c.state, sinkId: typeof c.sinkId === 'string' ? c.sinkId : JSON.stringify(c.sinkId) })),
+  tracks: window.__devrec.tracks,
+}));
+
+// install puts a page script (and its argument) into every page of the window before the app loads, with the Electron context's addInitScript,
+// and loads the page again; where the context does not take it, it is evaluated in the page that is there (the app reads navigator.mediaDevices and AudioContext
+// when it needs them, so a script evaluated later is seen too). It resolves to how it went.
+async function install(app, page, script, arg) {
+  let how = 'context.addInitScript';
+  try { await app.context().addInitScript(script, arg); } catch { how = 'evaluate'; }
+  if (how === 'evaluate') await page.evaluate(script, arg);
+  else {
+    await page.reload();
+    await page.waitForLoadState('load');
+    await until(() => page.evaluate(() => window.aiwbReady === true), 'the page drawn again after the init script');
+    // (an init script the Electron context ignored is told by what it was to put there)
+    if (!await page.evaluate(() => Boolean(window.__devrec || window.__aiwbDevices))) { how = 'evaluate'; await page.evaluate(script, arg); }
+  }
+  return how;
+}
+
+// grantMic answers main's two calls about the microphone as a person who allowed it would (on macOS the real ones open the system's prompt, which no test may do).
+const grantMic = (app) => app.evaluate(({ systemPreferences }) => {
+  systemPreferences.getMediaAccessStatus = () => 'granted';
+  systemPreferences.askForMediaAccess = async () => true;
+});
+
+const tid = (id, data = {}) => `[data-testid="${id}"]` + Object.entries(data).map(([k, v]) => `[data-${k}="${v}"]`).join('');
+const clean = (t) => String(t ?? '').replace(/[✓▾]/g, '').replace(/\s+/g, ' ').trim();
+const escapeRe = (t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+async function openSettings(page) {
+  await page.locator(tid('settings-btn')).first().click();
+  await page.locator(tid('settings-dialog')).first().waitFor({ timeout: 15000 });
+  await page.locator(tid('vs-devices-section')).first().waitFor({ timeout: 15000 });
+}
+async function closeSettings(page) {
+  await page.locator(tid('vs-close')).click();
+  await page.locator(tid('settings-dialog')).first().waitFor({ state: 'detached', timeout: 10000 });
+}
+// pickerText is what a picker of Settings shows; menuOf opens it and lists what it offers; pickDevice chooses one of them by its text.
+const pickerText = async (page, id) => clean(await page.locator(tid(id)).first().textContent()).replace(/^System default \(.+\)$/, 'System default');
+async function menuOf(page, id) {
+  await page.locator(tid(id)).first().click();
+  await page.locator(tid('menu-item')).first().waitFor({ timeout: 15000 });
+  const items = (await page.locator(tid('menu-item')).allTextContents()).map(clean);
+  // (System default names, in brackets, the device the system would use: "System default (Fake Default Audio Input)")
+  if (items.length && /^System default \(.+\)$/.test(items[0])) items[0] = 'System default';
+  await page.keyboard.press('Escape');
+  await page.locator(tid('menu')).first().waitFor({ state: 'detached', timeout: 10000 });
+  return items;
+}
+async function pickDevice(page, id, label) {
+  await page.locator(tid(id)).first().click();
+  await page.locator(tid('menu-item')).filter({ hasText: new RegExp(`^\\s*${escapeRe(label)}\\s*✓?\\s*$`) }).first().click();
+  await page.locator(tid('menu')).first().waitFor({ state: 'detached', timeout: 10000 });
+}
+// saveKey types a key into Settings > Voice, tests it (through main) and saves it. Settings is left open.
+async function saveKey(page, key, keyFile) {
+  await page.locator(tid('vs-key')).fill(key);
+  await page.locator(tid('vs-key-test')).click();
+  await until(async () => /Works/.test(clean(await page.locator(tid('vs-key-result')).first().textContent().catch(() => ''))), 'Test key answers');
+  await page.locator(tid('vs-key-save')).click();
+  await until(() => fs.existsSync(keyFile), 'the key file');
+  await until(async () => (await page.locator(tid('vs-key')).inputValue()) === '', 'the box empties after Save');
+}
+// readAloud opens the chat (the first time) and presses Read aloud on its reply.
+async function readAloud(page, { open = false } = {}) {
+  if (open) {
+    const row = page.locator(tid('side-row', { kind: 'chat' })).first();
+    await row.waitFor({ timeout: 30000 });
+    await row.click();
+  }
+  const reply = page.locator(tid('msg', { role: 'assistant' })).filter({ hasText: 'second one follows' }).last();
+  await reply.waitFor({ timeout: 30000 });
+  await reply.hover();
+  const read = reply.locator(tid('fk-act', { kind: 'read' })).first();
+  await read.waitFor({ state: 'visible', timeout: 15000 });
+  await read.click();
+}
+const ttsOf = async (service) => (await service.log()).filter((e) => e.kind === 'tts');
 
 async function main() {
   if (!fs.existsSync(pageFile)) throw new Error(`no ${pageFile}: run \`cd app && npm run build:web\` first`);
@@ -703,7 +814,8 @@ async function main() {
         await read.waitFor({ state: 'visible', timeout: 15000 });
         await read.click();
         const tts = await until(async () => { const t = (await voiceService.log()).filter((e) => e.kind === 'tts'); return t.length >= 3 && t.every((e) => e.finishedAt || e.cancelled) ? t : null; }, 'the reply is spoken', 60000);
-        assert.deepEqual(tts.map((e) => e.text), ['First sentence here.', 'A second one follows.', 'And a third ends it.']);
+        // (the player asks for a sentence or two ahead at once, so the log may hold them in the order they came, not the order they are said)
+        assert.deepEqual(tts.map((e) => e.text).sort(), ['A second one follows.', 'And a third ends it.', 'First sentence here.']);
         assert.ok(tts.every((e) => e.keyHeader && !e.token && !e.problems.length && !e.cancelled), JSON.stringify(tts.map((e) => [e.keyHeader, e.token, e.problems, e.cancelled])));
         const events = await page.evaluate(() => window.__voiceEvents);
         assert.ok(events.some((e) => e.kind === 'data'), 'the audio came to the page as events from main');
@@ -749,6 +861,268 @@ async function main() {
     });
   } finally {
     await voiceService.stop();
+  }
+
+  // 5. Voice devices (goal 6.1, 6.2, 6.4, 6.5): first on Chromium's own fake devices (the pick, its use, its life over a restart), then on the stand-in devices of the
+  //    browser checks (a device that is unplugged during Read aloud). The stand-in voice service is the only voice service.
+  const SENTENCES = ['First sentence here.', 'A second one follows.', 'And a third ends it.'];
+  const devicesSnapshot = { agents: ['claude'], catalogs: {}, home: '/home/test', defaultCwd: '/home/test', chats: [chatRecord], groups: [], boards: [] };
+  const devicesConfig = (s, home) => ({
+    launch: launchOutput(s, home),
+    secret: s.secret,
+    status: { running: { build: 'this', mcp: { listener: { port: 6006, url: 'http://localhost:6006/mcp', up: true }, chats: [] } } },
+  });
+  const devicesService = await startVoiceStandin();
+  const DEVICES_KEY = `sk_test_DEVICES_${crypto.randomBytes(6).toString('hex')}`;
+  const SETTINGS_KEY = 'aiwb.voice.settings';
+  try {
+    // 5.1 Chromium's fake devices.
+    await withApp(pw, {
+      waits: 'backoff=1s',
+      env: { AIWB_VOICE_BASE: devicesService.base },
+      args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'],
+      snapshot: devicesSnapshot,
+      config: devicesConfig,
+    }, async ({ app, page: first, s, userData, pageErrors, relaunch }) => {
+      let page = first;
+      const keyFile = path.join(userData, 'client', 'voice-key');
+      s.routes.set('GET /api/chats/c_voice/items', () => ({ json: { version: 1, branch: 'main', items: [
+        { kind: 'user', text: 'Say something.' }, { kind: 'text', text: REPLY, done: true }, { kind: 'end', point: 'p1' }] } }));
+      const consoleLines = [];
+      page.on('console', (m) => consoleLines.push(`${m.type()}: ${m.text()}`));
+      await until(() => page.evaluate(() => window.aiwbReady === true), 'the page drawn');
+      await grantMic(app);
+      const how = await install(app, page, recorder);
+      console.log(`     (the recorder was put in by ${how})`);
+      const listed = () => page.evaluate(async () => (await navigator.mediaDevices.enumerateDevices()).map((d) => ({ kind: d.kind, id: d.deviceId, label: d.label })));
+      let ids = {};
+
+      await step('devices: Settings > Voice lists Chromium\'s fake devices, System default first, with no note about a missing permission', async () => {
+        const all = await listed();
+        const named = (kind, label) => all.find((d) => d.kind === kind && d.label === label)?.id;
+        ids = { in1: named('audioinput', 'Fake Audio Input 1'), in2: named('audioinput', 'Fake Audio Input 2'), out1: named('audiooutput', 'Fake Audio Output 1'), out2: named('audiooutput', 'Fake Audio Output 2') };
+        assert.ok(Object.values(ids).every((id) => id && id !== 'default'), JSON.stringify(all));
+        await openSettings(page);
+        // (with no key saved the card lists nothing, goal 6.6: the key first)
+        await page.locator(tid('vs-devices-nokey')).waitFor({ timeout: 15000 });
+        assert.equal(await page.locator(tid('vs-mic')).count(), 0, 'no picker before a key is saved');
+        await saveKey(page, DEVICES_KEY, keyFile);
+        await page.locator(tid('vs-mic')).first().waitFor({ timeout: 15000 });
+        assert.deepEqual(await menuOf(page, 'vs-mic'), ['System default', 'Fake Audio Input 1', 'Fake Audio Input 2']);
+        assert.deepEqual(await menuOf(page, 'vs-speaker'), ['System default', 'Fake Audio Output 1', 'Fake Audio Output 2']);
+        assert.equal(await pickerText(page, 'vs-mic'), 'System default');
+        assert.equal(await pickerText(page, 'vs-speaker'), 'System default');
+        assert.equal(await page.locator(tid('vs-devices-note')).count(), 0, 'the window lists names without a permission');
+        assert.equal(await page.locator(tid('vs-devices-neither')).count(), 0);
+        assert.equal(await page.locator(tid('vs-mic-system')).count() + await page.locator(tid('vs-speaker-system')).count(), 0, 'the window can pick both kinds');
+        const kept = await page.evaluate((k) => localStorage.getItem(k), SETTINGS_KEY);
+        assert.ok(kept === null || (!JSON.parse(kept).mic && !JSON.parse(kept).speaker), 'nothing is chosen yet');
+      });
+
+      await step('devices: the second microphone and the second speaker are picked and kept in the settings of this device', async () => {
+        await pickDevice(page, 'vs-mic', 'Fake Audio Input 2');
+        await pickDevice(page, 'vs-speaker', 'Fake Audio Output 2');
+        assert.equal(await pickerText(page, 'vs-mic'), 'Fake Audio Input 2');
+        assert.equal(await pickerText(page, 'vs-speaker'), 'Fake Audio Output 2');
+        const saved = JSON.parse(await page.evaluate((k) => localStorage.getItem(k), SETTINGS_KEY));
+        assert.deepEqual(saved.mic, { id: ids.in2, name: 'Fake Audio Input 2' });
+        assert.deepEqual(saved.speaker, { id: ids.out2, name: 'Fake Audio Output 2' });
+      });
+
+      await step('devices: Test speaker plays through the chosen output and asks the voice service for nothing', async () => {
+        await devicesService.reset();
+        await page.locator(tid('vs-speaker-test')).click();
+        await until(async () => (await recorded(page)).sinks.some((c) => c.sinkId === ids.out2), 'a context playing on the chosen output');
+        await until(async () => (await page.locator(tid('vs-speaker-test')).getAttribute('data-playing')) === 'false', 'the sound is over');
+        assert.ok(!(await recorded(page)).sinks.some((c) => c.sinkId === ids.out1), 'nothing was played on the other output');
+        assert.deepEqual(await devicesService.log(), []);
+      });
+
+      await step('devices: Settings is left', async () => {
+        await closeSettings(page);
+      });
+
+      // The app is quit and started again on the same user data: the page is new, so is the Electron context.
+      await step('devices: after the app is quit and started again, the picks are still there, and the devices have the same ids', async () => {
+        const next = await relaunch();
+        page = next.page;
+        page.on('console', (m) => consoleLines.push(`${m.type()}: ${m.text()}`));
+        await until(() => page.evaluate(() => window.aiwbReady === true), 'the page drawn after the restart');
+        await grantMic(next.app);
+        await install(next.app, page, recorder);
+        const again = await listed();
+        assert.deepEqual(['in1', 'in2', 'out1', 'out2'].map((k) => again.find((d) => d.id === ids[k])?.label),
+          ['Fake Audio Input 1', 'Fake Audio Input 2', 'Fake Audio Output 1', 'Fake Audio Output 2'], 'the ids of one profile are the same from run to run');
+        await openSettings(page);
+        // (the pickers show System default alone until the list is read, a moment after Settings opens)
+        await until(async () => (await pickerText(page, 'vs-mic')) === 'Fake Audio Input 2', 'the chosen microphone shown again');
+        await until(async () => (await pickerText(page, 'vs-speaker')) === 'Fake Audio Output 2', 'the chosen speaker shown again');
+        assert.equal(await page.locator(tid('vs-mic')).getAttribute('data-value'), `d:${ids.in2}`);
+        await closeSettings(page);
+      });
+
+      await step('devices: Dictate opens the chosen microphone, and not the other', async () => {
+        await devicesService.reset();
+        const row = page.locator(tid('side-row', { kind: 'chat' })).first();
+        await row.waitFor({ timeout: 30000 });
+        await row.click();
+        const dictate = page.locator(tid('voice-dictate')).first();
+        await dictate.waitFor({ timeout: 30000 });
+        await dictate.click();
+        await until(async () => (await recorded(page)).tracks.length > 0, 'a microphone opened');
+        const got = (await recorded(page)).tracks;
+        assert.ok(got.every((t) => t.deviceId === ids.in2), `the tracks come from ${JSON.stringify(got)}, not from ${ids.in2} (Fake Audio Input 2)`);
+        await until(async () => (await devicesService.log()).some((e) => e.kind === 'stt'), 'the speech socket of the stand-in');
+        await dictate.click();
+        await until(async () => (await dictate.getAttribute('data-on')) !== 'true', 'dictation ended');
+      });
+
+      await step('devices: Read aloud plays on the chosen output, every sentence once', async () => {
+        await devicesService.reset();
+        await readAloud(page);
+        const tts = await until(async () => { const t = await ttsOf(devicesService); return t.length >= 3 && t.every((e) => e.finishedAt || e.cancelled) ? t : null; }, 'the reply is spoken', 60000);
+        assert.deepEqual(tts.map((e) => e.text).sort(), [...SENTENCES].sort(), 'every sentence once');
+        const sinks = (await recorded(page)).sinks;
+        assert.ok(sinks.some((c) => c.sinkId === ids.out2), `the contexts play on ${JSON.stringify(sinks.map((c) => c.sinkId))}, none on ${ids.out2} (Fake Audio Output 2)`);
+        assert.ok(!sinks.some((c) => c.sinkId === ids.out1), 'nothing played on the other output');
+        await until(async () => (await page.locator(tid('voice-reading')).count()) === 0, 'the reading ends', 30000);
+        assert.equal(await page.locator(tid('voice-notice')).count(), 0, 'a device that is there needs no notice');
+      });
+
+      await step('devices: no id and no name of a device went to the server or to the voice service, or to the console', async () => {
+        const traffic = JSON.stringify([s.requests, await devicesService.log()]);
+        for (const needle of [ids.in1, ids.in2, ids.out1, ids.out2, 'Fake Audio Input', 'Fake Audio Output']) {
+          assert.ok(!traffic.includes(needle), `${needle} is in the traffic`);
+          assert.ok(!consoleLines.some((l) => l.includes(needle)), `${needle} is in the console`);
+        }
+        assert.deepEqual(pageErrors, []);
+      });
+    });
+
+    // 5.2 The stand-in devices (web/dev/checks/devices.mjs): an output unplugged during Read aloud.
+    await devicesService.reset();
+    await withApp(pw, {
+      waits: 'backoff=1s',
+      env: { AIWB_VOICE_BASE: devicesService.base },
+      snapshot: devicesSnapshot,
+      config: devicesConfig,
+    }, async ({ app, page, s, userData }) => {
+      const keyFile = path.join(userData, 'client', 'voice-key');
+      s.routes.set('GET /api/chats/c_voice/items', () => ({ json: { version: 1, branch: 'main', items: [
+        { kind: 'user', text: 'Say something.' }, { kind: 'text', text: REPLY, done: true }, { kind: 'end', point: 'p1' }] } }));
+      await until(() => page.evaluate(() => window.aiwbReady === true), 'the page drawn');
+      const { installDevices, STANDIN_DEVICES } = await import(pathToFileURL(path.resolve(desktop, '../web/dev/checks/devices.mjs')).href);
+      const how = await (async () => {
+        // (installDevices adds the layer to the context; the page is loaded again for it to be there before the app)
+        let way = 'context.addInitScript';
+        try { await installDevices(app.context(), { ...STANDIN_DEVICES, granted: true, persist: false }); } catch { way = 'evaluate'; }
+        if (way === 'context.addInitScript') {
+          await page.reload();
+          await page.waitForLoadState('load');
+          await until(() => page.evaluate(() => window.aiwbReady === true), 'the page drawn again');
+          if (!await page.evaluate(() => Boolean(window.__aiwbDevices))) way = 'evaluate';
+        }
+        if (way === 'evaluate') {
+          const { deviceLayer } = await import(pathToFileURL(path.resolve(desktop, '../web/dev/checks/devices.mjs')).href);
+          await page.evaluate(deviceLayer, { ...STANDIN_DEVICES, granted: true, persist: false });
+        }
+        return way;
+      })();
+      console.log(`     (the stand-in devices were put in by ${how})`);
+      const plug = (d) => page.evaluate((x) => window.__aiwbDevices.plug(x), d);
+      const unplug = (id) => page.evaluate((x) => window.__aiwbDevices.unplug(x), id);
+      const sinks = () => page.evaluate(() => window.__aiwbDevices.sinks());
+      const sinkOf = async (id) => (await sinks()).find((x) => x.sinkId === id);
+      const calls = () => page.evaluate(() => window.__aiwbDevices.calls());
+      const noteText = async () => clean(await page.locator(tid('voice-notice')).first().textContent().catch(() => ''));
+      await devicesService.pace({ chunkMs: 300, chunks: 10 });
+
+      await step('devices (stand-in): Settings lists the stand-in speakers; the first is picked', async () => {
+        await openSettings(page);
+        await saveKey(page, DEVICES_KEY, keyFile); // (with no key saved the card lists nothing, goal 6.6)
+        await page.locator(tid('vs-speaker')).first().waitFor({ timeout: 15000 });
+        assert.deepEqual(await menuOf(page, 'vs-speaker'), ['System default', 'Desk Speakers', 'Stand-in Headphones']);
+        assert.deepEqual(await menuOf(page, 'vs-mic'), ['System default', 'Desk Mic', 'Stand-in Headset']);
+        await pickDevice(page, 'vs-speaker', 'Desk Speakers');
+        await closeSettings(page);
+        const n = (await calls()).getUserMedia;
+        assert.equal(n, 0, 'no microphone was opened to list or to pick');
+      });
+
+      await step('devices (stand-in): the speakers unplugged during Read aloud: one notice, the sound goes on from the system default, no sentence twice', async () => {
+        await devicesService.reset();
+        await devicesService.pace({ chunkMs: 300, chunks: 10 });
+        await readAloud(page, { open: true });
+        await until(async () => (await sinkOf('out-desk')) && (await ttsOf(devicesService)).length >= 1, 'the reply played on the speakers');
+        assert.equal(await unplug('out-desk'), true);
+        await until(async () => /Desk Speakers.*was disconnected\. Speaking through the system speaker\./.test(await noteText()), 'the notice', 20000);
+        const tts = await until(async () => { const t = await ttsOf(devicesService); return t.length >= 3 && t.every((e) => e.finishedAt || e.cancelled) ? t : null; }, 'the reply is spoken to its end', 60000);
+        assert.deepEqual(tts.map((e) => e.text).sort(), [...SENTENCES].sort(), 'every sentence once');
+        assert.ok(tts.every((e) => !e.cancelled));
+        const moved = (await sinks()).find((x) => x.calls.includes('out-desk'));
+        assert.ok(moved && moved.default && moved.sinkId === '', `the sound did not move to the system default: ${JSON.stringify(await sinks())}`);
+        assert.equal(await page.locator(tid('voice-reading-continue')).count(), 0, 'a public output is not a pause');
+        await until(async () => (await page.locator(tid('voice-reading')).count()) === 0, 'the reading ends', 30000);
+        await until(async () => (await page.locator(tid('voice-notice')).count()) === 0, 'the notice goes with the session', 10000);
+      });
+
+      await step('devices (stand-in): the saved speaker is still the choice in Settings, shown as not connected', async () => {
+        await openSettings(page);
+        assert.equal(await pickerText(page, 'vs-speaker'), 'Desk Speakers (not connected)');
+        assert.equal(JSON.parse(await page.evaluate((k) => localStorage.getItem(k), SETTINGS_KEY)).speaker.id, 'out-desk');
+        await closeSettings(page);
+      });
+
+      await step('devices (stand-in): the speakers plugged in again are used by the next reading', async () => {
+        await plug({ kind: 'output', id: 'out-desk', label: 'Desk Speakers' });
+        assert.equal(await sinkOf('out-desk'), undefined, 'the sound was not moved back by the plug');
+        await devicesService.reset();
+        await devicesService.pace({ chunkMs: 100, chunks: 3 });
+        await readAloud(page);
+        await until(async () => await sinkOf('out-desk'), 'the next reading on the speakers');
+        await until(async () => (await page.locator(tid('voice-reading')).count()) === 0, 'the reading ends', 60000);
+        assert.equal(await page.locator(tid('voice-notice')).count(), 0, 'a device that is there needs no notice');
+      });
+
+      await step('devices (stand-in): the headphones unplugged during Read aloud: the reading pauses with its reason, nothing plays until Continue reading', async () => {
+        await openSettings(page);
+        await pickDevice(page, 'vs-speaker', 'Stand-in Headphones');
+        await closeSettings(page);
+        await devicesService.reset();
+        await devicesService.pace({ chunkMs: 300, chunks: 10 });
+        await readAloud(page);
+        await until(async () => (await sinkOf('out-headphones')) && (await ttsOf(devicesService)).length >= 1, 'the reply played on the headphones');
+        assert.equal(await unplug('out-headphones'), true);
+        await page.locator(tid('voice-reading-continue')).first().waitFor({ timeout: 20000 });
+        await until(async () => /Stand-in Headphones.*was disconnected\. Paused so nothing is played out loud\./.test(await noteText()), 'the reason', 20000);
+        assert.equal(await page.locator(tid('voice-reading')).first().getAttribute('data-paused'), 'true');
+        const held = (await sinks()).find((x) => x.calls.includes('out-headphones'));
+        assert.equal(held.state, 'suspended', 'the context is held');
+        await sleep(2000);
+        assert.equal((await sinks()).find((x) => x.calls.includes('out-headphones')).state, 'suspended', 'nothing plays while paused');
+        assert.ok((await ttsOf(devicesService)).length <= 3);
+        await page.locator(tid('voice-reading-continue')).first().click();
+        await until(async () => (await page.locator(tid('voice-reading-continue')).count()) === 0, 'Continue reading goes');
+        const tts = await until(async () => { const t = await ttsOf(devicesService); return t.length >= 3 && t.every((e) => e.finishedAt || e.cancelled) ? t : null; }, 'the reply is spoken to its end', 60000);
+        assert.deepEqual(tts.map((e) => e.text).sort(), [...SENTENCES].sort(), 'every sentence once');
+        const after = (await sinks()).find((x) => x.calls.includes('out-headphones'));
+        assert.ok(after.default && after.sinkId === '', 'it goes on from the system default, the person having said so');
+        await until(async () => (await page.locator(tid('voice-reading')).count()) === 0, 'the reading ends', 30000);
+        await until(async () => (await page.locator(tid('voice-notice')).count()) === 0, 'the notice goes with the session', 10000);
+      });
+
+      await step('devices (stand-in): after both, a new reading works (the headphones plugged in again)', async () => {
+        await devicesService.reset();
+        await devicesService.pace({ chunkMs: 100, chunks: 3 });
+        await plug({ kind: 'output', id: 'out-headphones', label: 'Stand-in Headphones' });
+        await readAloud(page);
+        const tts = await until(async () => { const t = await ttsOf(devicesService); return t.length >= 3 && t.every((e) => e.finishedAt || e.cancelled) ? t : null; }, 'the reply is spoken', 60000);
+        assert.deepEqual(tts.map((e) => e.text).sort(), [...SENTENCES].sort(), 'every sentence once');
+        await until(async () => (await page.locator(tid('voice-reading')).count()) === 0, 'the reading ends', 30000);
+      });
+    });
+  } finally {
+    await devicesService.stop();
   }
 
   // 3. The window itself (A.13): where it opens the first time and where the person left it, and the error box of a page that cannot be loaded.

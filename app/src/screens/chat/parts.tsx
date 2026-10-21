@@ -58,8 +58,9 @@ export type ChatParts = {
 };
 
 /** A message's Read aloud action: `reading` while it is read (the action then stops it), `title` the action's words, `run` what a press does,
- *  `anchor` the control the problem popover hangs from. */
-export type ReadAloudAction = { reading: boolean; title: string; run(): void; anchor: RefObject<View | null> };
+ *  `anchor` the control the problem popover hangs from. `paused`: the reading is held because the headphones went away and the rest would be
+ *  out loud (voice devices VD-12); `resume` goes on. */
+export type ReadAloudAction = { reading: boolean; title: string; run(): void; anchor: RefObject<View | null>; paused: boolean; resume(): void };
 
 /** What a long press on a message adds to its view: touch handlers, and the style that keeps the platform's own selection from starting under the finger. */
 export type MessageHold = { props: Pick<ViewProps, "onTouchStart" | "onTouchMove" | "onTouchEnd" | "onTouchCancel">; style?: ViewStyle };

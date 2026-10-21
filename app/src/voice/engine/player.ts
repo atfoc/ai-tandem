@@ -3,7 +3,7 @@
 // played, and counts what it did for the checks (`window.__aiwbVoice.player()`, VC-32). It decides nothing about sentences: `speaker.ts`
 // does, and calls this.
 import { voicePorts } from "../ports.ts";
-import type { PcmPlayer, PlayerEvent } from "../ports.ts";
+import type { Opened, PcmPlayer, PlayerEvent, SavedDevice } from "../ports.ts";
 import { onReset } from "./state.ts";
 
 export type PlayerStats = {
@@ -22,6 +22,8 @@ const fresh = (): PlayerStats => ({ writes: 0, bytes: 0, marks: 0, stops: 0, fir
 let stats = fresh();
 /** Audio was written and the port has not said it is drained: there is sound to stop. */
 let busy = false;
+/** The port's player is held (by `hold`, or by a loss it held itself): it plays nothing and keeps its queue. `stop` ends it too. */
+let held = false;
 const listeners = new Set<(e: PlayerEvent) => void>();
 let subscribed: { port: PcmPlayer; off: () => void } | null = null;
 
@@ -55,13 +57,33 @@ export const player = {
     stats.marks++;
     port().mark(id);
   },
-  /** Stops at once and clears the queue. Nothing reaches the port when nothing was written (a fresh engine makes no audio call). */
+  /** Stops at once and clears the queue. Nothing reaches the port when nothing was written and nothing is held (a fresh engine makes no
+   *  audio call). A held player is let go too, once its queue is gone: the next utterance must not be written into a hold nobody owns. */
   stop(): void {
-    if (!busy) return;
+    if (!busy && !held) return;
+    const wasHeld = held;
     busy = false;
+    held = false;
     stats.stops++;
-    port().stop();
+    const p = port();
+    p.stop();
+    if (wasHeld) p.resume();
   },
+  /** Where the next sound goes: the saved speaker, or null for the system default (VD-1). Never rejects for a missing device. */
+  useOutput(d: SavedDevice | null): Promise<Opened> { return port().useOutput(d); },
+  /** Pauses the sound where it is; what is written meanwhile is kept (VD-12). */
+  hold(): void {
+    held = true;
+    port().hold();
+  },
+  /** Plays on from where the hold stopped. */
+  resume(): void {
+    held = false;
+    port().resume();
+  },
+  /** The port held the sound itself (an `output-lost` with `held`): the engine now owns the hold. */
+  noteHeld(): void { held = true; },
+  held: (): boolean => held,
   /** Audio is queued and not played out yet. */
   busy: (): boolean => busy,
   /** Playback events (marks, levels, drained) of the one player. Returns the way to stop listening. */
@@ -78,5 +100,6 @@ onReset(() => {
   subscribed = null;
   listeners.clear();
   busy = false;
+  held = false;
   stats = fresh();
 });

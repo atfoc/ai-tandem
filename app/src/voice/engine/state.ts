@@ -3,8 +3,10 @@
 // alike, so a change made anywhere shows at once everywhere (goal 4.6). Nothing here reaches the network, the key or the microphone;
 // the settings are read from the kv port when first asked for, not at start-up.
 import { safeGet, safeSet } from "@aiwb/core/state/store.ts";
-import { clampSettings, parseSettings, SETTINGS_KEY, stringifySettings } from "../logic/settings.ts";
+import { clampSettings, parseSettings, SETTINGS_KEY, sameSettings, stringifySettings } from "../logic/settings.ts";
 import type { VoiceSettings } from "../logic/settings.ts";
+import type { VoiceNotice } from "../logic/devices.ts";
+import { voicePorts } from "../ports.ts";
 import type { ReadingState, SessionState, VoiceProblem } from "../index.ts";
 
 export type Store<T> = { get(): T; set(next: T): void; subscribe(f: () => void): () => void };
@@ -33,14 +35,54 @@ export function createStore<T>(init: () => T): Store<T> {
 }
 
 export const IDLE_SESSION: SessionState = {
-  owner: null, phase: "idle", committed: "", partial: "", level: 0, muted: false, countdown: null, spoken: "", target: null,
+  owner: null, phase: "idle", committed: "", partial: "", level: 0, muted: false, countdown: null, spoken: "", target: null, paused: null,
 };
-export const NOT_READING: ReadingState = { key: null };
+export const NOT_READING: ReadingState = { key: null, paused: false };
 
 export const sessionStore = createStore<SessionState>(() => IDLE_SESSION);
 export const problemStore = createStore<VoiceProblem | null>(() => null);
 export const readingStore = createStore<ReadingState>(() => NOT_READING);
 export const settingsOpenStore = createStore<boolean>(() => false);
+/** The one notice on show (voice-devices VD-13): a device was missing at a start, or was lost during a session. */
+export const noticeStore = createStore<VoiceNotice | null>(() => null);
+
+/** The timer of the notice (the tests give their own, driven by their clock, as `sessionDeps` is). */
+export const noticeDeps = {
+  setTimer: (f: () => void, ms: number): unknown => setTimeout(f, ms),
+  clearTimer: (h: unknown): void => clearTimeout(h as ReturnType<typeof setTimeout>),
+};
+const NOTICE_DEPS_AT_START = { ...noticeDeps };
+let noticeTimer: unknown = null;
+/** Whoever made the notice on show (a route of `devices.ts`): when it ends, its notice goes with it. */
+let noticeOwner: unknown = null;
+
+function dropNoticeTimer(): void {
+  if (noticeTimer === null) return;
+  noticeDeps.clearTimer(noticeTimer);
+  noticeTimer = null;
+}
+
+/** Shows a notice (VD-13) in place of the one on show. It stays `waits.noticeMs`, or until `endNotice(owner)`; `sticky` stays until then only
+ *  (the pause's own sentence). The text is never logged. */
+export function showNotice(text: string, where: VoiceNotice["where"], owner: unknown, o: { sticky?: boolean } = {}): void {
+  dropNoticeTimer();
+  noticeOwner = owner;
+  noticeStore.set({ text, where, at: voicePorts().now() });
+  if (o.sticky) return;
+  noticeTimer = noticeDeps.setTimer(() => {
+    noticeTimer = null;
+    noticeOwner = null;
+    noticeStore.set(null);
+  }, waits.noticeMs);
+}
+
+/** Takes the notice away when `owner` made it: its session or utterance ended, or the pause it spoke of did. */
+export function endNotice(owner: unknown): void {
+  if (noticeOwner !== owner) return;
+  dropNoticeTimer();
+  noticeOwner = null;
+  noticeStore.set(null);
+}
 
 const readSettings = (): VoiceSettings => parseSettings(safeGet(SETTINGS_KEY));
 /** The stored settings: one value for Settings, the speech bar and the pill (goal 4.6). */
@@ -52,7 +94,7 @@ export const getSettings = (): VoiceSettings => settingsStore.get();
 export function updateSettings(patch: Partial<VoiceSettings>): void {
   const cur = settingsStore.get();
   const next = clampSettings({ ...cur, ...patch });
-  if ((Object.keys(next) as (keyof VoiceSettings)[]).every((k) => next[k] === cur[k])) return;
+  if (sameSettings(next, cur)) return;
   safeSet(SETTINGS_KEY, stringifySettings(next)); // a storage that refuses: the settings hold for this run
   settingsStore.set(next);
 }
@@ -67,6 +109,8 @@ export const waits = {
   callMs: 15_000,
   /** A TTS request whose answer (not its body) has not come by then is "can't reach". */
   answerMs: 15_000,
+  /** How long a notice stays on show (voice-devices VD-13), unless its session or utterance ends first. */
+  noticeMs: 6000,
 };
 const WAITS_AT_START = { ...waits };
 
@@ -84,6 +128,10 @@ export function resetEngine(): void {
   problemStore.set(null);
   readingStore.set(NOT_READING);
   settingsOpenStore.set(false);
+  dropNoticeTimer();
+  noticeOwner = null;
+  noticeStore.set(null);
+  Object.assign(noticeDeps, NOTICE_DEPS_AT_START);
   settingsStore.set(readSettings());
   Object.assign(waits, WAITS_AT_START);
   flags.denyMic = false;

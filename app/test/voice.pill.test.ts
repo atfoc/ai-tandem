@@ -96,6 +96,24 @@ test("Space down with no session starts one; with a session it is a tap on the o
   assert.deepEqual(spaceDown(down, { phase: "starting", words: false }, 20), { hold: down, act: null }, "a second press while it is down");
 });
 
+test("while the session is paused a Space tap is the paused orb's tap (resume) in every phase, and a hold does nothing", () => {
+  for (const phase of ["starting", "listening", "countdown", "waiting", "sending", "thinking", "speaking"] as const) {
+    const s = { phase, words: true, paused: true };
+    const tap = spaceDown(NO_HOLD, s, 10);
+    assert.deepEqual(tap, { hold: NO_HOLD, act: "resume" }, phase);
+    assert.deepEqual(spaceUp(tap.hold, s, 10 + TAP_MS * 5), { hold: NO_HOLD, act: null }, `a long press is no push-to-talk, ${phase}`);
+    assert.deepEqual(wakeAt(tap.hold), null, phase);
+  }
+  assert.deepEqual(spaceDown(NO_HOLD, { phase: "idle", words: false, paused: true }, 10), { hold: { kind: "down", at: 10 }, act: "start" }, "idle is never paused (the orb says so too)");
+  assert.deepEqual(spaceDown(NO_HOLD, { phase: "listening", words: true, paused: false }, 10), { hold: NO_HOLD, act: "end" }, "not paused: the phase decides");
+  // A pause that comes while Space is held: nothing is sent, nothing is cancelled, and the key's release does nothing.
+  const down: Hold = { kind: "down", at: 1000 };
+  const paused = { phase: "listening", words: true, paused: true } as const;
+  assert.deepEqual(settle(down, paused, 1500), { hold: NO_HOLD, act: null });
+  assert.deepEqual(settle({ kind: "released", at: 1000 }, paused, 1500), { hold: NO_HOLD, act: null });
+  assert.deepEqual(settle(down, { phase: "countdown", words: true, paused: true }, 1500), { hold: NO_HOLD, act: null });
+});
+
 test("a Space let go within a tap leaves the session listening; a hold sends when the words are there", () => {
   const down: Hold = { kind: "down", at: 1000 };
   const listening = { phase: "listening", words: true } as const;

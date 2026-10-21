@@ -324,11 +324,12 @@ function ComposerOf({ chatId, branch }: { chatId: string; branch: string }) {
   useEscLayer(!readOnly && matches.length > 0, () => setMention(null));
   if (!c) return null;
   if (c.archived) return root(<>
+    {parts.VoiceNotice ? <parts.VoiceNotice chatId={chatId} /> : null}
     {/* (shown as it was, it is not unarchived from here: the bar says why in the place of the button) */}
     <ArchivedBar off={readOnly} why={offWhy(where, left)} onUnarchive={() => api.unarchive("chats", c.id).catch((e) => setErr(e.message))} />
     {err && !readOnly ? <Text {...tid("composer-err")} size={12} tone="danger" style={styles.err}>{err}</Text> : null}
   </>);
-  if (legacy) return root(<LegacyBar />);
+  if (legacy) return root(<>{parts.VoiceNotice ? <parts.VoiceNotice chatId={chatId} /> : null}<LegacyBar /></>);
 
   // esc: the agent is busy on the branch shown; a message that starts a new branch may go out all the same
   const { stop, blocked, esc } = composerControls(c, { newBranch: move, liveFork: !!c.agent && LIVE_FORK[c.agent] });
@@ -465,6 +466,7 @@ function ComposerOf({ chatId, branch }: { chatId: string; branch: string }) {
     ) : null}
     {Banner ? <Banner chat={chatId} /> : null}
     <ModelNotice chatId={chatId} />
+    {parts.VoiceNotice ? <parts.VoiceNotice chatId={chatId} /> : null}
     {/* (the wrapper is always there, so that the box is the same element while speech mode comes and goes; hidden it keeps its width, which the toolbar's fit reads) */}
     <View {...tid("composer-away", { away: speech })} aria-hidden={speech} style={speech ? styles.away : undefined}>
     <View {...tid("composer-box", { readonly: readOnly })} {...boxHandlers}

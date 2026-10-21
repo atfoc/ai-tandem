@@ -14,6 +14,8 @@
 //   VoiceButtons    voice (VC-17): the Dictate and Speech mode buttons, in the toolbar's row or as two rows of its "more" popup (`place`); `disabled`:
 //                   why the composer cannot send now ("" while it can). null: none (the fit leaves them out).
 //   SpeechBar       voice (VC-17): the speech bar that takes the place of the box and the toolbar while speech mode is on. null: none.
+//   VoiceNotice     voice devices (VD-14): the one-sentence line above the box, the speech bar or the archived bar, where ModelNotice stands: a device
+//                   that was missing or went away, or Read aloud's pause. Nothing at rest. null: none.
 import { useSyncExternalStore, type ComponentType, type Dispatch, type ReactNode, type SetStateAction } from "react";
 
 import type { Refused } from "@aiwb/core/logic/chatimage.ts";
@@ -65,6 +67,7 @@ export type ComposerParts = {
   BranchBanner: ComponentType<{ chat: string }> | null;
   VoiceButtons: ComponentType<{ chatId: string; branch: string; place: "row" | "more"; disabled: string }> | null;
   SpeechBar: ComponentType<{ chatId: string; branch: string }> | null;
+  VoiceNotice: ComponentType<{ chatId: string }> | null;
 };
 
 /** The Subagents chip until S7 draws it: the settings in words, fixed (no list). */
@@ -83,7 +86,7 @@ let parts: ComposerParts = {
   quoteSelection: () => null,
   SubagentsChip: SubagentsStandIn,
   BranchBanner: null,
-  VoiceButtons: null, SpeechBar: null,
+  VoiceButtons: null, SpeechBar: null, VoiceNotice: null,
 };
 const listeners = new Set<() => void>();
 

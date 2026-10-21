@@ -12,7 +12,7 @@ import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 
 // The Android side of `aiwb-audio` (architecture VC-8): the microphone as 16 kHz mono s16le chunks (AudioRecord), the PCM player of the
-// voice's replies (AudioTrack), the audio focus and the communication mode (VoiceAudio.kt). The contract it implements is ../README.md;
+// voice's replies (AudioTrack), the audio focus and the communication mode (VoiceAudio.kt), the devices (Devices.kt, voice-devices VD-18). The contract it implements is ../README.md;
 // the TypeScript of it is ../src/AiwbAudio.ts, whose function and event names app/test/aiwbaudio.test.ts reads here.
 
 /** The code of `startMic`'s rejection when the system gives the app no microphone (MIC_BLOCKED of the contract). */
@@ -58,16 +58,18 @@ class AiwbAudioModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("AiwbAudio")
 
-    Events("onMic", "onPlayer", "onInterrupted")
+    Events("onMic", "onPlayer", "onInterrupted", "onDevices", "onRoute")
 
     AsyncFunction("micPermission") { promise: Promise -> permission(promise, ask = false) }
 
     AsyncFunction("requestMic") { promise: Promise -> permission(promise, ask = true) }
 
-    AsyncFunction("startMic") { chunkMs: Double, echoCancel: Boolean, promise: Promise ->
-      audio.startMic(chunkMs.toInt(), echoCancel) { result ->
+    // inputId: the input to prefer (voice-devices VD-18), null for the system's; one that has gone away gives the system's. The answer
+    // names the device the record is routed to.
+    AsyncFunction("startMic") { chunkMs: Double, echoCancel: Boolean, inputId: String?, promise: Promise ->
+      audio.startMic(chunkMs.toInt(), echoCancel, inputId) { result ->
         when (result) {
-          is MicResult.Started -> promise.resolve(mapOf("echoCancel" to result.echoCancel))
+          is MicResult.Started -> promise.resolve(mapOf("echoCancel" to result.echoCancel, "device" to result.device))
           is MicResult.Blocked -> promise.reject(MIC_BLOCKED, "the microphone is not allowed", null)
           is MicResult.Failed -> promise.reject("ERR_AIWB_MIC", result.why, null)
         }
@@ -91,6 +93,27 @@ class AiwbAudioModule : Module() {
     }
 
     Function("stopClip") { audio.stopClip() }
+
+    // The devices (voice-devices VD-18; Devices.kt). Listing asks for no permission and opens nothing.
+    AsyncFunction("listDevices") { promise: Promise -> audio.listDevices { promise.resolve(it) } }
+
+    // A constant of the OS version; it makes nothing.
+    Function("deviceAbility") { deviceAbility() }
+
+    // The app's words for the built-in microphone and speaker (the system names both after the phone); kept for the process.
+    Function("setBuiltInNames") { names: Map<String, String> ->
+      names["mic"]?.trim()?.takeIf { it.isNotEmpty() }?.let { BuiltInNames.mic = it }
+      names["speaker"]?.trim()?.takeIf { it.isNotEmpty() }?.let { BuiltInNames.speaker = it }
+      Unit
+    }
+
+    AsyncFunction("setOutput") { outputId: String?, promise: Promise ->
+      audio.setOutput(outputId) { device -> promise.resolve(mapOf("device" to device)) }
+    }
+
+    Function("playerHold") { audio.hold() }
+
+    Function("playerResume") { audio.resume() }
 
     // The app's page in the system settings (the microphone's switch is there).
     AsyncFunction("openSettings") { promise: Promise ->

@@ -21,8 +21,10 @@ import { problemOfException } from "../logic/problems.ts";
 import { committedText, deadline, initTurn, step, turnText } from "../logic/turn.ts";
 import type { TurnInput, TurnPhase, TurnState } from "../logic/turn.ts";
 import { voicePorts } from "../ports.ts";
-import type { VoiceProblemKind } from "../ports.ts";
+import type { Opened, VoiceProblemKind } from "../ports.ts";
 import type { DictationSink, Phase, SessionOwner, SessionState } from "../index.ts";
+import { announceStart, applyOutput, enterRoute, outputWanted, stopMicTest } from "./devices.ts";
+import type { NoticeWhere, RouteHandle } from "./devices.ts";
 import { startListener } from "./listener.ts";
 import type { Listener } from "./listener.ts";
 import { noteSpoken } from "./marks.ts";
@@ -78,6 +80,10 @@ type Session = {
   /** What the dictation sink was last shown. */
   shown: string;
   offs: (() => void)[];
+  /** Paused because the private output went away (VD-12): nothing is sent, no timer of the turn runs, the player stays held. */
+  paused: { device: string } | null;
+  /** The session's use of audio, for the devices that go away (`devices.ts`). */
+  route: RouteHandle | null;
 };
 
 let current: Session | null = null;
@@ -98,6 +104,7 @@ function phaseOf(s: Session): Phase {
 /** Audio may go up: the turn listens. A turn on its way, its reply and the reply's tail, and a message read aloud close the gate: the
  *  microphone would take the speaker's words for the person's. */
 function gateOpen(s: Session): boolean {
+  if (s.paused) return false;
   if (s.starting) return true;
   if (readingStore.get().key !== null) return false;
   if (s.stage) return false;
@@ -118,6 +125,7 @@ function render(s: Session): void {
     countdown: s.stage ? null : s.turn.countdown,
     spoken: s.stage === "speaking" ? s.spoken : "",
     target: s.target,
+    paused: s.paused,
   };
   const was = sessionStore.get();
   if (!(Object.keys(next) as (keyof SessionState)[]).every((k) => Object.is(next[k], was[k]))) sessionStore.set(next);
@@ -135,6 +143,7 @@ function render(s: Session): void {
 
 function schedule(s: Session): void {
   if (s.timer !== null) { sessionDeps.clearTimer(s.timer); s.timer = null; }
+  if (s.paused && s.turn.phase !== "committing") return; // the turn's time stands still while paused; a Send already asked for goes on
   const at = deadline(s.turn);
   if (at === null || current !== s) return;
   s.timer = sessionDeps.setTimer(() => {
@@ -152,6 +161,8 @@ function stepTurn(s: Session, input: TurnInput): void {
     else if (e.kind === "send") void sendTurn(s, e.text);
     // A countdown's start and stop are shown from the turn's own `countdown` (render).
   }
+  // Words heard while paused are kept, but no countdown runs: it would send the turn while the person cannot hear the reply (VD-12).
+  if (s.paused && s.turn.phase === "countdown") s.turn = step(s.turn, { type: "cancel" }, now()).state;
   schedule(s);
   render(s);
 }
@@ -303,18 +314,21 @@ export function endSession(): void {
   clearTail(s);
   for (const off of s.offs.splice(0)) off();
   stopReply(s);
+  s.route?.leave();
+  s.route = null;
   if (s.how.kind === "dictation") s.how.sink.done(turnText(s.turn));
   sessionStore.set(IDLE_SESSION);
 }
 
 async function start(owner: SessionOwner, anchor: string, how: How, retry: () => void): Promise<void> {
   endSession(); // one session at a time (VC-18)
+  stopMicTest(); // and not together with the microphone test of Settings (VD-16)
   const settings = getSettings();
   const s: Session = {
     owner, anchor, how, retry, ctl: new AbortController(), starting: true, listener: null,
     turn: initTurn({ sends: how.kind !== "dictation", autoSend: settings.autoSend, pauseMs: settings.pauseMs }),
     timer: null, stage: null, sending: false, said: "", reply: null, muted: false, spoken: "", tail: null,
-    level: 0, target: null, shown: `\u0000`, offs: [],
+    level: 0, target: null, shown: `\u0000`, offs: [], paused: null, route: null,
   };
   current = s;
   sessionStore.set({ ...IDLE_SESSION, owner, phase: "starting" });
@@ -350,6 +364,22 @@ async function start(owner: SessionOwner, anchor: string, how: How, retry: () =>
   if (!listener || current !== s) { listener?.stop(); return; }
   s.listener = listener;
   if (s.muted) listener.mute(true);
+  // The devices (VD-8): a speaking session gives the player its speaker once, now; a saved device that was not there is one notice.
+  const speaks = how.kind !== "dictation";
+  const where: NoticeWhere = owner.kind === "pill" ? { kind: "board", board: owner.board } : { kind: "chat", chat: owner.chat };
+  const route = enterRoute({
+    where, listens: true, speaks,
+    onPause: speaks ? (device) => pauseSession(s, device) : undefined,
+    onResume: () => resumeSession(s),
+    onMicFailed: () => fail(s, "mic_blocked"),
+  });
+  s.route = route;
+  let out: Opened | null = null;
+  if (speaks && outputWanted(settings.speaker)) {
+    out = await applyOutput(settings.speaker);
+    if (current !== s) return;
+  }
+  announceStart(route, settings, listener.opened, out);
   s.starting = false;
   s.offs.push(readingStore.subscribe(() => render(s)));
   s.offs.push(settingsStore.subscribe(() => {
@@ -380,6 +410,24 @@ export function startPill(o: {
     () => { void startPill(o); });
 }
 
+/** The private output went away and the next sound would be out loud (VD-12): the gate closes, a countdown is cancelled with its words kept,
+ *  the player stays held. The reply follower and the speaker go on into the held queue. */
+function pauseSession(s: Session, device: string): void {
+  if (current !== s || s.paused) return;
+  s.paused = { device };
+  if (s.starting) return; // the start finishes into the pause: the gate is closed from its first render
+  if (s.turn.phase === "countdown") stepTurn(s, { type: "cancel" });
+  else { schedule(s); render(s); }
+}
+
+/** Continue: the gate and the turn's time are back as the phase says. (The player was resumed by `devices.resume`.) */
+function resumeSession(s: Session): void {
+  if (current !== s || !s.paused) return;
+  s.paused = null;
+  if (s.starting) return;
+  stepTurn(s, { type: "tick" }); // quiet that came while paused starts its countdown now
+}
+
 /** Mute: no audio goes up; the socket stays. */
 export function mute(on: boolean): void {
   const s = current;
@@ -392,7 +440,7 @@ export function mute(on: boolean): void {
 /** Send, or the ↑ badge: the turn goes (after its last words are committed). */
 export function send(): void {
   const s = current;
-  if (!s || s.stage || s.how.kind === "dictation") return;
+  if (!s || s.stage || s.paused || s.how.kind === "dictation") return;
   stepTurn(s, { type: "send" });
 }
 

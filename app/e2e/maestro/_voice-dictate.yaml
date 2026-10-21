@@ -1,7 +1,10 @@
-# Shared by `voice-mic`: presses the composer's Dictate control, which is in the toolbar's row where there is room for the pair and in its "more" popup
+# Shared by `voice-mic` and `voice-devices`: presses the composer's Dictate control, which is in the toolbar's row where there is room for the pair and in its "more" popup
 # (a sheet on the phone, which stays open after the press) where there is not: the same control either way (`voice-dictate` / `more-dictate`).
+# The "more" branch runs only when the first press was not made: the first press may bring up the system's microphone alert, which covers the toolbar, and a
+# branch that asked "is Dictate still visible?" would then go looking for `more-chip` under the alert. So the first branch says it pressed (`output.dictatePressed`).
 appId: ${APP_ID}
 ---
+- evalScript: ${output.dictatePressed = false}
 - runFlow:
     when:
       visible:
@@ -9,10 +12,10 @@ appId: ${APP_ID}
     commands:
       - tapOn:
           id: "voice-dictate"
+      - evalScript: ${output.dictatePressed = true}
 - runFlow:
     when:
-      notVisible:
-        id: "voice-dictate"
+      true: ${!output.dictatePressed}
     commands:
       - runFlow:
           when:

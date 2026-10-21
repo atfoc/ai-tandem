@@ -32,7 +32,9 @@
 //                   problems: [what the client did against the protocol], … }; tts: text, voice, model, speed, chunks, bytes,
 //                   sampleRates [24000], chunkMsMin/Max (the time between two writes), startedAt, finishedAt, cancelled (the request was
 //                   closed before its end; cancelledAt); stt: chunks (of audio), commits, bytes, sampleRates, chunkMsMin/Max (the length
-//                   of a chunk's audio), sent (message types), startedAt, finishedAt, closeCode
+//                   of a chunk's audio), sent (message types), startedAt, finishedAt, closeCode, toneHz (the frequency of the audio it received, in
+//                   Hz, by the zero crossings of the PCM: the whole session's, null before a tone was heard; toneHzLast: the latest chunk with a
+//                   tone in it, so a session whose microphone changed in the middle tells both: voice-devices VD-19)
 //   reset()         clears the log, the script, the failure, the pace and the tokens, and cuts what is open
 import crypto from "node:crypto";
 import http from "node:http";
@@ -153,6 +155,31 @@ function cuts(length, count) {
   for (let k = 1; k < count; k++) { const b = Math.floor((k * length) / count); at.push(k % 2 && b % 2 === 0 ? b + 1 : b); }
   at.push(length);
   return at;
+}
+
+/** The frequency of a tone in 16-bit little-endian mono PCM, by counting zero crossings with a dead band (a Schmitt trigger of ±1.5 % of full
+ *  scale, so silence and low noise count none). `counter()` is fed chunk by chunk and answers { hz, last }: hz over the whole stream (from the first
+ *  crossing to the latest, so leading and trailing silence do not dilute it), last of the most recent chunk that had enough crossings; null when
+ *  there is no tone yet. */
+function toneCounter(rate) {
+  const BAND = 500, MIN = 8;
+  let side = 0, index = 0, first = -1, lastAt = -1, crossings = 0, last = null;
+  return function counter(pcm) {
+    let inChunk = 0, firstIn = -1, lastIn = -1;
+    for (let i = 0; i + 1 < pcm.length; i += 2, index++) {
+      const v = pcm.readInt16LE(i), now = v > BAND ? 1 : v < -BAND ? -1 : side;
+      if (side !== 0 && now !== side) {
+        crossings++; inChunk++;
+        if (first < 0) first = index;
+        lastAt = index;
+        if (firstIn < 0) firstIn = index;
+        lastIn = index;
+      }
+      side = now;
+    }
+    if (inChunk >= MIN) last = Math.round(((inChunk - 1) / 2 / ((lastIn - firstIn) / rate)));
+    return { hz: crossings >= MIN ? Math.round((crossings - 1) / 2 / ((lastAt - first) / rate)) : null, last };
+  };
 }
 
 const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
@@ -343,7 +370,8 @@ export function createVoiceStandin({ prefix = "/voice", keys = (k) => /^sk_test_
     socket.on("error", () => {});
     if (failure?.offline) { entry("offline", req).status = 0; socket.destroy(); return true; }
     if (rest !== "/v1/speech-to-text/realtime") { entry("other", req).status = 404; socket.end("HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"); return true; }
-    const e = entry("stt", req, { chunks: 0, commits: 0, bytes: 0, sampleRates: [], chunkMsMin: null, chunkMsMax: null, sent: [], startedAt: null, finishedAt: null, closeCode: null, cancelled: false });
+    const e = entry("stt", req, { chunks: 0, commits: 0, bytes: 0, sampleRates: [], chunkMsMin: null, chunkMsMax: null, sent: [], startedAt: null, finishedAt: null, closeCode: null, cancelled: false, toneHz: null, toneHzLast: null });
+    const tone = toneCounter(16000);
     const refuseWith = (status, text) => { e.status = status; socket.end(`HTTP/1.1 ${status} ${text}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`); };
     const wsKey = req.headers["sec-websocket-key"];
     if (req.method !== "GET" || !/websocket/i.test(String(req.headers.upgrade ?? "")) || typeof wsKey !== "string" || req.headers["sec-websocket-version"] !== "13") {
@@ -435,6 +463,8 @@ export function createVoiceStandin({ prefix = "/voice", keys = (k) => /^sk_test_
         e.chunkMsMin = e.chunkMsMin === null ? chunkMs : Math.min(e.chunkMsMin, chunkMs);
         e.chunkMsMax = e.chunkMsMax === null ? chunkMs : Math.max(e.chunkMsMax, chunkMs);
         if (!e.sampleRates.includes(m.sample_rate)) e.sampleRates.push(m.sample_rate);
+        const heard = tone(pcm);
+        e.toneHz = heard.hz; e.toneHzLast = heard.last;
       }
       if (m.commit) { e.commits++; if (current) { const t = current; current = ""; send({ message_type: "committed_transcript", text: t }); } }
       speak();

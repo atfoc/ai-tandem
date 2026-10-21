@@ -11,7 +11,7 @@ node app/e2e/run.mjs --list
 ```
 
 Name **your own** simulator (`--device` or `AIWB_IOS_UDID`; `xcrun simctl list devices`) or device (`--device` or
-`AIWB_ANDROID_SERIAL`): other agents run this on theirs, so the runner never guesses one. Flows: `conn-on-hermes`, `net-selftest`, `keys`, `board-webview`, `sheets`, `net-pinned-stream`, `composer-chips`, `composer-chips-gallery`, `voice-mic` (`app/e2e/maestro/*.yaml`; files that start with `_`
+`AIWB_ANDROID_SERIAL`): other agents run this on theirs, so the runner never guesses one. Flows: `conn-on-hermes`, `net-selftest`, `keys`, `board-webview`, `sheets`, `net-pinned-stream`, `composer-chips`, `composer-chips-gallery`, `voice-mic`, `voice-devices` (`app/e2e/maestro/*.yaml`; files that start with `_`
 are shared parts).
 
 ## What a run does
@@ -217,7 +217,7 @@ left to right (`_pick-ios.yaml`). Android's photo picker is in the tree, its cel
 
 ## The microphone and the audio session (`voice-mic`, package P17)
 
-`node app/e2e/run.mjs voice-mic --platform ios --device <your own simulator's udid>` (voice chats, goal 6.6, architecture §14.4; the development build,
+`node app/e2e/run.mjs voice-mic --platform ios --device <your own simulator's udid>` (also `--platform android --device emulator-5554` with the emulator lock held: the flow branches by platform where the system's dialogs and the screen's layout differ, see below; voice chats, goal 6.6, architecture §14.4; the development build,
 header `needs=server,agent,control,voice app=1`). It covers what only the platform shows of voice: the system's microphone prompt, the audio session of
 `app/modules/aiwb-audio` starting and stopping, 16 kHz chunks of 100 ms reaching a service, and the native player playing a stream. Nothing is recognised: the
 simulator's microphone is silence or the Mac's input, so the stand-in voice service says what it was told to (`needs=voice`, below).
@@ -241,4 +241,21 @@ simulator's microphone is silence or the Mac's input, so the stand-in voice serv
 - Two things the flow works around: a tap on the answer's "⋯" by its id (`fk-more`) does not open the menu on the device, a tap at its place does (and a first tap just after the chat opens is sometimes
   lost, so it is repeated); and the toolbar's "more" sheet, where the phone keeps Dictate, stays open after Dictate is pressed (`_voice-dictate.yaml`, `_voice-close-sheet.yaml`).
 - Not covered by a simulator: echo cancellation and the reply's sound not being heard as the next turn (no acoustic echo), Bluetooth routes, a phone call taking the audio; the person confirms them on a real iPhone and
-  Android phone. Android runs this flow only with the emulator lock held (see Android); otherwise its module is proven by `./gradlew :aiwb-audio:compileDebugKotlin` and on a phone.
+  Android phone. Android runs this flow only with the emulator lock held (see Android; it passes on the Medium Phone API 36.1 emulator, whose built-in microphone gives the stand-in 16 kHz chunks in real time); otherwise its module is proven by `./gradlew :aiwb-audio:compileDebugKotlin` and on a phone.
+  On Android the flow differs from iOS in three places, each a `runFlow` with `when: platform:`: the permission is the system's runtime dialog "Allow <app> to record audio?" with no words of the app (the flow taps "While using the app"); after `pm revoke` the app asks again, so the refusal step taps "Don't allow" to reach the "can't hear you" popover; and the answer's "⋯" is tapped at 92%,15% (iOS 92%,20%).
+
+## The audio devices in Settings > Voice (`voice-devices`, package D13)
+
+`node app/e2e/run.mjs voice-devices --platform ios --device <your own simulator's udid>` (voice devices, goal 6.5, architecture §12.4; header `needs=server,agent,control,voice app=1`,
+the same stand-in service and runner parts as `voice-mic`). The iPhone layout of the card "Microphone and speaker", against the native module's real `AVAudioSession`. **Part 1 needs no microphone**
+and runs where the simulator cannot capture audio (see the Mac's microphone note under `voice-mic`): with no key stored (one left by an earlier run is removed) the card shows only its title and "Add your key to choose a microphone and a speaker." (`vs-devices-nokey`; no picker, no test, no note, no microphone alert), then the stand-in's key is typed, tested and saved (`vs-key`, `vs-key-save`) and the card lists: the Microphone picker lists "System default (<input>)" and the
+system's input and listing asked for no permission; the Speaker row is the line "Follows the system: headphones or a headset when connected, otherwise the speaker." with no picker (`vs-speaker`), no
+`vs-mic-system`, no note; Test speaker plays the chime through the native player to its end (the dev line's `tested` count, read after the sheet is closed, since the sheet covers the line) with `mic=none`
+still (no microphone was opened by any of it); the built-in input is picked and is still the picker's choice after the app is closed and opened again (`POST /voice/relaunch`). **Part 2 needs a real
+microphone** (a Mac session that may use its microphone, or a phone): the key is already saved, Dictate asks the system for the microphone (the app's words, Allow), the scripted words come into the box, and the dev
+line's `mic=builtIn` says the saved input was opened (its kind, never a name) with no notice; Test microphone shows the level meter (`vs-mic-level`). The flow ends with System default and no key (the card is back to `vs-devices-nokey`), and starts by putting
+both so, so it runs again on a device an earlier run left half-way. **On the Android emulator** (`--platform android --device emulator-5554`, lock held; API 36, so both kinds are choices) the whole flow runs, part 2 too: the emulator's built-in microphone works. The Speaker row is a picker (`vs-speaker`: "System default (Phone speaker)", "Phone speaker"; no `vs-speaker-system`) and the card's note says "A headset is used for both listening and speaking while you talk to a chat."; both picks are kept over a relaunch; the permission is the system's dialog ("While using the app"); the card is taller, so the flow scrolls to Test microphone. An Android 7–11 device would show the iOS-style line for the speaker: not covered (the flow assumes API 31+). Loss, pause and headsets (wired, Bluetooth) are not on a simulator: the unit tests over the fake module prove the logic and a person proves the rest on
+real devices.
+
+The build's status line has a second text, `voice-dev-devices` (`mic=<none|default|builtIn|external> tested=<n>`): the kind of what the microphone's last start opened, and how many queues played out while no message
+was read aloud (Test speaker's chime). A separate text because Maestro matches a text as a whole and `voice-mic` ends its patterns at `marks=<n>`. Metro of a run does not watch files: a change of the app's source is picked up by a new run, not by a held one.

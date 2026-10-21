@@ -479,14 +479,14 @@ that board's chats. It uses ElevenLabs (realtime speech to text, text to speech)
 ElevenLabs itself; the AI Whiteboard server is not involved, never sees audio, the key or a voice setting, and nothing
 under `cmd/` or `internal/` is about voice. A spoken turn is an ordinary message: it is sent with the composer's
 `sendMessage`, as a typed one is, and the server stores it as one. Nothing of voice starts with the app: a page that has
-never used voice opens no socket, asks for no microphone, makes no audio context and makes no request to a voice service.
+never used voice opens no socket, asks for no microphone, makes no audio context, lists no audio devices and makes no request to a voice service.
 
 - **Where it is.** `app/src/voice/` is the engine: `logic/` is pure TypeScript (the cleaner that turns markdown into words to
   say, the sentence splitter, ElevenLabs' protocol and its errors, the turn machine, the settings, the marks), `engine/` is
   the one player, the speaker, the listener and the session, and `platform/` has a file per platform for the three ports the
   engine uses, as `@aiwb/core` has its ports: the keystore, the net and the audio. The screens (`app/src/screens/voice/`) call
   `voice` and its hooks and nothing below them. The phones' microphone and speaker are the app's own native module,
-  `app/modules/aiwb-audio` (voice processing on iOS, `AudioRecord` and `AudioTrack` on Android); the desktop window and the web
+  `app/modules/aiwb-audio` (voice processing on iOS, `AudioRecord` and `AudioTrack` on Android, and the lists and routes of their devices); the desktop window and the web
   build use Web Audio. The desktop's half is `desktop/voice.js`. Every sentence voice shows is in `app/src/voice/words.ts`
   (English only).
 - **The key, per platform.** It is one key, typed in Settings, and it is never in the kv, the settings, a log, the text of an
@@ -554,10 +554,96 @@ never used voice opens no socket, asks for no microphone, makes no audio context
 - **Settings.** The app had no Settings screen. Voice adds a **Settings** dialog (a sheet on a phone) with one section,
   Voice, opened by the gear at the sidebar foot (`settings-btn`, between the library button and the theme picker) and by
   the **Open Settings** of a problem popover. It holds the key (hidden, with Show, **Test key** and **Remove key from this
-  device**), the voice (four voices with a preview that costs no credits, **Show all voices**), whether speech mode sends the
+  device**), the voice (four voices with a preview that costs no credits, **Show all voices**), the card **Microphone and speaker** (see **Devices** below), whether speech mode sends the
   turn by itself, and Advanced options (speech model, language, the pause, the speed, skipping code blocks). Everything
   but the key is one stored value, `aiwb.voice.settings` in the kv, which Settings, the speech bar and the pill all read
   and write, so a change in one shows in the others.
+- **Devices.** Voice listens to a microphone and speaks through a speaker that the person can choose. Settings > Voice has a
+  card, **Microphone and speaker** (`vs-devices-section`, between Voice and the Auto-send switch, made of the same rows and
+  pickers as the other cards), with a **Microphone** picker (`vs-mic`) and a **Speaker** picker (`vs-speaker`). Each lists
+  **System default** first, labelled "System default (<device>)" where the system says what that is now, then every
+  device of the kind the system reports, by the system's name (cut at 60 characters for show). The choice is two more fields
+  of the one stored voice settings value, `mic` and `speaker` (`{ id, name }`, or null for System default), so it is kept on this
+  device with the other voice settings, read by Settings and by every session alike, and never sent to the AI Whiteboard
+  server or the voice service nor written to a log; the app writes it only when the person picks, never to refresh it. It applies to
+  Dictation, Speech mode, the pill, Read aloud, a voice's preview and Test speaker, and to the next session: a running one keeps
+  the devices it started with. A choice is found again at every start by its id and, when no device has that id, by the
+  first device with the same name (`matchSaved` in `app/src/voice/logic/devices.ts`), since ids change when the person's data is
+  cleared; a saved device that is not listed now stays selected as "<name> (not connected)". A person who never opens the
+  card has null for both: no new notice, no new permission, no new request. Settings lists the devices when it opens with a key saved (with none, the card says "Add your key to choose a microphone and a
+  speaker.", `vs-devices-nokey`, offers no picker and lists nothing: voice is not set up) and on every change while it is open; a voice session lists once at its start, to follow its route (the web port does it when the session subscribes to route
+  events, so Dictation too) and to find a saved choice; nothing else lists. No platform lists asking for the microphone: the
+  one place that hides names is the web build in a browser, which lists one blank entry per kind until the microphone is
+  allowed, so the card offers System default alone with the note "Allow the microphone to see your other devices."
+  (`vs-devices-note`) until **Test microphone** (or a voice control) asks for it.
+- **What each platform allows.** The engine asks a `DevicePort` (`ports.ts`) what the platform lets it choose
+  (`ability`: `pick` or `system` for each kind), and the card shows a picker only where the platform picks; where the system
+  decides it shows a line that says so, never a control that does nothing.
+
+  | Platform | Microphone | Speaker |
+  |---|---|---|
+  | Desktop window | picker (`getUserMedia` with an exact `deviceId`); names without any permission | picker (`AudioContext.setSinkId`) |
+  | Web build in Chromium | picker; before the permission System default alone with the note | picker (same rule) |
+  | Web build without `AudioContext.setSinkId` (Safari, Firefox) | picker | line "Follows the system: headphones or a headset when connected, otherwise the speaker." |
+  | iPhone, iPad | picker (`availableInputs`, `setPreferredInput`) | the same line: iOS has no output choice but the system's route picker, which changes the route of the whole device |
+  | Android 12 and later | picker | picker (the communication devices without the earpiece), and the note "A headset is used for both listening and speaking while you talk to a chat." (`vs-devices-note`): in speech mode a headset brings its own microphone |
+  | Android 7 to 11 | picker | the same line |
+  | A build without the audio module | one line for both: "Voice uses the system's microphone and speaker. Change them in the system's settings." (`vs-devices-neither`) | |
+
+  Android names its built-in devices itself ("Phone microphone", "Phone speaker"; the system names them all after the phone's
+  model) and lists them once each. The facts behind the table, with what was checked where, are in
+  `plans/voice-devices/platforms.md`.
+- **The device port.** The engine knows no platform: `AudioPort` gains `devices` (`ability`, `list()` and `watch()`: what the
+  system has now and when that may have changed; neither opens a device nor asks a permission), a `device` for `startMic`, an
+  output for the player (`useOutput`, `hold` and `resume`) and `onRoute`. A start answers what it opened (`opened`, with
+  `missed` when the saved device was not there); `onRoute` tells that a device in use went away (`input-lost`, `input-failed`,
+  `output-lost` with `held`) after the port has done the mechanical part. The matching is the same pure function in every
+  port (`audio.web.ts` with `audio.web.devices.ts`, and `audio.native.ts` over `aiwb-audio`, whose contract gained `listDevices`,
+  `deviceAbility`, `setBuiltInNames`, `setOutput`, `playerHold`, `playerResume` and the events `onDevices` and `onRoute`; `onInterrupted`
+  no longer says "route" for a lost device). `engine/devices.ts` applies the saved choice at each start, turns the route events
+  into a notice, a pause or an end, and runs the two tests below.
+- **When the saved device is not there, and when it goes.** The system default is always the fallback; there is no list of second
+  choices. At the start of a session or an utterance, a saved device that is not listed gives the system default and **one
+  notice** that names it ("“X” isn't connected. Using the system microphone."; the speaker likewise; both missing at once make
+  one notice); Settings still shows the saved one and the next session uses it again when it is back. During a session, a
+  microphone that goes: the port reopens capture on the system default into the same chunk callback, so the socket, the turn
+  and the words already heard are untouched (a moment of audio is lost), with the notice "“X” was disconnected. Listening with the system
+  microphone."; if capture cannot be reopened the session ends as a microphone that cannot start does, with "The app can't hear
+  you". A speaker that goes: the port moves the queue to the system default ("“X” was disconnected. Speaking through the system
+  speaker."), nothing is fetched or written again, so no sentence is said twice and at most the piece playing at that moment is
+  cut or played again from its start. A device that comes back mid-session is not switched to; the next session uses it. The
+  notice is one plain sentence in the composer's notice line above the box (`voice-notice`, the look of the model notice; in
+  speech mode it stands above the speech bar) or, for the pill, a caption above it (`caption-notice`); it needs no tap, a
+  newer one replaces it, and it goes after 6 s or when the session ends. Every sentence is in `words.ts`; the name in them is
+  cut at 40 characters.
+- **The pause.** A headset or headphones are private; the system default may be the loudspeaker. When the output in use
+  is private (or its kind is unknown) and what the sound moves to is not known to be private, the port holds the sound before any
+  of it comes out of the loudspeaker (iOS pauses its player node on the route notification, Android on
+  `ACTION_AUDIO_BECOMING_NOISY`, the web player suspends its context), and the engine **pauses the session** instead of
+  speaking out loud: speech mode and the pill in any phase (listening too, because the next reply would be heard), and Read
+  aloud; Dictation speaks nothing and never pauses; a preview or Test speaker just stops. While paused no audio is sent
+  (the gate is closed, the socket stays), a countdown is cancelled with its words kept, and the reply keeps being followed and
+  fetched (two sentences ahead) into the held queue, so nothing is missing or fetched twice when the person goes on. The speech bar's
+  line says "“X” was disconnected. Paused so nothing is played out loud." (`speech-paused`) and its foot shows **Continue**
+  (`speech-continue`); the pill's orb takes the state `paused` (`pill-orb` `data-state="paused"`, a pause glyph; a tap on it
+  continues), its bar shows **Continue** (`pill-continue`), and with the pill paused a Space tap continues and a hold does nothing; a message being read aloud shows **Continue reading** (`voice-reading-continue`) beside **Stop reading**, and the
+  composer's notice line the sentence. **Continue** (`voice.resume()`) plays on from where the sound stopped on the system's
+  output, out loud, on purpose. There is no time limit; End, Stop reading or leaving the chat end it. Which devices
+  are private is read from the port type on the phones (headphones, Bluetooth, wired and USB headsets, the earpiece), and from
+  the name on the desktop and the web (`privacyOfName`: "headphones", "headset", "AirPods", "buds" and the like are private,
+  "speakers", "display", "HDMI" are public); a desktop output whose kind cannot be told from its name counts as private when it
+  is lost, so voice pauses rather than play out loud.
+- **Test speaker and Test microphone.** Both are in Settings > Voice only. **Test speaker** (`vs-speaker-test`) plays a chime
+  the app makes in code (0.6 s, two notes, `logic/chime.ts`; the app has no sound file) through the one player and the chosen
+  speaker, so it proves speech's output and costs no request. **Test microphone** (`vs-mic-test`) starts the chosen
+  microphone and shows its level as a meter (`vs-mic-level`, the pill's waveform); the audio is read for its level and goes
+  nowhere, no socket opens and no request is made. It runs only on the person's tap, stops on a second tap, when Settings closes,
+  when a voice session starts or when the microphone choice changes (it restarts on the new one), is disabled with "Voice is
+  listening." while a session listens, and asks the microphone permission if it was never asked, as Dictate does (a refusal shows the
+  "can't hear you" popover from the button). When the saved speaker (for Test speaker, and for a voice preview) or the saved microphone (for
+  Test microphone) is not there, the test goes on the system default and says so in the card: one sentence, the start sentence of the notices
+  (`“X” isn't connected. Using the system speaker.` / `… microphone.`), in the card's notice line (`vs-devices-notice`, the look of
+  `voice-notice`; the notice's place is `{ kind: "settings" }`), on the usual timer and gone when Settings closes; the saved choice stays.
 - **When something fails.** One popover (`voice-problem`) hangs from the control that was pressed, with one sentence and
   one action: no key, the key refused or the plan out of credits (open Settings or ElevenLabs), the microphone blocked (open
   the system's settings, where the platform can), ElevenLabs not reached (try again), and a refusal that is none of these
@@ -587,5 +673,16 @@ never used voice opens no socket, asks for no microphone, makes no audio context
   realtime socket, which answers a script of words by the count of audio chunks it has received and checks the format of
   what it gets (16 kHz, 100 ms chunks, `output_format`). A key that starts with `sk_test_` works, any other is refused like a
   rejected key; it can be made to fail the way each problem does. The mock and the test host mount it at `/voice`, and it
-  runs alone for the desktop and the phone tests. It logs every call, never a key. See [Build and
+  runs alone for the desktop and the phone tests. It logs every call, never a key, and for each speech-to-text session the frequency of the audio it received (`toneHz`, and `toneHzLast` for the latest chunk), so a check can tell which microphone was heard. See [Build and
   develop](development.md#voice-without-elevenlabs).
+- **Stand-in devices.** No test needs a real headset. Four stand-ins stand for the devices: the engine's tests run over
+  `FakeDevices` in `app/test/fixtures/voice/fakeports.ts` (devices that can be plugged and unplugged, with the route events they cause, and
+  a record of what was opened, used, held and resumed), the adapter's tests over the fake native module (`app/modules/aiwb-audio/src/fake.ts`:
+  `plug`, `unplug`, `route`), and the browser checks over a stand-in `navigator.mediaDevices` and `AudioContext.setSinkId`
+  (`web/dev/checks/devices.mjs`, `installDevices` before the page loads: devices that list blank until the permission, open with an exact id as
+  an oscillator at the device's own frequency, end their tracks when unplugged and record each context's sink; `window.__aiwbDevices` plugs, unplugs and
+  reads it), with the stand-in voice service's `toneHz` proving which microphone the audio came from (`VC.8-devices.mjs` runs the
+  chosen, missing, lost and paused cases at the three viewports). The desktop e2e (`cd desktop && npm run e2e`) runs the window on
+  Chromium's own fake devices for the pick, its use and its life over a restart, and adds `devices.mjs` for the unplugging. Only
+  the lists, the choice kept over a restart and the choice applied run on the iOS simulator (`app/e2e/maestro/voice-devices.yaml`); losses, the pause and Bluetooth are proved
+  over the fakes and left to the person with a headset on a real iPhone, iPad and Android phone.

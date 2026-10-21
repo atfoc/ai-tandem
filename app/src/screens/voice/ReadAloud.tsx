@@ -19,7 +19,9 @@ export const readAnchor = (chat: string, branch: string, index: number): string 
 export function useReadAloud(chat: ChatView, branch: string, index: number, item: Item): ReadAloudAction | null {
   const anchor = useRef<View>(null);
   const id = readAnchor(chat.id, branch, index);
-  const reading = useReading().key === id;
+  const state = useReading();
+  const reading = state.key === id;
+  const paused = reading && state.paused;
   const text = item.kind === "user" || item.kind === "text" ? item.text ?? "" : "";
   const writing = item.kind === "text" && !item.done && chat.status === "writing";
   if (!text.trim() || writing) return null;
@@ -27,7 +29,7 @@ export function useReadAloud(chat: ChatView, branch: string, index: number, item
     if (reading) voice.stopReading();
     else void voice.readAloud({ chat: chat.id, branch, index, text, anchor: id });
   };
-  return { reading, title: reading ? READ_STOP : READ_ALOUD, run, anchor };
+  return { reading, title: reading ? READ_STOP : READ_ALOUD, run, anchor, paused, resume: voice.resume };
 }
 
 /** The popover of a failed Read aloud (no key, a refusal, no network), hung from the message's control `target`. */

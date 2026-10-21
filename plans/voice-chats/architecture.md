@@ -540,6 +540,12 @@ chat, and sends what it hears to ElevenLabs with your own key." `android.permiss
 not wanted); the tests of S12 and K4 stay, and a new test asserts the voice texts and permissions. No `UIBackgroundModes`:
 no listening in the background (goal §5).
 
+2026-10-21: partly superseded. A lost device no longer ends the session: `onInterrupted("route")` is no longer sent for it (the
+reasons stay `"call"` and `"other"`), and the module reports it as `onRoute` (`input-lost`, `input-failed`, `output-lost`). The
+route-change handling in the iOS and Android parts above (a route-change notification ending the session) is replaced by `plans/voice-devices/architecture.md` VD-9 (the microphone is reopened on the system default),
+VD-10 (the speaker's queue moves, and is held when private sound would become public) and VD-12 (the pause). The contract above
+also gained the device functions and `startMic`'s input id (VD-18).
+
 **VC-9. Echo cancellation and voice barge-in (goal 7.3).** `AudioPort.voiceBargeIn` is true on iOS and on an Android device
 whose `startMic` answered `echoCancel: true`; false on the desktop and the web build. Tap barge-in ships everywhere.
 
@@ -570,6 +576,12 @@ of the reply was transcribed as the person's words. The mic sends nothing until 
   `currentTime` passes it; `stop()` stops every source and resets the cursor; level from an `AnalyserNode`. The context is made
   at the first `write` (after a tap: autoplay allows it).
 - Clips: `decodeAudioData(bytes)` → a buffer source on the same context.
+
+2026-10-21: partly superseded. The track's `ended` event is no longer "the system took the audio" and no longer ends the session
+by itself: it is the loss of the microphone in use, and the port reopens capture on the system default (VD-9), ending the session
+only when that fails (`input-failed`). `onInterrupted` is still sent for the context's `"interrupted"` state (a call, as above).
+A loss of the output is handled from `devicechange` (VD-10, VD-11, VD-12). See `plans/voice-devices/architecture.md`
+VD-9 and VD-10; the web port also gained the device choice (`deviceId`, `setSinkId`).
 
 ### 6.1 The one player queue (goal 3.5)
 

@@ -1,4 +1,4 @@
-// Settings > Voice (VC-13, goal 3.7): a rounded page with the key, the voice, how a spoken turn is sent, and the advanced options. A centred
+// Settings > Voice (VC-13, goal 3.7): a rounded page with the key, the voice, the microphone and speaker, how a spoken turn is sent, and the advanced options. A centred
 // dialog on the wide layouts and a bottom sheet on the phone (`Overlay` decides). It is mounted always (the shell's `Overlays` slot) and shows
 // itself from the voice store's `settingsOpen`, which the foot's gear button and the problem popover's "Open Settings" set. Everything it
 // changes is a voice setting (one stored value, read by the speech bar and the pill too) or the key (which only the keystore holds): the key
@@ -28,6 +28,7 @@ import { webStyle } from "../../ui/webstyle.ts";
 import { confirm } from "../shell/confirm.ts";
 import { SECRET_INPUT } from "../servers/parts.tsx";
 import { Choice, Disclosure, Picker, Row, Section, SwitchRow, type Option } from "./SettingsParts.tsx";
+import { DevicesSection } from "./DevicesSection.tsx";
 import { VoiceChoice } from "./VoiceChoice.tsx";
 
 export const SETTINGS_DIALOG_ID = "settings-dialog";
@@ -63,6 +64,7 @@ function SettingsPage() {
       </View>
       <KeySection hasKey={hasKey} onChanged={changed} />
       <Section title={VOICES_TITLE} testID="vs-voices-section"><VoiceChoice hasKey={hasKey} stamp={stamp} /></Section>
+      <DevicesSection hasKey={hasKey} />
       <AutoSendSection />
       <AdvancedSection />
       <DialogActions>

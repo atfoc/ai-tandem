@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { DEFAULTS, PAUSE_MAX_MS, PAUSE_MIN_MS, SPEEDS, clampSettings, parseSettings, stringifySettings } from "../src/voice/logic/settings.ts";
+import { DEFAULTS, PAUSE_MAX_MS, PAUSE_MIN_MS, SPEEDS, clampSettings, parseSettings, sameSettings, stringifySettings } from "../src/voice/logic/settings.ts";
 import type { VoiceSettings } from "../src/voice/logic/settings.ts";
 import type { VoiceSettings as ShownSettings } from "../src/voice/index.ts";
 
@@ -14,7 +14,7 @@ describe("defaults", () => {
   it("are the ones of the goal: Auto-send, Flash, Scribe, auto language, 1.2 s, 1.0x, skip code", () => {
     assert.deepEqual(DEFAULTS, {
       autoSend: true, voiceId: null, voiceName: "", ttsModel: "eleven_flash_v2_5", sttModel: "scribe_v2_realtime", language: null,
-      pauseMs: 1200, speed: 1, skipCode: true,
+      pauseMs: 1200, speed: 1, skipCode: true, mic: null, speaker: null,
     });
     assert.deepEqual(same(DEFAULTS), back(DEFAULTS));
   });
@@ -36,7 +36,7 @@ describe("parseSettings", () => {
   it("reads a stored value back", () => {
     const s: VoiceSettings = {
       autoSend: false, voiceId: "Abc123", voiceName: "Alice", ttsModel: "eleven_multilingual_v2", sttModel: "scribe_v2_realtime",
-      language: "sr", pauseMs: 2000, speed: 1.1, skipCode: false,
+      language: "sr", pauseMs: 2000, speed: 1.1, skipCode: false, mic: null, speaker: null,
     };
     assert.deepEqual(parseSettings(JSON.stringify(s)), s);
     assert.deepEqual(parseSettings(stringifySettings(s)), s);
@@ -90,5 +90,48 @@ describe("clampSettings", () => {
     assert.deepEqual(clampSettings({}), DEFAULTS);
     assert.deepEqual(clampSettings(null), DEFAULTS);
     assert.deepEqual(clampSettings(undefined), DEFAULTS);
+  });
+});
+
+describe("the saved microphone and speaker (voice-devices VD-3)", () => {
+  it("are System default (null) when nothing is stored, and a stored value without the fields reads as null: no migration", () => {
+    assert.equal(DEFAULTS.mic, null);
+    assert.equal(DEFAULTS.speaker, null);
+    const old = parseSettings(JSON.stringify({ autoSend: false, speed: 1.1 }));
+    assert.equal(old.mic, null);
+    assert.equal(old.speaker, null);
+    assert.equal(old.autoSend, false);
+  });
+  it("keep a device as {id, name}, trimmed, and read it back", () => {
+    const s = clampSettings({ mic: { id: " a1 ", name: "  Desk Mic " }, speaker: { id: "o:2", name: "" } });
+    assert.deepEqual(s.mic, { id: "a1", name: "Desk Mic" });
+    assert.deepEqual(s.speaker, { id: "o:2", name: "" });
+    assert.deepEqual(parseSettings(stringifySettings(s)), s);
+  });
+  it("drop what is not {id: 1..512, name: 0..200 characters}: that field is null and nothing else changes", () => {
+    for (const bad of [
+      "x", 3, [], {}, { id: "a" }, { name: "n" }, { id: "", name: "n" }, { id: "   ", name: "n" }, { id: 4, name: "n" }, { id: "a", name: 4 },
+      { id: "x".repeat(513), name: "n" }, { id: "a", name: "n".repeat(201) },
+    ]) {
+      const s = clampSettings({ autoSend: false, mic: bad, speaker: bad });
+      assert.equal(s.mic, null, JSON.stringify(bad));
+      assert.equal(s.speaker, null, JSON.stringify(bad));
+      assert.equal(s.autoSend, false);
+    }
+    assert.deepEqual(clampSettings({ mic: { id: "x".repeat(512), name: "n".repeat(200) } }).mic, { id: "x".repeat(512), name: "n".repeat(200) });
+  });
+  it("hold nothing but the id and the name of a device", () => {
+    const s = clampSettings({ mic: { id: "a", name: "n", privacy: "private", builtIn: true } });
+    assert.deepEqual(s.mic, { id: "a", name: "n" });
+  });
+  it("sameSettings compares a device by its id and name, not by identity", () => {
+    const a = clampSettings({ mic: { id: "a", name: "n" } });
+    const b = clampSettings({ mic: { id: "a", name: "n" } });
+    assert.notEqual(a.mic, b.mic);
+    assert.equal(sameSettings(a, b), true);
+    assert.equal(sameSettings(a, { ...b, mic: { id: "a", name: "other" } }), false);
+    assert.equal(sameSettings(a, { ...b, mic: null }), false);
+    assert.equal(sameSettings(DEFAULTS, { ...DEFAULTS }), true);
+    assert.equal(sameSettings(a, { ...b, speed: 1.2 }), false);
   });
 });

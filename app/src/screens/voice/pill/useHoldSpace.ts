@@ -7,8 +7,10 @@ import { useCallback, useContext, useEffect, useRef, useState } from "react";
 import { onKey } from "../../../platform/keys";
 import type { KeyLike } from "../../../platform/keys.types.ts";
 import { useStore } from "../../../state/useStore.ts";
+import { useVoiceSession, voice } from "../../../voice/index.ts";
 import type { Phase } from "../../../voice/index.ts";
 import { onSpaceRelease, spaceFocus, type SpaceFocus } from "./holdkeys";
+import { orbStateFor } from "./logic.ts";
 import { NO_HOLD, settle, spaceDown, spaceUp, wakeAt, type Hold, type HoldAct, type HoldStep } from "./hold.ts";
 
 /** Whether the board's screen is the one in front: on the phone the stack keeps it mounted beneath a chat. */
@@ -25,9 +27,13 @@ function useScreenIsFront(board: string): boolean {
   return front && shown;
 }
 
-/** `act` is what the orb, the ↑ badge and Cancel do. Answers whether Space is held now (for the pill's data and its look). */
-export function useHoldSpace(board: string, session: { phase: Phase; words: boolean }, act: Record<HoldAct, () => void>): boolean {
+/** `act` is what the orb, the ↑ badge and Cancel do; the paused orb's tap (`voice.resume`) the hook does itself, from the same pause the orb shows
+ *  (`orbStateFor`). Answers whether Space is held now (for the pill's data and its look). */
+export function useHoldSpace(board: string, heard: { phase: Phase; words: boolean }, given: Record<Exclude<HoldAct, "resume">, () => void>): boolean {
   const usable = useScreenIsFront(board);
+  const pausedNow = useVoiceSession((s) => s.owner?.kind === "pill" && s.owner.board === board && s.paused !== null);
+  const session = { ...heard, paused: orbStateFor(heard.phase, pausedNow) === "paused" };
+  const act = { ...given, resume: voice.resume };
   const seen = useRef(session);
   seen.current = session;
   const acts = useRef(act);
@@ -52,7 +58,7 @@ export function useHoldSpace(board: string, session: { phase: Phase; words: bool
   // The session moved on (listening began, a pause ran out, words came): a hold that waits for it goes on.
   useEffect(() => {
     if (hold.current.kind !== "off") run(settle(hold.current, session, Date.now()));
-  }, [session.phase, session.words]);
+  }, [session.phase, session.words, session.paused]);
 
   useEffect(() => {
     if (!usable) return;

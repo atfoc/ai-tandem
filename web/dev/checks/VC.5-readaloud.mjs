@@ -4,6 +4,7 @@
 //                    model's alike, and also where no fork action is (an archived chat); a reply still being written has none until it is done
 //   what is said     the TTS texts sent for each message have no markdown mark, no link, no URL, no image and no code (Skip code blocks is on by default),
 //                    and keep the words of the message; with "Skip code blocks" off the code is read; the stand-in saw nothing against the protocol
+//   (voice devices D9: while a reading is paused, `voice-reading-continue` stands beside the `voice-reading` chip; VC.8 drives it, this check does not)
 //   stop             while a message is read, the control says "Stop reading" and a chip (`voice-reading`) stays on the message when the pointer leaves
 //                    it; both stop the reading, and the stand-in's open request is cancelled
 //   one at a time    a Read aloud on another message stops the first at once (the first's open requests are cancelled, none of

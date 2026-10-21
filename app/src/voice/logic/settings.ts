@@ -1,5 +1,6 @@
 // The voice settings (architecture VC-14): the type, the defaults, and the reading and clamping of the stored value. The value is one
 // JSON text in the kv port (`aiwb.voice.settings`); `engine/state.ts` reads and writes it through these functions. The key is not in it.
+import type { SavedDevice } from "../ports.ts";
 import { STT_MODELS, TTS_MODELS } from "./protocol.ts";
 
 export type VoiceSettings = {
@@ -12,6 +13,8 @@ export type VoiceSettings = {
   pauseMs: number;              // default 1200, clamp 600..3000
   speed: number;                // default 1.0, one of 0.8..1.2
   skipCode: boolean;            // default true
+  mic: SavedDevice | null;      // default null = System default (voice-devices VD-3); only the person's pick in Settings changes it
+  speaker: SavedDevice | null;  // default null = System default
 };
 
 export const SETTINGS_KEY = "aiwb.voice.settings";
@@ -26,6 +29,8 @@ export const DEFAULTS: VoiceSettings = {
   pauseMs: 1200,
   speed: 1,
   skipCode: true,
+  mic: null,
+  speaker: null,
 };
 
 export const PAUSE_MIN_MS = 600;
@@ -36,10 +41,27 @@ export const SPEEDS: readonly number[] = [0.8, 0.9, 1, 1.1, 1.2];
 const VOICE_ID = /^[A-Za-z0-9]{1,64}$/;
 const LANGUAGE = /^[a-z]{2,3}$/;
 const NAME_MAX = 200;
+const DEVICE_ID_MAX = 512;
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
 const nearest = (n: number, of: readonly number[]): number => of.reduce((best, x) => (Math.abs(x - n) < Math.abs(best - n) ? x : best));
+
+/** A saved device from anything: `{id: 1..512 characters, name: 0..200}` (both trimmed), else null. */
+function clampDevice(v: unknown): SavedDevice | null {
+  if (!isObject(v) || typeof v.id !== "string" || typeof v.name !== "string") return null;
+  const id = v.id.trim();
+  if (id.length < 1 || id.length > DEVICE_ID_MAX) return null;
+  const name = v.name.trim();
+  if (name.length > NAME_MAX) return null;
+  return { id, name };
+}
+
+/** Whether two settings are equal: the fields by identity, a saved device by its id and name (a clamped value is a new object each time). */
+export function sameSettings(a: VoiceSettings, b: VoiceSettings): boolean {
+  const same = (x: SavedDevice | null, y: SavedDevice | null): boolean => x === y || (x !== null && y !== null && x.id === y.id && x.name === y.name);
+  return (Object.keys(a) as (keyof VoiceSettings)[]).every((k) => (k === "mic" || k === "speaker" ? same(a[k], b[k]) : a[k] === b[k]));
+}
 
 /** A settings value from anything: each field that is not valid is its default, and a number is brought into its range. */
 export function clampSettings(s: Partial<Record<keyof VoiceSettings, unknown>> | null | undefined): VoiceSettings {
@@ -59,6 +81,8 @@ export function clampSettings(s: Partial<Record<keyof VoiceSettings, unknown>> |
     pauseMs: Math.min(PAUSE_MAX_MS, Math.max(PAUSE_MIN_MS, Math.round(pause))),
     speed,
     skipCode: typeof v.skipCode === "boolean" ? v.skipCode : DEFAULTS.skipCode,
+    mic: clampDevice(v.mic),
+    speaker: clampDevice(v.speaker),
   };
 }
 

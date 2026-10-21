@@ -9,8 +9,9 @@
 // Read aloud (voice, VC-24) is one more action of the bar and the menu, last, on a user message and on a reply that is written: the chat view's
 // `useReadAloud` part gives it (or null), so this file does not know voice's engine. Reading needs no server, so it is offered also where no
 // fork action is (a chat shown as it was, an archived one, a read-only one). While the message is read its control says "Stop reading" and a
-// chip (`voice-reading`, under the message's words, at the right) stays on the message, hovered or not, until the reading ends; a failure hangs the problem popover from the message's
-// top right corner (the bar is gone when the pointer leaves it).
+// chip (`voice-reading`, under the message's words, at the right) stays on the message, hovered or not, until the reading ends; while the reading is
+// paused (the headphones went away, voice devices VD-12) a second chip, Continue reading (`voice-reading-continue`), stands beside it; a failure hangs the
+// problem popover from the message's top right corner (the bar is gone when the pointer leaves it).
 //
 // What does nothing now is disabled and says why (logic/waits.ts heldReason): the two that branch while a message that starts a new branch is on its
 // way, the two that fork while a fork of the chat is being made, Branch and edit while the chat's composer uploads an image. Label is never held. A
@@ -37,6 +38,7 @@ import { useTokens } from "../../ui/theme.tsx";
 import { tid } from "../../ui/tid.ts";
 import { usePointer } from "../../ui/usePointer";
 import { webStyle } from "../../ui/webstyle.ts";
+import { READ_CONTINUE } from "../../voice/words.ts";
 import { useChatParts, useOffWhy } from "../chat/index.ts";
 import { ReadAloudProblem } from "../voice/index.ts";
 import { LabelInput } from "./LabelInput.tsx";
@@ -125,11 +127,19 @@ export function MessageExtras({ chat, index, item, hovered }: { chat: ChatView; 
       )}
       {read && pointer !== "touch" && <View ref={read.anchor} pointerEvents="none" collapsable={false} style={styles.corner} />}
       {read?.reading && !typing && (
-        <Pressable {...tid("voice-reading")} role="button" accessibilityLabel={readTitle} onPress={read.run}
-          style={[styles.reading, { backgroundColor: t.bg, borderColor: t.accent }]}>
-          <StopIcon size={10} color={t.accent} />
-          <Text size={11} tone="accent">{readTitle}</Text>
-        </Pressable>
+        <View style={styles.readings}>
+          {read.paused && (
+            <Pressable {...tid("voice-reading-continue")} role="button" accessibilityLabel={READ_CONTINUE} onPress={read.resume}
+              style={[styles.reading, { backgroundColor: t.accent, borderColor: t.accent }]}>
+              <Text size={11} tone="onAccent">{READ_CONTINUE}</Text>
+            </Pressable>
+          )}
+          <Pressable {...tid("voice-reading", { paused: read.paused || undefined })} role="button" accessibilityLabel={readTitle} onPress={read.run}
+            style={[styles.reading, { backgroundColor: t.bg, borderColor: t.accent }]}>
+            <StopIcon size={10} color={t.accent} />
+            <Text size={11} tone="accent">{readTitle}</Text>
+          </Pressable>
+        </View>
       )}
       {actions && !typing && pointer === "mouse" && hovered && (
         <View {...tid("fk-acts")} ref={fitBar} style={[styles.acts, { backgroundColor: t.bg, borderColor: t.line, boxShadow: t.shadowSm } as ViewStyle]}>
@@ -178,7 +188,8 @@ const styles = StyleSheet.create({
   acts: { position: "absolute", top: 2, right: 2, zIndex: 2, flexDirection: "row", gap: 1, padding: 2, borderWidth: 1, borderRadius: 7, ...(webStyle({ width: "max-content" }) as object) },
   more: { position: "absolute", top: -9, right: 2, zIndex: 2 },
   corner: { position: "absolute", top: 2, right: 2, width: 1, height: 26 },
-  reading: { alignSelf: "flex-end", marginTop: 4, flexDirection: "row", alignItems: "center", gap: 5, paddingVertical: 2, paddingHorizontal: 8, borderWidth: 1, borderRadius: 10 },
+  readings: { alignSelf: "flex-end", marginTop: 4, flexDirection: "row", alignItems: "center", gap: 6 },
+  reading: { flexDirection: "row", alignItems: "center", gap: 5, paddingVertical: 2, paddingHorizontal: 8, borderWidth: 1, borderRadius: 10 },
   marker: { flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 4, marginTop: 4, ...(webStyle({ userSelect: "none" }) as object) },
   line: { flex: 1, height: 1 },
   chip: { flexDirection: "row", alignItems: "center", gap: 5, paddingVertical: 1, paddingHorizontal: 8, borderWidth: 1, borderRadius: 10 },

@@ -13,7 +13,7 @@ import { audioFrame, CHUNK_MS, parseSttEvent, STT_PATH, sttQuery, testKeyQuery, 
 import { problemOfException, problemOfSttError } from "../logic/problems.ts";
 import type { VoiceSettings } from "../logic/settings.ts";
 import { VoiceProblemError, voicePorts } from "../ports.ts";
-import type { MicHandle, VoiceProblemKind, VoiceSocket } from "../ports.ts";
+import type { MicHandle, Opened, VoiceProblemKind, VoiceSocket } from "../ports.ts";
 import { requestJson } from "./speaker.ts";
 import { flags, waits } from "./state.ts";
 
@@ -27,6 +27,8 @@ export type ListenerEvents = {
 };
 
 export interface Listener {
+  /** What the microphone port opened (VD-8): `missed` when the saved microphone was not there and the system default listens. */
+  readonly opened: Opened;
   /** The person's Mute: no chunk goes up, the socket stays. */
   mute(on: boolean): void;
   /** The session's gate: closed while nothing the person says may count (a turn on its way, its reply, a message read aloud).
@@ -62,7 +64,7 @@ type Sock = { s: VoiceSocket; open: boolean; done: boolean; timer?: ReturnType<t
  *  once and the answer is null. Throws a `VoiceProblemError` when the microphone or the socket cannot start (the microphone is then
  *  stopped). */
 export async function startListener(o: {
-  settings: Pick<VoiceSettings, "sttModel" | "language">;
+  settings: Pick<VoiceSettings, "sttModel" | "language" | "mic">;
   echoCancel: boolean;
   on: ListenerEvents;
   signal: AbortSignal;
@@ -80,6 +82,7 @@ export async function startListener(o: {
   let queue: string[] = [];
   let reopens = 0;
   let mic: MicHandle | null = null;
+  let micOpened: Opened = { device: null, missed: false };
   let failed = false;
   /** The opening in progress: resolves when the socket opens, rejects with the problem when it cannot. */
   let opening: { resolve(): void; reject(e: VoiceProblemError): void } | null = null;
@@ -190,6 +193,7 @@ export async function startListener(o: {
   }
 
   const listener: Listener = {
+    get opened(): Opened { return micOpened; },
     mute(on) {
       if (stopped) return;
       muted = on;
@@ -212,7 +216,7 @@ export async function startListener(o: {
   // The microphone first (the system's question is asked here), then the socket.
   let handle: MicHandle;
   try {
-    handle = await ports.audio.startMic({ chunkMs: CHUNK_MS, echoCancel: o.echoCancel, onChunk });
+    handle = await ports.audio.startMic({ chunkMs: CHUNK_MS, echoCancel: o.echoCancel, device: o.settings.mic, onChunk });
   } catch (e) {
     stopped = true;
     if (o.signal.aborted) return null;
@@ -221,6 +225,7 @@ export async function startListener(o: {
     throw e instanceof VoiceProblemError ? e : new VoiceProblemError("mic_blocked");
   }
   mic = handle;
+  micOpened = handle.opened;
   if (o.signal.aborted) { stop(); return null; }
   o.signal.addEventListener("abort", stop, { once: true });
 

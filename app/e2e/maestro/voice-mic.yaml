@@ -71,13 +71,28 @@ appId: ${APP_ID}
       ROUTE: /script
       BODY: '[{"after":8,"partial":"hello"},{"after":16,"committed":"hello there"}]'
 - runFlow: _voice-dictate.yaml
-- extendedWaitUntil:
-    visible: ".*Would Like to Access the Microphone.*"
-    timeout: 30000
-- assertVisible: ".*listens only while you dictate or talk to a chat.*"
-- takeScreenshot: p17-02-prompt
-- tapOn:
-    text: "OK|Allow"
+- runFlow:
+    when:
+      platform: iOS
+    commands:
+      - extendedWaitUntil:
+          visible: ".*Would Like to Access the Microphone.*"
+          timeout: 30000
+      - assertVisible: ".*listens only while you dictate or talk to a chat.*"
+      - takeScreenshot: p17-02-prompt
+      - tapOn:
+          text: "OK|Allow"
+# (Android's runtime permission dialog is the system's: it has no app words, its allow button is "While using the app")
+- runFlow:
+    when:
+      platform: Android
+    commands:
+      - extendedWaitUntil:
+          visible: "Allow .* to record audio\\?"
+          timeout: 30000
+      - takeScreenshot: p17-02-prompt
+      - tapOn:
+          text: "While using the app"
 - runFlow: _voice-close-sheet.yaml
 - extendedWaitUntil:
     visible: "hello there"
@@ -99,14 +114,31 @@ appId: ${APP_ID}
 # (the "⋯" of the answer, the second message: a tap on the element by its id does not open the menu on the device, a tap on its place does, the place being the iPhone 17's;
 # a first tap just after the chat has opened is sometimes lost, so the tap is repeated until the menu shows)
 - waitForAnimationToEnd
-- retry:
-    maxRetries: 4
+- runFlow:
+    when:
+      platform: iOS
     commands:
-      - tapOn:
-          point: "92%,20%"
-      - extendedWaitUntil:
-          visible: "Read aloud"
-          timeout: 5000
+      - retry:
+          maxRetries: 4
+          commands:
+            - tapOn:
+                point: "92%,20%"
+            - extendedWaitUntil:
+                visible: "Read aloud"
+                timeout: 5000
+# (the emulator's layout puts the answer's "⋯" higher: about 15% of the screen's height, 92% across)
+- runFlow:
+    when:
+      platform: Android
+    commands:
+      - retry:
+          maxRetries: 4
+          commands:
+            - tapOn:
+                point: "92%,15%"
+            - extendedWaitUntil:
+                visible: "Read aloud"
+                timeout: 5000
 - tapOn:
     text: "Read aloud"
 - extendedWaitUntil:
@@ -141,6 +173,16 @@ appId: ${APP_ID}
       id: "composer-input"
     timeout: 120000
 - runFlow: _voice-dictate.yaml
+# (Android asks again after a revoke by `pm`: the person says no)
+- runFlow:
+    when:
+      platform: Android
+    commands:
+      - extendedWaitUntil:
+          visible: "Allow .* to record audio\\?"
+          timeout: 30000
+      - tapOn:
+          text: "Don.t allow"
 - extendedWaitUntil:
     visible:
       id: "voice-problem-text"

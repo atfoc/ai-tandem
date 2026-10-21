@@ -5,11 +5,13 @@
 import { voicePorts } from "../ports.ts";
 import { player } from "./player.ts";
 import type { PlayerStats } from "./player.ts";
-import { flags, getSettings, problemStore, readingStore, sessionStore, settingsOpenStore } from "./state.ts";
+import { flags, getSettings, noticeStore, problemStore, readingStore, sessionStore, settingsOpenStore } from "./state.ts";
 
 export type VoiceSeam = {
   state(): { session: ReturnType<typeof sessionStore.get>; problem: ReturnType<typeof problemStore.get>; reading: ReturnType<typeof readingStore.get>; settingsOpen: boolean };
   settings(): ReturnType<typeof getSettings>;
+  /** The notice on show (voice-devices VD-13), with the place that shows it; null when none. (`state()` has `session.paused` and `reading.paused`.) */
+  notice(): ReturnType<typeof noticeStore.get>;
   /** What was written to the player, how many marks, the time of the first write and how many stops. */
   player(): PlayerStats;
   denyMic(on: boolean): void;
@@ -20,6 +22,7 @@ export type VoiceSeam = {
 export const seam: VoiceSeam = {
   state: () => ({ session: sessionStore.get(), problem: problemStore.get(), reading: readingStore.get(), settingsOpen: settingsOpenStore.get() }),
   settings: () => getSettings(),
+  notice: () => noticeStore.get(),
   player: () => player.stats(),
   denyMic(on) { flags.denyMic = on; },
   setKey: (key) => voicePorts().keystore.set(key),

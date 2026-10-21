@@ -7,15 +7,18 @@
 //
 // A second utterance never overlaps the first: `begin` stops it. A problem in any request stops the utterance, shows the popover
 // (`state.ts` `showProblem`) and ends `done` with the problem; what was already played is not taken back.
+import { chimePcm } from "../logic/chime.ts";
+import { noticeText } from "../logic/devices.ts";
 import { createSplitter } from "../logic/sentences.ts";
 import { problemOfException, problemOfStatus } from "../logic/problems.ts";
 import { firstVoiceQuery, parseVoices, ttsBody, ttsPath, ttsQuery, VOICES_PATH } from "../logic/protocol.ts";
 import { VoiceNetError, VoiceProblemError, voicePorts } from "../ports.ts";
-import type { NetRequest } from "../ports.ts";
+import type { NetRequest, Opened } from "../ports.ts";
 import type { VoiceSettings } from "../logic/settings.ts";
 import type { VoiceProblem } from "../index.ts";
+import { announceSpeakerInSettings, applyOutput, enterRoute, outputWanted } from "./devices.ts";
 import { player } from "./player.ts";
-import { dismissProblem, getSettings, onReset, readingStore, showProblem, updateSettings, waits } from "./state.ts";
+import { dismissProblem, getSettings, NOT_READING, onReset, readingStore, sessionStore, showProblem, updateSettings, waits } from "./state.ts";
 
 export type Utterance = {
   key: string;
@@ -28,6 +31,9 @@ export type Utterance = {
   onSentence?(sentence: string): void;
   /** The player's level, 0..1. */
   onLevel?(level: number): void;
+  /** Set: the utterance gives the player the person's speaker before its first request (Read aloud, VD-8), and is told what it got. Unset: the
+   *  output the session chose at its start is kept (the reply of speech mode or the pill). Not called when the person never chose a speaker. */
+  onOutput?(opened: Opened): void;
 };
 
 export interface SpeakHandle {
@@ -71,6 +77,8 @@ type Run = {
   ended: boolean;
   finished: boolean;
   settings: VoiceSettings;
+  /** The output is set (or none needed): the requests may start. */
+  ready: boolean;
   voice: Promise<string> | null;
   texts: Map<number, string>;
   off: () => void;
@@ -218,7 +226,7 @@ function settleIfOver(r: Run): void {
 
 /** Starts the requests that may start: the sentences in order, while fewer than two are fetched and not yet written out. */
 function pump(r: Run): void {
-  if (r.finished) return;
+  if (r.finished || !r.ready) return;
   let active = r.queue.filter((s) => s.started).length;
   for (const s of r.queue) {
     if (active >= MAX_IN_FLIGHT) return;
@@ -269,10 +277,19 @@ function begin(u: Utterance): SpeakHandle {
   let settle!: (r: "played" | "stopped" | VoiceProblem) => void;
   const done = new Promise<"played" | "stopped" | VoiceProblem>((resolve) => { settle = resolve; });
   const r: Run = {
-    u, ctl: new AbortController(), queue: [], ended: false, finished: false, settings: getSettings(), voice: null,
+    u, ctl: new AbortController(), queue: [], ended: false, finished: false, settings: getSettings(), ready: true, voice: null,
     texts: new Map(), off: () => {}, settle,
   };
   run = r;
+  if (u.onOutput && outputWanted(r.settings.speaker)) {
+    r.ready = false;
+    void applyOutput(r.settings.speaker).then((opened) => {
+      if (r.finished) return;
+      u.onOutput?.(opened);
+      r.ready = true;
+      pump(r);
+    });
+  }
   r.off = player.on((e) => {
     if (r.finished) return;
     if (e.kind === "mark") {
@@ -315,8 +332,12 @@ export async function playClipOnce(load: (signal: AbortSignal) => Promise<Uint8A
   stopAll();
   const ctl = new AbortController();
   clip = ctl;
+  const route = enterRoute({ where: null, listens: false, speaks: true, onStop: stopAll }); // a lost private output stops a short clip (VD-12)
   try {
     const bytes = await load(ctl.signal);
+    if (ctl.signal.aborted) return "stopped";
+    const saved = getSettings().speaker;
+    if (outputWanted(saved)) announceSpeakerInSettings(saved, await applyOutput(saved));
     if (ctl.signal.aborted) return "stopped";
     await voicePorts().audio.playClip(bytes, ctl.signal);
     return ctl.signal.aborted ? "stopped" : "played";
@@ -324,8 +345,38 @@ export async function playClipOnce(load: (signal: AbortSignal) => Promise<Uint8A
     if (ctl.signal.aborted) return "stopped";
     throw e;
   } finally {
+    route.leave();
     if (clip === ctl) clip = null;
   }
+}
+
+/** Plays PCM the app made itself through the player, the path of speech (Test speaker, VD-15): stops everything else, resolves "played" when
+ *  the player has drained and "stopped" when something else took the output. No request, no key. */
+async function playPcmOnce(pcm: Uint8Array): Promise<"played" | "stopped"> {
+  stopAll();
+  const ctl = new AbortController();
+  clip = ctl;
+  const route = enterRoute({ where: null, listens: false, speaks: true, onStop: stopAll });
+  try {
+    const saved = getSettings().speaker;
+    if (outputWanted(saved)) announceSpeakerInSettings(saved, await applyOutput(saved));
+    if (ctl.signal.aborted) return "stopped";
+    const drained = new Promise<void>((resolve) => {
+      const off = player.on((e) => { if (e.kind === "drained") { off(); resolve(); } });
+      ctl.signal.addEventListener("abort", () => { off(); resolve(); }, { once: true });
+    });
+    player.write(pcm);
+    await drained;
+    return ctl.signal.aborted ? "stopped" : "played";
+  } finally {
+    route.leave();
+    if (clip === ctl) clip = null;
+  }
+}
+
+/** Test speaker: a short chime on the person's speaker (VD-15). Never rejects, never asks the service for anything. */
+export async function testSpeaker(): Promise<void> {
+  try { await playPcmOnce(chimePcm()); } catch { /* a player that cannot play has nothing to tell here */ }
 }
 
 // ---- Read aloud (goal 3.3, VC-24)
@@ -341,30 +392,54 @@ export async function readAloud(o: { chat: string; branch: string; index: number
   const mine = ++readSeq;
   stopAll();
   const key = readKey(o.chat, o.branch, o.index);
-  readingStore.set({ key });
+  readingStore.set({ key, paused: false });
   const hasKey = await voicePorts().keystore.has().catch(() => false);
   if (mine !== readSeq) return;
   if (!hasKey) {
-    readingStore.set({ key: null });
+    readingStore.set(NOT_READING);
     showProblem({ kind: "no_key", anchor: o.anchor });
     return;
   }
   dismissProblem();
   const retry = () => { void readAloud(o); };
-  const handle = speaker.begin({ key, owner: "read", anchor: o.anchor, retry });
-  const splitter = createSplitter({ skipCode: getSettings().skipCode, onSentence: handle.say });
-  splitter.push(o.text);
-  splitter.flush();
-  handle.end();
-  await handle.done;
-  if (readingStore.get().key === key) readingStore.set({ key: null });
+  // A private output that goes away pauses the reading (VD-12): the line says why, Continue reading goes on. A session that speaks already
+  // chose the output at its start and keeps it.
+  const kept = sessionStore.get().owner !== null && sessionStore.get().owner?.kind !== "dictation";
+  const saved = getSettings();
+  const route = enterRoute({
+    where: { kind: "chat", chat: o.chat }, listens: false, speaks: true,
+    onPause(device) {
+      if (readingStore.get().key === key) readingStore.set({ key, paused: true });
+      route.notice(noticeText("paused", { device }), { sticky: true });
+    },
+    onResume() {
+      if (readingStore.get().key === key) readingStore.set({ key, paused: false });
+      route.clearNotice();
+    },
+  });
+  try {
+    const handle = speaker.begin({
+      key, owner: "read", anchor: o.anchor, retry,
+      onOutput: kept ? undefined : (opened) => {
+        if (opened.missed && saved.speaker) route.notice(noticeText("start-speaker", { speaker: saved.speaker.name }));
+      },
+    });
+    const splitter = createSplitter({ skipCode: saved.skipCode, onSentence: handle.say });
+    splitter.push(o.text);
+    splitter.flush();
+    handle.end();
+    await handle.done;
+  } finally {
+    route.leave();
+  }
+  if (readingStore.get().key === key) readingStore.set(NOT_READING);
 }
 
 /** Stops the message being read, if one is. */
 export function stopReading(): void {
   readSeq++;
   if (readingStore.get().key === null) return;
-  readingStore.set({ key: null });
+  readingStore.set(NOT_READING);
   stopAll();
 }
 

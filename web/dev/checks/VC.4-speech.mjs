@@ -20,6 +20,7 @@
 //   interrupt      a tap on the wave while the model speaks stops the sound, cancels the requests still open and asks for no more; the session listens
 //   Mute, End      Mute sends no audio and keeps the socket; Unmute sends again; End sends none, closes the socket and gives the box and toolbar back
 //   leaving        the session ends when its chat leaves the screen
+//   (voice devices D9 added testIDs this check does not drive: `voice-notice` above the bar, and the pause's `speech-paused` and `speech-continue`; VC.8 does)
 // OUT=/tmp/x keeps a screenshot of the page in each state there, for a person's look.
 import fs from "node:fs";
 import path from "node:path";

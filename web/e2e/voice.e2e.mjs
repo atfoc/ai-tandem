@@ -1,12 +1,14 @@
 // Voice against a real server, and the key's whole life, through the real page (voice-chats goal 4.1, 4.2, 6.1, 6.3, 6.7;
-// plans/voice-chats/architecture.md §14.3).
+// plans/voice-chats/architecture.md §14.3), and the names of the audio devices (voice-devices goal 4.7, 6.1, 6.6;
+// plans/voice-devices/architecture.md §12.3).
 //
 // A spoken turn is an ordinary chat message: the server sees the same calls and the same message it sees for a typed one, and nothing of
 // voice. The key never leaves the device except as the `xi-api-key` header to the voice service. This script runs the app's web build through
 // the test host (web/dev/host.mjs) against a scratch server with the stand-in agent (internal/agenttest/fake-claude), and the voice service
 // is the stand-in of web/dev/voicestandin.mjs that the host mounts at /voice (voice: true). The page's microphone is the checks' (web/dev/
 // checks/mic.mjs: Chromium's fake device, or a synthetic stream where that never answers). It spends no money: no call to ElevenLabs or to a
-// model, no key but the canary below.
+// model, no key but the canary below. The devices are the stand-ins of web/dev/checks/devices.mjs (persist: false, so that no name is kept in
+// the tab's sessionStorage by the stand-in), named CANARY-MIC-<random> and CANARY-OUT-<random>.
 //
 // It never touches the installed app: the script builds its own binary and its own build of the page into a temp folder (the version
 // "uicheck", so that the page has the checks' seam `window.__aiwbVoice`; a build named by DIST has it or not, and what needs it is skipped),
@@ -16,7 +18,8 @@
 //   node web/e2e/voice.e2e.mjs
 //
 // Steps:
-//   1 a page that never used voice: no request to /voice, no getUserMedia call, nothing logged by the voice service; it chats in text
+//   1 a page that never used voice (with the stand-in devices, which count): no request to /voice, no getUserMedia call, no enumerateDevices
+//     call, nothing logged by the voice service; it chats in text
 //   2 Settings > Voice with a canary key (sk_test_CANARY_<random>): Test key finds the stand-in's six voices, Save keeps the key in memory
 //   3 speech mode: the scripted words become a message on the server by the calls a typed message makes (compared with a typed one), the
 //     stored message has the words and no audio, it carries the mic mark in this window, and the model's reply is spoken sentence by sentence
@@ -27,9 +30,15 @@
 //     and log, the host's state and log, what the agent was given, this script's output. The voice service saw it only as the header of
 //     its token, voices and TTS requests, and its socket only with a token
 //   7 the web build keeps the key in memory only: after a reload it is gone (Settings, the no-key popover), and Remove clears it
+//   8 device names: a page with a microphone and a speaker named CANARY-MIC-<random> and CANARY-OUT-<random> lists them in Settings (Test
+//     microphone grants the permission), picks both, Test speaker, then a spoken turn and its spoken reply: the microphone really heard
+//     (the stand-in service hears its tone) and the speaker really played (its sink id); then the search for the two names: not in any request or
+//     answer of the page (the voice service's included), the socket, the console, the voice service's log, the server's folders and log, the
+//     host's state and log, what the agent was given; in the page's storage only as the saved choice (localStorage `aiwb.voice.settings`); the
+//     voice service saw nothing of the choosing, listing and testing
 //
 // It prints one line per check, `ok <n> <what>` or `FAIL <n> <what> — <what was seen>`, saves a screenshot for a failed check, and exits with
-// 1 when a check failed (2 when it could not run). The canary never appears in a line it prints.
+// 1 when a check failed (2 when it could not run). Neither the canary nor a device name appears in a line it prints.
 //
 // Environment (all optional):
 //   AIWB_E2E_BIN       server binary                    (default: built into the temp folder)
@@ -41,6 +50,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { launchChromium, loadPlaywright } from "../dev/shot.mjs";
 import { useMic } from "../dev/checks/mic.mjs";
+import { installDevices } from "../dev/checks/devices.mjs";
 import { pressAct } from "../dev/checks/fork.mjs";
 import { Scratch, buildPage, finish, hostCall, hostFor, makeOut, onSignal, openPage as openHostPage, serverBinary, sleep, standInAgent, waitFor, writesFrom } from "./lib/rig.mjs";
 import * as ui from "./lib/ui.mjs";
@@ -50,7 +60,11 @@ const { q } = ui;
 const OUT = makeOut("voice");
 const CANARY = `sk_test_CANARY_${crypto.randomBytes(6).toString("hex")}`;
 const BAD = `bad-${CANARY}`; // a key the voice service rejects, with the canary in it, to see what a rejection shows
-const scrub = (s) => String(s).split(CANARY).join("<canary>");
+// the stand-in devices of step 8 (and of step 1, which counts the calls): the ids carry no name, the labels are what the person sees
+const MIC = { id: "canary-mic", label: `CANARY-MIC-${crypto.randomBytes(6).toString("hex")}`, hz: 523 };
+const SPK = { id: "canary-out", label: `CANARY-OUT-${crypto.randomBytes(6).toString("hex")}` };
+const NAMES = [MIC.label, SPK.label];
+const scrub = (s) => String(s).split(CANARY).join("<canary>").split(MIC.label).join("<mic-name>").split(SPK.label).join("<out-name>");
 
 // ---- checks: one line each
 
@@ -136,9 +150,11 @@ function record(p, tag) {
 }
 
 /** A page of the host in a context of its own, its calls to getUserMedia counted from before the app runs (window.__gum). */
-async function openPage(tag) {
+async function openPage(tag, { devices = false } = {}) {
   const p = await openHostPage(browser, host, { context: { viewport: { width: 1400, height: 900 }, permissions: ["microphone"] }, wait: q.rootVisible, timeout: 8000 });
   record(p, tag);
+  // (before the counting script below, which wraps the stand-in's getUserMedia; the first load is without them, they are there from the reload)
+  if (devices) await installDevices(p.ctx, { inputs: [MIC], outputs: [SPK], granted: false, persist: false });
   await p.ctx.addInitScript(() => {
     window.__gum = 0;
     const md = navigator.mediaDevices;
@@ -198,8 +214,8 @@ function filesWith(dir, what = needle) {
   return found;
 }
 
-/** What a page holds in its storage, as text: localStorage, sessionStorage, every IndexedDB store, the Cache storage and the cookies. */
-async function storageText(p) {
+/** What a page holds in its storage, by store: localStorage, sessionStorage, every IndexedDB store, the Cache storage and the cookies. */
+async function storageOf(p) {
   const inPage = await p.evaluate(async () => {
     const out = { local: {}, session: {}, idb: [], caches: [] };
     for (const [store, into] of [[localStorage, out.local], [sessionStorage, out.session]]) for (let i = 0; i < store.length; i++) { const k = store.key(i); into[k] = store.getItem(k); }
@@ -216,18 +232,21 @@ async function storageText(p) {
     try { out.caches = await caches.keys(); } catch { /* none */ }
     return out;
   });
-  return JSON.stringify({ ...inPage, cookies: await p.ctx.cookies() });
+  return { ...inPage, cookies: await p.ctx.cookies() };
 }
+/** The same as one text. */
+const storageText = async (p) => JSON.stringify(await storageOf(p));
 
 /** What the page shows now: its text, its markup and the value of every box. */
 const shownText = (p) => p.evaluate(() => [document.body.innerText, document.documentElement.outerHTML, ...[...document.querySelectorAll("input, textarea")].map((e) => e.value + " " + (e.getAttribute("placeholder") ?? ""))].join("\n"));
 
-/** Where the canary is in a page's record: the places it must not be. A request to the voice service carries it in its `xi-api-key` header only. */
-function leaksOf(rec) {
+/** Where `what` (the canary key, or a device name) is in a page's record: the places it must not be. A request to the voice service carries the key
+ *  in its `xi-api-key` header only; a device name is allowed nowhere. */
+function leaksOf(rec, what = CANARY) {
   const at = [];
-  const has = (s) => String(s).includes(CANARY);
+  const has = (s) => String(s).includes(what);
   for (const r of rec.requests) {
-    const voice = new URL(r.url).pathname.startsWith("/voice/");
+    const voice = what === CANARY && new URL(r.url).pathname.startsWith("/voice/");
     const headers = Object.entries(r.headers).filter(([k, v]) => has(v) && !(voice && k.toLowerCase() === "xi-api-key")).map(([k]) => k);
     if (has(r.url)) at.push(`${rec.tag}: the address of ${r.method} ${new URL(r.url).pathname}`);
     if (has(r.post)) at.push(`${rec.tag}: the body of ${r.method} ${new URL(r.url).pathname}`);
@@ -243,7 +262,7 @@ function leaksOf(rec) {
 
 async function step1() {
   voiceReset();
-  const p = await openPage("never");
+  const p = await openPage("never", { devices: true });
   page = p;
   await newChat(p);
   await ui.send(p, "no voice here");
@@ -253,6 +272,9 @@ async function step1() {
   const toVoice = p.rec.requests.filter((r) => new URL(r.url).pathname.startsWith("/voice"));
   const gum = await p.evaluate(() => window.__gum);
   await check("1 it made no request to /voice and no getUserMedia call", toVoice.length === 0 && gum === 0, `requests to /voice: ${toVoice.map((r) => r.url).join(", ") || "none"}; getUserMedia calls: ${gum}`);
+  // (the stand-in devices count what the page asked of them, from the reload on; a page that lists devices at its start would show here)
+  const asked = await p.evaluate(() => window.__aiwbDevices?.calls() ?? null);
+  await check("1 it made no enumerateDevices, getUserMedia or setSinkId call", !!asked && asked.enumerateDevices === 0 && asked.getUserMedia === 0 && asked.setSinkId === 0, asked ? JSON.stringify(asked) : "the page has no device stand-in");
   await check("1 the voice service saw nothing", voiceLog().length === 0, `its log has ${voiceLog().length} entries`);
   await check("1 no socket was opened and no key was asked for", p.rec.sockets.length === 0 && keysSeen.length === 0, `sockets ${p.rec.sockets.length}, keys shown ${keysSeen.length}`);
   page = null;
@@ -264,6 +286,7 @@ const voiceReset = () => control().reset();
 
 const SAID = "Please tell me three things. First the plan. Second the boxes. Third the arrows.";
 let main = null;
+let devs = null;
 let chatId = "";
 let spokenWrites = [];
 
@@ -431,10 +454,11 @@ async function search(when) {
   await sleep(500);
   const found = [];
   for (const rec of recs) found.push(...leaksOf(rec));
-  if (main && !main.isClosed()) {
-    const stored = await storageText(main);
-    if (stored.includes(CANARY)) found.push("the page's storage (localStorage, sessionStorage, IndexedDB, caches or cookies)");
-    if ((await shownText(main)).includes(CANARY)) found.push("the page's text, markup or boxes");
+  for (const pg of [main, devs]) {
+    if (!pg || pg.isClosed()) continue;
+    const stored = await storageText(pg);
+    if (stored.includes(CANARY)) found.push(`the page's storage (localStorage, sessionStorage, IndexedDB, caches or cookies) of ${pg.rec.tag}`);
+    if ((await shownText(pg)).includes(CANARY)) found.push(`the text, markup or boxes of ${pg.rec.tag}`);
   }
   for (const f of filesWith(A.home)) found.push(`the server's data folder: ${path.relative(OUT, f)}`);
   for (const f of filesWith(A.work)) found.push(`the server's work folder: ${path.relative(OUT, f)}`);
@@ -465,6 +489,27 @@ async function searchWorks() {
   const allowed = leaksOf({ ...rec, requests: [rec.requests[2]], answers: [], sockets: [], console: [] });
   await check("6 the search itself finds a canary in storage, a file, a body, a header, an address, an answer, a socket and the console, and lets the voice header pass",
     inStorage && inFile && at.length === 6 && allowed.length === 0, `storage ${inStorage}, file ${inFile}, found ${at.length} of 6 in the record, ${allowed.length} in the allowed header`);
+}
+
+/** The same probe for a device name: found in the same six places, and now in the voice service's header as well (the name is allowed nowhere). */
+async function searchWorksForNames() {
+  const probes = [];
+  for (const name of NAMES) {
+    const rec = { tag: "probe", requests: [
+      { url: "http://x/host/call", method: "POST", headers: {}, post: `{"a":"${name}"}` },
+      { url: "http://x/host/call", method: "POST", headers: { "x-other": name }, post: "" },
+      { url: "http://x/voice/v2/voices", method: "GET", headers: { "xi-api-key": name }, post: "" },
+      { url: `http://x/voice/v2/voices?k=${name}`, method: "GET", headers: {}, post: "" },
+    ], answers: [{ url: "http://x/host/call", status: 400, body: name }], sockets: [{ url: "ws://x/voice/s", sent: [name], received: [] }], console: [`error: ${name}`] };
+    const dir = path.join(OUT, "probe");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "x.log"), `a line with ${name} in it\n`);
+    const inFile = filesWith(dir, Buffer.from(name)).length === 1;
+    fs.rmSync(dir, { recursive: true, force: true });
+    probes.push({ found: leaksOf(rec, name).length, inFile });
+  }
+  await check("6 the search finds a device name in a file, a body, a header (the voice service's too), an address, an answer, a socket and the console",
+    probes.every((x) => x.found === 7 && x.inFile), probes.map((x) => `found ${x.found} of 7 in the record, file ${x.inFile}`).join("; "));
 }
 
 async function audioSearch() {
@@ -532,6 +577,118 @@ async function step7() {
   await search("after Remove");
 }
 
+// ---- step 8: device names
+
+const tid = (p, id) => p.locator(`[data-testid="${id}"]`);
+const devCall = (p, fn) => p.evaluate((f) => window.__aiwbDevices[f](), fn);
+
+/** Opens a picker of the devices card and presses the item named `label` (exactly: "System default (<label>)" is another item) once the list holds it
+ *  (the list fills after the permission); true when it was pressed, else what was seen. */
+async function pickDevice(p, picker, label) {
+  const named = new RegExp(`^[\\s✓]*${label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*$`);
+  const done = await waitFor(`${picker} offers the device`, async () => {
+    await ui.click(p, tid(p, picker));
+    const item = p.locator(q.menuItem).filter({ hasText: named }).first();
+    if (await item.isVisible().catch(() => false)) { await ui.click(p, item); await gone(p.locator(q.menu)); return true; }
+    await p.keyboard.press("Escape");
+    await gone(p.locator(q.menu));
+    return false;
+  }, { timeout: 20000, every: 300 }).then(() => true, (e) => e.message);
+  return done;
+}
+
+async function step8() {
+  voiceReset();
+  const p = devs = await openPage("devices", { devices: true });
+  page = p;
+  chatId = await newChat(p);
+
+  // Settings > Voice: the key, then the card. Before the permission the page lists no name at all.
+  await ui.openVoiceSettings(p);
+  await p.locator(q.voiceKey).fill(CANARY);
+  await ui.click(p, p.locator(q.voiceKeySave));
+  await waitFor("the key is saved", async () => (await p.locator(q.voiceKeyRemove).count()) > 0, { timeout: 10000 });
+  voiceReset(); // (Save asks the voice service for its voices: that is the key's, not a device's)
+  const blind = (await shownText(p));
+  const gumBefore = (await devCall(p, "calls")).getUserMedia;
+  await check("8 before the microphone is allowed the card lists no device name and asked for no microphone", NAMES.every((x) => !blind.includes(x)) && gumBefore === 0, `getUserMedia calls: ${gumBefore}`);
+
+  // Test microphone is the tap that asks; then both devices are listed, chosen, and the microphone is tested and the speaker too
+  await ui.click(p, tid(p, "vs-mic-test"));
+  const meter = await shownIn(tid(p, "vs-mic-level"));
+  const micPicked = await pickDevice(p, "vs-mic", MIC.label);
+  const spkPicked = await pickDevice(p, "vs-speaker", SPK.label);
+  await check("8 Test microphone lists the stand-in devices, and both can be chosen", meter === true && micPicked === true && spkPicked === true, `meter ${meter}; microphone ${micPicked}; speaker ${spkPicked}`);
+  const shownMic = await textOf(tid(p, "vs-mic")), shownSpk = await textOf(tid(p, "vs-speaker"));
+  await check("8 the pickers show the chosen devices", shownMic.includes(MIC.label) && shownSpk.includes(SPK.label), `microphone "${shownMic}", speaker "${shownSpk}"`);
+  if (seam) {
+    const saved = await p.evaluate(() => window.__aiwbVoice.settings());
+    await check("8 the saved choice is the two devices", saved.mic?.id === MIC.id && saved.mic?.name === MIC.label && saved.speaker?.id === SPK.id && saved.speaker?.name === SPK.label, JSON.stringify({ mic: saved.mic?.id, speaker: saved.speaker?.id }));
+  } else skipped("8 the saved choice is the two devices", "the page has no seam (a build that is not the checks')");
+  const testing = await waitFor("the test microphone is opened", async () => (await devCall(p, "opened")).some((o) => o.deviceId === MIC.id && o.live), { timeout: 15000 }).then(() => true, (e) => e.message);
+  await check("8 the microphone test goes on with the chosen microphone", testing === true, testing === true ? "" : testing);
+  await ui.click(p, tid(p, "vs-mic-test")); // stops
+  await ui.click(p, tid(p, "vs-speaker-test"));
+  await waitFor("the speaker test plays on the chosen sink", async () => (await devCall(p, "sinks")).some((x) => x.sinkId === SPK.id), { timeout: 15000 }).catch(() => {});
+  await waitFor("the speaker test ends", async () => (await tid(p, "vs-speaker-test").getAttribute("data-playing")) === "false", { timeout: 20000 }).catch(() => {});
+  const sinks1 = await devCall(p, "sinks");
+  await check("8 Test speaker played on the chosen output", sinks1.some((x) => x.sinkId === SPK.id), JSON.stringify(sinks1.map((x) => ({ sinkId: x.sinkId ? "<set>" : "", default: x.default }))));
+  const idle = voiceLog();
+  await check("8 choosing, listing and testing the devices made no request of the voice service", idle.length === 0, `${idle.length} entries: ${idle.map((e) => `${e.kind} ${e.path}`).join(", ")}`);
+  await ui.closeVoiceSettings(p);
+
+  // a spoken turn with the chosen devices, and its reply spoken
+  voiceReset();
+  control().script([{ after: 3, partial: "please tell" }, { after: 6, committed: SAID }]);
+  await ui.box(p).waitFor();
+  await ui.pressVoiceControl(p, q.voiceSpeech, q.moreSpeech);
+  const stored = await waitFor("the spoken message is stored", async () => (await itemsOf(chatId)).find((i) => (i.text ?? "") === SAID), { timeout: 40000 }).then((x) => x, (e) => e.message);
+  await check("8 a spoken turn with the chosen devices becomes a message", typeof stored === "object", typeof stored === "object" ? "" : String(stored));
+  const spoken = await waitFor("the reply is spoken", async () => { const t = voiceLog().filter((e) => e.kind === "tts"); return t.length >= 1 && t.every((e) => e.finishedAt || e.cancelled) ? t : null; }, { timeout: 60000 }).then((x) => x, (e) => e.message);
+  await check("8 the reply is spoken", Array.isArray(spoken), Array.isArray(spoken) ? `${spoken.length} requests` : String(spoken));
+  const heard = voiceLog().filter((e) => e.kind === "stt");
+  const hz = heard[0]?.toneHz ?? null;
+  await check("8 the voice service heard the chosen microphone (its tone)", heard.length === 1 && hz !== null && Math.abs(hz - MIC.hz) <= MIC.hz * 0.05, `tone ${hz} Hz, expected about ${MIC.hz}; sockets ${heard.length}`);
+  const opened = await devCall(p, "opened");
+  await check("8 the microphone opened for the turn is the chosen one", opened.some((o) => o.deviceId === MIC.id && o.requested === MIC.id), JSON.stringify(opened.map((o) => ({ requested: o.requested, deviceId: o.deviceId, live: o.live }))));
+  const sinks2 = await devCall(p, "sinks");
+  await check("8 the reply played on the chosen output, and on no other sink", sinks2.length > 0 && sinks2.filter((x) => x.sinkId !== "").every((x) => x.sinkId === SPK.id) && sinks2.some((x) => x.sinkId === SPK.id && x.calls.includes(SPK.id)), JSON.stringify(sinks2.map((x) => ({ state: x.state, set: x.sinkId === SPK.id, default: x.default }))));
+  await waitFor("speech mode listens again after the reply", async () => !seam || (await phase(p)) === "listening", { timeout: 40000 }).catch(() => {});
+  await ui.click(p, p.locator(q.speechEnd));
+  await gone(p.locator(q.speechBar), 10000);
+
+  // the search for the two names
+  await searchWorksForNames();
+  await searchNames();
+  await search("after the device run");
+  page = null;
+}
+
+/** The search for the device names: they are in none of the places they must not be. The page shows them (it is the person's own choice) and keeps
+ *  the saved choice in localStorage; nowhere else in its storage. */
+async function searchNames() {
+  await sleep(500);
+  for (const [what, name] of [["microphone", MIC.label], ["speaker", SPK.label]]) {
+    const needleOf = Buffer.from(name);
+    const found = [];
+    for (const rec of recs) found.push(...leaksOf(rec, name));
+    if (voiceLog().some((e) => JSON.stringify(e).includes(name))) found.push("what the voice service logged");
+    if (JSON.stringify(keysSeen).includes(name)) found.push("a key shown to the voice service");
+    for (const f of filesWith(A.home, needleOf)) found.push(`the server's data folder: ${path.relative(OUT, f)}`);
+    for (const f of filesWith(A.work, needleOf)) found.push(`the server's work folder: ${path.relative(OUT, f)}`);
+    for (const dir of stateFiles()) for (const f of filesWith(dir, needleOf)) found.push(`the host's state: ${path.relative(OUT, f)}`);
+    if (fs.existsSync(agentLog) && fs.readFileSync(agentLog).includes(needleOf)) found.push("what the agent was given (fake-claude.log)");
+    if (hostLog.some((l) => l.includes(name))) found.push("the host's log");
+    if (devs.errors.some((e) => e.includes(name))) found.push("the page's errors");
+    await check(`8 the ${what}'s name is in none of the places it must not be (requests, answers, sockets, console, voice service, server, host, agent)`, found.length === 0, found.join("; "));
+  }
+  const st = await storageOf(devs);
+  const where = [];
+  for (const [k, v] of Object.entries(st.local)) if (NAMES.some((x) => String(v).includes(x))) where.push(`localStorage ${k}`);
+  for (const k of ["session", "idb", "caches", "cookies"]) if (NAMES.some((x) => JSON.stringify(st[k]).includes(x))) where.push(k);
+  await check("8 the page keeps the names only as the saved choice (localStorage aiwb.voice.settings), not in sessionStorage, IndexedDB, caches or cookies", where.join() === "localStorage aiwb.voice.settings", `kept in: ${where.join(", ") || "nowhere"}`);
+}
+
 // ---- main
 
 let code = 0;
@@ -548,9 +705,10 @@ try {
   await step("2 to 5 the voice page", step2to5);
   await step("6 the search", step6);
   await step("7 gone with the page", step7);
+  await step("8 device names", step8);
   if (main) {
     // (the browser's own line for a call answered 400 or more, which step 5 makes on purpose, names no address)
-    const errors = [...new Set(main.errors)].filter((e) => !/^Failed to load resource/.test(e));
+    const errors = [...new Set([...main.errors, ...(devs?.errors ?? [])])].filter((e) => !/^Failed to load resource/.test(e));
     await check("the page's console has no error", errors.length === 0, errors.slice(0, 5).join(" ; "));
   }
   code = failed ? 1 : 0;

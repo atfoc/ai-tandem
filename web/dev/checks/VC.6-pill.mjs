@@ -11,6 +11,8 @@
 //   the target     with no chat on the board the first spoken turn makes one (under the board's row in the sidebar, the chat view not opened);
 //                  with chats the target is the chat used last; + New chat and the sidebar's + each make a chat that becomes the target at
 //                  once; the chip lists the sidebar's chats, with Show all for the archived ones; a pick is the new target
+//   (voice devices D9 added what this check does not drive, VC.8 does: the orb's `paused` state, `pill-continue` in the listening bar, and the board's
+//   `caption-notice`)
 //   the popover    a microphone that is blocked shows its sentence on the orb and the pill is idle again
 //   captions       (P15b) `caption-said` carries the words of the turn where the bar does not (the collapsed orb; the compact pill from the send until the
 //                  reply starts, however long the agent takes) and `caption-spoken` the sentence being spoken, which stays after the reply ends and fades

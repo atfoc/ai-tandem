@@ -57,6 +57,12 @@ function socketTo(url, headers) {
     types: () => got.map((m) => m.message_type),
     async next(type) { const m = await until(() => got.find((x) => x.message_type === type && !x.taken), `a ${type} message (got ${JSON.stringify(got.map((x) => x.message_type))})`); m.taken = true; return m; },
     chunk(ms = 100, more = {}) { ws.send(JSON.stringify({ message_type: "input_audio_chunk", audio_base_64: Buffer.alloc(Math.round(ms * 32)).toString("base64"), commit: false, sample_rate: 16000, ...more })); },
+    /** A chunk of a sine at `hz`, `ms` long, starting at sample `from`; `peak` of full scale. */
+    tone(hz, ms = 100, { from = 0, peak = 0.5 } = {}) {
+      const n = Math.round(ms * 16), pcm = Buffer.alloc(n * 2);
+      for (let i = 0; i < n; i++) pcm.writeInt16LE(Math.round(Math.sin((2 * Math.PI * hz * (from + i)) / 16000) * peak * 32767), i * 2);
+      ws.send(JSON.stringify({ message_type: "input_audio_chunk", audio_base_64: pcm.toString("base64"), commit: false, sample_rate: 16000 }));
+    },
     commit() { ws.send(JSON.stringify({ message_type: "input_audio_chunk", audio_base_64: "", commit: true, sample_rate: 16000 })); },
     close: () => { try { ws.close(); } catch {} },
   };
@@ -276,6 +282,52 @@ describe("the realtime socket", () => {
     again.chunk();
     await sleep(60);
     assert.deepEqual(again.types(), ["session_started"]);
+  });
+
+  test("toneHz: the frequency of the audio received, by zero crossings; silence does not dilute it and counts none; the latest tone is told too", async () => {
+    const s = await serve();
+    const near = (got, want) => assert.ok(got !== null && Math.abs(got - want) <= 4, `${got} is not near ${want}`);
+    // (a microphone at 300 Hz: a silent start, as a device's first chunks are, then the tone in chunks of 100 ms)
+    const a = socketTo(url(s), { "xi-api-key": KEY });
+    await a.opened;
+    await a.next("session_started");
+    a.chunk(300);
+    for (let i = 0; i < 5; i++) a.tone(300, 100, { from: i * 1600 });
+    a.chunk(200);
+    await until(() => lastOf(s.c, "stt").chunks === 7, "the seven chunks");
+    near(lastOf(s.c, "stt").toneHz, 300);
+    near(lastOf(s.c, "stt").toneHzLast, 300);
+    a.close();
+    // (700 Hz, quieter, and noise below the dead band before it)
+    const b = socketTo(url(s), { "xi-api-key": KEY });
+    await b.opened;
+    await b.next("session_started");
+    b.tone(700, 100, { peak: 0.01 });
+    await until(() => lastOf(s.c, "stt").chunks === 1, "the noise chunk");
+    assert.deepEqual([lastOf(s.c, "stt").toneHz, lastOf(s.c, "stt").toneHzLast], [null, null], "a tone under 1.5 % of full scale is not heard");
+    for (let i = 0; i < 5; i++) b.tone(700, 100, { from: i * 1600, peak: 0.1 });
+    await until(() => lastOf(s.c, "stt").chunks === 6, "the six chunks");
+    near(lastOf(s.c, "stt").toneHz, 700);
+    // (a microphone that changed in the middle: the whole session is between the two, the latest chunk tells the one it ended on)
+    const c = socketTo(url(s), { "xi-api-key": KEY });
+    await c.opened;
+    await c.next("session_started");
+    for (let i = 0; i < 4; i++) c.tone(300, 100, { from: i * 1600 });
+    for (let i = 0; i < 4; i++) c.tone(700, 100, { from: i * 1600 });
+    c.chunk(200);
+    await until(() => lastOf(s.c, "stt").chunks === 9, "the nine chunks");
+    const e = lastOf(s.c, "stt");
+    near(e.toneHzLast, 700);
+    assert.ok(e.toneHz > 350 && e.toneHz < 650, `${e.toneHz} lies between the two tones`);
+    assert.deepEqual(e.problems, []);
+    // (no audio at all: no tone)
+    const d = socketTo(url(s), { "xi-api-key": KEY });
+    await d.opened;
+    await d.next("session_started");
+    d.chunk(100); d.chunk(100);
+    await until(() => lastOf(s.c, "stt").chunks === 2, "two silent chunks");
+    assert.deepEqual([lastOf(s.c, "stt").toneHz, lastOf(s.c, "stt").toneHzLast], [null, null]);
+    for (const x of [b, c, d]) x.close();
   });
 
   test("frames of 125, 126 and 65536 bytes (7, 16 and 64 bit lengths) are read", async () => {

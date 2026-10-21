@@ -2,8 +2,8 @@
 // desktop, the tablet and the phone: a centred dialog on the first two, a bottom sheet on the phone. Goal 3.7, 4.2, 4.9, 4.10, 6.3; architecture
 // VC-13 and VC-30. The key lives in the web build's memory (VC-2), so a reload drops it.
 //   the foot         the gear button (`settings-btn`, "Settings") is between the library's button and the theme picker, and opens the page
-//   the page         the sections in the goal's order (key, voice, how a spoken turn is sent, Advanced options), Advanced options collapsed, the page
-//                    rounded; no key: the voice list asks for one, nothing can be removed, and Test key says the key is missing
+//   the page         the sections in the goal's order (key, voice, microphone and speaker, how a spoken turn is sent, Advanced options), Advanced options
+//                    collapsed, the page rounded; no key: the voice list asks for one, nothing can be removed, and Test key says the key is missing
 //   the key          typed in a hidden box, Show shows it; Test key with a rejected key says the 401 sentence, with a working one the number of
 //                    voices; Save keeps it (the box empties, its placeholder says a key is saved) and the list of voices comes; the stand-in saw the key
 //                    only as the header (`keyHeader`), the page holds it in no storage and in no line of text
@@ -11,6 +11,14 @@
 //                    setting; Show all voices lists them all with a search and the way back; the play button plays the voice's own preview clip
 //                    (the stand-in logs a `preview` and no `tts`: no credits), and a preview that cannot be fetched hangs the problem popover from its
 //                    button, with "Try again" and "Not now"
+//   the devices      the card "Microphone and speaker" (voice-devices VD-17, D8; stand-in devices of devices.mjs, installed before the page loads): it is
+//                    between Voice and Auto-send and looks like the other cards (`vs-devices-section`); with no key saved it says "Add your key …"
+//                    (`vs-devices-nokey`) and offers and lists nothing (no `enumerateDevices` call); with the key, before the microphone is allowed both pickers
+//                    (`vs-mic`, `vs-speaker`) hold System default alone and `vs-devices-note` says why; Test microphone (`vs-mic-test`) asks for the
+//                    permission, the lists fill, the meter (`vs-mic-level`) moves and carries a peak, and a second tap, a different microphone (it
+//                    restarts on it) and closing Settings behave as VD-16 says; a pick is the voice setting `mic` / `speaker`; Test speaker
+//                    (`vs-speaker-test`) plays on the chosen sink and makes no request of the voice service; a device plugged in while
+//                    Settings is open is listed, a saved one unplugged shows "(not connected)" and stays saved; the card keeps the contrast floor
 //   the settings     Auto-send / Tap to send and every Advanced option are the voice settings (`__aiwbVoice.settings()`), kept over a reload
 //   remove           "Remove key from this device" asks first, then the key is gone: the box, the list and the button say so; a reload drops the key too
 //   readable         the page's text and icons keep the contrast floor in the light theme and a dark flavour
@@ -18,6 +26,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { atRest, check, contrastAudit, mockEval, until } from "../shot.mjs";
+import { installDevices } from "./devices.mjs";
 import { byTid, press } from "./sel.mjs";
 
 export const viewports = ["desktop", "tablet", "phone"];
@@ -54,6 +63,11 @@ await check("VC.1 Settings > Voice: the foot's button, the key, the voices, the 
     await gone(byTid(p, "menu"));
   };
 
+  // ---- the stand-in devices of the card (devices.mjs): in the page from its next load on
+  await installDevices(context);
+  await page.reload();
+  await page.waitForSelector('[data-testid="settings-btn"]', { timeout: 30000 });
+
   // ---- the foot
   const order = await page.evaluate(() => [...document.querySelectorAll('[data-testid="side-foot"] [data-testid]')].map((e) => e.dataset.testid).filter((id) => ["servers-btn", "library-btn", "settings-btn", "theme-btn"].includes(id)));
   if (order.join() !== "servers-btn,library-btn,settings-btn,theme-btn") fail(`the foot's buttons are ${order.join()}, not Servers, library, Settings, theme`);
@@ -62,7 +76,7 @@ await check("VC.1 Settings > Voice: the foot's button, the key, the voices, the 
 
   // ---- the page, with no key
   await openPage(page);
-  const order2 = await page.evaluate(() => ["vs-key-section", "vs-voices-section", "vs-autosend-section", "vs-advanced-section"].map((id) => { const e = document.querySelector(`[data-testid="${id}"]`); return e ? Math.round(e.getBoundingClientRect().top) : null; }));
+  const order2 = await page.evaluate(() => ["vs-key-section", "vs-voices-section", "vs-devices-section", "vs-autosend-section", "vs-advanced-section"].map((id) => { const e = document.querySelector(`[data-testid="${id}"]`); return e ? Math.round(e.getBoundingClientRect().top) : null; }));
   if (order2.some((y) => y === null) || order2.some((y, i) => i && y <= order2[i - 1])) fail(`the sections are not in the goal's order, top to bottom (their tops: ${order2.join()})`);
   if (await byTid(page, "vs-advanced-body").count()) fail("Advanced options are open before they are opened");
   if (await byTid(page, "vs-advanced").getAttribute("aria-expanded") !== "false") fail("Advanced options do not say they are collapsed");
@@ -78,6 +92,98 @@ await check("VC.1 Settings > Voice: the foot's button, the key, the voices, the 
   if (none !== "Voice needs your ElevenLabs key. It stays on this device.") fail(`Test key with no key says "${none}"`);
   if (!(await textOf(byTid(page, "vs-key-section"))).includes("Stored on this device only. Sent only to elevenlabs.io.")) fail("the key's section lacks the line on where the key goes");
   await shot(page, "1-nokey");
+
+  // ---- the devices (voice-devices D8)
+  const dev = (fn, ...args) => page.evaluate(([f, a]) => window.__aiwbDevices[f](...a), [fn, args]);
+  const menuTexts = async (p, picker) => {
+    await press(p, byTid(p, picker));
+    await shown(byTid(p, "menu-item"));
+    const items = (await byTid(p, "menu-item").allTextContents()).map((x) => x.replace(/✓/g, "").trim());
+    await p.keyboard.press("Escape");
+    await gone(byTid(p, "menu"));
+    return items;
+  };
+  const pickShown = async (picker) => (await textOf(byTid(page, picker))).replace(/▾/g, "").trim();
+  const box = (id) => page.evaluate((x) => { const r = document.querySelector(`[data-testid="${x}"]`).getBoundingClientRect(); return { left: Math.round(r.left), width: Math.round(r.width) }; }, id);
+  const rect = await box("vs-devices-section");
+  const rectVoices = await box("vs-voices-section");
+  if (rect.left !== rectVoices.left || rect.width !== rectVoices.width) fail(`the devices card is not laid out like the voices card (${JSON.stringify(rect)} against ${JSON.stringify(rectVoices)})`);
+  const radius = await byTid(page, "vs-devices-section").evaluate((e) => parseFloat(getComputedStyle(e).borderTopLeftRadius));
+  if (radius !== card) fail(`the devices card is rounded ${radius}px, the key's ${card}px`);
+  if ((await textOf(byTid(page, "vs-devices-section").locator('[role="heading"]'))) !== "Microphone and speaker") fail("the devices card has no title \"Microphone and speaker\"");
+  if (await byTid(page, "vs-devices-neither").count()) fail("the card says the system decides when the page can choose");
+  // no key: voice is not set up, so the card offers nothing and lists nothing (goal 6.6), and says why, as the voices' section does
+  if ((await textOf(byTid(page, "vs-devices-nokey"))) !== "Add your key to choose a microphone and a speaker.") fail(`with no key the devices card says "${await textOf(byTid(page, "vs-devices-nokey"))}"`);
+  for (const id of ["vs-mic", "vs-speaker", "vs-mic-test", "vs-speaker-test", "vs-devices-note"]) if (await byTid(page, id).count()) fail(`${id} is offered with no key saved`);
+  await sleep(1000);
+  if (JSON.stringify(await dev("calls")) !== JSON.stringify({ enumerateDevices: 0, getUserMedia: 0, setSinkId: 0 })) fail(`Settings with no key made device calls: ${JSON.stringify(await dev("calls"))}`);
+  await shot(page, "1-devices-nokey");
+  // the key set (from outside, as a saved one is): the pickers come on the next opening
+  await close(page);
+  await page.evaluate((k) => window.__aiwbVoice.setKey(k), KEY);
+  await openPage(page);
+  // before the microphone is allowed: System default alone, the note says why, no meter, no microphone opened
+  if ((await pickShown("vs-mic")) !== "System default" || (await pickShown("vs-speaker")) !== "System default") fail(`before the permission the pickers show "${await pickShown("vs-mic")}" and "${await pickShown("vs-speaker")}"`);
+  if ((await textOf(byTid(page, "vs-devices-note"))) !== "Allow the microphone to see your other devices.") fail(`the note before the permission says "${await textOf(byTid(page, "vs-devices-note"))}"`);
+  if ((await menuTexts(page, "vs-mic")).length !== 1) fail("before the permission the microphone picker lists more than System default");
+  if (await byTid(page, "vs-mic-level").count()) fail("the meter is drawn before the tap");
+  if ((await dev("calls")).getUserMedia !== 0) fail("opening Settings asked for the microphone");
+  await shot(page, "1a-devices-before");
+  // Test microphone: the permission is the person's tap; the lists fill; the meter moves
+  await press(page, byTid(page, "vs-mic-test"));
+  if (!await shown(byTid(page, "vs-mic-level"))) fail("Test microphone drew no meter");
+  if (await byTid(page, "vs-mic-test").getAttribute("aria-pressed") !== "true" || (await textOf(byTid(page, "vs-mic-test"))) !== "Stop test") fail(`the test button says "${await textOf(byTid(page, "vs-mic-test"))}" while it runs`);
+  await until(async () => (await menuTexts(page, "vs-mic")).length === 3, 15000);
+  const micItems = await menuTexts(page, "vs-mic");
+  if (!/^System default/.test(micItems[0] ?? "") || !micItems.includes("Desk Mic") || !micItems.includes("Stand-in Headset")) fail(`the microphones listed are ${JSON.stringify(micItems)}`);
+  const spItems = await menuTexts(page, "vs-speaker");
+  if (!/^System default/.test(spItems[0] ?? "") || !spItems.includes("Desk Speakers") || !spItems.includes("Stand-in Headphones")) fail(`the speakers listed are ${JSON.stringify(spItems)}`);
+  if (await byTid(page, "vs-devices-note").count()) fail("the note stays after the microphone was allowed");
+  if (!await until(async () => Number(await byTid(page, "vs-mic-level").getAttribute("data-peak")) > 0, 15000)) fail("the meter never moved while the test ran");
+  await shot(page, "1b-devices-testing");
+  // a different microphone: the test goes on with it
+  await pick(page, "vs-mic", "Stand-in Headset");
+  await until(async () => (await settings(page)).mic?.id === "mic-headset");
+  if ((await settings(page)).mic?.name !== "Stand-in Headset") fail(`the pick is kept as ${JSON.stringify((await settings(page)).mic)}`);
+  if (await byTid(page, "vs-mic").getAttribute("data-value") !== "d:mic-headset") fail("the picker does not show the pick");
+  if (!await until(async () => (await dev("opened")).at(-1)?.deviceId === "mic-headset" && (await dev("opened")).at(-1)?.live, 15000)) fail(`the test did not go on with the microphone picked (opened: ${JSON.stringify(await dev("opened"))})`);
+  // a second tap stops it, with the microphone released
+  await press(page, byTid(page, "vs-mic-test"));
+  if (!await gone(byTid(page, "vs-mic-level"))) fail("the meter stays after Stop test");
+  if ((await dev("opened")).some((o) => o.live)) fail("a microphone stays open after Stop test");
+  if ((await textOf(byTid(page, "vs-mic-test"))) !== "Test microphone") fail("the test button does not go back to \"Test microphone\"");
+  // Test speaker: no key, no request of the voice service, played on the chosen sink
+  await pick(page, "vs-speaker", "Stand-in Headphones");
+  await until(async () => (await settings(page)).speaker?.id === "out-headphones");
+  await mockEval("voice.reset();", url);
+  await press(page, byTid(page, "vs-speaker-test"));
+  if (!await until(async () => (await dev("sinks")).some((x) => x.sinkId === "out-headphones"), 15000)) fail(`Test speaker did not play on the speaker picked (sinks: ${JSON.stringify(await dev("sinks"))})`);
+  await until(async () => (await byTid(page, "vs-speaker-test").getAttribute("data-playing")) === "false", 15000);
+  if ((await log()).length) fail(`Test speaker made a request of the voice service: ${JSON.stringify(await log())}`);
+  // plugged in while Settings is open: listed without reopening; a saved device unplugged: shown "(not connected)", still saved
+  await dev("plug", { kind: "input", id: "mic-usb", label: "USB Mic", hz: 500 });
+  if (!await until(async () => (await menuTexts(page, "vs-mic")).includes("USB Mic"), 15000)) fail("a microphone plugged in while Settings is open is not listed");
+  await dev("unplug", "mic-headset");
+  if (!await until(async () => (await pickShown("vs-mic")) === "Stand-in Headset (not connected)", 15000)) fail(`the unplugged microphone shows "${await pickShown("vs-mic")}"`);
+  if ((await settings(page)).mic?.id !== "mic-headset") fail("unplugging the saved microphone changed the saved choice");
+  await dev("plug", { kind: "input", id: "mic-headset", label: "Stand-in Headset", hz: 700 });
+  if (!await until(async () => (await pickShown("vs-mic")) === "Stand-in Headset", 15000)) fail("the microphone does not come back to the picker when it is plugged in again");
+  await shot(page, "1c-devices");
+  // System default again; the test ends with Settings
+  await pick(page, "vs-mic", "System default");
+  await until(async () => (await settings(page)).mic === null);
+  await press(page, byTid(page, "vs-mic-test"));
+  await shown(byTid(page, "vs-mic-level"));
+  await close(page);
+  if (!await until(async () => !(await dev("opened")).some((o) => o.live), 15000)) fail("the microphone test goes on after Settings was closed");
+  await openPage(page);
+  if (await byTid(page, "vs-mic-level").count()) fail("the meter is drawn when Settings opens again");
+  for (const r of (await contrastAudit(page, { only: ['[data-testid="vs-devices-section"]'] })).filter((r) => r.ratio < FLOOR)) fail(`the devices card: "${r.what}" (${r.where}) is ${r.fg} on ${r.bg}, ${r.ratio}:1, under ${FLOOR}:1`);
+  await pick(page, "vs-speaker", "System default");
+  await until(async () => (await settings(page)).speaker === null);
+  await close(page);
+  await page.evaluate(() => window.__aiwbVoice.clearKey()); // (the key's part below starts with none)
+  await openPage(page);
 
   // ---- the key
   await typeKey(page, BAD);
@@ -264,5 +370,5 @@ await check("VC.1 Settings > Voice: the foot's button, the key, the voices, the 
   await floorOf(dark.page, "in Mocha");
   await shot(dark.page, "9-mocha");
 
-  note(`the foot's gear, the page ${wide ? "as a dialog" : "as a sheet"} with the four sections and Advanced options collapsed, Test key (no key, rejected, working), Save, Show, ${rows.length} voices with their previews and the problem popover, Show all and the search, the settings kept over a reload, Remove, the contrast floor`);
+  note(`the foot's gear, the page ${wide ? "as a dialog" : "as a sheet"} with the five sections and Advanced options collapsed, the Microphone and speaker card (stand-in devices: the permission by Test microphone, the lists, the meter, picks, plug and unplug, Test speaker with no request), Test key (no key, rejected, working), Save, Show, ${rows.length} voices with their previews and the problem popover, Show all and the search, the settings kept over a reload, Remove, the contrast floor`);
 }, { viewports });

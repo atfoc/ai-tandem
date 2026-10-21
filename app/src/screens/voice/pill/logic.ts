@@ -5,8 +5,9 @@ import type { ChatView } from "@aiwb/core/types.ts";
 
 import type { Phase } from "../../../voice/index.ts";
 
-/** The orb's states (goal 3.6). `waiting` is "Tap to send waiting" (the ↑ badge); `countdown` is "Auto-send waiting" (the ring fills). */
-export type OrbState = "idle" | "listening" | "countdown" | "waiting" | "thinking" | "speaking";
+/** The orb's states (goal 3.6). `waiting` is "Tap to send waiting" (the ↑ badge); `countdown` is "Auto-send waiting" (the ring fills);
+ *  `paused` (voice devices VD-12) is a session held because the headphones went away: a tap on the orb continues. */
+export type OrbState = "idle" | "listening" | "countdown" | "waiting" | "thinking" | "speaking" | "paused";
 
 /** The three sizes of the pill (VC-28): the compact pill, the listening bar, the orb alone. */
 export type PillSize = "compact" | "listening" | "orb";
@@ -22,11 +23,17 @@ export function orbState(phase: Phase): OrbState {
   }
 }
 
-/** The pill grows to the listening bar while the person listens or words wait, and is the orb alone when it was collapsed. */
-export function pillSize(phase: Phase, collapsed: boolean): PillSize {
+/** The orb's state with the session's pause: a session held because the headphones went away is `paused` in every phase but idle (VD-12). */
+export function orbStateFor(phase: Phase, paused: boolean): OrbState {
+  return paused && phase !== "idle" ? "paused" : orbState(phase);
+}
+
+/** The pill grows to the listening bar while the person listens or words wait, and is the orb alone when it was collapsed. A paused pill is the
+ *  listening bar too, whatever the phase: its words line says why it stopped and its foot has Continue (VD-12). */
+export function pillSize(phase: Phase, collapsed: boolean, paused = false): PillSize {
   if (collapsed) return "orb";
-  const s = orbState(phase);
-  return s === "listening" || s === "countdown" || s === "waiting" ? "listening" : "compact";
+  const s = orbStateFor(phase, paused);
+  return s === "paused" || s === "listening" || s === "countdown" || s === "waiting" ? "listening" : "compact";
 }
 
 /** A chat voice can send to: not archived, and not a Curl-era one that the app disables. */

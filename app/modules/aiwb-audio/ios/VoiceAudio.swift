@@ -12,6 +12,13 @@ import Foundation
 // stopped, so going from playback to listening builds the engine again, and what was playing then is cut (the player says `drained`).
 // The engine is taken down, and the session given back to the other apps (`.notifyOthersOnDeactivation`), when nothing runs: at once when the
 // microphone stops with nothing to play, after a short while when Read aloud has played to its end (so the next sentence finds it running).
+//
+// Devices (voice-devices VD-9, VD-10, VD-11, VD-18): the microphone can be chosen (`setPreferredInput`, after activation, before the engine
+// starts); the output follows the system. A device lost while something runs is not an end: the microphone goes on from the system's input
+// (`input-lost`, or `input-failed` when it cannot), the sound goes on from the system's output (`output-lost`), and when that would turn
+// private sound public the player is paused at once, on the notification's own thread, and waits for `resume` (`held`). The player keeps
+// every buffer it scheduled until it has played, and schedules them again when the engine has to be started again, so nothing is lost
+// and nothing played is played again (at most the piece playing at that moment, from its own start).
 
 enum MicFailure: Error {
   /// The system gives the app no microphone.
@@ -82,6 +89,50 @@ final class MicTap {
   }
 }
 
+/// The ports of the audio session as the contract's devices (NativeDevice of src/AiwbAudio.ts). Names are the system's; they are sent to JS
+/// and never written to the log (goal 4.7): a trace names a port by its type only.
+enum Ports {
+  static let builtIn: Set<AVAudioSession.Port> = [.builtInMic, .builtInSpeaker, .builtInReceiver]
+
+  /// Whether what this port plays is heard by the person alone (architecture VD-11, platforms.md §3). An input is private when it belongs to
+  /// a headset.
+  static func privacy(_ type: AVAudioSession.Port, output: Bool) -> String {
+    if output {
+      switch type {
+      case .headphones, .bluetoothA2DP, .bluetoothHFP, .bluetoothLE, .builtInReceiver: return "private"
+      case .builtInSpeaker, .HDMI, .airPlay, .carAudio: return "public"
+      default: return "unknown"
+      }
+    }
+    switch type {
+    case .headsetMic, .bluetoothHFP, .bluetoothLE: return "private"
+    case .builtInMic: return "public"
+    default: return "unknown"
+    }
+  }
+
+  static func device(_ p: AVAudioSessionPortDescription, output: Bool) -> [String: Any] {
+    [
+      "id": p.uid,
+      "name": p.portName,
+      "kind": output ? "output" : "input",
+      "privacy": privacy(p.portType, output: output),
+      "builtIn": builtIn.contains(p.portType),
+    ]
+  }
+
+  static func deviceOrNull(_ p: AVAudioSessionPortDescription?, output: Bool) -> Any {
+    p.map { device($0, output: output) } ?? NSNull()
+  }
+
+  /// The pause of VD-11: the lost output was private (or could not be told) and what the sound moves to is not known to be private.
+  static func holds(lost: AVAudioSessionPortDescription?, now: AVAudioSessionPortDescription?) -> Bool {
+    let was = lost.map { privacy($0.portType, output: true) } ?? "unknown"
+    let next = now.map { privacy($0.portType, output: true) } ?? "unknown"
+    return was != "public" && next != "private"
+  }
+}
+
 final class VoiceAudio: NSObject, AVAudioPlayerDelegate {
   typealias Emit = (String, [String: Any]) -> Void
 
@@ -109,19 +160,38 @@ final class VoiceAudio: NSObject, AVAudioPlayerDelegate {
   private var tap: MicTap?
   private var tapFrames = 1600
 
-  // The player's queue. A buffer has a number (`seq`); `generation` changes when the queue is stopped, so that the completions of the
-  // buffers it dropped are ignored.
+  // The devices. `preferredUid`: the input this module asked the session for (nil: the system's). `lastInput`, `lastOutput`: the route's
+  // ports as last seen while something ran, to tell what a route change took away. `inputCache`: the last list of inputs that was not
+  // empty, for a listing while a playback session is active (its category lists none).
+  private var preferredUid: String?
+  private var lastInput: AVAudioSessionPortDescription?
+  private var lastOutput: AVAudioSessionPortDescription?
+  private var inputCache: [AVAudioSessionPortDescription] = []
+
+  // The player's queue. A buffer has a number (`seq`) and is kept in `unplayed` until it has played; `generation` changes when the node's
+  // buffers are dropped (a stop, a restart), so that the completions of what it dropped are ignored.
   private let playFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 24000, channels: 1, interleaved: false)!
   private var carry: UInt8?
-  private var generation = 0
   private var nextSeq = 0
   private var lastSeq = -1
   private var outstanding = 0
+  private var unplayed: [(seq: Int, buffer: AVAudioPCMBuffer)] = []
   /// Marks reached when the buffer of that number has played (the mark came after it).
   private var marksAfter: [Int: [Int]] = [:]
   /// Marks that came when nothing was queued: reached when the next buffer starts.
   private var marksAtStart: [Int] = []
+  /// A buffer was queued while held with nothing before it: its start (the marks at start, the level) is told at the resume.
+  private var startPending = false
   private var levels: [Int: Double] = [:]
+
+  // What other threads touch, under `gate`: the route notification pauses the node and the clip at once (VD-10); the node's completions
+  // are taken in on the audio thread.
+  private let gate = NSLock()
+  private var held = false
+  private var generation = 0
+  private var completed: [Int] = []
+  private var liveNode: AVAudioPlayerNode?
+  private var liveClip: AVAudioPlayer?
 
   // The preview clip.
   private var clip: AVAudioPlayer?
@@ -138,11 +208,17 @@ final class VoiceAudio: NSObject, AVAudioPlayerDelegate {
       self?.queue.async { self?.interrupted("call") }
     })
     sessionObservers.append(center.addObserver(forName: AVAudioSession.routeChangeNotification, object: session, queue: nil) { [weak self] n in
-      // Headphones taken off: what was private would go to the speaker. Every other change (a category this module set, a new device) is
-      // not an end; a new device that changes the engine's format stops the engine, which is seen below.
-      guard let raw = n.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
-            AVAudioSession.RouteChangeReason(rawValue: raw) == .oldDeviceUnavailable else { return }
-      self?.queue.async { self?.interrupted("route") }
+      guard let self, let raw = n.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
+            let reason = AVAudioSession.RouteChangeReason(rawValue: raw) else { return }
+      let previous = n.userInfo?[AVAudioSessionRouteChangePreviousRouteKey] as? AVAudioSessionRouteDescription
+      // Headphones taken off: the sound stops here, on the notification's thread, before any of it comes out of the speaker (VD-10).
+      let lost = previous?.outputs.first
+      var heldNow = false
+      if reason == .oldDeviceUnavailable, let lost {
+        let now = session.currentRoute.outputs.first
+        if lost.uid != now?.uid && Ports.holds(lost: lost, now: now) { heldNow = self.holdIfPlaying() }
+      }
+      self.queue.async { self.routeChanged(reason, previous: lost, heldNow: heldNow) }
     })
     sessionObservers.append(center.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification, object: session, queue: nil) { [weak self] _ in
       self?.queue.async { self?.interrupted("other") }
@@ -186,16 +262,19 @@ final class VoiceAudio: NSObject, AVAudioPlayerDelegate {
 
   // MARK: the session and the engine
 
+  private static var listeningOptions: AVAudioSession.CategoryOptions {
+    #if compiler(>=6.2)
+    return [.defaultToSpeaker, .allowBluetoothHFP]
+    #else
+    return [.defaultToSpeaker, .allowBluetooth]
+    #endif
+  }
+
   private func activate(_ want: Shape) throws {
     let session = AVAudioSession.sharedInstance()
     switch want {
     case .listening:
-      #if compiler(>=6.2)
-      let bluetooth: AVAudioSession.CategoryOptions = .allowBluetoothHFP
-      #else
-      let bluetooth: AVAudioSession.CategoryOptions = .allowBluetooth
-      #endif
-      try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, bluetooth])
+      try session.setCategory(.playAndRecord, mode: .voiceChat, options: VoiceAudio.listeningOptions)
     case .playback:
       try session.setCategory(.playback, mode: .spokenAudio, options: [])
     }
@@ -205,17 +284,25 @@ final class VoiceAudio: NSObject, AVAudioPlayerDelegate {
 
   private func deactivateIfIdle() {
     guard sessionActive, engine == nil, clip == nil else { return }
+    let session = AVAudioSession.sharedInstance()
+    if preferredUid != nil {
+      // The choice is this module's, for one listening; the session is left as the system would have it.
+      do { try session.setPreferredInput(nil) } catch { trace("prefer none: \(error)") }
+      preferredUid = nil
+    }
     do {
-      try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+      try session.setActive(false, options: .notifyOthersOnDeactivation)
     } catch {
       trace("deactivate: \(error)")
     }
     sessionActive = false
   }
 
-  /// Builds the engine for `want` (none runs). Listening: voice processing when `echoCancel` and the device has it.
-  private func build(_ want: Shape, echoCancel: Bool) throws {
+  /// Builds the engine for `want` (none runs). Listening: voice processing when `echoCancel` and the device has it, on the input `inputId`.
+  private func build(_ want: Shape, echoCancel: Bool, inputId: String? = nil) throws {
     try activate(want)
+    // The preferred input is set with the session active and before the engine takes its formats (setPreferredInput's rule).
+    if want == .listening { prefer(inputId) }
     let e = AVAudioEngine()
     var processing = false
     if want == .listening {
@@ -237,12 +324,16 @@ final class VoiceAudio: NSObject, AVAudioPlayerDelegate {
     e.connect(p, to: e.mainMixerNode, format: playFormat)
     e.prepare()
     try e.start()
-    p.play()
+    gate.lock()
+    liveNode = p
+    if !held { p.play() }
+    gate.unlock()
     engine = e
     player = p
     shape = want
     voiceProcessing = processing
     echoAsked = want == .listening && echoCancel
+    lastOutput = AVAudioSession.sharedInstance().currentRoute.outputs.first
     // The engine stops by itself when the hardware's format changes: voice processing does it as the engine starts (the input and the
     // output take its formats), and so does a headset plugged in or taken off. It is started again on the new formats (restart).
     engineObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: e, queue: nil) { [weak self] _ in
@@ -252,20 +343,21 @@ final class VoiceAudio: NSObject, AVAudioPlayerDelegate {
   }
 
   /// The engine `e` stopped by itself on a change of the hardware's format: it is started again. The tap is put back for the input's new
-  /// format (muted if it was), and what the player had queued is dropped (`drained`), since the node lost it with the engine. Only an engine
-  /// that does not start again, or that stops again and again, ends what runs.
+  /// format (muted if it was), and what the player had queued and not played is scheduled again, in order, with its marks (VD-10). A change
+  /// that took private sound to a public output holds it first. Only an engine that does not start again, or that stops again and again,
+  /// ends what runs: the microphone with `input-failed`, the player alone with `onInterrupted` "route".
   private func restart(_ e: AVAudioEngine) {
     guard engine === e, !e.isRunning else { return }
     let now = Date()
     restarts = restarts.filter { now.timeIntervalSince($0) < 2 } + [now]
     trace("configuration changed, restart \(restarts.count)")
     if restarts.count > 3 {
-      interrupted("route")
+      engineFailed()
       return
     }
-    let hadAudio = outstanding > 0
-    clearQueue()
-    player?.stop()
+    // What has played before the engine stopped is counted as played; the node loses the rest with the engine, and it is scheduled again.
+    drainCompleted()
+    dropNodeBuffers()
     do {
       if let old = tap {
         e.inputNode.removeTap(onBus: 0)
@@ -280,17 +372,41 @@ final class VoiceAudio: NSObject, AVAudioPlayerDelegate {
       }
       e.prepare()
       try e.start()
-      player?.play()
     } catch {
       trace("restart: \(error)")
-      interrupted("route")
+      engineFailed()
       return
     }
-    if hadAudio { emitPlayer(["kind": "drained"]) }
+    if let p = player {
+      for item in unplayed { schedule(item.buffer, item.seq, on: p) }
+    }
+    // The route may have changed with the format: a private output gone is held before the queue plays on.
+    let route = AVAudioSession.sharedInstance().currentRoute
+    if inUse { checkOutput(route, update: false, loss: false, previous: nil, heldNow: false) }
+    if tap != nil { checkInput(route, update: false) }
+    gate.lock()
+    if !held { player?.play() }
+    gate.unlock()
     settle()
   }
 
-  /// Takes the engine down. The player's queue is dropped (its completions are ignored).
+  /// The engine cannot run any more: everything stops, and JS is told once.
+  private func engineFailed() {
+    let hadMic = tap != nil
+    let lost = lastInput
+    let hadAudio = outstanding > 0
+    if !hadMic {
+      interrupted("route") // the output changed under the engine and it would not start again
+      return
+    }
+    takeDown()
+    finishClip()
+    deactivateIfIdle()
+    if hadAudio { emitPlayer(["kind": "drained"]) } // nothing will play: whoever waits for the end is not left waiting
+    emitRoute("input-failed", lost: Ports.deviceOrNull(lost, output: false), now: NSNull(), held: false)
+  }
+
+  /// Takes the engine down. The player's queue is dropped (its completions are ignored). A hold stays until resumed or stopped.
   private func takeDown() {
     cancelIdle()
     guard let e = engine else { return }
@@ -298,21 +414,40 @@ final class VoiceAudio: NSObject, AVAudioPlayerDelegate {
     engineObserver = nil
     if tap != nil { e.inputNode.removeTap(onBus: 0) }
     tap = nil
+    clearQueue()
     player?.stop()
     e.stop()
+    gate.lock()
+    liveNode = nil
+    gate.unlock()
     engine = nil
     player = nil
     voiceProcessing = false
     echoAsked = false
-    clearQueue()
+    lastInput = nil
+    if clip == nil { lastOutput = nil }
     trace("taken down")
   }
 
-  private func clearQueue() {
+  /// The node's scheduled buffers are about to be dropped (a stop, a restart): their completions are ignored from now on.
+  private func dropNodeBuffers() {
+    gate.lock()
     generation += 1
+    completed = []
+    gate.unlock()
+    player?.stop()
+  }
+
+  private func clearQueue() {
+    gate.lock()
+    generation += 1
+    completed = []
+    gate.unlock()
     outstanding = 0
+    unplayed = []
     marksAfter = [:]
     marksAtStart = []
+    startPending = false
     levels = [:]
     carry = nil
   }
@@ -343,9 +478,183 @@ final class VoiceAudio: NSObject, AVAudioPlayerDelegate {
     queue.asyncAfter(deadline: .now() + 1.5, execute: work)
   }
 
+  // MARK: the devices
+
+  /// The inputs (the output follows the system on iOS, so none is listed), the input the system would take and the output it uses now.
+  /// Asks for no permission, and leaves another app's sound alone: the list is read as the session is; when that gives none (a category
+  /// that records nothing), with `.playAndRecord` set and the session inactive; only when that gives none either, and the microphone is
+  /// allowed (an activation that records could ask otherwise), with a short activation that mixes with the others (platforms.md §3).
+  func listDevices(_ done: @escaping ([String: Any]) -> Void) {
+    queue.async {
+      let session = AVAudioSession.sharedInstance()
+      var inputs = session.availableInputs ?? []
+      var how = "as is"
+      if inputs.isEmpty && !self.sessionActive {
+        (inputs, how) = self.inputsOfRecording(session)
+      }
+      if inputs.isEmpty {
+        inputs = self.inputCache
+        how = "kept"
+      } else {
+        self.inputCache = inputs
+      }
+      self.trace("devices \(how): \(inputs.map { $0.portType.rawValue }.joined(separator: ","))")
+      let route = session.currentRoute
+      done([
+        "devices": inputs.map { Ports.device($0, output: false) },
+        "defaultInput": self.systemInput(inputs, route: route) ?? NSNull(),
+        "defaultOutput": route.outputs.first?.uid ?? NSNull(),
+      ])
+    }
+  }
+
+  /// The inputs with the category of listening set on the inactive session; the category it had is put back.
+  private func inputsOfRecording(_ session: AVAudioSession) -> ([AVAudioSessionPortDescription], String) {
+    let was = (session.category, session.mode, session.categoryOptions)
+    defer {
+      do { try session.setCategory(was.0, mode: was.1, options: was.2) } catch { trace("category back: \(error)") }
+    }
+    do {
+      try session.setCategory(.playAndRecord, mode: .voiceChat, options: VoiceAudio.listeningOptions)
+    } catch {
+      trace("category to list: \(error)")
+      return ([], "none")
+    }
+    let found = session.availableInputs ?? []
+    if !found.isEmpty || VoiceAudio.permission() != "granted" { return (found, "category") }
+    do {
+      try session.setCategory(.playAndRecord, mode: .voiceChat, options: VoiceAudio.listeningOptions.union(.mixWithOthers))
+      try session.setActive(true)
+      let active = session.availableInputs ?? []
+      try session.setActive(false)
+      return (active, "activation")
+    } catch {
+      trace("activation to list: \(error)")
+      return ([], "none")
+    }
+  }
+
+  /// The input the system takes when the app prefers none: the route's, when the route has one and this module prefers nothing; otherwise
+  /// the last headset connected, else the built-in microphone (the system's rule: the last device in).
+  private func systemInput(_ inputs: [AVAudioSessionPortDescription], route: AVAudioSessionRouteDescription) -> String? {
+    if preferredUid == nil, let now = route.inputs.first, inputs.contains(where: { $0.uid == now.uid }) { return now.uid }
+    return (inputs.last { $0.portType != .builtInMic } ?? inputs.first)?.uid
+  }
+
+  /// Asks the session for the input `id` (nil, or one that is not there: the system's). Only with the session active.
+  private func prefer(_ id: String?) {
+    let session = AVAudioSession.sharedInstance()
+    let want = id.flatMap { id in (session.availableInputs ?? []).first { $0.uid == id } }
+    if want?.uid == preferredUid && session.preferredInput?.uid == want?.uid { return }
+    do {
+      try session.setPreferredInput(want)
+      preferredUid = want?.uid
+    } catch {
+      trace("prefer \(want?.portType.rawValue ?? "none"): \(error)")
+      preferredUid = nil
+    }
+  }
+
+  /// The output now (the system decides it): nothing is changed (VD-18, output ability "system").
+  func currentOutput(_ done: @escaping ([String: Any]) -> Void) {
+    queue.async {
+      done(["device": Ports.deviceOrNull(AVAudioSession.sharedInstance().currentRoute.outputs.first, output: true)])
+    }
+  }
+
+  /// Pauses the node and the clip at once if something plays or may play; answers whether it did. Any thread.
+  private func holdIfPlaying() -> Bool {
+    gate.lock()
+    defer { gate.unlock() }
+    guard liveNode != nil || liveClip != nil else { return false }
+    held = true
+    liveNode?.pause()
+    liveClip?.pause()
+    return true
+  }
+
+  /// Something is in use: the microphone, sound queued or playing, the clip. An engine idling before it is taken down is not.
+  private var inUse: Bool { tap != nil || outstanding > 0 || clip != nil }
+
+  /// A route change, on the queue: the list may have changed; a device in use that went away is told (VD-9, VD-10). `previous`: the output
+  /// of the route before the change; `heldNow`: the notification's thread has already held the sound.
+  private func routeChanged(_ reason: AVAudioSession.RouteChangeReason, previous: AVAudioSessionPortDescription?, heldNow: Bool) {
+    if reason == .newDeviceAvailable || reason == .oldDeviceUnavailable { emit("onDevices", [:]) }
+    let route = AVAudioSession.sharedInstance().currentRoute
+    guard inUse else {
+      // Nothing in use: nobody is told of a loss, and a hold made at once on the notification's thread is let go.
+      if heldNow { release() }
+      if engine != nil { lastOutput = route.outputs.first }
+      return
+    }
+    checkOutput(route, update: true, loss: reason == .oldDeviceUnavailable, previous: previous, heldNow: heldNow)
+    if tap != nil { checkInput(route, update: true) }
+  }
+
+  /// The output of `route` against the one last seen (or, when none was, the route's before the change). A loss (the old device went
+  /// away), or a private output that gave way to one not known to be private (held), is told as `output-lost`; any other change (a device
+  /// plugged in) is only noted when `update`.
+  private func checkOutput(_ route: AVAudioSessionRouteDescription, update: Bool, loss: Bool, previous: AVAudioSessionPortDescription?, heldNow: Bool) {
+    let now = route.outputs.first
+    guard let was = lastOutput ?? previous else {
+      if update { lastOutput = now }
+      if heldNow { release() } // nothing known was lost
+      return
+    }
+    if now?.uid == was.uid { return } // no change, or one already told (restart saw it first)
+    let hold = heldNow || Ports.holds(lost: was, now: now)
+    guard loss || hold else {
+      if update { lastOutput = now }
+      return
+    }
+    lastOutput = now
+    if hold { _ = holdIfPlaying() }
+    trace("output lost: \(was.portType.rawValue) -> \(now?.portType.rawValue ?? "none"), held \(hold)")
+    emitRoute("output-lost", lost: Ports.device(was, output: true), now: Ports.deviceOrNull(now, output: true), held: hold)
+  }
+
+  /// The input of `route` against the one the microphone last listened to. The old one still there: the route moved, no loss (noted when
+  /// `update`). Gone: the tap is already on the system's input (the engine follows the route, or restart put it back), and `input-lost` says
+  /// so; no input at all: the microphone stops, `input-failed`.
+  private func checkInput(_ route: AVAudioSessionRouteDescription, update: Bool) {
+    let now = route.inputs.first
+    guard let was = lastInput else {
+      if update { lastInput = now }
+      return
+    }
+    if now?.uid == was.uid { return }
+    let session = AVAudioSession.sharedInstance()
+    if (session.availableInputs ?? []).contains(where: { $0.uid == was.uid }) {
+      if update { lastInput = now }
+      return
+    }
+    lastInput = now
+    if preferredUid == was.uid {
+      // The chosen input went away: the system's is used, and the session is not left asking for one that is gone.
+      do { try session.setPreferredInput(nil) } catch { trace("prefer none: \(error)") }
+      preferredUid = nil
+    }
+    guard let now else {
+      trace("input lost: \(was.portType.rawValue), none left")
+      if let e = engine, tap != nil { e.inputNode.removeTap(onBus: 0) }
+      tap = nil
+      emitRoute("input-failed", lost: Ports.device(was, output: false), now: NSNull(), held: false)
+      settle()
+      return
+    }
+    trace("input lost: \(was.portType.rawValue) -> \(now.portType.rawValue)")
+    emitRoute("input-lost", lost: Ports.device(was, output: false), now: Ports.device(now, output: false), held: false)
+  }
+
+  private func emitRoute(_ kind: String, lost: Any, now: Any, held: Bool) {
+    emit("onRoute", ["kind": kind, "lost": lost, "now": now, "held": held])
+  }
+
   // MARK: the microphone
 
-  func startMic(chunkMs: Double, echoCancel: Bool, done: @escaping (Result<Bool, MicFailure>) -> Void) {
+  /// Starts the microphone on the input `inputId` (nil, or one that is not there: the system's). Answers whether voice processing runs
+  /// and the input it listens to (nil: not known).
+  func startMic(chunkMs: Double, echoCancel: Bool, inputId: String?, done: @escaping (Result<(Bool, [String: Any]?), MicFailure>) -> Void) {
     queue.async {
       guard VoiceAudio.permission() == "granted" else {
         done(.failure(.blocked))
@@ -364,7 +673,11 @@ final class VoiceAudio: NSObject, AVAudioPlayerDelegate {
         if hadAudio { self.emitPlayer(["kind": "drained"]) }
       }
       do {
-        if self.engine == nil { try self.build(.listening, echoCancel: echoCancel) }
+        if self.engine == nil {
+          try self.build(.listening, echoCancel: echoCancel, inputId: inputId)
+        } else {
+          self.prefer(inputId) // a change of input stops the engine, and restart puts the tap back on the new one
+        }
         guard let e = self.engine else { throw MicFailure.device("no engine") }
         let input = e.inputNode.outputFormat(forBus: 0)
         guard input.sampleRate > 0, input.channelCount > 0 else { throw MicFailure.device("the device has no microphone input") }
@@ -373,8 +686,10 @@ final class VoiceAudio: NSObject, AVAudioPlayerDelegate {
         e.inputNode.installTap(onBus: 0, bufferSize: 4096, format: input) { buffer, _ in tap.take(buffer) }
         self.tap = tap
         self.tapFrames = frames
-        self.trace("mic on, \(frames) frames a chunk, input \(input.sampleRate) Hz x\(input.channelCount)")
-        done(.success(self.voiceProcessing))
+        let opened = AVAudioSession.sharedInstance().currentRoute.inputs.first
+        self.lastInput = opened
+        self.trace("mic on, \(frames) frames a chunk, input \(opened?.portType.rawValue ?? "unknown") \(input.sampleRate) Hz x\(input.channelCount)")
+        done(.success((self.voiceProcessing, opened.map { Ports.device($0, output: false) })))
       } catch let failure as MicFailure {
         self.takeDown()
         self.deactivateIfIdle()
@@ -396,6 +711,7 @@ final class VoiceAudio: NSObject, AVAudioPlayerDelegate {
       if let e = self.engine, self.tap != nil {
         e.inputNode.removeTap(onBus: 0)
         self.tap = nil
+        self.lastInput = nil
         self.trace("mic off")
       }
       self.settle()
@@ -407,6 +723,30 @@ final class VoiceAudio: NSObject, AVAudioPlayerDelegate {
 
   private func emitPlayer(_ body: [String: Any]) {
     emit("onPlayer", body)
+  }
+
+  /// Schedules a buffer on the node; its completion is taken in on the audio thread and counted on the queue.
+  private func schedule(_ buffer: AVAudioPCMBuffer, _ seq: Int, on p: AVAudioPlayerNode) {
+    gate.lock()
+    let g = generation
+    gate.unlock()
+    p.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
+      guard let self else { return }
+      self.gate.lock()
+      let current = g == self.generation
+      if current { self.completed.append(seq) }
+      self.gate.unlock()
+      if current { self.queue.async { self.drainCompleted() } }
+    }
+  }
+
+  /// The buffers the node has played since the last call, in order.
+  private func drainCompleted() {
+    gate.lock()
+    let seqs = completed
+    completed = []
+    gate.unlock()
+    for seq in seqs { played(seq) }
   }
 
   func write(_ data: Data) {
@@ -449,24 +789,35 @@ final class VoiceAudio: NSObject, AVAudioPlayerDelegate {
       self.nextSeq += 1
       self.lastSeq = seq
       self.levels[seq] = level
-      let generation = self.generation
       let starts = self.outstanding == 0
       self.outstanding += 1
-      p.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
-        self?.queue.async { self?.played(seq, generation) }
-      }
-      if !p.isPlaying { p.play() }
+      self.unplayed.append((seq, buffer))
+      self.schedule(buffer, seq, on: p)
+      self.gate.lock()
+      let isHeld = self.held
+      if !isHeld && !p.isPlaying { p.play() }
+      self.gate.unlock()
       if starts {
-        // Nothing was queued: this buffer plays now, and the marks that waited for it are reached.
-        for id in self.marksAtStart { self.emitPlayer(["kind": "mark", "id": id]) }
-        self.marksAtStart = []
-        self.emitPlayer(["kind": "level", "level": level])
+        if isHeld {
+          self.startPending = true // told when the hold ends
+        } else {
+          // Nothing was queued: this buffer plays now, and the marks that waited for it are reached.
+          self.started(level)
+        }
       }
     }
   }
 
-  private func played(_ seq: Int, _ generation: Int) {
-    guard generation == self.generation else { return }
+  /// The first buffer after an empty queue starts to play: the marks that waited for it are reached.
+  private func started(_ level: Double) {
+    for id in marksAtStart { emitPlayer(["kind": "mark", "id": id]) }
+    marksAtStart = []
+    emitPlayer(["kind": "level", "level": level])
+  }
+
+  private func played(_ seq: Int) {
+    guard let at = unplayed.firstIndex(where: { $0.seq == seq }) else { return }
+    unplayed.remove(at: at)
     outstanding -= 1
     levels[seq] = nil
     if let ids = marksAfter.removeValue(forKey: seq) {
@@ -494,10 +845,41 @@ final class VoiceAudio: NSObject, AVAudioPlayerDelegate {
   func stopPlayer() {
     queue.async {
       let had = self.outstanding > 0
+      self.gate.lock()
+      self.held = false // a stop ends a hold: the next write plays
+      self.gate.unlock()
       self.clearQueue()
       self.player?.stop() // the completions of the dropped buffers come with the old generation
       if had { self.emitPlayer(["kind": "level", "level": 0.0]) }
       self.settle()
+    }
+  }
+
+  /// Pauses the sound where it is; writes are still queued (VD-1 `hold`).
+  func hold() {
+    queue.async {
+      self.gate.lock()
+      self.held = true
+      self.liveNode?.pause()
+      self.liveClip?.pause()
+      self.gate.unlock()
+    }
+  }
+
+  /// Plays on from where the hold (the app's or a held loss) stopped, on the output there is now.
+  func resume() {
+    queue.async { self.release() }
+  }
+
+  private func release() {
+    gate.lock()
+    held = false
+    if let p = liveNode, engine?.isRunning == true, !unplayed.isEmpty { p.play() }
+    if let c = liveClip, !c.isPlaying { c.play() }
+    gate.unlock()
+    if startPending {
+      startPending = false
+      if let first = unplayed.first { started(levels[first.seq] ?? 0.0) }
     }
   }
 
@@ -510,10 +892,16 @@ final class VoiceAudio: NSObject, AVAudioPlayerDelegate {
       do {
         let p = try AVAudioPlayer(data: data)
         // With the engine running, its session (playback or listening) plays the clip too.
-        if self.engine == nil { try self.activate(.playback) }
+        if self.engine == nil {
+          try self.activate(.playback)
+          self.lastOutput = AVAudioSession.sharedInstance().currentRoute.outputs.first
+        }
         p.delegate = self
         self.clip = p
         self.clipDone = done
+        self.gate.lock()
+        self.liveClip = p
+        self.gate.unlock()
         if !p.play() { self.finishClip() }
       } catch {
         self.trace("clip: \(error)")
@@ -534,10 +922,18 @@ final class VoiceAudio: NSObject, AVAudioPlayerDelegate {
     p.delegate = nil
     p.stop()
     clip = nil
+    gate.lock()
+    liveClip = nil
+    gate.unlock()
     let done = clipDone
     clipDone = nil
     done?(true)
-    if engine == nil { deactivateIfIdle() } else { settle() }
+    if engine == nil {
+      lastOutput = nil
+      deactivateIfIdle()
+    } else {
+      settle()
+    }
   }
 
   func audioPlayerDidFinishPlaying(_ p: AVAudioPlayer, successfully _: Bool) {
@@ -550,11 +946,14 @@ final class VoiceAudio: NSObject, AVAudioPlayerDelegate {
 
   // MARK: the end
 
-  /// The system took the audio (a call, Siri, an alarm, the app going to the background), the headphones were taken off, or the engine
-  /// stopped by itself: the microphone and the player stop, and JS is told once.
+  /// The system took the audio (a call, Siri, an alarm, the app going to the background, the audio server reset), or the engine of the
+  /// player alone would not start again: the microphone and the player stop, and JS is told once. A lost device is not an end (onRoute).
   private func interrupted(_ reason: String) {
     guard engine != nil || clip != nil else { return }
     trace("interrupted: \(reason)")
+    gate.lock()
+    held = false
+    gate.unlock()
     takeDown()
     finishClip()
     deactivateIfIdle()

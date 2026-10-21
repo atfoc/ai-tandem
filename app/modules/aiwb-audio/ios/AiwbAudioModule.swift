@@ -16,7 +16,7 @@ public class AiwbAudioModule: Module {
   public func definition() -> ModuleDefinition {
     Name("AiwbAudio")
 
-    Events("onMic", "onPlayer", "onInterrupted")
+    Events("onMic", "onPlayer", "onInterrupted", "onDevices", "onRoute")
 
     AsyncFunction("micPermission") { () -> String in
       VoiceAudio.permission()
@@ -26,10 +26,11 @@ public class AiwbAudioModule: Module {
       VoiceAudio.requestPermission { promise.resolve($0) }
     }
 
-    AsyncFunction("startMic") { (chunkMs: Double, echoCancel: Bool, promise: Promise) in
-      self.audio.startMic(chunkMs: chunkMs, echoCancel: echoCancel) { result in
+    // inputId: the input to prefer (voice-devices VD-18); null, or one that has gone away, is the system's. Answers the input it listens to.
+    AsyncFunction("startMic") { (chunkMs: Double, echoCancel: Bool, inputId: String?, promise: Promise) in
+      self.audio.startMic(chunkMs: chunkMs, echoCancel: echoCancel, inputId: inputId) { result in
         switch result {
-        case .success(let on): promise.resolve(["echoCancel": on])
+        case .success(let (on, device)): promise.resolve(["echoCancel": on, "device": device.map { $0 as Any } ?? NSNull()])
         case .failure(.blocked): promise.reject(micBlockedCode, "the microphone is not allowed")
         case .failure(.device(let why)): promise.reject("ERR_AIWB_MIC", why)
         }
@@ -64,6 +65,34 @@ public class AiwbAudioModule: Module {
 
     Function("stopClip") {
       self.audio.stopClip()
+    }
+
+    // The devices (voice-devices VD-18, platforms.md §3). The input can be chosen (the session's available inputs); the output follows the
+    // system (headphones or a headset when connected, else the speaker): iOS has no choice of output but its own route picker, which would
+    // change the route of the whole device (goal 4.4).
+    AsyncFunction("listDevices") { (promise: Promise) in
+      self.audio.listDevices { promise.resolve($0) }
+    }
+
+    Function("deviceAbility") { () -> [String: Any] in
+      ["input": "pick", "output": "system", "linked": false]
+    }
+
+    // iOS names its built-in ports itself ("iPhone Microphone", "Speaker"): the app's names are not needed.
+    Function("setBuiltInNames") { (_: [String: String]) in
+    }
+
+    // The output is the system's: nothing changes, the answer is the route's output now.
+    AsyncFunction("setOutput") { (_: String?, promise: Promise) in
+      self.audio.currentOutput { promise.resolve($0) }
+    }
+
+    Function("playerHold") {
+      self.audio.hold()
+    }
+
+    Function("playerResume") {
+      self.audio.resume()
     }
 
     // The app's page in the Settings app. Its address is the system's own constant (`app-settings:`), not one this app makes: it is taken

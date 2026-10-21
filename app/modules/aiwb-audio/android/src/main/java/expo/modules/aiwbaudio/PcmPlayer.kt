@@ -1,7 +1,9 @@
 package expo.modules.aiwbaudio
 
 import android.media.AudioAttributes
+import android.media.AudioDeviceInfo
 import android.media.AudioFormat
+import android.media.AudioRouting
 import android.media.AudioTrack
 import android.os.Handler
 import kotlin.math.sqrt
@@ -11,10 +13,16 @@ import kotlin.math.sqrt
 // writer reached it; it is emitted when the track's playback head passes it. The head is read every 40 ms on the engine's thread while
 // something plays (marks, the level of the piece that plays, and `drained` when the head has reached the end of what was written and
 // nothing waits). Every method but the writer's loop runs on the engine's thread.
+//
+// Devices (voice-devices VD-10): `prefer` routes the track to a chosen output (null: the system's routing), the track made next too; the
+// device the track plays on is told through `onRouted` when it changes. `hold` pauses the track where it is and keeps everything: what is
+// in the track's buffer, what waits in the queue, and what is written while held (the writer waits instead of dropping a piece that the
+// paused track does not take). `resume` plays on from there. While held no `drained` is emitted and no silence is pushed.
 internal class PcmPlayer(
   private val handler: Handler,
   private val onEvent: (Map<String, Any?>) -> Unit,
   private val onDrained: () -> Unit,
+  private val onRouted: (AudioDeviceInfo?) -> Unit,
 ) {
   private sealed class Item {
     class Pcm(val bytes: ByteArray, val level: Double) : Item()
@@ -41,6 +49,16 @@ internal class PcmPlayer(
   private val marks = ArrayDeque<Pair<Long, Int>>()
   private val pieces = ArrayDeque<Piece>()
   private var writer: Thread? = null
+  private var held = false
+  /** How many holds there have been: a write given back by a hold's pause is told from one given back by stop(). */
+  private var holds = 0
+  private var preferred: AudioDeviceInfo? = null
+
+  /** The track's routing changes, told on the engine's thread (only for the track in use). */
+  private val routing = AudioRouting.OnRoutingChangedListener { r ->
+    val current = synchronized(lock) { r === track }
+    if (current) onRouted(r.routedDevice)
+  }
 
   // The engine thread's own.
   private var carry: Byte? = null
@@ -84,19 +102,74 @@ internal class PcmPlayer(
     startWriter()
   }
 
-  /** Stops at once and empties the queue. Answers whether something was playing. The track is let go (the next write makes another),
-   *  so that no frame of what was cut is left in it and its head starts again from 0. */
+  /** Whether a track is made (something plays, or played a moment ago). */
+  val hasTrack: Boolean get() = synchronized(lock) { track != null }
+
+  /** The device the track plays on now (null: no track, or not playing). */
+  fun routedDevice(): AudioDeviceInfo? = synchronized(lock) {
+    try { track?.routedDevice } catch (_: IllegalStateException) { null }
+  }
+
+  /** The output to route to (null: the system's routing), for the track now and the ones made after. */
+  fun prefer(d: AudioDeviceInfo?) {
+    synchronized(lock) {
+      if (preferred?.id == d?.id) return
+      preferred = d
+      track?.let { try { it.setPreferredDevice(d) } catch (_: IllegalStateException) { /* released */ } }
+    }
+  }
+
+  val isHeld: Boolean get() = synchronized(lock) { held }
+
+  /** Pauses the sound where it is; the queue and the track's buffer are kept, and writes are still queued. */
+  fun hold() {
+    synchronized(lock) {
+      if (held) return
+      held = true
+      holds += 1
+      track?.let { try { it.pause() } catch (_: IllegalStateException) { /* released */ } }
+    }
+    if (busy) onEvent(mapOf("kind" to "level", "level" to 0.0))
+  }
+
+  /** Plays on from where hold() stopped. */
+  fun resume() {
+    synchronized(lock) {
+      if (!held) return
+      held = false
+      track?.let { try { it.play() } catch (_: IllegalStateException) { /* released */ } }
+      lock.notifyAll()
+    }
+    resetHead()
+    if (busy) startPolling()
+  }
+
+  /** Ends a hold that holds nothing (nothing was written while held): the next track plays at once. */
+  fun clearHold() {
+    synchronized(lock) {
+      if (busy) return
+      held = false
+      lock.notifyAll()
+    }
+  }
+
+  /** Stops at once and empties the queue (a hold ends with it). Answers whether something was playing. The track is let go (the next
+   *  write makes another), so that no frame of what was cut is left in it and its head starts again from 0. */
   fun stop(): Boolean {
     val had = busy
     carry = null
     busy = false
     synchronized(lock) {
+      // A writer that waits on a hold, or is inside write(), lets the piece go: the generation is no longer its own.
+      generation += 1
+      held = false
+      lock.notifyAll()
       items.clear()
       marks.clear()
       pieces.clear()
       track?.let {
-        // pause() makes a blocking write return at once.
-        try { it.pause(); it.flush() } catch (_: IllegalStateException) { /* released */ }
+        // pause() makes a blocking write return at once; stop() does it for a track that a hold had paused already.
+        try { it.pause(); it.flush(); it.stop() } catch (_: IllegalStateException) { /* released */ }
       }
     }
     release()
@@ -145,7 +218,9 @@ internal class PcmPlayer(
       .setBufferSizeInBytes(maxOf(min, 0) * 2)
       .setTransferMode(AudioTrack.MODE_STREAM)
       .build()
-    t.play()
+    preferred?.let { t.setPreferredDevice(it) }
+    t.addOnRoutingChangedListener(routing, handler)
+    if (!held) t.play()
     return t
   }
 
@@ -180,8 +255,20 @@ internal class PcmPlayer(
       val out = t ?: continue
       var off = 0
       while (off < p.bytes.size) {
+        // Held: no write goes into the paused track (it would wait there for room); the writer waits here for resume, or for stop.
+        val holdsBefore = synchronized(lock) {
+          while (held && gen == generation && !closed) lock.wait()
+          if (gen != generation || closed) -1 else holds
+        }
+        if (holdsBefore < 0) break
         val n = try { out.write(p.bytes, off, p.bytes.size - off, AudioTrack.WRITE_BLOCKING) } catch (_: IllegalStateException) { -1 }
-        if (n <= 0) break
+        if (n < 0) break
+        if (n == 0) {
+          // The pause of a hold gives a blocking write back early: the rest is written after the resume. A pause of stop(): cut, as before.
+          val heldSince = synchronized(lock) { held || holds != holdsBefore }
+          if (heldSince) continue
+          break
+        }
         off += n
         val current = synchronized(lock) {
           if (gen == generation) written += n / 2
@@ -205,7 +292,8 @@ internal class PcmPlayer(
 
   private val poll = object : Runnable {
     override fun run() {
-      if (!busy) {
+      if (!busy || isHeld) {
+        // Held: the head stands still on purpose; resume() starts the polling again.
         polling = false
         return
       }

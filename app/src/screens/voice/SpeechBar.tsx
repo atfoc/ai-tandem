@@ -6,6 +6,8 @@
 //                 model speaks; a line saying what happens when there is neither
 //   Auto-send     the one setting that Settings and the board's pill read and write too (goal 4.6)
 //   the countdown the bar with the seconds left and Cancel, which keeps the words; otherwise Send
+//   the pause     (voice devices VD-12) the headphones went away and the next sound would be out loud: the status line says so (`speech-paused`,
+//                 warn), the wave is flat and Continue (`speech-continue`) stands where Send stands; Mute and End stay
 //   Mute, End     Mute sends no audio and keeps the session; End stops listening and speaking and closes the socket
 // The bar says nothing of problems: a problem ends the session, and the composer's toolbar (which hangs the popover) is back by then.
 import { useEffect, useState } from "react";
@@ -20,8 +22,9 @@ import { useControlRef } from "../../ui/useControlRef";
 import { webStyle } from "../../ui/webstyle.ts";
 import { setVoiceSettings, useVoiceSession, useVoiceSettings, voice } from "../../voice/index.ts";
 import type { Phase } from "../../voice/index.ts";
+import { noticeText } from "../../voice/logic/devices.ts";
 import {
-  PILL_AUTOSEND, PILL_CANCEL, PILL_COUNTDOWN, PILL_SEND, SPEECH_BAR, SPEECH_END, SPEECH_END_TIP, SPEECH_LISTENING, SPEECH_MUTE, SPEECH_MUTE_TIP, SPEECH_MUTED,
+  VOICE_CONTINUE, PILL_AUTOSEND, PILL_CANCEL, PILL_COUNTDOWN, PILL_SEND, SPEECH_BAR, SPEECH_END, SPEECH_END_TIP, SPEECH_LISTENING, SPEECH_MUTE, SPEECH_MUTE_TIP, SPEECH_MUTED,
   SPEECH_SENDING, SPEECH_THINKING, SPEECH_UNMUTE, SPEECH_UNMUTE_TIP, SPEECH_WAVE_TIP,
 } from "../../voice/words.ts";
 import { useCountdown } from "./pill/Orb.tsx";
@@ -35,7 +38,8 @@ export function SpeechBar({ chatId, branch }: { chatId: string; branch: string }
   const { tokens: t } = useTheme();
   const own = (s: { owner: { kind: string; chat?: string; branch?: string } | null }) => s.owner?.kind === "speech" && s.owner.chat === chatId && s.owner.branch === branch;
   const phase = useVoiceSession((s) => (own(s) ? s.phase : "idle"));
-  const level = useVoiceSession((s) => (own(s) ? Math.round(s.level * 50) / 50 : 0));
+  const paused = useVoiceSession((s) => (own(s) ? s.paused : null));
+  const level = useVoiceSession((s) => (own(s) && !s.paused ? Math.round(s.level * 50) / 50 : 0));
   const muted = useVoiceSession((s) => own(s) && s.muted);
   const countdown = useVoiceSession((s) => (own(s) ? s.countdown : null));
   const committed = useVoiceSession((s) => (own(s) ? s.committed : ""));
@@ -48,22 +52,25 @@ export function SpeechBar({ chatId, branch }: { chatId: string; branch: string }
   const turnOpen = phase === "listening" || phase === "waiting" || phase === "countdown"; // the turn is still the person's: Send and the countdown mean something
   const status = muted ? SPEECH_MUTED : phase === "sending" ? SPEECH_SENDING : phase === "thinking" ? SPEECH_THINKING : SPEECH_LISTENING;
   return (
-    <View {...tid("speech-bar", { phase, muted })} accessibilityLabel={SPEECH_BAR} style={[styles.bar, { backgroundColor: t.bg, borderColor: t.accent, boxShadow: `0 0 0 3px ${t.accentSoft}` } as object]}>
+    <View {...tid("speech-bar", { phase, muted, paused: !!paused || undefined })} accessibilityLabel={SPEECH_BAR} style={[styles.bar, { backgroundColor: t.bg, borderColor: t.accent, boxShadow: `0 0 0 3px ${t.accentSoft}` } as object]}>
       <View style={styles.talk}>
         <Wave level={level} phase={phase} />
         <View style={styles.said}>
+          {paused ? <Text {...tid("speech-paused")} size={13} tone="warn">{noticeText("paused", { device: paused.device })}</Text> : null}
           {speaking ? (
             <Text {...tid("speech-spoken")} size={13} numberOfLines={4}>{spoken}</Text>
           ) : heard ? (
             <Text {...tid("speech-words")} size={13} numberOfLines={4}>{committed}{committed && partial ? " " : ""}<Text size={13} tone="muted">{partial}</Text></Text>
-          ) : (
+          ) : paused ? null : (
             <Text {...tid("speech-status")} size={13} tone="muted">{status}</Text>
           )}
         </View>
       </View>
       <View style={styles.foot}>
         <Switch testID="speech-autosend" label={PILL_AUTOSEND} on={autoSend} onChange={(on) => setVoiceSettings({ autoSend: on })} />
-        {phase === "countdown" ? (
+        {paused ? (
+          <Button {...tid("speech-continue")} size="sm" tone="primary" label={VOICE_CONTINUE} onPress={voice.resume} />
+        ) : phase === "countdown" ? (
           <View {...tid("speech-countdown", { left: run ? run.left.toFixed(1) : "" })} style={styles.count}>
             <View style={[styles.track, { backgroundColor: t.line2 }]}><View {...tid("speech-countdown-bar")} style={[styles.fill, { backgroundColor: t.accent, width: `${Math.round((run?.frac ?? 0) * 100)}%` }]} /></View>
             <Text size={12} tone="muted" style={styles.secs}>{PILL_COUNTDOWN(run?.left ?? 0)}</Text>

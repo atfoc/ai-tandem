@@ -7,8 +7,18 @@
 //   f.calls                                                                       // every call the engine made, in order
 //
 // Nothing here knows a key's value except the keystore; `calls` and the records never hold one.
-import type { AudioPort, MicHandle, NetRequest, PlayerEvent, SocketEvents, VoiceNet, VoicePorts, VoiceSocket } from "../../../src/voice/ports.ts";
+//
+// Devices (voice-devices VD-19 item 1): `f.audio.devices` is a `FakeDevices`. The test sets `inputs`, `outputs`, `defaults`, `ability` and
+// `hidden`; the audio port finds a saved device again with `matchSaved`, as the real adapters do, and records what it was asked. `plug` and
+// `unplug` do what a person does with a headset: they tell `watch`, and when the device was in use they tell `onRoute`.
+//
+//   f.audio.devices.inputs.push(mic("a", "Desk Mic"));  f.audio.devices.unplug("a");   // input-lost, or input-failed after failReopen()
+import type {
+  AudioDevice, AudioPort, DeviceAbility, DeviceList, DevicePort, MicHandle, NetRequest, Opened, PlayerEvent, RouteEvent, SavedDevice, SocketEvents,
+  VoiceNet, VoicePorts, VoiceSocket,
+} from "../../../src/voice/ports.ts";
 import { VoiceNetError, VoiceProblemError } from "../../../src/voice/ports.ts";
+import { matchSaved, shouldPause } from "../../../src/voice/logic/devices.ts";
 
 export type Deferred<T = void> = { promise: Promise<T>; resolve(v: T): void; reject(e: unknown): void };
 export function deferred<T = void>(): Deferred<T> {
@@ -277,10 +287,169 @@ export function createFakeNet(log: (s: string) => void, now: () => number): Fake
   return net;
 }
 
+// ---------------------------------------------------------------- the devices
+
+/** An `AudioDevice` for a test: `dev("a", "Desk Mic")` is an input of unknown privacy; `dev("h", "Headphones", "output", "private")`. */
+export function dev(id: string, name: string, kind: AudioDevice["kind"] = "input", privacy: AudioDevice["privacy"] = "unknown", builtIn = false): AudioDevice {
+  return { id, name, kind, privacy, builtIn };
+}
+
+export type FakeDevices = DevicePort & {
+  /** What the system lists now (the test pushes to them, `plug` and `unplug` change them). */
+  inputs: AudioDevice[];
+  outputs: AudioDevice[];
+  /** What System default is now. A start without a saved device, or with one that is missing, opens this. */
+  defaults: { input: AudioDevice | null; output: AudioDevice | null };
+  /** Fixed for the life of the port in reality; a test sets it before the first call. Default: pick, pick, not linked. */
+  ability: DeviceAbility;
+  /** `list()` answers no devices and `hidden: true` (the web build before the microphone is allowed). */
+  hidden: boolean;
+  /** The `device` of each `startMic`, in order (null: none saved). */
+  opened: (SavedDevice | null)[];
+  /** The device of each `player.useOutput`, in order. (The architecture's records name `outputs` for these; here `outputs` is the list.) */
+  used: (SavedDevice | null)[];
+  /** The calls of `player.hold()` and `player.resume()` by the engine (a held loss of the port is not counted in `holds`). */
+  holds: number;
+  resumes: number;
+  /** How many times `list()` was called. */
+  lists: number;
+  /** What the microphone listens to / the player plays to now (null: none in use, or the default is not known). */
+  micDevice: AudioDevice | null;
+  outputDevice: AudioDevice | null;
+  /** The player is held now (by `hold()` or by a held loss) and has not been resumed or stopped. */
+  held: boolean;
+  /** The next reopen of the microphone after a loss fails: `unplug` of the microphone's device answers `input-failed`. */
+  failReopen(on?: boolean): void;
+  /** A device comes: listed by its kind, `watch` told. */
+  plug(d: AudioDevice): void;
+  /** A device goes: unlisted, `watch` told; when it was the microphone's or the output's in use, `onRoute` says so. `now`: what the sound or
+   *  the capture moves to (default: the system default, or else the first device left of the kind). `held`: whether the port held the sound
+   *  (default: `shouldPause(lost, now)`, the rule the real ports use). */
+  unplug(id: string, o?: { now?: AudioDevice | null; held?: boolean }): void;
+  /** A route event made up by the test, sent to the listeners of `onRoute` as given. */
+  emit(e: RouteEvent): void;
+  /** The number of `watch` and `onRoute` listeners now. */
+  watching(): { watch: number; route: number };
+};
+
+type DevicesInternal = {
+  devices: FakeDevices;
+  routeListeners: Set<(e: RouteEvent) => void>;
+  /** Called by the audio port: a start / a change of output happened. */
+  startedMic(device: SavedDevice | null): Opened;
+  switchedOutput(device: SavedDevice | null): Opened;
+  micStopped(): void;
+  /** The microphone in use was stopped by a loss the test made (the handle reports it). */
+  setMicLoss(f: (failed: boolean) => void): void;
+};
+
+function createDevices(): DevicesInternal {
+  const watchers = new Set<() => void>();
+  const routeListeners = new Set<(e: RouteEvent) => void>();
+  let failReopen = false;
+  let micOn = false;
+  let micLoss: (failed: boolean) => void = () => {};
+  const signal = () => { for (const f of [...watchers]) f(); };
+
+  const d: FakeDevices = {
+    inputs: [],
+    outputs: [],
+    defaults: { input: null, output: null },
+    ability: { input: "pick", output: "pick", linked: false },
+    hidden: false,
+    opened: [],
+    used: [],
+    holds: 0,
+    resumes: 0,
+    lists: 0,
+    micDevice: null,
+    outputDevice: null,
+    held: false,
+    async list(): Promise<DeviceList> {
+      d.lists++;
+      if (d.hidden) return { inputs: [], outputs: [], hidden: true, defaults: { input: null, output: null } };
+      return { inputs: [...d.inputs], outputs: [...d.outputs], hidden: false, defaults: { ...d.defaults } };
+    },
+    watch(f) {
+      watchers.add(f);
+      return () => { watchers.delete(f); };
+    },
+    failReopen(on = true) { failReopen = on; },
+    plug(x) {
+      (x.kind === "input" ? d.inputs : d.outputs).push(x);
+      signal();
+    },
+    unplug(id, o = {}) {
+      const gone = d.inputs.find((x) => x.id === id) ?? d.outputs.find((x) => x.id === id);
+      if (!gone) return;
+      d.inputs = d.inputs.filter((x) => x.id !== id);
+      d.outputs = d.outputs.filter((x) => x.id !== id);
+      if (d.defaults.input?.id === id) d.defaults.input = d.inputs[0] ?? null;
+      if (d.defaults.output?.id === id) d.defaults.output = d.outputs[0] ?? null;
+      signal();
+      const list = gone.kind === "input" ? d.inputs : d.outputs;
+      const now = o.now !== undefined ? o.now : (gone.kind === "input" ? d.defaults.input : d.defaults.output) ?? list[0] ?? null;
+      if (gone.kind === "input" && micOn && d.micDevice?.id === id) {
+        if (failReopen) {
+          micOn = false;
+          d.micDevice = null;
+          micLoss(true);
+          d.emit({ kind: "input-failed", lost: gone });
+        } else {
+          d.micDevice = now;
+          micLoss(false);
+          d.emit({ kind: "input-lost", lost: gone, now });
+        }
+      }
+      if (gone.kind === "output" && d.outputDevice?.id === id) {
+        d.outputDevice = now;
+        const held = o.held ?? shouldPause(gone, now);
+        if (held) d.held = true;
+        d.emit({ kind: "output-lost", lost: gone, now, held });
+      }
+    },
+    emit(e) { for (const f of [...routeListeners]) f(e); },
+    watching: () => ({ watch: watchers.size, route: routeListeners.size }),
+  };
+
+  const open = (kind: "input" | "output", saved: SavedDevice | null): Opened => {
+    const picks = d.ability[kind];
+    const list = kind === "input" ? d.inputs : d.outputs;
+    const fallback = d.defaults[kind];
+    if (picks === "system" || d.hidden) return { device: fallback, missed: false };
+    if (saved === null) return { device: fallback, missed: false };
+    const found = matchSaved(saved, list);
+    return found ? { device: found, missed: false } : { device: fallback, missed: true };
+  };
+
+  return {
+    devices: d,
+    routeListeners,
+    startedMic(saved) {
+      d.opened.push(saved);
+      const got = open("input", saved);
+      d.micDevice = got.device;
+      micOn = true;
+      return got;
+    },
+    switchedOutput(saved) {
+      d.used.push(saved);
+      const got = open("output", saved);
+      d.outputDevice = got.device;
+      return got;
+    },
+    micStopped() { micOn = false; d.micDevice = null; },
+    setMicLoss(f) { micLoss = f; },
+  };
+}
+
 // ---------------------------------------------------------------- the audio
 
 export type FakeMic = {
   opts: { chunkMs: number; echoCancel: boolean };
+  /** The saved device `startMic` was given (null: none), and what it answered. */
+  device: SavedDevice | null;
+  opened: Opened;
   muted: boolean;
   stopped: boolean;
   /** The `mute` calls made, in order. */
@@ -291,7 +460,7 @@ export type FakeMic = {
 
 export type FakeAudio = AudioPort & {
   /** What the player was given, in order. */
-  writes: { at: number; bytes: number; data: Uint8Array }[];
+  writes: { at: number; bytes: number; data: Uint8Array; /** the player was held when this write came */ held: boolean }[];
   marks: number[];
   stops: number;
   /** Everything the player was asked, in order: "write" | "mark:<id>" | "stop". */
@@ -312,6 +481,7 @@ export type FakeAudio = AudioPort & {
   /** The system takes the audio (a call): the listeners of `onInterrupted` are told. */
   interrupt(): void;
   canOpenMicSettings: boolean;
+  readonly devices: FakeDevices;
 };
 
 export function createFakeAudio(log: (s: string) => void, now: () => number): FakeAudio {
@@ -321,6 +491,8 @@ export function createFakeAudio(log: (s: string) => void, now: () => number): Fa
   let unreached: number[] = [];
   let scheduled = false;
   let clipEnd: Deferred | null = null;
+  const inner = createDevices();
+  const devs = inner.devices;
 
   const a: FakeAudio = {
     writes: [], marks: [], stops: 0, playerLog: [], clips: [], mics: [],
@@ -330,28 +502,33 @@ export function createFakeAudio(log: (s: string) => void, now: () => number): Fa
     drain() { emit({ kind: "drained" }); },
     level(l) { emit({ kind: "level", level: l }); },
     interrupt() { for (const f of [...interrupted]) f(); },
+    devices: devs,
+    onRoute(f) { inner.routeListeners.add(f); return () => { inner.routeListeners.delete(f); }; },
 
     async micPermission() { log("audio.micPermission"); return a.permission; },
     async startMic(o) {
       log("audio.startMic");
       if (a.permission === "denied") throw new VoiceProblemError("mic_blocked");
       a.permission = "granted";
+      const opened = inner.startedMic(o.device);
       const mic: FakeMic = {
-        opts: { chunkMs: o.chunkMs, echoCancel: o.echoCancel }, muted: false, stopped: false, muteLog: [],
+        opts: { chunkMs: o.chunkMs, echoCancel: o.echoCancel }, device: o.device, opened, muted: false, stopped: false, muteLog: [],
         chunk(b64, level = 0.3) { if (!mic.stopped) o.onChunk(b64, level); },
       };
       a.mics.push(mic);
+      inner.setMicLoss((failed) => { if (failed) mic.stopped = true; });   // a lost microphone that cannot be reopened is stopped
       const handle: MicHandle = {
         echoCancel: o.echoCancel,
+        opened,
         mute(on) { log("audio.mic.mute"); mic.muteLog.push(on); mic.muted = on; },
-        async stop() { log("audio.mic.stop"); mic.stopped = true; },
+        async stop() { log("audio.mic.stop"); mic.stopped = true; inner.micStopped(); },
       };
       return handle;
     },
     player: {
       write(data) {
         log("audio.player.write");
-        a.writes.push({ at: now(), bytes: data.length, data });
+        a.writes.push({ at: now(), bytes: data.length, data, held: devs.held });
         a.playerLog.push("write");
         schedule();
       },
@@ -367,6 +544,25 @@ export function createFakeAudio(log: (s: string) => void, now: () => number): Fa
         a.stops++;
         a.playerLog.push("stop");
         unreached = [];
+        devs.held = false;
+      },
+      async useOutput(saved) {
+        log("audio.player.useOutput");
+        a.playerLog.push("useOutput");
+        return inner.switchedOutput(saved);
+      },
+      hold() {
+        log("audio.player.hold");
+        a.playerLog.push("hold");
+        devs.holds++;
+        devs.held = true;
+      },
+      resume() {
+        log("audio.player.resume");
+        a.playerLog.push("resume");
+        devs.resumes++;
+        devs.held = false;
+        schedule();
       },
       on(f) {
         log("audio.player.on");
@@ -397,7 +593,7 @@ export function createFakeAudio(log: (s: string) => void, now: () => number): Fa
     scheduled = true;
     setImmediate(() => {
       scheduled = false;
-      if (!a.auto) return;
+      if (!a.auto || devs.held) return;   // a held player plays nothing: its marks and `drained` wait for resume()
       const ids = unreached;
       unreached = [];
       for (const id of ids) emit({ kind: "mark", id });

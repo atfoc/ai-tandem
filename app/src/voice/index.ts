@@ -1,15 +1,19 @@
 // The public face of voice (architecture §3.1): the controller `voice`, the hooks and the types. The screens import from here and from
 // nothing below it; the work is done in `engine/`. The three starts never reject: a start that cannot go on shows the popover (the
 // problem's store) and leaves the session idle. The void methods never throw.
-import { useRef, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import type { VoiceProblemKind } from "./ports.ts";
 import type { VoiceSettings } from "./logic/settings.ts";
 import { hasKey, playPreview, removeKey, setKey, testKey, voices } from "./engine/keycheck.ts";
-import { readAloud, stopReading } from "./engine/speaker.ts";
+import { readAloud, stopReading, testSpeaker } from "./engine/speaker.ts";
+import { deviceListStore, micTestStore, resume, startMicTest, stopMicTest, watchDevices } from "./engine/devices.ts";
+import { choicesFor } from "./logic/devices.ts";
+import type { DeviceChoices } from "./logic/devices.ts";
+import { voicePorts } from "./ports.ts";
 import { cancelCountdown, endSession, interrupt, mute, send, startDictation, startPill, startSpeech } from "./engine/session.ts";
 import { marksStore, spokenMark, watchMarks } from "./engine/marks.ts";
 import {
-  dismissProblem, problemStore, readingStore, sessionStore, settingsOpenStore, settingsStore, updateSettings,
+  dismissProblem, noticeStore, problemStore, readingStore, sessionStore, settingsOpenStore, settingsStore, updateSettings,
 } from "./engine/state.ts";
 import "./engine/testseam.ts";
 
@@ -39,13 +43,19 @@ export type SessionState = {
   countdown: { startedAt: number; ms: number } | null;
   spoken: string;                // the sentence being spoken (speech bar, captions)
   target: string | null;         // pill: the chat the turn goes to
+  /** Paused because the private output went away and the next sound would be out loud (voice-devices VD-12): the lost device's name, "" when it had none. */
+  paused: { device: string } | null;
 };
 
-export type ReadingState = { key: string | null };   // "read:<chat>:<branch>:<index>" of the message being read
+/** key: "read:<chat>:<branch>:<index>" of the message being read; paused: the same pause, for Read aloud. */
+export type ReadingState = { key: string | null; paused: boolean };
 
 /** The stored voice settings (architecture VC-14); `logic/settings.ts` owns the type, its defaults and its clamping. */
 export type { VoiceSettings } from "./logic/settings.ts";
 export type { VoiceInfo, VoiceList } from "./logic/protocol.ts";
+/** The devices (voice-devices): the notice on show, what the pickers show, the saved choice and the platform's devices. */
+export type { VoiceNotice, DeviceChoices } from "./logic/devices.ts";
+export type { AudioDevice, SavedDevice } from "./ports.ts";
 import type { VoiceList } from "./logic/protocol.ts";
 
 export type DictationSink = {
@@ -76,6 +86,13 @@ export const voice: {
   voices(o?: { all?: boolean; search?: string; cursor?: string }): Promise<VoiceList>;
   playPreview(voiceId: string): Promise<void>;
   dismissProblem(): void;
+  /** Continue after a pause (VD-12): the speech bar's Continue, the paused orb, Continue reading. The sound goes on from the system's output. */
+  resume(): void;
+  /** A short chime on the chosen speaker (VD-15): no request, no key. Resolves when it has played or was stopped. */
+  testSpeaker(): Promise<void>;
+  /** Test microphone (VD-16): the level of the chosen microphone, nothing else; a refusal is `mic_blocked` on `anchor`. A running test restarts. */
+  startMicTest(anchor: string): Promise<void>;
+  stopMicTest(): void;
 } = {
   startDictation,
   startSpeech,
@@ -94,6 +111,10 @@ export const voice: {
   voices,
   playPreview,
   dismissProblem,
+  resume,
+  testSpeaker,
+  startMicTest,
+  stopMicTest,
 };
 
 /** The session, or a part of it. A selector that answers a value equal (`Object.is`) to the last one does not re-render: select the
@@ -138,4 +159,32 @@ export function openVoiceSettings(): void { settingsOpenStore.set(true); }
 export function closeVoiceSettings(): void { settingsOpenStore.set(false); }
 export function useVoiceSettingsOpen(): boolean {
   return useSyncExternalStore(settingsOpenStore.subscribe, settingsOpenStore.get, settingsOpenStore.get);
+}
+
+/** The notice on show for this chat (dictation, speech mode, Read aloud), this board (the pill) or the devices card of Settings, or null (VD-13, VD-14). */
+export function useVoiceNotice(where: { kind: "chat"; chat: string } | { kind: "board"; board: string } | { kind: "settings" }): string | null {
+  const get = (): string | null => {
+    const n = noticeStore.get();
+    if (!n || n.where.kind !== where.kind) return null;
+    const same = n.where.kind === "chat" ? n.where.chat === (where as { chat: string }).chat
+      : n.where.kind === "board" ? n.where.board === (where as { board: string }).board : true;
+    return same ? n.text : null;
+  };
+  return useSyncExternalStore(noticeStore.subscribe, get, get);
+}
+
+/** What the Microphone and Speaker pickers of Settings show (VD-17): listed while the component is mounted and when the port says the list
+ *  changed, laid out by the pure `choicesFor` with the saved choice. */
+export function useDeviceChoices(): DeviceChoices {
+  useEffect(() => watchDevices(), []);
+  const list = useSyncExternalStore(deviceListStore.subscribe, deviceListStore.get, deviceListStore.get);
+  const mic = useVoiceSettings((s) => s.mic);
+  const speaker = useVoiceSettings((s) => s.speaker);
+  const ability = voicePorts().audio.devices.ability;
+  return useMemo(() => choicesFor(list, { mic, speaker }, ability), [list, mic, speaker, ability]);
+}
+
+/** The microphone test of Settings (VD-16): on, the level 0..1, and `busy` while a voice session listens (the control is off then). */
+export function useMicTest(): { on: boolean; level: number; busy: boolean } {
+  return useSyncExternalStore(micTestStore.subscribe, micTestStore.get, micTestStore.get);
 }

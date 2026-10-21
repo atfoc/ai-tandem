@@ -11,5 +11,6 @@ Platform-free: it uses only the ports (`../ports.ts`) and imports no screen, no 
 | `listener.ts` | the STT socket session (VC-19) |
 | `session.ts` | dictation, speech mode, the pill: one session at a time (VC-18) |
 | `reply.ts` | follows a chat's reply in the store and feeds the speaker (VC-22) |
+| `devices.ts` | routes (what a lost device does to a session, a reading, a preview), notices, the pause's `resume`, the microphone test, the lists of Settings (voice-devices VD-6 to VD-16) |
 | `keycheck.ts` | Test key and the voice list |
 | `testseam.ts` | `window.__aiwbVoice` in a build for the checks (VC-32) |
