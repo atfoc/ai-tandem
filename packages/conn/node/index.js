@@ -8,7 +8,7 @@
 
 const { createClient, parseAppWaits } = require('../index');
 const { nodeConnector } = require('./connector');
-const { fileStore, ensureStateDir } = require('./store');
+const { fileStore, ensureStateDir, writeFileAtomic } = require('./store');
 const { nodeLocal } = require('./local');
 
 // createNodeClient makes the client of every server (plan C3.2) with the Node ports.
@@ -32,4 +32,4 @@ function createNodeClient(options) {
   });
 }
 
-module.exports = { createNodeClient, parseAppWaits, nodeConnector, fileStore, nodeLocal };
+module.exports = { createNodeClient, parseAppWaits, nodeConnector, fileStore, nodeLocal, ensureStateDir, writeFileAtomic };

@@ -10,6 +10,7 @@
 //                   screen over the chat's board or over the list.
 //   Canvas          B4: the board screen's canvas, under the shell's `BoardBar`; given the board's id.
 //   SubagentDrawer  S7: the drawer of a subagent (beside the page on the wide layouts, a pushed screen on the phone).
+//   BoardVoice      voice (VC-28): the board's voice pill, drawn over the board screen's canvas; given the board's id. Draws nothing until voice registers it.
 //   Overlays        the popups that are always mounted and show themselves from the store (the chat tree, the prompt library's
 //                   popups, the Servers dialog): each one a component with no props.
 import { useSyncExternalStore, type ComponentType } from "react";
@@ -28,6 +29,7 @@ export type Slots = {
   ChatView: ComponentType<{ chat: string }>;
   Canvas: ComponentType<{ board: string }>;
   SubagentDrawer: ComponentType;
+  BoardVoice: ComponentType<{ board: string }>;
   Overlays: ComponentType[];
 };
 
@@ -74,7 +76,7 @@ function StandInCanvas({ board }: { board: string }) {
   );
 }
 
-let slots: Slots = { Sidebar: StandInSidebar, ChatView: StandInChat, Canvas: StandInCanvas, SubagentDrawer: Nothing, Overlays: [] };
+let slots: Slots = { Sidebar: StandInSidebar, ChatView: StandInChat, Canvas: StandInCanvas, SubagentDrawer: Nothing, BoardVoice: Nothing, Overlays: [] };
 const listeners = new Set<() => void>();
 
 /** Registers a screen in a slot (once, at import: before the first render). `Overlays` adds to the list. */

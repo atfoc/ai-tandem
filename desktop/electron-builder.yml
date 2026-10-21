@@ -14,6 +14,7 @@ files:
   - preload.js
   - lib.js
   - ipcface.js
+  - voice.js
   - package.json
 asar: true
 # Outside app.asar: a binary can't be run from inside an asar.
@@ -39,3 +40,6 @@ mac:
   icon: ../assets/icon/AppIcon.icns
   identity: "-" # ad-hoc: enough to run on this Mac
   hardenedRuntime: false
+  # The microphone's prompt (voice): macOS shows this sentence, and without it the app cannot ask for the microphone.
+  extendInfo:
+    NSMicrophoneUsageDescription: AI Whiteboard uses the microphone only when you dictate or talk to a chat. Your voice goes to ElevenLabs with your own key.

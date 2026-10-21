@@ -1,0 +1,9 @@
+{
+  "sentences": [
+    "See the setup guide. It is short for details, or read first.",
+    "The config lives in ~/.config/app/settings.json and in src/voice/logic/speech.ts, which you can open now.",
+    "Visit. Then come back.",
+    "Edit index.ts, then run ./scripts/build.sh and check out/report.txt for the result.",
+    "Mail me at if it breaks."
+  ]
+}

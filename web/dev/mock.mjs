@@ -46,8 +46,8 @@
 //   - a call under /api/ that has no route here answers {ok: true}
 //   - made up, with no counterpart on the server: T0 (the mock's own "now" at its start), flags.send,
 //     flags.items, flags.fork, flags.configure, flags.spawn, flags.make, flags.hello, flags.restart, flags.start, flags.mcp,
-//     flags.streamDown, dropStreams(), addServer(), setServerState(), removeServer(), resync(), onServer(), elsewhere(),
-//     onCalls, seedUI() and what it adds to the snapshot
+//     flags.streamDown, flags.reply, dropStreams(), addServer(), setServerState(), removeServer(), resync(), onServer(), elsewhere(),
+//     onCalls, seedUI(), voice (the stand-in voice service) and what it adds to the snapshot
 //
 //   node dev/mock.mjs                                      then open http://127.0.0.1:4791 (serves app/dist-web; the page can reach the mock
 //                                                          only if built with --connect-self: DIST=/some/folder as below)
@@ -162,6 +162,11 @@
 // its next snapshot has none); `libraries[id]` is what the mock holds, `sendLibrary(id)` tells the page of a change made to it
 // by hand. flags.library = { delay | hold | refuse } holds or refuses the calls that change one.
 //
+// The stand-in voice service (dev/voicestandin.mjs, its header says what it answers and how it is scripted) is mounted at /voice of
+// the mock, HTTP and the socket's upgrade, behind the same check of the Host and the Origin as the rest. Through /mock/eval its control
+// is `voice`: voice.script([{ after: 3, partial: "hel" }, { after: 6, committed: "hello" }]), voice.fail("no_credits"),
+// voice.pace({ chunkMs: 40, chunks: 4 }), voice.log(), voice.reset(). It is as new as the mock process: a restart is a reset.
+//
 // Knobs for the waits of the fork flows, set through /mock/eval and kept until deleted (`delete flags.send`). send,
 // items, fork, configure and spawn may name a `chat` (and `items` a `branch`) to hold for that one alone, and the
 // fields of one knob go together:
@@ -197,6 +202,11 @@
 //                                                   the start, "window", tells nothing there)
 //   flags.spawn = { delay: ms }                     the first message to such a fork finds no process: the fork is
 //                                                   "thinking" and still fresh for that long before the message is added
+//   flags.reply = { text, parts, pace }            the next reply (once: the knob is deleted when it is used) is `text` and nothing
+//                                                   else, no tool call: sent as `parts` (default 6) growing updates of one `text`
+//                                                   item, cut anywhere in the words, `pace` ms apart (default 150), the last one
+//                                                   whole and done, then the turn's end. For voice: speech mode needs a reply of
+//                                                   several sentences that streams (plans/voice-chats/architecture.md, VC-31)
 //   flags.hello = { version }                      what GET /api/hello answers, and the version this computer's entry shows (the page
 //                                                   compares it with its own build's)
 //   flags.streamDown = true; dropStreams()          cuts the stream the page has open and refuses a new one (503, so that the
@@ -221,6 +231,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createHostFace, ownRequest } from "./hostface.mjs";
+import { createVoiceStandin } from "./voicestandin.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const DIST = path.resolve(process.env.DIST || path.resolve(HERE, "../../app/dist-web"));
@@ -708,14 +719,23 @@ function reply(id, branch, b, first = () => {}, made = false) {
   const gone = () => chats[id] !== own || listOf(id, branch) !== list;
   const points = list.some((x) => x.kind === "end" && x.point), k = knob("send", id);
   const put = (i, item) => { list[i] = item; send({ type: "chat_items", chat: id, branch, version: (versions[key] = (versions[key] ?? 1) + 1), updates: [{ index: i, item }] }); };
-  // (the message takes the branch's draft with it: a change of the draft, which raises its counter)
-  const state = (status, more) => { const st = sessionOf(id, branch); setSession(id, branch, { status, locked: true, draft: undefined, ...(st.draft ? { draftRev: (st.draftRev ?? 0) + 1 } : {}), fresh: undefined, ...more }); };
+  // (the message takes the branch's draft with it, once, when it is sent: a change of the draft, which raises its counter. A draft saved
+  // while the reply runs, as speech mode's composer does for the text typed before it, is left alone, as the server leaves it)
+  let taken = false;
+  const state = (status, more) => {
+    const st = sessionOf(id, branch), take = !taken;
+    taken = true;
+    setSession(id, branch, { status, locked: true, ...(take ? { draft: undefined, ...(st.draft ? { draftRev: (st.draftRev ?? 0) + 1 } : {}) } : {}), fresh: undefined, ...more });
+  };
   const tree = (current) => { if (points || sessions[id]) send({ type: "tree", chat: id, branch: treePart(id, branch), ...(current ? { current: curOf(own) } : {}) }); };
   if (!made) list[at] = message(b);
   first();
   if (!made) put(at, list[at]);
   state("thinking"); tree(true);
   if (k.noReply) return;
+  const said = flags.reply; // (flags.reply: this reply's own words, once)
+  delete flags.reply;
+  if (said) return streamReply(said, at + 1, { gone, put, state, tree, points, usage: () => sessionOf(id, branch).usage });
   const read = (result) => tool("r" + at, "Read", { file_path: "README.md" }, result);
   setTimeout(() => { if (gone()) return; put(at + 1, read()); state("tool"); }, 500);
   setTimeout(() => {
@@ -725,6 +745,23 @@ function reply(id, branch, b, first = () => {}, made = false) {
     put(at + 3, { kind: "end", ...(points ? { point: newId("p_") } : {}) });
     const u = sessionOf(id, branch).usage; state("ready", { usage: { ...u, turns: u.turns + 1 } }); tree(false);
   }, 1400);
+}
+
+/** The reply that flags.reply asks for: `text` as `parts` growing updates of one text item, `pace` ms apart, and then the end of
+ *  the turn. The cuts fall at even steps through the characters, in the middle of words as a model's tokens may. */
+function streamReply({ text = "", parts = 6, pace = 150 }, i, { gone, put, state, tree, points, usage }) {
+  const n = Math.max(1, Math.floor(parts)), cut = (k) => (k >= n ? text : text.slice(0, Math.ceil((text.length * k) / n)));
+  for (let k = 1; k <= n; k++) {
+    setTimeout(() => {
+      if (gone()) return;
+      put(i, say(cut(k), k === n));
+      if (k === 1) state("writing");
+      if (k === n) {
+        put(i + 1, { kind: "end", ...(points ? { point: newId("p_") } : {}) });
+        const u = usage(); state("ready", { usage: { ...u, turns: u.turns + 1 } }); tree(false);
+      }
+    }, pace * k);
+  }
 }
 
 /** POST /api/chats/{id}/messages. With no target the message goes to the end of the branch named (?branch=), or of
@@ -1348,7 +1385,8 @@ export function createMockClient() {
 const faces = new Set();
 /** Starts the mock's server on `port`, serving the client of `dist` through the face. Answers the http.Server. */
 export function startMock({ port = PORT, dist = DIST } = {}) {
-  const face = createHostFace({ client: createMockClient(), distDir: dist, log: (line) => console.error(line) });
+  const standin = createVoiceStandin(), voice = standin.control; // (`voice` is in scope of /mock/eval)
+  const face = createHostFace({ client: createMockClient(), distDir: dist, log: (line) => console.error(line), voice: standin });
   faces.add(face);
   const server = http.createServer(async (req, res) => {
     const u = new URL(req.url, "http://x"), p = u.pathname, M = req.method;
@@ -1370,6 +1408,7 @@ export function startMock({ port = PORT, dist = DIST } = {}) {
       if (!res.headersSent) json(res, { error: String(err?.message ?? err) }, 500); else res.end();
     }
   });
+  server.on("upgrade", face.upgrade);
   server.on("close", () => { face.close(); faces.delete(face); });
   return new Promise((ok) => server.listen(port, "127.0.0.1", () => ok(server)));
 }

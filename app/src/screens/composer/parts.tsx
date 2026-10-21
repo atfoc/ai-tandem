@@ -11,6 +11,9 @@
 //   quoteSelection  K5: the text selected in a message of the chat, as ⌘L reads it ({ref, at}), an { error } sentence, or null for none.
 //   SubagentsChip   S7: the Subagents chip and its popover (C-SS). The toolbar gives it its open state (one list at a time) and measures it.
 //   BranchBanner    S8: the banner of a pending move above the box (B-FK). null: none.
+//   VoiceButtons    voice (VC-17): the Dictate and Speech mode buttons, in the toolbar's row or as two rows of its "more" popup (`place`); `disabled`:
+//                   why the composer cannot send now ("" while it can). null: none (the fit leaves them out).
+//   SpeechBar       voice (VC-17): the speech bar that takes the place of the box and the toolbar while speech mode is on. null: none.
 import { useSyncExternalStore, type ComponentType, type Dispatch, type ReactNode, type SetStateAction } from "react";
 
 import type { Refused } from "@aiwb/core/logic/chatimage.ts";
@@ -60,6 +63,8 @@ export type ComposerParts = {
   quoteSelection: (chat: string) => QuoteSelection;
   SubagentsChip: ComponentType<SubagentsProps>;
   BranchBanner: ComponentType<{ chat: string }> | null;
+  VoiceButtons: ComponentType<{ chatId: string; branch: string; place: "row" | "more"; disabled: string }> | null;
+  SpeechBar: ComponentType<{ chatId: string; branch: string }> | null;
 };
 
 /** The Subagents chip until S7 draws it: the settings in words, fixed (no list). */
@@ -78,6 +83,7 @@ let parts: ComposerParts = {
   quoteSelection: () => null,
   SubagentsChip: SubagentsStandIn,
   BranchBanner: null,
+  VoiceButtons: null, SpeechBar: null,
 };
 const listeners = new Set<() => void>();
 

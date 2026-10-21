@@ -8,10 +8,11 @@
 const os = require('node:os');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
-const { app, BrowserWindow, dialog, ipcMain, protocol, session, shell } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, protocol, session, shell, systemPreferences } = require('electron');
 const windowStateKeeper = require('electron-window-state');
 const { createNodeClient: createClient, parseAppWaits } = require('@aiwb/conn/node');
 const { createIpcFace } = require('./ipcface');
+const { makePermissionHandler } = require('./voice');
 const {
   serverBin,
   pagePath,
@@ -122,9 +123,14 @@ function start() {
     shell,
     dialog,
     home: dataFolder,
+    // The voice service's calls and the microphone (voice.js); the key file is in the same folder as the server list.
+    voice: { app, systemPreferences, userData: app.getPath('userData'), env: process.env },
   });
 
   const ses = session.defaultSession;
+  // The microphone (audio only) for the app's own page; any other camera or microphone request is refused, and every other
+  // permission is answered as Electron does with no handler.
+  ses.setPermissionRequestHandler(makePermissionHandler({ getWindow: () => mainWindow, pageURL }));
   // protocol.handle is given no frame, so the check of who asks is made here, before the request
   // reaches the handler.
   ses.webRequest.onBeforeRequest({ urls: [`${PICTURE_SCHEME}://*/*`] }, (details, callback) => {

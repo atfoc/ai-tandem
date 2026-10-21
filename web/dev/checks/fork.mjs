@@ -132,8 +132,9 @@ export function actsIn(page, scope) {
   })));
 }
 
-/** Every action of every message the thread draws, message by message in order (the old `acts`: a mouse's bar shows while the pointer is over its message, a
- *  finger's menu while it is open, so each message is opened in turn). */
+/** Every fork action of every message the thread draws, message by message in order (the old `acts`: a mouse's bar shows while the pointer is over its
+ *  message, a finger's menu while it is open, so each message is opened in turn). Read aloud (`kind: "read"`, voice's, VC.5 proves it) stands in the same
+ *  bar and menu on every message that has words, and is left out here: these checks are about what forking offers. */
 export async function actsSeen(page) {
   const items = (await page.evaluate(`[...document.querySelectorAll('[data-testid="msg"][data-item]')].map((e) => +e.dataset.item).sort((a, b) => a - b)`));
   const out = [];
@@ -141,7 +142,7 @@ export async function actsSeen(page) {
     const msg = byTid(page, "msg", { item: i }).first();
     const opened = await openActs(page, msg).catch(() => null);
     if (!opened) continue; // (a message with no actions)
-    out.push(...await actsIn(page, opened.scope));
+    out.push(...(await actsIn(page, opened.scope)).filter((a) => a.kind !== "read"));
     await opened.close();
   }
   return out;

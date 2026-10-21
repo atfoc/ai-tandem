@@ -1,0 +1,25 @@
+# Shared by `voice-mic`: presses the composer's Dictate control, which is in the toolbar's row where there is room for the pair and in its "more" popup
+# (a sheet on the phone, which stays open after the press) where there is not: the same control either way (`voice-dictate` / `more-dictate`).
+appId: ${APP_ID}
+---
+- runFlow:
+    when:
+      visible:
+        id: "voice-dictate"
+    commands:
+      - tapOn:
+          id: "voice-dictate"
+- runFlow:
+    when:
+      notVisible:
+        id: "voice-dictate"
+    commands:
+      - runFlow:
+          when:
+            notVisible:
+              id: "more-dictate"
+          commands:
+            - tapOn:
+                id: "more-chip"
+      - tapOn:
+          id: "more-dictate"

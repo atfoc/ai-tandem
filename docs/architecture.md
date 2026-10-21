@@ -1,6 +1,6 @@
 # Architecture
 
-How AI Whiteboard fits together: the server, the app on its four targets (the desktop window, iPhone, iPad and Android), who changes a board (readers, the writer, the button and the headless writer), the board engine in Node, how the app reaches every server, the MCP listener and the board tools the agents get, the subagent settings, `get_image`, images in a message, and how pi is run.
+How AI Whiteboard fits together: the server, the app on its four targets (the desktop window, iPhone, iPad and Android), who changes a board (readers, the writer, the button and the headless writer), the board engine in Node, how the app reaches every server, voice (dictation, speech mode, Read aloud and the board's pill, with the person's own ElevenLabs key), the MCP listener and the board tools the agents get, the subagent settings, `get_image`, images in a message, and how pi is run.
 
 - **Server** (`cmd/`, `internal/`): a Go program. It stores boards and chats,
   runs the agent processes and gives them board tools (`list_boards`, `read_board`, `get_view`,
@@ -470,3 +470,121 @@ pi -e <extension> --mcp-config '{"mcpServers":{"board":{"type":"http","url":"htt
 
 That mode connects and registers the MCP tools normally, but shows no permission card: the
 user-supplied MCP tools run un-gated because the ask UI comes from the app's UDS bridge.
+
+## Voice
+
+Voice lets you speak to the app and have it speak back: **Dictate** types what you say into the composer's box,
+**Speech mode** talks a chat through, turn by turn, **Read aloud** speaks one message, and the **pill** on a board talks to
+that board's chats. It uses ElevenLabs (realtime speech to text, text to speech) with the person's own key. The app calls
+ElevenLabs itself; the AI Whiteboard server is not involved, never sees audio, the key or a voice setting, and nothing
+under `cmd/` or `internal/` is about voice. A spoken turn is an ordinary message: it is sent with the composer's
+`sendMessage`, as a typed one is, and the server stores it as one. Nothing of voice starts with the app: a page that has
+never used voice opens no socket, asks for no microphone, makes no audio context and makes no request to a voice service.
+
+- **Where it is.** `app/src/voice/` is the engine: `logic/` is pure TypeScript (the cleaner that turns markdown into words to
+  say, the sentence splitter, ElevenLabs' protocol and its errors, the turn machine, the settings, the marks), `engine/` is
+  the one player, the speaker, the listener and the session, and `platform/` has a file per platform for the three ports the
+  engine uses, as `@aiwb/core` has its ports: the keystore, the net and the audio. The screens (`app/src/screens/voice/`) call
+  `voice` and its hooks and nothing below them. The phones' microphone and speaker are the app's own native module,
+  `app/modules/aiwb-audio` (voice processing on iOS, `AudioRecord` and `AudioTrack` on Android); the desktop window and the web
+  build use Web Audio. The desktop's half is `desktop/voice.js`. Every sentence voice shows is in `app/src/voice/words.ts`
+  (English only).
+- **The key, per platform.** It is one key, typed in Settings, and it is never in the kv, the settings, a log, the text of an
+  error, a board or a chat, and never sent to the AI Whiteboard server.
+
+  | Platform | Where the key is | Who reads it |
+  |---|---|---|
+  | iPhone, iPad | the Keychain (`expo-secure-store`, `aiwb.voice.elevenlabs`, this device only, not in a backup or a transfer) | the page's code, at the start of each call; it is put in the header and dropped |
+  | Android | the Keystore (`expo-secure-store`, same name; the app keeps the secure store out of auto backup) | the same |
+  | Desktop | `<userData>/client/voice-key`, mode 0600 in a 0700 folder, written atomically by the main process | **only the main process**; the page cannot read it, it can ask whether there is one, set one or remove it |
+  | Web build in a browser (the tests) | a variable in memory, gone with the page; nothing in `localStorage`, a cookie or IndexedDB | the page, for the stand-in |
+
+  Nothing reads the key at start-up. Whether there is one is asked when a voice control is pressed and when Settings opens.
+  **Remove key from this device** deletes it from its store.
+- **Who calls ElevenLabs.**
+
+  | Platform | Speech to text (a WebSocket) | Text to speech, voices, previews |
+  |---|---|---|
+  | iPhone, iPad, Android | the app's code, with React Native's `WebSocket` and the key in the `xi-api-key` header | the app's code, with `fetch` of `expo/fetch` (a streamed body) and the same header |
+  | Desktop | the **main process**, with Node's `WebSocket` and the header | the main process, with Node's `fetch`; the body is streamed to the page over IPC |
+  | Web build in a browser (the tests) | the page: it asks the stand-in for a single-use token and opens the socket with `token=` (a browser's socket cannot set a header) | the page, to the stand-in on its own origin |
+
+  On the desktop the page asks and the main process answers, as for the servers: `window.aiwbVoice` (`desktop/preload.js`,
+  registered by `desktop/ipcface.js`) offers the key calls, one request, one socket, a preview and the microphone's questions,
+  and its channels answer only the app's own page. Main makes only the calls voice needs and nothing else is sent with the key:
+  `POST /v1/text-to-speech/{voice}/stream`, `GET /v2/voices` and the realtime socket, each with the query keys voice sends; a
+  preview clip is fetched with no key, over https, from an address main saw in a voices answer, up to 2 MB. What reaches the
+  page is a status, the bytes of a body, the frames of a socket and one word for a failure, never the key, a header, an
+  address or the text of the network library's error. Only `app/src/voice/platform/origin.ts` builds an address of the voice
+  service; `app/test/noplainhttp.test.ts` lets `net.native.ts` and `net.web.ts` be the only other files that open a connection
+  besides `aiwb-net` (which still builds only `https` addresses), and checks that they write no `http://` and use `origin.ts`.
+- **The page's policy is unchanged.** The shipped page keeps `connect-src 'none'`, and a build for the browser checks
+  (`--connect-self`) has `'self'` as before. The desktop's page talks only to its main process, as always; the web build's
+  page talks to the stand-in on its own origin, which `'self'` already allows. Microphone capture and Web Audio need no
+  source in the policy, and a preview clip is decoded from bytes, so no `media-src` is needed either. The calls are made by
+  the main process because that is where the key can stay (a browser socket cannot set a header, and ElevenLabs does not
+  document that its API answers a page's cross-origin requests), so the policy has nothing to let through. If the page were to
+  call ElevenLabs itself, `cspFor` (`app/scripts/export-web.mjs`) would have to add `https://api.elevenlabs.io
+  wss://api.elevenlabs.io` to `connect-src`, and the page would hold the key.
+- **The one player.** All the sound of the app goes through one queue (`engine/player.ts`, over the platform's PCM player):
+  a reply spoken in speech mode, a message read aloud, the pill's turn and a preview clip in Settings. Starting any of them
+  stops what plays and aborts its text-to-speech requests that are still open, so two things never speak at once. A reply is
+  cut into sentences as it is written (`logic/sentences.ts`, after `logic/speech.ts` has taken out markdown, URLs, images and,
+  by default, code), and each sentence is its own text-to-speech request, at most two at a time. Playback of a sentence starts
+  with its first chunk, before the service has finished it. The speed in Settings is sent as `voice_settings.speed`; the
+  player does not stretch the sound.
+- **Interrupting.** A tap interrupts everywhere: a tap on the speech bar's waveform or on the pill's orb while a reply is
+  spoken, and the **Stop reading** control of a message, each stop the sound and the open requests at once (and in a session
+  the microphone goes on listening). Interrupting **by speaking** is on the phones only. On iOS the microphone and the
+  speaker are one engine with Apple's voice processing, and on Android the microphone asks for the platform's echo canceller
+  and voice barge-in is on when the device gave one; there the microphone stays open while the reply is spoken, and a
+  transcript of at least two words that is not mostly the sentence being spoken (the echo of the speaker) stops the sound and
+  starts the next turn. On the desktop and in the web build it is off: whether Chromium's echo cancellation covers what Web
+  Audio plays on macOS is not established, and a model that interrupts itself is worse than no voice barge-in. There, while a
+  reply is spoken or a message is read, **no audio is sent** (the engine mutes the microphone), and the person interrupts
+  with a tap. Whether the phones' echo cancellation holds with a loud speaker is checked by a person on a phone, not by a
+  test.
+- **A turn.** Listening opens one socket to the speech-to-text service (`commit_strategy=vad`, 100 ms chunks of 16 kHz
+  PCM) and keeps it between the turns of a session; there is one session at a time (starting another ends the one
+  running). With **Auto-send** on, a pause (1.2 s by default) after the words starts a countdown that sends the turn,
+  talking on cancels it, and **Cancel** keeps the words without sending; with Auto-send off the words wait for **Send**.
+  **Mute** sends no audio and keeps the socket, **End** closes the microphone and the socket. Dictation never sends: it
+  only fills the composer's box (the guess shows as ordinary text, and typing in the box ends dictation). The reply of a
+  spoken turn is followed as it streams in the chat's items and spoken once, sentence by sentence.
+- **Settings.** The app had no Settings screen. Voice adds a **Settings** dialog (a sheet on a phone) with one section,
+  Voice, opened by the gear at the sidebar foot (`settings-btn`, between the library button and the theme picker) and by
+  the **Open Settings** of a problem popover. It holds the key (hidden, with Show, **Test key** and **Remove key from this
+  device**), the voice (four voices with a preview that costs no credits, **Show all voices**), whether speech mode sends the
+  turn by itself, and Advanced options (speech model, language, the pause, the speed, skipping code blocks). Everything
+  but the key is one stored value, `aiwb.voice.settings` in the kv, which Settings, the speech bar and the pill all read
+  and write, so a change in one shows in the others.
+- **When something fails.** One popover (`voice-problem`) hangs from the control that was pressed, with one sentence and
+  one action: no key, the key refused or the plan out of credits (open Settings or ElevenLabs), the microphone blocked (open
+  the system's settings, where the platform can), ElevenLabs not reached (try again), and a refusal that is none of these
+  (open ElevenLabs). With no key the popover shows before anything else happens: no microphone, no socket. A problem ends
+  the voice session quietly and the chat goes on in text; a turn already sent is not touched.
+- **The mic mark is kept on this device only.** A message that was sent by voice shows a small microphone at its corner.
+  The server stores a message as its text, its context, its references and its images, and none of these can carry a mark
+  to another device without changing what the agent reads or the server, so the mark is a list in the kv
+  (`aiwb.voice.spoken`: the item indexes of this app's spoken messages, per chat and branch, at most 500, the oldest dropped).
+  Another device, a fork, a branch and a reinstall do not show it.
+- **The composer and Read aloud.** **Dictate** and **Speech mode** are two buttons after the toolbar's spacer, before attach;
+  they leave together for the "more" popup when the row is short (`fitWithTail` in `@aiwb/core`), and they are off for the
+  reasons Send is off. While speech mode is on, the **speech bar** takes the place of the box and the toolbar (the words, a
+  waveform, the sentence being spoken, Mute, End, the Auto-send switch, and the countdown with Cancel or Send); the box
+  and its draft are kept under it and come back at End. **Read aloud** is the last of a message's actions (the mouse's hover
+  bar, the finger's "⋯" menu), on the person's messages and the agent's finished replies, even in an archived chat, because
+  reading needs no server; while a message is read it says **Stop reading**.
+- **The board's pill.** A control floating at the bottom of a board's canvas (a canvas board that is not archived), outside
+  the board view: an orb that is idle, listening, thinking, speaking, counting down or waiting to send, a chip that names the
+  chat the turn goes to (the board's last used chat, or a new one made by the first turn), and a bar while it listens. The
+  pill makes its chat with the same action as the sidebar's **+**, but does not open it. If the board has a selection, the
+  turn carries it as ⌘L does ("3 selected", removable). In the desktop window (and the web build), holding Space is push-to-talk and
+  letting go sends; a phone's or tablet's keyboard cannot give the app a typing key, so there it is a tap on the orb. The agent's edits show on the board as they do for a typed message.
+- **The stand-in.** The tests call no real service and no paid model. `web/dev/voicestandin.mjs` is a local fake of the parts
+  of ElevenLabs that voice uses, in plain Node with no dependency: voices, a token, chunked PCM for a sentence, and the
+  realtime socket, which answers a script of words by the count of audio chunks it has received and checks the format of
+  what it gets (16 kHz, 100 ms chunks, `output_format`). A key that starts with `sk_test_` works, any other is refused like a
+  rejected key; it can be made to fail the way each problem does. The mock and the test host mount it at `/voice`, and it
+  runs alone for the desktop and the phone tests. It logs every call, never a key. See [Build and
+  develop](development.md#voice-without-elevenlabs).

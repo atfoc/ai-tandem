@@ -81,7 +81,9 @@ await check("PL4.1 the library popup: the tree, the search, the editor, a second
     // ---- the button, and the ways the popup opens and closes
     const foot = await page.evaluate(() => ["servers-btn", "library-btn", "theme-btn"].map((s) => { const r = document.querySelector(`[data-testid="side-foot"] [data-testid="${s}"]`)?.getBoundingClientRect(); return r ? [Math.round(r.left), Math.round(r.right), Math.round(r.top + r.height / 2)] : null; }));
     if (foot.some((r) => !r)) fail(`the sidebar's foot has not all of Servers, the library's button and the theme picker: ${JSON.stringify(foot)}`);
-    else if (!(foot[0][1] <= foot[1][0] && foot[1][1] <= foot[2][0]) || Math.abs(foot[0][2] - foot[1][2]) > 1 || Math.abs(foot[1][2] - foot[2][2]) > 1) fail(`the library's button is not between Servers and the theme picker on their line: ${JSON.stringify(foot)}`);
+    // (with Settings' gear between the library's button and the picker the foot's right group no longer fits the line of Servers at the default width: it wraps to a line of its own, so
+    // "between" is the reading order, top to bottom and left to right, and the library's button and the picker are on one line)
+    else if (!(foot[0][2] < foot[1][2] - 1 || (Math.abs(foot[0][2] - foot[1][2]) <= 1 && foot[0][1] <= foot[1][0])) || Math.abs(foot[1][2] - foot[2][2]) > 1 || foot[1][1] > foot[2][0]) fail(`the library's button is not between Servers and the theme picker in the foot's reading order: ${JSON.stringify(foot)}`);
     const title = await a.libBtn.getAttribute("title");
     if (title !== "Prompt library") fail(`the button's title is ${JSON.stringify(title)}`);
     await a.libBtn.focus();

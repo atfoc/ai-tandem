@@ -32,4 +32,10 @@ export function nodeConnector(o?: { dial?: NodeClientOptions['dial']; roots?: No
 /** The Store over <stateDir>/servers.json and <stateDir>/client-id. now: the clock of the set-aside name. */
 export function fileStore(stateDir: string, o?: { now?: () => Date }): Store;
 
+/** Writes the file next to `file` and renames it over `file`, with the mode (the desktop's voice key file uses it). */
+export function writeFileAtomic(file: string, data: string | Uint8Array, mode: number): void;
+
+/** Makes the folder, mode 0700, when it is missing. */
+export function ensureStateDir(root: string): void;
+
 export type { ClientOptions };

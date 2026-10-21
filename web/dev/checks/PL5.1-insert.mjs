@@ -5,12 +5,12 @@
 //   (it would print), and once the popup it opens is closed with Esc the box has the focus and its caret or its
 //   selection, so what is typed next goes where it would have gone. The toolbar has the Insert button, which does
 //   the same. ⌘P with the cursor elsewhere (nowhere, in a message, in another field) is left to the browser.
-//   A chat's toolbar draws the button only where its row has room left (logic/composerfit.ts fitWithInsert): beside
-//   a board, in a panel of 430 px, a started chat's whole row leaves none and has no "more" chip, so there is no
-//   button, the meter has its text as before, and ⌘P is the box's all the same. (That was the default panel, of
-//   400 px, before the row had the attach button, which takes 30 px. There the row is no longer whole: the attach
-//   button has the room of the meter's text, and the Insert button stands in what the ring leaves, still with no
-//   "more" chip.) In a pane of 300 px the composer fits its box, with the button or without.
+//   A chat's toolbar draws the button only where its row has room left (logic/composerfit.ts fitWithTail): beside
+//   a board, in a panel of 480 px, a started chat's whole row has the voice pair beside its controls and the meter's text,
+//   and leaves the button no room: there is no button and no "more" chip, and ⌘P is the box's all the same. In a panel of
+//   430 px the pair does not fit beside the controls: it is in the "more" popup, whose chip takes the room of the meter's
+//   text, and the button's entry is in the popup too. In a panel of 410 px the meter is its ring and the row has the
+//   button and the pair. In a pane of 300 px the composer fits its box, with the button or without.
 //   The box alone (src/RefInput.tsx, bundled here with a stand-in for the popup that takes the focus as the popup's
 //   search field will). A text goes in where the caret was when the popup opened: in the middle of typed text, in
 //   place of a selection, in an empty box, with its line breaks; what was before and after is unchanged, the box has
@@ -81,7 +81,9 @@ await check("PL5.1 a text put into a composer's text box, and ⌘P in it and els
 
       // the toolbar's button: the same, and the focus stays in the box (a row without room for it has the "more" popup's entry in its place)
       const button = byTid(page, "insert-btn");
-      const viaMore = async () => { await press(page, byTid(page, "more-chip")); await press(page, byTid(page, "more-insert")); };
+      // (a row with neither the button nor the chip, as a phone's with voice's pair beside the controls, has the key alone: the button gives way to the pair)
+      const hasMore = await byTid(page, "more-chip").count();
+      const viaMore = async () => { if (!hasMore) { await page.keyboard.press(KEY); return; } await press(page, byTid(page, "more-chip")); await press(page, byTid(page, "more-insert")); };
       const has = await button.count();
       if (has > 1) fail(`${name}: the toolbar has ${has} Insert buttons`);
       if (has === 1) {
@@ -92,12 +94,13 @@ await check("PL5.1 a text put into a composer's text box, and ⌘P in it and els
       await shut();
       await until(async () => (await page.evaluate(focusOf)).box, 5000);
       f = await page.evaluate(focusOf);
-      if (!f.box || f.selected !== " worl") fail(`${name}: after ${has ? "a press on the Insert button" : "the entry of the \"more\" popup"} the selection is ${JSON.stringify(f.selected)} in ${f.el}`);
+      if (!f.box || f.selected !== " worl") fail(`${name}: after ${has ? "a press on the Insert button" : hasMore ? "the entry of the \"more\" popup" : "the key"} the selection is ${JSON.stringify(f.selected)} in ${f.el}`);
       await page.keyboard.type("Y");
       if (bare(await boxText()) !== "HelloXYd") fail(`${name}: typing after the Insert button gave ${JSON.stringify(await boxText())}`);
       // reached with the keyboard, it puts the focus back into the box, at the caret
       if (has === 1) { await button.focus(); await page.keyboard.press("Enter"); }
-      else { await byTid(page, "more-chip").focus(); await page.keyboard.press("Enter"); await byTid(page, "more-insert").focus(); await page.keyboard.press("Enter"); }
+      else if (hasMore) { await byTid(page, "more-chip").focus(); await page.keyboard.press("Enter"); await byTid(page, "more-insert").focus(); await page.keyboard.press("Enter"); }
+      else await page.keyboard.press(KEY);
       await shut();
       if (!await until(async () => (await page.evaluate(focusOf)).box, 5000)) fail(`${name}: Enter on the Insert button left the focus in ${(await page.evaluate(focusOf)).el}`);
       await page.keyboard.type("Z");
@@ -122,8 +125,15 @@ await check("PL5.1 a text put into a composer's text box, and ⌘P in it and els
     } catch (e) { fail(`${name}: ${e.message.split("\n")[0]}`); } finally { await ctx.close(); } // (one page at a time: the mock has one stream)
   }
   // a chat's toolbar draws the button where its row has room left, and the composer fits its box
-  // (button: false, a whole row with no room for it; true, a row whose meter is its ring anyway; null, either). The panes are the desktop's; a touch viewport's window is the phone layout.
-  for (const [name, id, width, button] of [["a started chat beside a board, in a panel of 430 px", "board-started", 430, false], ["a started chat beside a board, at the default panel width", "board-started", 400, true], ["a chat's page of 300 px", "plain-started", 300, null]]) {
+  // (what the toolbar has: button, the Insert button in the row; text, the meter's text; chip, the "more" chip; null, either. Voice's pair stands in the row where it fits
+  // beside the controls, and the Insert button gives way to it; where it does not fit, it is in the "more" popup, which brings the chip, and the meter's text gives the chip its room.
+  // The panes are the desktop's; a touch viewport's window is the phone layout.)
+  for (const [name, id, width, want] of [
+    ["a started chat beside a board, in a panel of 480 px", "board-started", 480, { button: false, text: true, chip: false }], // (a whole row, the pair beside it, no room for the button)
+    ["a started chat beside a board, in a panel of 430 px", "board-started", 430, { button: false, text: false, chip: true }], // (the pair is in the popup, with the chip, the button's entry and the ring)
+    ["a started chat beside a board, in a panel of 410 px", "board-started", 410, { button: true, text: false, chip: false }], // (the ring leaves room for the button and the pair)
+    ["a started chat beside a board, at the default panel width", "board-started", 400, null],
+    ["a chat's page of 300 px", "plain-started", 300, null]]) {
     const s = state(id);
     const { page, ctx } = await openAt(open, s, layout, width);
     try {
@@ -133,10 +143,8 @@ await check("PL5.1 a text put into a composer's text box, and ⌘P in it and els
       const m = (await measureComposer(page)).find((c) => !c.none);
       if (!m || m.past || m.send !== "ok" || m.docScroll > 0) fail(`${name}: the composer does not fit: ${JSON.stringify(m && { past: m.past, over: m.over, send: m.send })}`);
       const has = await byTid(page, "insert-btn").count(), text = await byTid(page, "ctx-meter").and(page.locator(":not([data-compact])")).count();
-      const exact = button !== null && layout === "desktop";
-      if (exact && button === false && (has || !text)) fail(`${name}: the toolbar has ${has ? "the" : "no"} Insert button and the meter has ${text ? "its text" : "no text"}: a whole row leaves the button no room, and keeps the meter's text`);
-      if (exact && button === true && (!has || text)) fail(`${name}: the toolbar has ${has ? "the" : "no"} Insert button and the meter has ${text ? "its text" : "no text"}: the attach button leaves the meter's text no room, and the ring leaves room for the button`);
-      if (exact && await byTid(page, "more-chip").count()) fail(`${name}: the toolbar has a "more" chip: the way to the insert popup must cost ${button ? "the row no control" : "a whole row nothing"}`);
+      const chip = await byTid(page, "more-chip").count();
+      if (want && layout === "desktop" && (!!has !== want.button || !!text !== want.text || !!chip !== want.chip)) fail(`${name}: the toolbar has ${has ? "the" : "no"} Insert button, the meter has ${text ? "its text" : "no text"} and the toolbar has ${chip ? "a" : "no"} "more" chip; the row wants ${JSON.stringify(want)}`);
       await press(page, byTid(page, "composer-input").first());
       await page.keyboard.press(KEY);
       const k = await page.evaluate(() => window.__taken());

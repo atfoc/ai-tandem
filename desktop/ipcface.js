@@ -8,6 +8,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { fromAppWindow, pickImages, serverLogPath } = require('./lib');
+const { createVoice } = require('./voice');
 
 // The operations the page may ask for (plan C3.10). Anything else answers 404 no_op.
 const APP_OPS = new Set([
@@ -30,9 +31,12 @@ class Refused extends Error {}
 //   dispose()          removes the handlers
 //
 // getWindow answers the main window, or null; pageURL is the page's URL; home is the data folder
-// when the client does not know this computer's yet.
+// when the client does not know this computer's yet. voice, when given, is what voice.js needs
+// besides the face's own (app, systemPreferences, userData, and the seams of its tests): the face
+// then also answers the voice channels (aiwb:voice, aiwb:voice-cancel, aiwb:voice-send) and sends
+// its events on aiwb:voice-event.
 function createIpcFace({
-  ipcMain, client, getWindow, pageURL, shell, dialog, home,
+  ipcMain, client, getWindow, pageURL, shell, dialog, home, voice: voiceOptions = null,
   fsImpl = fs, setImmediate: later = setImmediate,
 }) {
   // pending holds the calls under way by the page's id, to cancel them.
@@ -52,6 +56,10 @@ function createIpcFace({
     win.webContents.send(channel, payload);
   }
 
+  const voice = voiceOptions
+    ? createVoice({ shell, ...voiceOptions, emit: (event) => send('aiwb:voice-event', event) })
+    : null;
+
   function flush() {
     flushScheduled = false;
     if (queue.length === 0) return;
@@ -70,6 +78,12 @@ function createIpcFace({
     sub = null;
     queue = [];
     if (old) old.close();
+  }
+
+  // endVoice ends the voice requests and sockets: a page that is gone takes them with it. (The stream
+  // handler does not: the page may close and reopen its stream while a voice call runs.)
+  function endVoice() {
+    if (voice) voice.closeAll();
   }
 
   function parseBody(body) {
@@ -154,6 +168,23 @@ function createIpcFace({
   ipcMain.handle('aiwb:pick-images', (event) =>
     pickImages({ event, win: getWindow(), pageURL, dialog }));
 
+  if (voice) {
+    ipcMain.handle('aiwb:voice', async (event, payload) => {
+      check(event);
+      if (!payload || typeof payload !== 'object') throw new Refused('bad voice request');
+      return voice.handle(payload.op, payload.args);
+    });
+    ipcMain.on('aiwb:voice-cancel', (event, payload) => {
+      if (!senderOk(event) || !payload) return;
+      voice.cancel(payload.id);
+    });
+    ipcMain.on('aiwb:voice-send', (event, payload) => {
+      if (!senderOk(event) || !payload) return;
+      if (payload.close === true) voice.socketClose(payload.id);
+      else voice.socketSend(payload.id, payload.text);
+    });
+  }
+
   const answer = (status, body) => ({ status, text: JSON.stringify(body === undefined ? null : body) });
 
   // dataFolder is the data folder of this computer's server: what its launch printed, else the one
@@ -185,10 +216,19 @@ function createIpcFace({
   function watchWindow(win) {
     const wc = win.webContents;
     wc.on('did-start-navigation', (details) => {
-      if (details.isMainFrame && !details.isSameDocument) endSubscription();
+      if (details.isMainFrame && !details.isSameDocument) {
+        endSubscription();
+        endVoice();
+      }
     });
-    wc.on('render-process-gone', endSubscription);
-    win.on('closed', endSubscription);
+    wc.on('render-process-gone', () => {
+      endSubscription();
+      endVoice();
+    });
+    win.on('closed', () => {
+      endSubscription();
+      endVoice();
+    });
   }
 
   return {
@@ -197,11 +237,18 @@ function createIpcFace({
     close() {
       if (sub) send('aiwb:stream-state', 'closed');
       endSubscription();
+      endVoice();
     },
     dispose() {
       for (const ch of ['aiwb:call', 'aiwb:stream', 'aiwb:app', 'aiwb:pick-images']) ipcMain.removeHandler(ch);
       ipcMain.removeAllListeners('aiwb:cancel');
+      if (voice) {
+        ipcMain.removeHandler('aiwb:voice');
+        ipcMain.removeAllListeners('aiwb:voice-cancel');
+        ipcMain.removeAllListeners('aiwb:voice-send');
+      }
       endSubscription();
+      endVoice();
     },
   };
 }

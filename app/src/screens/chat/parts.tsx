@@ -20,10 +20,12 @@
 //                  quotes: native, and the phone layout of the web build); `{}` where the platform's own selection quotes. Called for every message.
 //   MessageFlash   K5: drawn inside a message (user or agent) and over it: the flash that shows where a quote points on native (null at rest).
 //   sendMessage    K3: a suggestion's chip sends its text as the chat's first message (a board chat sends its context with it).
+//   MessageMark    voice (VC-23): the mic mark of a message that was spoken, drawn inside the message; nothing at rest.
+//   useReadAloud   voice (VC-24): a hook that gives a message its Read aloud action, or null where it has none (no text to say). Called for every message.
 //
 // The thread draws each message in a wrapper that carries `testID="msg"` and `dataSet { role, item, quotable, streaming }`: a part that
 // is drawn inside a message does not change them.
-import type { ComponentType } from "react";
+import type { ComponentType, RefObject } from "react";
 import { useSyncExternalStore } from "react";
 import { StyleSheet, View, type ViewProps, type ViewStyle } from "react-native";
 
@@ -51,7 +53,13 @@ export type ChatParts = {
   useMessageHold: (chat: ChatView, index: number | undefined, item: Item) => MessageHold;
   MessageFlash: ComponentType<{ chat: string; index: number }>;
   sendMessage: (chat: string, text: string) => Promise<unknown>;
+  MessageMark: ComponentType<{ chat: ChatView; index: number; item: Item }>;
+  useReadAloud: (chat: ChatView, branch: string, index: number, item: Item) => ReadAloudAction | null;
 };
+
+/** A message's Read aloud action: `reading` while it is read (the action then stops it), `title` the action's words, `run` what a press does,
+ *  `anchor` the control the problem popover hangs from. */
+export type ReadAloudAction = { reading: boolean; title: string; run(): void; anchor: RefObject<View | null> };
 
 /** What a long press on a message adds to its view: touch handlers, and the style that keeps the platform's own selection from starting under the finger. */
 export type MessageHold = { props: Pick<ViewProps, "onTouchStart" | "onTouchMove" | "onTouchEnd" | "onTouchCancel">; style?: ViewStyle };
@@ -105,6 +113,7 @@ let parts: ChatParts = {
   Composer: ComposerStandIn, ToolCard: ToolCardStandIn, PermCard: PermCardStandIn, SubagentRow: SubagentRowStandIn, SubResultRow: Nothing,
   MessageExtras: Nothing, MessageImages: Nothing, HeaderCrumb: Nothing, HeaderTail: Nothing, Banner: Nothing, showQuote: () => {},
   useMessageHold: () => NO_HOLD, MessageFlash: Nothing, sendMessage: sendFirst,
+  MessageMark: Nothing, useReadAloud: () => null,
 };
 const listeners = new Set<() => void>();
 

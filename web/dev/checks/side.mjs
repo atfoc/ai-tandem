@@ -5,7 +5,7 @@
 //   side-section-name  side-section-state {server, tone}  side-count  side-add  side-more  side-section-body  side-section-line
 //   side-section-extra  side-section-reason  side-loose {group}  side-group {group, depth, archived}  side-group-head {group, depth}
 //   side-group-name  side-group-body  side-board {board, archived}  side-board-chats  side-row {kind, key, archived}  side-name  side-sub
-//   draft-tag  archived-tag  name-input  side-foot  side-archived (role switch)  servers-btn  library-btn  theme-btn
+//   draft-tag  archived-tag  name-input  side-foot  side-archived (role switch)  servers-btn  library-btn  settings-btn  theme-btn
 import { byTid, hover, openMenu, press, tidSel } from "./sel.mjs";
 
 /** In the page: one section of the sidebar as it is drawn. id: the entry id of the section's server, "local" for this computer's.
@@ -96,7 +96,7 @@ export async function sideMenu(page, root, button, ...items) {
  *  connected), and the foot's box. */
 export const footOf = (page) => page.evaluate(() => {
   const foot = document.querySelector('[data-testid="side-foot"]'), r = foot.getBoundingClientRect();
-  const ids = ["side-archived", "servers-btn", "library-btn", "theme-btn"];
+  const ids = ["side-archived", "servers-btn", "library-btn", "settings-btn", "theme-btn"];
   return { controls: ids.map((id) => { const e = foot.querySelector(`[data-testid="${id}"]`); return `${id} ${e && id !== "servers-btn" && id !== "theme-btn" ? e.getAttribute("title") ?? "" : ""} ${e?.textContent.trim() ?? "MISSING"}`; }),
     box: [r.left, r.width, r.height, innerHeight - r.bottom].map(Math.round), inTree: !!foot.closest('[data-testid="side-tree"]') };
 });

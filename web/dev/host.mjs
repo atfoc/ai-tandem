@@ -16,8 +16,9 @@
 // The page is in its HTTP way when it is loaded from this address (it has no window.aiwbTransport); nothing is put into it.
 // The owner's things that need the app's own shell (open the log, reveal a board's file) answer 501 here.
 //
-// startHost(options) does the same for a script: { stateDir, localBin, localHome, dist, port, env, timing, log, dial } →
-// { url, port, client, face, close() }. env: the environment of the server program it runs; timing: the module's waits
+// startHost(options) does the same for a script: { stateDir, localBin, localHome, dist, port, env, timing, log, dial, voice } →
+// { url, port, client, face, voice, close() }. voice: true mounts a stand-in voice service (dev/voicestandin.mjs) at /voice of the
+// host (HTTP and the socket's upgrade) and returns it as `voice` ({ control, … }); an object is the options of createVoiceStandin. env: the environment of the server program it runs; timing: the module's waits
 // (parseAppWaits("backoff=3s") reads the syntax of AIWB_APP_WAITS; it is exported from here); dial: the module's test
 // seam for net.connect, with which a script puts a link of its own between the host and a server. close() ends the
 // connections and the listener; it stops no server.
@@ -27,6 +28,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createHostFace } from "./hostface.mjs";
+import { createVoiceStandin } from "./voicestandin.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
@@ -35,7 +37,7 @@ const { createNodeClient: createClient, parseAppWaits } = require("../../package
 export { parseAppWaits };
 
 /** Starts a host and answers once it listens. log(line): one line of what went wrong (never a secret). */
-export async function startHost({ stateDir, localBin, localHome, dist = path.join(HERE, "../../app/dist-web"), port = 0, env, timing, dial, log = (line) => console.error(line) } = {}) {
+export async function startHost({ stateDir, localBin, localHome, dist = path.join(HERE, "../../app/dist-web"), port = 0, env, timing, dial, voice: withVoice, log = (line) => console.error(line) } = {}) {
   if (!stateDir) throw new Error("the host needs a state folder");
   if (localHome && !localBin) throw new Error("--local-home needs --local-bin");
   const client = createClient({
@@ -45,14 +47,16 @@ export async function startHost({ stateDir, localBin, localHome, dist = path.joi
     log,
     dial,
   });
-  const face = createHostFace({ client, distDir: path.resolve(dist), log });
+  const voice = withVoice ? createVoiceStandin(withVoice === true ? {} : withVoice) : null;
+  const face = createHostFace({ client, distDir: path.resolve(dist), log, voice });
   const server = http.createServer(face.handle);
+  if (face.upgrade) server.on("upgrade", face.upgrade);
   try {
     await new Promise((ok, no) => { server.once("error", no); server.listen(port, "127.0.0.1", ok); });
   } catch (e) { await client.close(); throw e; }
   const at = server.address().port;
   return {
-    url: `http://127.0.0.1:${at}/`, port: at, client, face,
+    url: `http://127.0.0.1:${at}/`, port: at, client, face, voice,
     async close() {
       face.close();
       server.closeAllConnections?.();

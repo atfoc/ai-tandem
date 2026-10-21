@@ -44,7 +44,9 @@ await check("A2.3 every choice is a chip in the toolbar or in the open popup, an
     if (!fixed) { fail(`${s.id}: not in the fixture of widths`); continue; }
     // The fixed Subagents chip of a chat on the default settings gives way to the others: it is in the popup when the popup holds another
     // control, in the row when the row has room for it with all the others whole, else not drawn.
-    const spare = fixed.controls.some((c) => c.kind === "subagents" && c.fixed && c.label === "Subagents1 level");
+    // (A state whose fixture row has no Subagents chip is one where voice's pair took its room at the widest pane there is: the page has the chip
+    // all the same, as the spare one, where the popup is.)
+    const spare = fixed.controls.some((c) => c.kind === "subagents" && c.fixed && c.label === "Subagents1 level") || !fixed.controls.some((c) => c.kind === "subagents");
     const firm = (kinds) => (spare ? kinds.filter((k) => k !== "subagents") : kinds);
     const want = firm(fixed.controls.map((c) => CHOICE[c.kind]).filter(Boolean).sort());
     const [kind] = s.pane, p = await openAt(open, s, layout, 300);

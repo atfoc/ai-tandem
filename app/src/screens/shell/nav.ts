@@ -79,14 +79,17 @@ export function openChat(c: ChatView): void {
 }
 
 /** "New chat": made at once where it was asked for, in a group or on a board. That place decides the server the chat lives on,
- *  this computer or the section's: nothing asks, and nothing moves it later. A refusal is shown with the server's sentence, and
- *  nothing was made. */
-export async function newChat(where: ChatPlace): Promise<void> {
+ *  this computer or the section's: nothing asks, and nothing moves it later. On a board the chat is shown under the board's row at
+ *  once (the row opens) and becomes the board's last chat. It is opened (selected, the chat view shown) unless `open` is false.
+ *  Answers the chat, or null when it was refused: the refusal is shown with the server's sentence, and nothing was made. */
+export async function newChat(where: ChatPlace, o?: { open?: boolean }): Promise<ChatView | null> {
   try {
     const c = await api.newChat(where);
     upsertChat(c);
-    openChat(c);
-  } catch (e) { reportError(CHAT_FAILED, e); }
+    if (c.board) { lastChat.set(c.board, c.id); expandBoardRow(c.board); }
+    if (o?.open !== false) openChat(c);
+    return c;
+  } catch (e) { reportError(CHAT_FAILED, e); return null; }
 }
 
 /** Returns the new board's key. The board is made on the server its group is on, and this window takes it at once: making a board
@@ -103,6 +106,11 @@ let editRow: (key: string | null) => void = () => {}; // puts a row of the sideb
 
 /** The sidebar registers what puts one of its rows in rename mode (`board:<key>`, `chat:<key>`, `group:<key>`); nothing while it is not mounted. */
 export function setEditRow(f: (key: string | null) => void): void { editRow = f; }
+
+let expandBoardRow: (board: string) => void = () => {}; // opens a board's row in the sidebar (the sidebar sets it while it is mounted)
+
+/** The sidebar registers what opens the row of a board, so that a chat made on the board shows under it; nothing while it is not mounted. */
+export function setExpandBoardRow(f: (board: string) => void): void { expandBoardRow = f; }
 
 /** "New whiteboard": the board is made at once in its group, its row in rename mode. */
 export function addBoard(group: string): void {

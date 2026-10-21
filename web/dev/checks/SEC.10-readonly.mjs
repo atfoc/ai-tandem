@@ -123,7 +123,15 @@ await check("SEC.10 every control of a chat that is shown as it was is off, and 
     const first = byTid(page, "msg").first();
     await hover(page, first);
     await page.waitForTimeout(150);
-    if (await page.locator('[data-testid="fk-act"], [data-testid="fk-more"]').count()) fail(`${viewport}: ${when}: a message still offers ${J(await page.locator('[data-testid="fk-act"]').evaluateAll((els) => els.map((e) => e.getAttribute("aria-label"))))}`);
+    // (Read aloud, voice's, needs no server: it stays, last, and is the only one; on a finger it is behind the "⋯")
+    const offered = await page.locator('[data-testid="fk-act"]:not([data-kind="read"])').evaluateAll((els) => els.map((e) => e.getAttribute("aria-label")));
+    if (offered.length) fail(`${viewport}: ${when}: a message still offers ${J(offered)}`);
+    if (await touchNow(page) && await byTid(page, "fk-more").count()) {
+      await press(page, byTid(page, "fk-more").first());
+      const kinds = await byTid(page, "menu").last().locator('[data-testid="fk-act"]').evaluateAll((els) => els.map((e) => e.dataset.kind));
+      await page.keyboard.press("Escape");
+      if (kinds.some((k) => k !== "read")) fail(`${viewport}: ${when}: the menu of a message offers ${J(kinds)}, not Read aloud alone`);
+    }
     // the tree: it opens, and is to be read only
     await openTree(page);
     const rows = await byTid(page, "fk-row").filter({ hasNot: page.locator('[data-kind="fork"]') }).count(), held = await page.locator('[data-testid="fk-row"][data-held="true"]').count();

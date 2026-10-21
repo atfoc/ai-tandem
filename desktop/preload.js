@@ -15,6 +15,12 @@
 //   app(op, args) -> Promise<{ status, text }>
 //   pickImages() -> Promise<{ files, skipped }>
 //
+// window.aiwbVoice (voice-chats VC-5; the type is app/src/voice/platform/bridge.types.ts): the page's side of the voice
+// service. Main makes every call to it and holds the key, so no key comes back. A call that fails rejects with an Error
+// whose message is one word of desktop/voice.js (voice_refused, voice_no_key, voice_unreachable, voice_cancelled,
+// voice_failed). An answer's body and a socket's frames come as events (`on`), and may arrive before the promise of the
+// call that started them settles.
+//
 // A sandboxed preload can require 'electron' and nothing of the app's own files, so this is one file.
 // Pictures are shown from addresses of the aiwb-picture scheme.
 
@@ -119,4 +125,59 @@ function buildTransport(randomUUID) {
   };
 }
 
+// buildVoice makes the page's voice face over aiwb:voice and its sibling channels.
+function buildVoice() {
+  const WORDS = /voice_[a-z_]+/;
+  // call asks main for one operation. Only the word of the failure crosses: Electron's text names the channel.
+  const call = (op, args) =>
+    ipcRenderer.invoke('aiwb:voice', { op, args }).catch((e) => {
+      const m = WORDS.exec(e instanceof Error ? e.message : String(e));
+      throw new Error(m ? m[0] : 'voice_failed');
+    });
+  // eventOf cuts an event to the fields of its kind, so that nothing else main sent reaches the page.
+  const eventOf = (e) => {
+    if (!e || typeof e !== 'object') return null;
+    switch (e.kind) {
+      case 'data': return { id: e.id, kind: 'data', bytes: e.bytes };
+      case 'message': return { id: e.id, kind: 'message', text: e.text };
+      case 'close': return { id: e.id, kind: 'close', code: e.code };
+      case 'end': case 'error': case 'open': return { id: e.id, kind: e.kind };
+      default: return null;
+    }
+  };
+
+  return {
+    key: {
+      has: () => call('key.has'),
+      set: (key) => call('key.set', { key }),
+      clear: () => call('key.clear'),
+    },
+    request: (req) => {
+      const r = req && typeof req === 'object' ? req : {};
+      return call('request', { id: r.id, method: r.method, path: r.path, query: r.query, json: r.json, key: r.key });
+    },
+    cancel: (id) => ipcRenderer.send('aiwb:voice-cancel', { id }),
+    socket: {
+      open: (o) => call('socket.open', { id: o && o.id, path: o && o.path, query: o && o.query }),
+      send: (id, text) => ipcRenderer.send('aiwb:voice-send', { id, text }),
+      close: (id) => ipcRenderer.send('aiwb:voice-send', { id, close: true }),
+    },
+    preview: (url) => call('preview', { url }),
+    mic: {
+      status: () => call('mic.status'),
+      ask: () => call('mic.ask'),
+      openSettings: () => call('mic.openSettings'),
+    },
+    on(cb) {
+      if (typeof cb !== 'function') return () => {};
+      return listen('aiwb:voice-event', (e) => {
+        const event = eventOf(e);
+        if (!event) return;
+        try { cb(event); } catch { /* the page's own error */ }
+      });
+    },
+  };
+}
+
 contextBridge.exposeInMainWorld('aiwbTransport', buildTransport(() => globalThis.crypto.randomUUID()));
+contextBridge.exposeInMainWorld('aiwbVoice', buildVoice());

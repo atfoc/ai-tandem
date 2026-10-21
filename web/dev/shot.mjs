@@ -29,6 +29,10 @@
 //   callsOf(page): the calls the page makes; callMatcher(re, server) and callOfRequest(r): a page.route
 //                                 predicate for them, and the call a request carries; hostCall(url, method, path, body, server): a call made on the mock as the page's
 //                                 transport makes it
+//   launchChromium(playwright)    the browser of the checks: Chromium with the fake microphone (BROWSER_ARGS: the page captures a real
+//                                 stream from Chromium's fake device with no prompt, and its sounds play without a gesture);
+//                                 every page of openApp has the `microphone` permission (a blocked microphone is
+//                                 window.__aiwbVoice.denyMic(true) of a build for the checks, plans/voice-chats/architecture.md VC-32)
 //   until(fn)                     waits for a sign, in place of a fixed time; onEnd(fn): what to undo when the process
 //                                 is ended early, ending(): whether it is being; versions(): the Playwright and the
 //                                 Chromium that draw the pages
@@ -39,6 +43,13 @@ import path from "node:path";
 import { execFileSync, spawn } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { checkViewports, contextOptions, isTouch, layoutOfViewport } from "./viewports.mjs";
+
+/** The three flags of the checks' Chromium for voice (arch 13): the microphone's prompt is accepted, the device is a fake one that plays a
+ *  beep, and a page may play sound before anyone touched it. */
+export const BROWSER_ARGS = ["--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream", "--autoplay-policy=no-user-gesture-required"];
+
+/** Chromium for the pages of the checks (Electron's shim of dev/electron ignores the arguments and has its own permissions). */
+export const launchChromium = (playwright) => playwright.chromium.launch({ args: BROWSER_ARGS });
 
 export const URL0 = `http://127.0.0.1:${Number(process.env.PORT || 4801)}`;
 const WEB = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -87,7 +98,7 @@ export async function loadPlaywright() { return await import(pathToFileURL(path.
 /** What draws the pages: { playwright, chromium }, their versions. The widths of the fixture and every screenshot are
  *  this Chromium's. */
 export async function versions() {
-  const browser = await (await loadPlaywright()).chromium.launch();
+  const browser = await launchChromium(await loadPlaywright());
   try { return { playwright: versionIn(playwrightDir()), chromium: browser.version() }; } finally { await browser.close(); }
 }
 
@@ -185,8 +196,8 @@ export const APP_READY = '[data-testid="app-root"]';
 export async function openApp({ url = URL0, viewport = "desktop", query = "", sel, ls = {}, wait = APP_READY, size, scale, browser, errors = [], clock, still = false, scheme } = {}) {
   if (dropped.has(url)) { const id = dropped.get(url); dropped.delete(url); await mockEval(`setServerState(${JSON.stringify(id)}, "connected");`, url).catch(() => {}); }
   const playwright = await loadPlaywright();
-  browser ??= await playwright.chromium.launch();
-  const ctx = await browser.newContext(contextOptions(playwright, viewport, { size, scale, scheme }));
+  browser ??= await launchChromium(playwright);
+  const ctx = await browser.newContext({ ...contextOptions(playwright, viewport, { size, scale, scheme }), permissions: ["microphone"] });
   await seedContext(ctx, sel, ls, still);
   const page = await ctx.newPage();
   if (clock !== undefined) await page.clock.setFixedTime(clock);
@@ -406,7 +417,7 @@ export const atRest = (page, frames = 24) => page.evaluate((frames) => new Promi
  *  one that does not fails the comparison. */
 export async function compareShots({ a, b, pages, omit = [], port, out, clock = Date.UTC(2026, 0, 15, 12), browser, tolerance = 0 }) {
   const own = !browser;
-  browser ??= await (await loadPlaywright()).chromium.launch();
+  browser ??= await launchChromium(await loadPlaywright());
   const dir = out ?? fs.mkdtempSync(path.join(TMP, "aiwb-shots-"));
   fs.mkdirSync(dir, { recursive: true });
   const tidy = async () => { if (own) await browser.close().catch(() => {}); if (!out) fs.rmSync(dir, { recursive: true, force: true }); };
@@ -547,7 +558,7 @@ export async function check(title, body, { viewports, page: pageOpts = {}, allow
     const dist = process.env.DIST || (process.env.MOCK ? "" : (built = buildAppDist()));
     mock = process.env.MOCK ? null : await startMock({ dist, port: Number(process.env.PORT || 4801) });
     const playwright = await loadPlaywright();
-    browser = await playwright.chromium.launch();
+    browser = await launchChromium(playwright);
     const url = mock?.url ?? process.env.MOCK;
     for (const [i, viewport] of names.entries()) {
       if (i > 0 && mock) await mock.restart();

@@ -58,6 +58,28 @@ board. Either way you pick the agent, its model, the effort, and the folder it w
   <img src="docs/screenshots/permission-card.png" width="49%" alt="A chat in which the agent asks to run git push: a card with the command and the buttons Allow and Don't">
 </p>
 
+### Talk to your chats
+
+With your own [ElevenLabs](https://elevenlabs.io) key, you can speak to the app and have it speak back. The key is yours, is
+typed once in **Settings** (the gear at the foot of the sidebar), stays on the device that you typed it on (in the Keychain
+or Keystore of a phone, in a file only the desktop app's main process reads) and goes to ElevenLabs and nowhere else. Voice
+is off until you add a key, and the app does not touch the microphone until you press a voice control.
+
+- **Dictate.** Press the microphone next to the box and speak: your words appear in the box as you say them, and nothing is
+  sent until you press Send.
+- **Speech mode.** Talk to a chat turn by turn. Your words are sent as an ordinary message after a pause (or when you press
+  Send, if you switch **Auto-send** off), and the agent's reply is spoken sentence by sentence as it is written. Mute and End
+  are in the speech bar; a tap on its waveform interrupts the reply, and on an iPhone or an Android phone you can also just
+  start talking.
+- **Read aloud.** Any message has a **Read aloud** action; it skips code blocks unless you switch that off in Settings.
+- **The pill on a board.** A small control at the bottom of a board: speak to the board's chats without opening one, with the
+  selection on the board added to what you say. On a desktop, hold Space to talk and let go to send.
+- **Your voice.** Pick one of ElevenLabs' voices (each has a preview that costs nothing), the speed, the language and the
+  models in Settings. A message you sent by voice has a small microphone mark, on the device that sent it.
+
+If the key is missing, refused or out of credits, or the microphone is blocked, a popover next to the control says so and offers
+the fix; the chat keeps working in text.
+
 ### Branch and fork a chat
 
 A chat is a tree, not a line. From any message you can **Branch** (continue from that point on a
@@ -221,6 +243,9 @@ flowchart LR
   delete elements, and more) on a second local port, 6006. The window that is editing the board
   carries out the edits, which is how they become undo steps. When no window is, the server's
   headless writer does, with no screen.
+- **Voice** does not go through the server. The app itself talks to ElevenLabs with your key: on a phone the app's code does, and on
+  the desktop the main process does, so the key stays out of the page. A spoken turn reaches the server as the ordinary
+  message that a typed one is.
 
 More in [docs/architecture.md](docs/architecture.md).
 
@@ -240,6 +265,10 @@ More in [docs/architecture.md](docs/architecture.md).
   view need a window, so the agent cannot use them while it works away. See
   [Who changes a board](docs/architecture.md#who-changes-a-board) and
   [The board engine in Node](docs/architecture.md#the-board-engine-in-node).
+- **Voice needs ElevenLabs and your key.** The audio of dictation, speech mode and Read aloud goes to ElevenLabs under your
+  own account and plan (it uses credits), and the key never goes to a server of AI Whiteboard. On the desktop the main
+  process makes the calls, so the key never enters the page. Pressing a voice control without a key opens a popover, not
+  a microphone. See [Voice](docs/architecture.md#voice).
 - **One instance per machine.** The MCP port is fixed at 6006, so a second AI Whiteboard server
   on the same machine does not start.
 - **A server's secret is all or nothing.** Whoever has a server's secret reads and changes every
@@ -254,7 +283,7 @@ The full list, with the caps, is in [docs/limitations.md](docs/limitations.md).
 
 - [docs/README.md](docs/README.md): the index of everything below
 - [docs/architecture.md](docs/architecture.md): server, the app on its four targets, who changes a
-  board (readers, the writer and the headless writer), the connection between them, the MCP
+  board (readers, the writer and the headless writer), the connection between them, voice, the MCP
   listener and the board tools, subagents, images
 - [docs/prompt-library.md](docs/prompt-library.md): the prompt library in full
 - [docs/remote-servers.md](docs/remote-servers.md): this computer and other servers as sections of
@@ -265,5 +294,5 @@ The full list, with the caps, is in [docs/limitations.md](docs/limitations.md).
   and when this computer's server does not start
 - [docs/limitations.md](docs/limitations.md): limitations and caps
 - [docs/development.md](docs/development.md): build, run and test while working on the app; the
-  install script for a phone or tablet; the browser checks and the device tests
+  install script for a phone or tablet; trying voice against a stand-in; the browser checks and the device tests
 - [AGENTS.md](AGENTS.md): for contributors, which tests to run and how to write them

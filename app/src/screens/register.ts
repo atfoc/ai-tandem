@@ -12,3 +12,4 @@ import "./quotes";
 import "./composerimages";
 import "./subagents";
 import "./library";
+import "./voice";

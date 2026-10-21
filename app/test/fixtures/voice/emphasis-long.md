@@ -1,0 +1,3 @@
+**Note. This matters** a lot, and __this does too__. Use snake_case_names as they are, and 2 * 3 stays; ~~old~~ is gone.
+
+This is one very long sentence that keeps going without any full stop because the writer simply could not stop adding more and more clauses, then yet another clause follows after a comma, and then some more words are added so that the total length is well over the limit; after that a final stretch of text arrives that keeps on going and going for a while longer until it ends at last.

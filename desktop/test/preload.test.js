@@ -1,6 +1,10 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { loadPreload, recorderRenderer } = require('./bridgemodel.js');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { loadPreload, recorderRenderer, slowClient, exposeThroughBridge, PAGE_URL } = require('./bridgemodel.js');
+const { createIpcFace } = require('../ipcface.js');
 
 // ---- window.aiwbTransport (AD-22), the one surface the preload gives the page
 
@@ -15,7 +19,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 test('exposes window.aiwbTransport: the Transport minus the signal and the error classes, and picture() for the address', () => {
   const exposed = loadPreload(recorderRenderer());
-  assert.deepEqual(Object.keys(exposed), ['aiwbTransport'], 'the page gets nothing else');
+  assert.deepEqual(Object.keys(exposed), ['aiwbTransport', 'aiwbVoice'], 'the page gets nothing else');
   assert.deepEqual(Object.keys(exposed.aiwbTransport).sort(), ['app', 'call', 'pickImages', 'picture', 'stream', 'way']);
   assert.equal(exposed.aiwbTransport.way, 'ipc');
 });
@@ -146,4 +150,215 @@ test('pickImages takes no argument and names no path', async () => {
   const { aiwbTransport } = loadPreload(r);
   assert.equal(await aiwbTransport.pickImages('/etc/passwd', { filePaths: ['/etc/passwd'] }), 'answer');
   assert.deepEqual(r.invoked, [['aiwb:pick-images', undefined]]);
+});
+
+// ---- window.aiwbVoice (VC-5), the voice service's face: the shape of app/src/voice/platform/bridge.types.ts
+
+const VOICE_KEY = 'sk_test_RECOGNISABLE_0123456789abcdef';
+
+test('exposes window.aiwbVoice with the shape of the bridge type, and every method is a function', () => {
+  const { aiwbVoice } = loadPreload(recorderRenderer());
+  assert.deepEqual(Object.keys(aiwbVoice).sort(), ['cancel', 'key', 'mic', 'on', 'preview', 'request', 'socket']);
+  assert.deepEqual(Object.keys(aiwbVoice.key).sort(), ['clear', 'has', 'set']);
+  assert.deepEqual(Object.keys(aiwbVoice.socket).sort(), ['close', 'open', 'send']);
+  assert.deepEqual(Object.keys(aiwbVoice.mic).sort(), ['ask', 'openSettings', 'status']);
+  const seen = exposeThroughBridge(aiwbVoice);
+  for (const f of [seen.cancel, seen.on, seen.preview, seen.request, seen.key.has, seen.key.set, seen.key.clear, seen.socket.open, seen.socket.send, seen.socket.close, seen.mic.status, seen.mic.ask, seen.mic.openSettings]) {
+    assert.equal(typeof f, 'function');
+  }
+});
+
+test('the calls go over aiwb:voice with an op and the fields the face reads, and nothing else', async () => {
+  const r = recorderRenderer({ 'aiwb:voice': async () => 'answer' });
+  const { aiwbVoice } = loadPreload(r);
+  await aiwbVoice.key.has();
+  await aiwbVoice.key.set('k1');
+  await aiwbVoice.key.clear();
+  await aiwbVoice.request({ id: 4, method: 'GET', path: '/v2/voices', query: { page_size: '1' }, json: undefined, key: 'k2', extra: 'no', headers: { a: 'b' } });
+  await aiwbVoice.socket.open({ id: 5, path: '/v1/speech-to-text/realtime', query: { model_id: 'm' }, headers: { a: 'b' } });
+  await aiwbVoice.preview('https://storage.example/a.mp3');
+  await aiwbVoice.mic.status();
+  await aiwbVoice.mic.ask();
+  await aiwbVoice.mic.openSettings();
+  assert.deepEqual(r.invoked, [
+    ['aiwb:voice', { op: 'key.has', args: undefined }],
+    ['aiwb:voice', { op: 'key.set', args: { key: 'k1' } }],
+    ['aiwb:voice', { op: 'key.clear', args: undefined }],
+    ['aiwb:voice', { op: 'request', args: { id: 4, method: 'GET', path: '/v2/voices', query: { page_size: '1' }, json: undefined, key: 'k2' } }],
+    ['aiwb:voice', { op: 'socket.open', args: { id: 5, path: '/v1/speech-to-text/realtime', query: { model_id: 'm' } } }],
+    ['aiwb:voice', { op: 'preview', args: { url: 'https://storage.example/a.mp3' } }],
+    ['aiwb:voice', { op: 'mic.status', args: undefined }],
+    ['aiwb:voice', { op: 'mic.ask', args: undefined }],
+    ['aiwb:voice', { op: 'mic.openSettings', args: undefined }],
+  ]);
+  await aiwbVoice.request(null); // nothing to read: the face refuses it
+  assert.deepEqual(r.invoked.at(-1)[1].args, { id: undefined, method: undefined, path: undefined, query: undefined, json: undefined, key: undefined });
+});
+
+test('cancel, a socket\'s frames and its close are fire and forget on their own channels', () => {
+  const r = recorderRenderer();
+  const { aiwbVoice } = loadPreload(r);
+  aiwbVoice.cancel(3);
+  aiwbVoice.socket.send(5, '{"a":1}');
+  aiwbVoice.socket.close(5);
+  assert.deepEqual(r.sent, [
+    ['aiwb:voice-cancel', { id: 3 }],
+    ['aiwb:voice-send', { id: 5, text: '{"a":1}' }],
+    ['aiwb:voice-send', { id: 5, close: true }],
+  ]);
+  assert.deepEqual(r.invoked, []);
+});
+
+test('a failure rejects with the one word main gave, or voice_failed; Electron\'s text never reaches the page', async () => {
+  const fail = (m) => async () => { throw new Error(`Error invoking remote method 'aiwb:voice': ${m}`); };
+  for (const [thrown, word] of [['VoiceError: voice_no_key', 'voice_no_key'], ['VoiceError: voice_refused', 'voice_refused'], ['VoiceError: voice_unreachable', 'voice_unreachable'], ['VoiceError: voice_cancelled', 'voice_cancelled'], ['Error: the call is not from the app window', 'voice_failed'], ['TypeError: x is not a function', 'voice_failed']]) {
+    const { aiwbVoice } = loadPreload(recorderRenderer({ 'aiwb:voice': fail(thrown) }));
+    await assert.rejects(aiwbVoice.key.has(), (e) => e.message === word, thrown);
+    await assert.rejects(aiwbVoice.mic.ask(), (e) => e.message === word, thrown);
+  }
+});
+
+test('events reach the listener cut to the fields of their kind, in order; off stops them; a throwing listener hurts no other', () => {
+  const r = recorderRenderer();
+  const { aiwbVoice } = loadPreload(r);
+  const a = []; const b = [];
+  const offA = aiwbVoice.on((e) => a.push(e));
+  aiwbVoice.on((e) => { b.push(e); throw new Error('the page\'s own'); });
+  const bytes = new Uint8Array([1, 2, 3]);
+  r.emit('aiwb:voice-event', { id: 1, kind: 'data', bytes, secret: 'x' });
+  r.emit('aiwb:voice-event', { id: 1, kind: 'end', text: 'no' });
+  r.emit('aiwb:voice-event', { id: 2, kind: 'error', status: 500, message: 'https://api.elevenlabs.io failed' });
+  r.emit('aiwb:voice-event', { id: 3, kind: 'open' });
+  r.emit('aiwb:voice-event', { id: 3, kind: 'message', text: '{}', bytes });
+  r.emit('aiwb:voice-event', { id: 3, kind: 'close', code: 1000, text: 'no' });
+  r.emit('aiwb:voice-event', { id: 3, kind: 'unknown' });
+  r.emit('aiwb:voice-event', null);
+  r.emit('aiwb:voice-event', 'text');
+  const want = [
+    { id: 1, kind: 'data', bytes }, { id: 1, kind: 'end' }, { id: 2, kind: 'error' }, { id: 3, kind: 'open' },
+    { id: 3, kind: 'message', text: '{}' }, { id: 3, kind: 'close', code: 1000 },
+  ];
+  assert.deepEqual(a, want);
+  assert.deepEqual(b, want);
+  offA();
+  r.emit('aiwb:voice-event', { id: 4, kind: 'end' });
+  assert.equal(a.length, want.length);
+  assert.equal(b.length, want.length + 1);
+  assert.equal(aiwbVoice.on('not a function')(), undefined, 'a listener that is no function is ignored, and its remover does nothing');
+});
+
+// voiceRig wires the real preload to the real face and the real voice module, the way Electron does (the payload is
+// cloned, the handler gets the sender frame, a rejection comes back as Electron's "Error invoking remote method" text).
+// The service is fetch: a fake that records what it is asked.
+function voiceRig({ senderURL = PAGE_URL, fetchImpl } = {}) {
+  const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'aiwb-voice-face-'));
+  const handlers = new Map();
+  const listeners = new Map();
+  const frame = { url: senderURL };
+  const renderer = recorderRenderer();
+  const webContents = { mainFrame: frame, send(channel, payload) { renderer.emit(channel, structuredClone(payload)); }, isDestroyed: () => false, on() {} };
+  const win = { webContents, isDestroyed: () => false, on() {} };
+  const ipcMain = {
+    handle: (ch, fn) => handlers.set(ch, fn),
+    on: (ch, fn) => listeners.set(ch, fn),
+    removeHandler: (ch) => handlers.delete(ch),
+    removeAllListeners: (ch) => listeners.delete(ch),
+  };
+  const face = createIpcFace({
+    ipcMain, client: slowClient(), getWindow: () => win, pageURL: PAGE_URL, shell: {}, dialog: {}, home: '/tmp',
+    voice: { app: { isPackaged: true }, systemPreferences: {}, userData, platform: 'linux', env: {}, fetchImpl },
+  });
+  const event = { sender: webContents, senderFrame: frame };
+  renderer.invoke = async (ch, payload) => {
+    renderer.invoked.push([ch, payload]);
+    try { return await handlers.get(ch)(event, structuredClone(payload)); }
+    catch (e) { throw new Error(`Error invoking remote method '${ch}': ${e}`); }
+  };
+  renderer.send = (ch, payload) => { renderer.sent.push([ch, payload]); const fn = listeners.get(ch); if (fn) fn(event, structuredClone(payload)); };
+  const { aiwbVoice } = loadPreload(renderer);
+  return { aiwbVoice: exposeThroughBridge(aiwbVoice), handlers, listeners, face, userData, keyFile: path.join(userData, 'client', 'voice-key'), cleanup: () => { face.dispose(); fs.rmSync(userData, { recursive: true, force: true }); } };
+}
+
+const waitUntil = async (what, pred) => {
+  const end = Date.now() + 15000;
+  while (!pred()) {
+    if (Date.now() > end) assert.fail(`timed out waiting for ${what}`);
+    await new Promise((res) => setTimeout(res, 5));
+  }
+};
+
+test('through the real face: the key is set, a request is answered with a status and events, and the key is nowhere the page can see', async () => {
+  const asked = [];
+  const fetchImpl = async (url, o) => { asked.push([url, o.headers]); return new Response(new Uint8Array([9, 8, 7]), { status: 200 }); };
+  const rig = voiceRig({ fetchImpl });
+  try {
+    const { aiwbVoice } = rig;
+    const seen = [];
+    aiwbVoice.on((e) => seen.push(e));
+    assert.equal(await aiwbVoice.key.has(), false);
+    await aiwbVoice.key.set(VOICE_KEY);
+    assert.equal(await aiwbVoice.key.has(), true);
+    assert.equal(fs.statSync(rig.keyFile).mode & 0o777, 0o600);
+    const answer = await aiwbVoice.request({ id: 1, method: 'GET', path: '/v2/voices', query: { page_size: '1' } });
+    assert.deepEqual(answer, { status: 200 });
+    await waitUntil('the end', () => seen.some((e) => e.kind === 'end'));
+    assert.deepEqual(seen.map((e) => e.kind), ['data', 'end']);
+    assert.deepEqual(Array.from(seen[0].bytes), [9, 8, 7]);
+    assert.deepEqual(asked, [['https://api.elevenlabs.io/v2/voices?page_size=1', { 'xi-api-key': VOICE_KEY }]]);
+    assert.ok(!JSON.stringify([answer, seen.map((e) => ({ ...e, bytes: e.bytes && Array.from(e.bytes) }))]).includes(VOICE_KEY));
+    await assert.rejects(aiwbVoice.request({ id: 2, method: 'GET', path: '/v1/user' }), (e) => e.message === 'voice_refused');
+    await aiwbVoice.key.clear();
+    assert.equal(await aiwbVoice.key.has(), false);
+    await assert.rejects(aiwbVoice.request({ id: 3, method: 'GET', path: '/v2/voices' }), (e) => e.message === 'voice_no_key');
+    assert.equal(asked.length, 1);
+  } finally {
+    rig.cleanup();
+  }
+});
+
+test('through the real face: a cancel from the page aborts the request', async () => {
+  let signal = null;
+  const fetchImpl = async (url, o) => {
+    signal = o.signal;
+    return new Response(new ReadableStream({ start(c) { c.enqueue(new Uint8Array([1])); } }), { status: 200 });
+  };
+  const rig = voiceRig({ fetchImpl });
+  try {
+    await rig.aiwbVoice.key.set(VOICE_KEY);
+    const seen = [];
+    rig.aiwbVoice.on((e) => seen.push(e));
+    await rig.aiwbVoice.request({ id: 1, method: 'GET', path: '/v2/voices' });
+    await waitUntil('the first chunk', () => seen.length > 0);
+    assert.equal(signal.aborted, false);
+    rig.aiwbVoice.cancel(1);
+    assert.equal(signal.aborted, true);
+  } finally {
+    rig.cleanup();
+  }
+});
+
+test('through the real face: a call from another page or frame is refused, and a cancel or a frame from it does nothing', async () => {
+  let fetched = 0;
+  const rig = voiceRig({ senderURL: 'https://evil.example/', fetchImpl: async () => { fetched++; return new Response('x'); } });
+  try {
+    await assert.rejects(rig.aiwbVoice.key.set(VOICE_KEY), (e) => e.message === 'voice_failed');
+    await assert.rejects(rig.aiwbVoice.key.has(), (e) => e.message === 'voice_failed');
+    await assert.rejects(rig.aiwbVoice.mic.status(), (e) => e.message === 'voice_failed');
+    await assert.rejects(rig.aiwbVoice.preview('https://storage.example/a.mp3'), (e) => e.message === 'voice_failed');
+    assert.equal(fs.existsSync(rig.keyFile), false);
+    rig.aiwbVoice.cancel(1);
+    rig.aiwbVoice.socket.send(1, 'x');
+    rig.aiwbVoice.socket.close(1);
+    assert.equal(fetched, 0);
+  } finally {
+    rig.cleanup();
+  }
+});
+
+test('the face registers the voice channels only when it is given voice, and dispose removes them', () => {
+  const rig = voiceRig();
+  assert.deepEqual([...rig.handlers.keys()].filter((c) => c.startsWith('aiwb:voice')), ['aiwb:voice']);
+  assert.deepEqual([...rig.listeners.keys()].filter((c) => c.startsWith('aiwb:voice')).sort(), ['aiwb:voice-cancel', 'aiwb:voice-send']);
+  rig.cleanup();
+  assert.deepEqual([...rig.handlers.keys(), ...rig.listeners.keys()], []);
 });

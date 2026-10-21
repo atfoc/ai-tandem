@@ -1,10 +1,13 @@
 // The readers of the composer for the checks of the new build (package K3; the counterparts of the old driver's `measureComposer`,
 // `composerProbe`, `toolbarWidths` and of the seed's `see` selectors, which read the old page's classes). No dash in the name: the runner
 // does not take it for a check. The testIDs of screens/composer, with their dataSet in brackets:
-//   composer [chat, branch] · composer-box [readonly] · composer-input (the chip input) · composer-tools [more, meter, insert] (the toolbar's
+//   composer [chat, branch] · composer-box [readonly] · composer-input (the chip input) · composer-tools [more, meter, insert, voice] (the toolbar's
 //   row) · tool [control: server | agent | folder | model | effort | subagents] (a control of the row; a fixed folder's `lock` stands before
 //   its chip) · tchip [kind, fixed, connected?] (a chip: a button, or static) · more-chip · part [part: more | meter | insert | attach | stop |
-//   send] (what stands in the row besides the controls) · tool-grow · ctx-meter [tone: error, compact] · send [sending] · stop · insert-btn ·
+//   send | voice] (what stands in the row besides the controls) · tool-grow · ctx-meter [tone: error, compact] · send [sending] · stop · insert-btn ·
+//   voice-dictate [on] · voice-speech [on] (voice's pair, Dictate and Speech mode, after the row's spacer, before the attach button: they are in `part` "voice", one
+//   child of the row, and `composer-tools` says where the pair is in its `voice`: row | more) · more-row [control: dictate | speech] with more-dictate [on] and more-speech [on]
+//   (the pair as two entries of the popup) · voice-problem (the popover of a voice problem) ·
 //   agent-reason [tone: missing] · more-pop (the popup, over the page) with more-row [control: …] and more-insert · picker (a list) with
 //   picker-search, pick-row [optionId] · dirs (the folder browser) with dir-input, dir-item, dir-use, dir-err · context-row · ctx-chip [ref] ·
 //   ctx-act [kind: selection | point, on] · ctx-note · mention-pop with mention-item [board] · composer-err · model-notice [warn] · archived-bar.

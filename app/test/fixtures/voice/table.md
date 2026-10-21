@@ -1,0 +1,9 @@
+Here is how the options compare:
+
+| Option | Speed | Cost |
+|---|:---:|---:|
+| Local | fast | free |
+| **Cloud** | `medium` | $20.00 |
+| Hybrid | slow | see [pricing](https://example.com/p) |
+
+So the local one wins on cost.

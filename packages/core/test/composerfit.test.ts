@@ -5,7 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { CONTROLS, LEAVING, fit, fitWithInsert, needs, widthKey, type Control, type Fit, type Row } from "../src/logic/composerfit.ts";
+import { CONTROLS, LEAVING, fit, fitWithInsert, fitWithTail, needs, widthKey, type Control, type Fit, type Row } from "../src/logic/composerfit.ts";
 
 type Measured = { kind: string; label: string; fixed?: boolean; w: number; margin?: number };
 type State = { pane: string; sum: number; controls: Measured[] };
@@ -336,4 +336,180 @@ test("an optional control is beside the others when all of them are whole, in th
   assert.deepEqual(fit(rowOf(started, 375, null, true)), { toolbar: ["folder", "model"], popup: [], more: false, meter: "ring" });
   assert.deepEqual(fit(rowOf(started, 389, null, true)), { toolbar: ["folder", "model"], popup: [], more: false, meter: "full" });
   assert.deepEqual(fit(rowOf(started, 520, null, true)), { toolbar: ["folder", "model", "subagents"], popup: [], more: false, meter: "full" });
+});
+
+/** The voice pair (Dictate and Speech mode) as one child of the row: two buttons the width of the insert button and the gap between. */
+const PAIR = 2 * INSERT + gap;
+const tail = (r: Row, held = { insert: false, voice: false }, w: { insert?: number; voice?: number } = { insert: INSERT, voice: PAIR }) => fitWithTail(r, w, held);
+const free = { insert: false, voice: false };
+
+test("the voice pair is in the row where the row has room for it with every control where it is without it, and takes nothing from them", () => {
+  let inRow = 0, inPopup = 0;
+  for (const [id, s] of chats) {
+    for (let box = 150; box <= 1000; box++) {
+      const r = rowOf(s, box), { fit: f, insert, voice } = tail(r), at = `${id} at ${box}`, plain = fit(r);
+      // the pair is in the row exactly where the row, placed with it and its gap, has room for it
+      const room = needs(r, plain) + PAIR + gap <= r.room + 1e-6;
+      assert.equal(voice === "row", room && fitWithInsert(r, PAIR).insert === "row", at);
+      if (voice === "row") {
+        inRow++;
+        // every control and the meter are where they are without the pair, and the row, with the pair and what is drawn beside it, fits
+        assert.deepEqual(f, fit({ ...r, fixed: [PAIR, ...r.fixed] }), at);
+        assert.deepEqual(f.popup, plain.popup, at);
+        assert.equal(f.meter, plain.meter, at);
+        assert.equal(f.more, plain.more, at);
+        const drawn = needs({ ...r, fixed: [PAIR, ...(insert === "row" ? [INSERT] : []), ...r.fixed] }, f);
+        assert.ok(drawn <= r.room + 1e-6, `${at}: needs ${drawn} of ${r.room}`);
+        // the insert button gives way first: it is in the row only where the row has room for it beside the pair
+        assert.equal(insert === "row", needs({ ...r, fixed: [PAIR, ...r.fixed] }, f) + INSERT + gap <= r.room + 1e-6, at);
+        if (insert !== "row") assert.equal(insert, f.more ? "more" : "", at);
+      } else {
+        inPopup++;
+        // in the popup as two entries; the chip is there, and the button's entry is in the popup too
+        assert.equal(f.more, true, at);
+        assert.equal(insert, "more", at);
+        // the controls are where they are without the pair, unless the chip it brought took room that the row needed
+        if (plain.more) assert.deepEqual(f, plain, at);
+        else assert.ok(f.popup.length > 0 || f.meter === plain.meter || needs(r, f) <= r.room + 1e-6, at);
+        assert.ok(needs(r, f) <= r.room + 1e-6 || f.popup.length === r.controls.length, `${at}: needs ${needs(r, f)} of ${r.room}`);
+      }
+    }
+  }
+  assert.ok(inRow > 0 && inPopup > 0, `${inRow} in the row, ${inPopup} in the popup`);
+  for (const [id, s] of chats) assert.deepEqual(tail(rowOf(s, 1000)), { fit: { toolbar: rowOf(s, 1000).controls.map((c) => c.id), popup: [], more: false, meter: "full" }, insert: "row", voice: "row" }, `${id}: on a wide page`);
+});
+
+test("narrower than room for both, the insert button gives way and the pair stays in the row", () => {
+  let seen = 0;
+  for (const [id, s] of chats) {
+    for (let box = 150; box <= 1000; box++) {
+      const r = rowOf(s, box), t = tail(r), at = `${id} at ${box}`;
+      if (t.voice === "row" && t.insert !== "row") {
+        seen++;
+        // the button is in the popup when the row has the chip, else nowhere; the pair is in the row
+        assert.equal(t.insert, t.fit.more ? "more" : "", at);
+        assert.deepEqual(t.fit, fit({ ...r, fixed: [PAIR, ...r.fixed] }), at);
+      }
+      // the pair never gives way to the button: where the button is in the row, the pair is too
+      if (t.insert === "row") assert.equal(t.voice, "row", at);
+    }
+  }
+  assert.ok(seen > 0, "no state of the fixture has room for the pair and none for the button");
+  // a whole row of short names: the button needs 30 px more than the pair
+  const s = fixture.states["board-started"], whole = rowOf(s, 375 + 14);
+  assert.equal(fitWithInsert(whole, INSERT).insert, "", "(the row is whole, and has no room for the button)");
+  const roomForPair = rowOf(s, Math.ceil(needs(whole, fit(whole)) + PAIR + gap + chrome) + 0);
+  assert.deepEqual(tail(roomForPair), { fit: fit({ ...roomForPair, fixed: [PAIR, ...roomForPair.fixed] }), insert: "", voice: "row" });
+});
+
+test("narrower still, the pair is two entries of the \"more\" popup and brings the chip, with no control in it where all of them fit", () => {
+  // a whole row with the chip's room but not the pair's
+  const s = fixture.states["board-started"], whole = rowOf(s, 2000), base = needs(whole, fit(whole)) + chrome;
+  const box = Math.ceil(base + MORE + gap + 1); // (the chip fits; the pair, wider than the chip, does not)
+  assert.ok(PAIR > MORE, "the pair is wider than the chip");
+  const r = rowOf(s, box), t = tail(r);
+  assert.deepEqual(t, { fit: { toolbar: fit(r).toolbar, popup: [], more: true, meter: "full" }, insert: "more", voice: "more" });
+  assert.equal(needs(r, t.fit) <= r.room + 1e-6, true);
+  // the chip needs room that the row does not have: a control goes to the popup for it, as in any fit
+  const tight = rowOf(s, Math.ceil(base) + 2), u = tail(tight);
+  assert.equal(u.voice, "more");
+  assert.equal(u.insert, "more");
+  assert.equal(u.fit.more, true);
+  assert.ok(needs(tight, u.fit) <= tight.room + 1e-6 || u.fit.popup.length === tight.controls.length);
+  assert.ok(u.fit.popup.length > 0 || u.fit.meter === "ring", "the chip took the room of the meter's text or of a control");
+  // a row that already has the chip is as it is without the pair
+  const narrow = rowOf(fixture.states["plain-started"], 260);
+  assert.deepEqual(tail(narrow), { fit: fit(narrow), insert: "more", voice: "more" });
+});
+
+test("the chip the pair brings costs the meter its text only where the chip does not fit beside it, and no control leaves for it then", () => {
+  // A started chat beside a board (a 430 px panel is a row of 385 px): the row is whole with the meter's text and has less to spare than the pair
+  // is wide, and than the chip is (28 px and a gap). The pair goes into the popup; the chip takes the room of the text, which is the first to go.
+  const s = fixture.states["board-started"], bare = rowOf(s, 2000), whole = needs(bare, fit(bare));
+  const row430 = rowOf(s, 385 + chrome);
+  assert.equal(fit(row430).meter, "full", "(without voice the row keeps the text at 430 px)");
+  assert.ok(needs(row430, fit(row430)) + PAIR + gap > row430.room, "(the pair does not fit beside the controls)");
+  assert.ok(needs(row430, fit(row430)) + MORE + gap > row430.room, "(nor the chip beside the text)");
+  assert.deepEqual(tail(row430), { fit: { toolbar: ["folder", "model"], popup: [], more: true, meter: "ring" }, insert: "more", voice: "more" });
+  // with the chip's room to spare (one px less is the ring): the pair is in the popup with the text kept, and not a control in it
+  const fits = rowOf(s, Math.ceil(whole + MORE + gap + chrome));
+  assert.deepEqual(tail(fits), { fit: { toolbar: ["folder", "model"], popup: [], more: true, meter: "full" }, insert: "more", voice: "more" });
+  assert.deepEqual(tail({ ...fits, room: fits.room - 1 }).fit.meter, "ring");
+  // everywhere the row had no chip and the pair is in the popup: the meter has its text exactly where the row with the chip has room for it,
+  // and a control leaves only where the ring alone does not make room (as in any fit with the chip)
+  let seen = 0;
+  for (const [id, x] of chats) {
+    for (let box = 150; box <= 1000; box++) {
+      const r = rowOf(x, box), t = tail(r), at = `${id} at ${box}`;
+      if (t.voice !== "more" || fit(r).more) continue;
+      seen++;
+      const withChip = fit({ ...r, fixed: [r.more, ...r.fixed] });
+      assert.deepEqual({ ...t.fit, more: true }, { ...withChip, more: true }, at);
+      assert.equal(t.fit.meter === "full", needs({ ...r, fixed: [MORE, ...r.fixed] }, { ...withChip, meter: "full" }) <= r.room + 1e-6 && withChip.popup.length === 0, at);
+      if (fit(r).popup.length === 0 && withChip.popup.length === 0) assert.equal(t.fit.popup.length, 0, `${at}: no control leaves where the ring makes room for the chip`);
+    }
+  }
+  assert.ok(seen > 0);
+});
+
+test("while the popup is open it keeps the pair, however wide the row, as it keeps a control; and a popup that lost what it held keeps nothing", () => {
+  const s = fixture.states["plain-new"], held = fit(rowOf(s, 260)).popup;
+  assert.ok(held.length > 0);
+  for (let box = 260; box <= 1000; box += 20) {
+    const r = rowOf(s, box, held), t = tail(r, { insert: false, voice: true });
+    assert.equal(t.voice, "more", `at ${box}`);
+    assert.equal(t.fit.more, true, `at ${box}`);
+    assert.deepEqual(t.fit.popup, held, `at ${box}: nothing returns`);
+    // the button is in the row with the pair gone from it, where the row has room: it was in the row before
+    assert.equal(tail(r, { insert: true, voice: false }).insert, "more", `at ${box}`);
+  }
+  // the pair held with the chip not there: the popup is closed with nothing in it, the pair returns
+  assert.equal(tail(rowOf(s, 1000), { insert: false, voice: true }).voice, "row");
+  assert.equal(tail(rowOf(s, 1000), { insert: true, voice: true }).voice, "row");
+  // the pair that was in the row stays there with the popup open, held by something else
+  assert.equal(tail(rowOf(s, 1000, held), free).voice, "row");
+  // the button held in the popup stays there; the pair is in the row
+  const t = tail(rowOf(s, 1000, held), { insert: true, voice: false });
+  assert.deepEqual([t.voice, t.insert], ["row", "more"]);
+});
+
+test("a pair whose width is not known is drawn in the row, to be measured, and the button with it where it has room", () => {
+  for (const box of [150, 300, 800]) {
+    const r = rowOf(fixture.states["plain-new"], box), t = tail(r, free, { insert: INSERT });
+    assert.equal(t.voice, "row", `at ${box}`);
+    // it counts nothing: the others are as they are without it
+    assert.deepEqual(t.fit, fitWithInsert(r, INSERT).fit, `at ${box}`);
+    assert.equal(t.insert, fitWithInsert(r, INSERT).insert, `at ${box}`);
+  }
+  // nothing is measured yet: every control is in the toolbar, the button and the pair with them
+  const r = rowOf(fixture.states["plain-new"], 300), none: Row = { ...r, controls: r.controls.map((c) => ({ id: c.id })), meter: {}, more: undefined, fixed: [undefined] };
+  assert.deepEqual(fitWithTail(none, {}, free), { fit: { toolbar: r.controls.map((c) => c.id), popup: [], more: false, meter: "full" }, insert: "row", voice: "row" });
+});
+
+test("the optional chip gives way to the pair, and the pair to nothing but the controls", () => {
+  const started = Object.entries(fixture.states).find(([, x]) => x.controls.some(spare))!;
+  const bare = rowOf(started[1], 2000), whole = needs(bare, fit(bare)) + chrome;
+  const at = (box: number) => { const t = tail(rowOf(started[1], box, null, true)); return [t.voice, t.insert, t.fit.toolbar.includes("subagents")]; };
+  assert.deepEqual(at(Math.ceil(whole + PAIR + gap)), ["row", "", false]);
+  assert.deepEqual(at(Math.ceil(whole + PAIR + gap + INSERT + gap)), ["row", "row", false]);
+  // with the chip, the others are where fit puts them
+  for (let box = 260; box <= 1000; box += 3) {
+    const r = rowOf(started[1], box, null, true), f = tail(r).fit, plain = fit(r), firm = (x: Fit) => [x.meter, x.toolbar.filter((c) => c !== "subagents"), x.popup.filter((c) => c !== "subagents")];
+    if (tail(r).voice === "row") assert.deepEqual(firm(f), firm(plain), `${started[0]} at ${box}`);
+  }
+});
+
+test("the optional chip goes to the popup where the pair brought the \"more\" chip: a choice is not left out of both", () => {
+  const started = Object.entries(fixture.states).find(([, x]) => x.controls.some(spare))!;
+  let inPopup = 0;
+  for (let box = 150; box <= 1000; box++) {
+    const r = rowOf(started[1], box, null, true), t = tail(r), at = `${started[0]} at ${box}`;
+    if (t.voice !== "more") continue;
+    inPopup++;
+    assert.ok(t.fit.more, at);
+    // in the toolbar or in the popup, never in neither
+    assert.ok(t.fit.toolbar.includes("subagents") || t.fit.popup.includes("subagents"), at);
+    assert.deepEqual(t.fit.popup, CONTROLS.filter((id) => t.fit.popup.includes(id)), `${at}: in the order of CONTROLS`);
+  }
+  assert.ok(inPopup > 0, "the pair is in the popup at some width");
 });

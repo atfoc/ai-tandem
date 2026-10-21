@@ -1,0 +1,5 @@
+Dr. Smith and Mrs. Jones met Mr. Lee at St. Mary's, e.g. on Monday, i.e. the first day. J. R. R. Tolkien wrote it, vs. what you expected.
+
+We need fruit, nuts, etc. and some bread. Bring fruit, nuts, etc. Then we leave. The cost is approx. five dollars, see Fig. 3 and No. 4 for more.
+
+Prof. Ng said so. Is that right? Yes! It is... really? Wait... what happened here. OK.

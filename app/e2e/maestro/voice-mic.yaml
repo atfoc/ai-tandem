@@ -1,0 +1,174 @@
+# aiwb-e2e: needs=server,agent,control,voice app=1
+# voice-mic (voice chats, package P17, goal 6.6, architecture §14.4): the microphone's permission and the audio session of the app's own native
+# audio module (`aiwb-audio`) on the real stack of the simulator, against a stand-in voice service on this computer (no ElevenLabs, no key of value).
+# On the phone layout: the scratch server is added and holds a chat with a message and the stand-in agent's answer; Settings > Voice takes the key
+# `sk_test_…` and Test key finds the stand-in's voices; "Dictate" on the chat puts up the system's microphone alert with the app's own words, Allow,
+# the microphone runs, the stand-in's log shows 16 kHz chunks of 100 ms (the runner checks it at the end) and the words the stand-in's script
+# answers by chunk count come into the box (the simulator's microphone is silence or the Mac's input: nothing is recognised here, the stand-in says
+# what it was told to); "Read aloud" on the answer streams the stand-in's speech to the native player, which plays it to its end (the dev line
+# `voice-dev`, src/screens/voice/DevLine.tsx, counts the player's marks and drained events); the microphone permission is then taken back
+# (`simctl privacy revoke`, which ends the app as a change in Settings does; the flow opens it again), "Dictate" shows the "can't hear you" popover with "Open system settings", and the key is removed.
+appId: ${APP_ID}
+---
+- runFlow: _open-app.yaml
+- runFlow: _forget-servers.yaml
+- runScript:
+    file: _ctl.js
+    env:
+      METHOD: POST
+      ROUTE: /chat?name=Voice-chat&text=Say one short sentence.
+- runFlow: _add-server.yaml
+- takeScreenshot: p17-00-sidebar
+
+# ---- Settings > Voice: the key, and Test key against the stand-in
+- tapOn:
+    id: "settings-btn"
+- extendedWaitUntil:
+    visible:
+      id: "vs-page"
+    timeout: 30000
+- tapOn:
+    id: "vs-key"
+- inputText: "sk_test_p17devicekey"
+- tapOn:
+    id: "vs-key-test"
+- extendedWaitUntil:
+    visible:
+      id: "vs-key-result"
+      text: "Works: 6 voices found."
+    timeout: 60000
+- tapOn:
+    id: "vs-key-save"
+- extendedWaitUntil:
+    visible: "Key saved on this device."
+    timeout: 30000
+- takeScreenshot: p17-01-key-saved
+- tapOn:
+    id: "vs-close"
+- extendedWaitUntil:
+    notVisible:
+      id: "vs-page"
+    timeout: 30000
+
+# ---- the chat, with its message and the answer
+- extendedWaitUntil:
+    visible: "Voice-chat"
+    timeout: 90000
+- tapOn: "Voice-chat"
+- extendedWaitUntil:
+    visible:
+      id: "composer-input"
+    timeout: 60000
+- extendedWaitUntil:
+    visible: "FAKE.*Say one short sentence."
+    timeout: 60000
+
+# ---- Dictate: the prompt, Allow, the chunks, the scripted words
+# (the stand-in answers by chunk count, 10 per second: a guess after 8 chunks, the words committed after 16)
+- runScript:
+    file: _voice.js
+    env:
+      ROUTE: /script
+      BODY: '[{"after":8,"partial":"hello"},{"after":16,"committed":"hello there"}]'
+- runFlow: _voice-dictate.yaml
+- extendedWaitUntil:
+    visible: ".*Would Like to Access the Microphone.*"
+    timeout: 30000
+- assertVisible: ".*listens only while you dictate or talk to a chat.*"
+- takeScreenshot: p17-02-prompt
+- tapOn:
+    text: "OK|Allow"
+- runFlow: _voice-close-sheet.yaml
+- extendedWaitUntil:
+    visible: "hello there"
+    timeout: 60000
+- assertVisible:
+    id: "voice-dev"
+    text: "voice-dev: phase=listening .*"
+- takeScreenshot: p17-03-dictating
+- runFlow: _voice-dictate.yaml
+- runFlow: _voice-close-sheet.yaml
+- extendedWaitUntil:
+    visible:
+      id: "voice-dev"
+      text: "voice-dev: phase=idle .*"
+    timeout: 30000
+- assertVisible: "hello there"
+
+# ---- Read aloud on the answer: the stand-in's speech, played to its end by the native player
+# (the "⋯" of the answer, the second message: a tap on the element by its id does not open the menu on the device, a tap on its place does, the place being the iPhone 17's;
+# a first tap just after the chat has opened is sometimes lost, so the tap is repeated until the menu shows)
+- waitForAnimationToEnd
+- retry:
+    maxRetries: 4
+    commands:
+      - tapOn:
+          point: "92%,20%"
+      - extendedWaitUntil:
+          visible: "Read aloud"
+          timeout: 5000
+- tapOn:
+    text: "Read aloud"
+- extendedWaitUntil:
+    visible:
+      id: "voice-dev"
+      text: "voice-dev: phase=idle reading=none drained=[1-9][0-9]* marks=[1-9][0-9]*"
+    timeout: 90000
+- takeScreenshot: p17-04-read
+
+# ---- the permission is taken back: Dictate says the app can't hear
+- runScript:
+    file: _ctl.js
+    env:
+      METHOD: POST
+      ROUTE: /voice/mic?action=revoke
+# (the system ends an app whose permission changes, as Settings does on a phone: the app is opened again, and has the server, the chat and the key)
+- runScript:
+    file: _ctl.js
+    env:
+      METHOD: POST
+      ROUTE: /voice/relaunch
+# (it opens on the chat it had open; if it opens on the sidebar the chat is opened)
+- runFlow: _dismiss.yaml
+- runFlow:
+    when:
+      visible:
+        id: "side-tree"
+    commands:
+      - tapOn: "Voice-chat"
+- extendedWaitUntil:
+    visible:
+      id: "composer-input"
+    timeout: 120000
+- runFlow: _voice-dictate.yaml
+- extendedWaitUntil:
+    visible:
+      id: "voice-problem-text"
+      text: "The app can't hear you. Turn on the microphone in system settings."
+    timeout: 30000
+- assertVisible:
+    id: "voice-problem-act"
+    text: "Open system settings"
+- takeScreenshot: p17-05-blocked
+- tapOn:
+    id: "voice-problem-dismiss"
+- runFlow: _voice-close-sheet.yaml
+
+# ---- the key is removed from this device
+- runFlow: _to-sidebar.yaml
+- tapOn:
+    id: "settings-btn"
+- extendedWaitUntil:
+    visible:
+      id: "vs-key-remove"
+    timeout: 30000
+- tapOn:
+    id: "vs-key-remove"
+- tapOn:
+    text: "Remove key"
+- extendedWaitUntil:
+    visible: "Key removed from this device."
+    timeout: 30000
+- assertNotVisible:
+    id: "vs-key-remove"
+- takeScreenshot: p17-06-key-removed

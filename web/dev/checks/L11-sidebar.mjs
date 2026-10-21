@@ -13,7 +13,7 @@
 //   A-SB-36  a menu is a popover (a sheet on the phone), headed for a "+", its Delete in the danger colour; Esc closes only it; a press outside does
 //   A-SB-37  a collapsed group shows what it holds and a dot while one of its chats works; a double press renames it
 //   A-SB-41  an empty group says "Empty — use + or drag chats here."
-//   A-SB-06  the foot: Show archived, Servers, the prompt library, the theme picker, in that order; the Servers button's title
+//   A-SB-06  the foot: Show archived, Servers, the prompt library, Settings (voice's), the theme picker, in that order; the Servers button's title
 // The touch layouts run the same body: a double press is two taps, hover is not asked of a finger.
 import { callMatcher, callsOf, check, colourOf, mockEval, until } from "../shot.mjs";
 import { byTid, hover, placed, press, showList, touchNow } from "./sel.mjs";
@@ -179,14 +179,15 @@ await check("L11 the sidebar's rows, heads and menus: the parts nothing proved o
   await page.unroute(callMatcher(/^POST \/api\/boards\/b_L1\/rename$/));
 
   // ---- the foot
-  const foot = await page.evaluate(() => [...document.querySelectorAll('[data-testid="side-foot"] [data-testid="side-archived"], [data-testid="side-foot"] [data-testid="servers-btn"], [data-testid="side-foot"] [data-testid="library-btn"], [data-testid="side-foot"] [data-testid="theme-btn"]')].map((e) => [e.dataset.testid, Math.round(e.getBoundingClientRect().left), e.getAttribute("title") ?? "", Math.round((e.getBoundingClientRect().top + e.getBoundingClientRect().height / 2) / 30)]));
+  const foot = await page.evaluate(() => [...document.querySelectorAll('[data-testid="side-foot"] [data-testid="side-archived"], [data-testid="side-foot"] [data-testid="servers-btn"], [data-testid="side-foot"] [data-testid="library-btn"], [data-testid="side-foot"] [data-testid="settings-btn"], [data-testid="side-foot"] [data-testid="theme-btn"]')].map((e) => [e.dataset.testid, Math.round(e.getBoundingClientRect().left), e.getAttribute("title") ?? "", Math.round((e.getBoundingClientRect().top + e.getBoundingClientRect().height / 2) / 30)]));
   const order = foot.map((f) => f[0]);
-  if (J(order) !== J(["side-archived", "servers-btn", "library-btn", "theme-btn"])) fail(`the foot's controls are ${J(order)}`);
+  if (J(order) !== J(["side-archived", "servers-btn", "library-btn", "settings-btn", "theme-btn"])) fail(`the foot's controls are ${J(order)}`);
   // (in a narrow sidebar the library's button and the picker wrap to a line of their own, at the right: they are still read after the others)
   const seen = [...foot].sort((a, b) => a[3] - b[3] || a[1] - b[1]).map((f) => f[0]);
   if (J(seen) !== J(order)) fail(`the foot's controls are not in that order, top to bottom and left to right: ${J(seen)}`);
   if (foot[1][2] !== "Servers" && !/^Servers: one is not connected/.test(foot[1][2])) fail(`the Servers button is titled "${foot[1][2]}"`);
   if (foot[2][2] !== "Prompt library") fail(`the library's button is titled "${foot[2][2]}"`);
+  if (foot[3][2] !== "Settings") fail(`the Settings button is titled "${foot[3][2]}"`);
   void viewport; void colourOf; void showList;
   note(`the rows' words, the tags, the caret and count, the new dot, the hover buttons (${touch ? "drawn for a finger" : "under the pointer"}), ${kind}s, Delete in the danger colour, the question before an archive at work, a refusal and its title, a refused rename's line, the foot's order`);
 }, { viewports, page: false });

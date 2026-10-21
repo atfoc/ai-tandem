@@ -11,7 +11,7 @@ node app/e2e/run.mjs --list
 ```
 
 Name **your own** simulator (`--device` or `AIWB_IOS_UDID`; `xcrun simctl list devices`) or device (`--device` or
-`AIWB_ANDROID_SERIAL`): other agents run this on theirs, so the runner never guesses one. Flows: `conn-on-hermes`, `net-selftest`, `keys`, `board-webview`, `sheets`, `net-pinned-stream`, `composer-chips`, `composer-chips-gallery` (`app/e2e/maestro/*.yaml`; files that start with `_`
+`AIWB_ANDROID_SERIAL`): other agents run this on theirs, so the runner never guesses one. Flows: `conn-on-hermes`, `net-selftest`, `keys`, `board-webview`, `sheets`, `net-pinned-stream`, `composer-chips`, `composer-chips-gallery`, `voice-mic` (`app/e2e/maestro/*.yaml`; files that start with `_`
 are shared parts).
 
 ## What a run does
@@ -214,3 +214,31 @@ that left the list, of them with a secret still in the store, deletes still to r
 **The picker's pictures on iOS are touched at the places of its grid**: the system's picker is another process, so Maestro does not see inside it (only the app's own screen disappears from the
 accessibility tree, which is how the flow knows it is up). The library is date-sorted and the flow puts its pictures in one after the other, so "the newest N" are the first cells,
 left to right (`_pick-ios.yaml`). Android's photo picker is in the tree, its cells named by their date (`_pick-android.yaml`), and its button is "Done".
+
+## The microphone and the audio session (`voice-mic`, package P17)
+
+`node app/e2e/run.mjs voice-mic --platform ios --device <your own simulator's udid>` (voice chats, goal 6.6, architecture §14.4; the development build,
+header `needs=server,agent,control,voice app=1`). It covers what only the platform shows of voice: the system's microphone prompt, the audio session of
+`app/modules/aiwb-audio` starting and stopping, 16 kHz chunks of 100 ms reaching a service, and the native player playing a stream. Nothing is recognised: the
+simulator's microphone is silence or the Mac's input, so the stand-in voice service says what it was told to (`needs=voice`, below).
+
+- `voice`: `web/dev/voicestandin.mjs` runs alone on a free port of this computer (`lib/voice.mjs`; no prefix: the app builds its addresses from an origin,
+  `src/voice/platform/origin.ts`). Metro gets `EXPO_PUBLIC_AIWB_VOICE_BASE` at it, which a development build honours for a local host only (a Release build ignores
+  it), and the flow gets `VOICE_CONTROL` (`_voice.js` posts to it: `script` the next transcription as `[{ after: <chunks>, partial?, committed? }]`, `pace`, `fail`).
+  The runner resets the microphone's answer before each attempt (the system then asks again); with `control` the control API gets `POST /voice/mic?action=grant|revoke` (iOS `simctl privacy … microphone`; Android `pm grant|revoke RECORD_AUDIO`) and `POST /voice/relaunch`. The system ends an app whose permission changes (iOS: exit domain `tcc`; Settings does the same on a phone), so a flow opens the app again after a revoke, and the runner resets only while the app is not running.
+  After the flow the runner reads the stand-in's log (`checkLog`) and fails the run unless every transcription socket got only 16 kHz chunks of exactly 100 ms of
+  audio, at about real time, had the key header, ended, and the client broke no rule of the protocol (`problems` empty); the log is `voice-log.json` in the run's folder.
+- The build has a status line, `voice-dev` (`src/screens/voice/DevLine.tsx`, registered only when `__DEV__` and `EXPO_PUBLIC_AIWB_VOICE_BASE` are set): `voice-dev: phase=<…>
+  reading=<key|none> drained=<n> marks=<n>`; the last two count the player's events while a message is read aloud, so `reading=none` with both above zero is a reading played to its end.
+- The flow: the scratch server is added, with a chat that has a message and the stand-in agent's answer; Settings > Voice takes `sk_test_…` and Test key finds six voices; Dictate →
+  the system's alert with the app's words → Allow → the scripted words come into the box (the script fires by chunk count, so the microphone really ran); Dictate again stops;
+  Read aloud on the answer; `simctl privacy revoke microphone` (the system ends the app; the flow opens it again); Dictate → the "can't hear you" popover with "Open system settings"; Remove key.
+- **The Mac must let the process that runs the simulator use its microphone.** The simulator takes its input from the Mac's, and the first input call of an audio engine in the app waits for the Mac's
+  answer. In a session where nobody can answer the Mac's microphone prompt (the authorization of the running process is "not determined"), that call never returns: CoreAudio says
+  `Initialize: RPC timeout. Apparently deadlocked. Aborting now.` after 9 s and the app ends, with Dictate at `phase=starting` and no transcription socket at the stand-in (the flow then fails at "hello there",
+  and the runner would fail it for the missing socket). The same call from a plain Swift program on that Mac hangs too, so it is the session, not the app. Run the flow from a terminal the person has
+  allowed to use the microphone once (System Settings > Privacy & Security > Microphone). The prompt, Read aloud, the refused permission, the relaunch and Remove key need no microphone and run anywhere.
+- Two things the flow works around: a tap on the answer's "⋯" by its id (`fk-more`) does not open the menu on the device, a tap at its place does (and a first tap just after the chat opens is sometimes
+  lost, so it is repeated); and the toolbar's "more" sheet, where the phone keeps Dictate, stays open after Dictate is pressed (`_voice-dictate.yaml`, `_voice-close-sheet.yaml`).
+- Not covered by a simulator: echo cancellation and voice barge-in (no acoustic echo), Bluetooth routes, a phone call taking the audio; the person confirms them on a real iPhone and
+  Android phone. Android runs this flow only with the emulator lock held (see Android); otherwise its module is proven by `./gradlew :aiwb-audio:compileDebugKotlin` and on a phone.

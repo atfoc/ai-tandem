@@ -1,0 +1,9 @@
+{
+  "platforms": ["apple", "android"],
+  "apple": {
+    "modules": ["AiwbAudioModule"]
+  },
+  "android": {
+    "modules": ["expo.modules.aiwbaudio.AiwbAudioModule"]
+  }
+}

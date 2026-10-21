@@ -40,9 +40,12 @@ import { agentName } from "../../ui/icons.tsx";
 import { Text } from "../../ui/Text.tsx";
 import { useTheme } from "../../ui/theme.tsx";
 import { tid } from "../../ui/tid.ts";
+import { webStyle } from "../../ui/webstyle.ts";
+import { voice, useVoiceSession } from "../../voice/index.ts";
 import { useWhere } from "../chat/hooks.ts";
 import { onPhone } from "../board/phone.ts";
 import { addSelection, composerGone, registerInserter, startPick, takeHeld } from "../board/refs.ts";
+import { DictationBoxContext, type DictationBox } from "./dictation.ts";
 import { registerBox } from "./focus.ts";
 import { boxAction, enterSends, keyNames, refKey, sendByKey, sendTitleFor } from "./keys.ts";
 import { ArchivedBar, ContextRow, LegacyBar, ModelNotice } from "./Notices.tsx";
@@ -101,6 +104,14 @@ function ComposerOf({ chatId, branch }: { chatId: string; branch: string }) {
     const m = v ? catalogFor(s, where.server, v.agent)?.models.find((x) => x.id === id) : undefined;
     return m?.noImages ? m.label || m.id : "";
   });
+  // Speech mode of this chat and branch (voice's speech bar, parts.SpeechBar): while it listens the bar stands in the place of the box and the
+  // toolbar, which are hidden, not unmounted (the draft, the caret and the popovers hung from the toolbar stay). It ends with the composer: when
+  // the chat leaves the screen, and not when another session took the microphone (then the composer re-rendered, and `owns` is false).
+  const owns = useVoiceSession((s) => s.owner !== null && s.owner.kind === "speech" && s.owner.chat === chatId && s.owner.branch === branch);
+  const speech = useVoiceSession((s) => s.owner !== null && s.owner.kind === "speech" && s.owner.chat === chatId && s.owner.branch === branch && s.phase !== "starting");
+  const owning = useRef(owns);
+  owning.current = owns;
+  useEffect(() => () => { if (owning.current) voice.end(); }, []);
   const [text, setText] = useState(() => draftToShow(chatId, branch)?.text ?? "");
   const [picked, setPicked] = useState<Picked[]>(() => draftToShow(chatId, branch)?.mentions ?? []);
   const [quotes, setQuotes] = useState<Reference[]>(() => draftToShow(chatId, branch)?.references ?? []);
@@ -119,6 +130,23 @@ function ComposerOf({ chatId, branch }: { chatId: string; branch: string }) {
   const put = useRef<{ picked: Picked[]; quotes: Reference[]; images: ChatImage[] } | null>(null); // what a move set that no render has shown yet: the composer may go away before one does
   const drafts = useRef<DraftSaver | null>(null);
   const gone = useRef(false); // this composer went away
+  // What voice's Dictate control takes of the box (dictation.ts): the text, a put that is dictation's own, and a watch for the person's typing. A change to
+  // exactly the text dictation put last is not typing; any other change of the box's text is.
+  const dictated = useRef<string | null>(null);
+  const typedWatchers = useRef(new Set<() => void>());
+  const dictation = useRef<DictationBox | null>(null);
+  dictation.current ??= {
+    text: () => current.current,
+    put: (t) => { dictated.current = t; setBox(t); },
+    watch: (typed) => { typedWatchers.current.add(typed); return () => { typedWatchers.current.delete(typed); }; },
+    keeping: async (send) => {
+      const answered = getState().moves[chatId] ? null : drafts.current!.keeping();
+      let refused = false;
+      try { return await send(); }
+      catch (e) { refused = e instanceof ApiError && sentNothing(e.status, e.code); throw e; }
+      finally { answered?.(refused); }
+    },
+  };
   // Puts a text into the composer. An archived chat draws no box, and the text is then set as what the composer holds all the same: left as
   // it was, it would go to the saver as typed with the next change of the mentions or the quotes, and two windows would save their texts over
   // each other without end.
@@ -286,7 +314,9 @@ function ComposerOf({ chatId, branch }: { chatId: string; branch: string }) {
   }, []);
 
   const root = (children: ReactNode) => (
-    <KeyboardLift><Sized {...tid("composer", { chat: chatId, branch })} onWidth={setWidth} style={styles.composer}>{children}</Sized></KeyboardLift>
+    <KeyboardLift><Sized {...tid("composer", { chat: chatId, branch })} onWidth={setWidth} style={styles.composer}>
+      <DictationBoxContext.Provider value={dictation.current}>{children}</DictationBoxContext.Provider>
+    </Sized></KeyboardLift>
   );
   // The @ list is a layer on the Esc order (ui/useEscLayer.ts): with the subagent drawer or another overlay open under it, one Esc closes the list
   // and keeps the draft, and the next one the overlay; the composer's own Esc (which stops the agent) does not see it.
@@ -395,6 +425,7 @@ function ComposerOf({ chatId, branch }: { chatId: string; branch: string }) {
     setMention(null);
   };
   const onChange = (v: string, beforeCaret: string) => {
+    if (v !== current.current && v !== dictated.current) for (const typed of [...typedWatchers.current]) typed(); // the person changed the box: dictation ends
     setText(v); current.current = v;
     if (!c.board) return; // plain chats have no mentions
     const m = openMention(beforeCaret);
@@ -434,6 +465,8 @@ function ComposerOf({ chatId, branch }: { chatId: string; branch: string }) {
     ) : null}
     {Banner ? <Banner chat={chatId} /> : null}
     <ModelNotice chatId={chatId} />
+    {/* (the wrapper is always there, so that the box is the same element while speech mode comes and goes; hidden it keeps its width, which the toolbar's fit reads) */}
+    <View {...tid("composer-away", { away: speech })} aria-hidden={speech} style={speech ? styles.away : undefined}>
     <View {...tid("composer-box", { readonly: readOnly })} {...boxHandlers}
       style={[styles.box, { borderColor: focused && !readOnly ? t.accent : t.line2, backgroundColor: readOnly ? t.panel : t.bg }, focused && !readOnly && { boxShadow: `0 0 0 3px ${t.accentSoft}` }]}>
       {mention && !readOnly && matches.length > 0 ? <MentionList options={matches} at={mention.i} onPick={pick} /> : null}
@@ -443,8 +476,10 @@ function ComposerOf({ chatId, branch }: { chatId: string; branch: string }) {
       ) : null}
       <ChipInput ref={input} placeholder={placeholder} locked={readOnly} readOnly={readOnly} onChange={onChange} onKey={onKey}
         onImages={parts.ImageStrip ? (files) => add(files) : undefined} testID="composer-input" />
-      <Toolbar chatId={chatId} onError={setErr} onInsert={() => input.current?.openInsert()} sending={sending} stop={showStop} tail={tail} insertKey={names.insert} />
+      <Toolbar chatId={chatId} branch={branch} onError={setErr} onInsert={() => input.current?.openInsert()} sending={sending} stop={showStop} tail={tail} insertKey={names.insert} />
     </View>
+    </View>
+    {speech && parts.SpeechBar ? <parts.SpeechBar chatId={chatId} branch={branch} /> : null}
     {under ? <Text {...tid("composer-err")} size={12} tone="danger" style={styles.err}>{under}</Text> : null}
     {q.float}
   </>);
@@ -460,6 +495,7 @@ const styles = StyleSheet.create({
   contextRow: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6, marginBottom: 6 },
   grow: { flexGrow: 1, flexBasis: 0 },
   note: { paddingVertical: 1, paddingHorizontal: 5 },
+  away: { height: 0, overflow: "hidden", opacity: 0, ...webStyle({ visibility: "hidden" }) },
   box: { position: "relative", borderWidth: 1, borderRadius: 10, paddingTop: 8, paddingRight: 8, paddingBottom: 6, paddingLeft: 10 },
   err: { paddingTop: 5, paddingHorizontal: 2 },
 });

@@ -20,7 +20,7 @@ import { Overlay } from "../../ui/Overlay.tsx";
 import { useTokens } from "../../ui/theme.tsx";
 import { tid } from "../../ui/tid.ts";
 import { useLayout } from "../../ui/useLayout.ts";
-import { addBoard, attempt, newChat, setEditRow } from "../shell/nav.ts";
+import { addBoard, attempt, newChat, setEditRow, setExpandBoardRow } from "../shell/nav.ts";
 import { clipRef, DragGhost, LOCK_SCROLL, setScroller, useDragActive } from "./drag.tsx";
 import { SideHideButton } from "../shell/SideRail.tsx";
 import { stackOf } from "../shell/stack.ts";
@@ -29,6 +29,7 @@ import { mayRename } from "./editguard.ts";
 import { Foot } from "./Foot.tsx";
 import { Still, later } from "./menus.tsx";
 import { useSideHidden, Text } from "./parts.tsx";
+import { setBoardRowOpen } from "./rowsopen.ts";
 import type { Make } from "./rows.tsx";
 import { SectionNode } from "./Section.tsx";
 
@@ -44,6 +45,7 @@ export function Sidebar() {
   // (on the phone what is made may open its own screen over the list, which hides it as well: a board does, a group does not)
   const edit = (key: string | null) => { if (mayRename(getState().sideHidden, layoutOf(Dimensions.get("window").width), stackOf(getState()))) setEditing(key); };
   useEffect(() => { setEditRow(edit); return () => setEditRow(() => {}); }, []);
+  useEffect(() => { setExpandBoardRow((board) => setBoardRowOpen(board, true)); return () => setExpandBoardRow(() => {}); }, []);
   useSideHidden(() => setEditing(null));
 
   const make: Make = {

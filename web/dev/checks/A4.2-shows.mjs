@@ -243,6 +243,9 @@ await check("A4.2 each wait of the fork flows shows something", async ({ url, vi
       seen = await when(page, effort, (s) => s.fixed);
       expect(`${effort}: the fixed chip names the model and the effort picked, and Send the same`, /High/.test(seen.model?.text ?? "") && seen.model.text.includes(label) && /^The agent is starting on .*High/.test(seen.send?.title ?? "") && seen.send.disabled, [seen.model, seen.send]);
       await release(url, "configure");
+      // (the effort chip is in the "more" popup where voice's pair has no room in the row and brought the chip, which closes with the pick: it is opened to read it)
+      await when(page, `${effort}, started: the model chip is the picker again`, (s) => !s.fixed && !!s.model && !s.model.disabled);
+      await chipOf(page, "effort");
       await when(page, `${effort}, started`, (s) => !s.fixed && /High/.test(s.effort?.text ?? ""));
     }
     await knob(`delete flags.configure;`);

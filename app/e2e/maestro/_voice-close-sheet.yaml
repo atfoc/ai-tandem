@@ -1,0 +1,10 @@
+# Shared by `voice-mic`: closes the toolbar's "more" sheet if it is open (a press on the dimmed screen above it), so that the chat behind it can be read.
+appId: ${APP_ID}
+---
+- runFlow:
+    when:
+      visible:
+        id: "more-dictate"
+    commands:
+      - tapOn:
+          point: "50%,20%"

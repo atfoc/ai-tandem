@@ -35,6 +35,7 @@ export const ItemView = memo(function ItemView({ item, chat, branch, sub, index,
     case "user": return (
       <View ref={track} {...hold.props} {...tid("msg", { role: "user", item: tag, quotable: q })} style={[styles.user, { backgroundColor: t.accentSoft }, hold.style]}>
         <UserSaid chat={chat} said={item} />
+        {tag !== undefined && <parts.MessageMark chat={chat} index={tag} item={item} />}
         {tag !== undefined && <parts.MessageExtras chat={chat} index={tag} item={item} hovered={hovered} />}
         {tag !== undefined && <parts.MessageFlash chat={chat.id} index={tag} />}
       </View>

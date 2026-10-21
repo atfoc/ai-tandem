@@ -449,6 +449,34 @@ test("the drop of the sent draft that arrives while the save of the text typed s
   assert.deepEqual([puts.length, puts[2].d, puts[2].base], [3, { text: "next!" }, 6]);
 });
 
+test("a Send that keeps the draft saves it again over the removal the server makes, and the box is not emptied", async () => {
+  const { puts, local, shown, s } = counted(3, { text: "typed", mentions: [{ name: "a", id: "b_1" }] });
+  const answered = s.keeping(); // a spoken turn is on its way
+  s.arrived(4, null); // the server removed the branch's draft for it
+  assert.deepEqual(shown, []);
+  assert.deepEqual([puts.length, puts[0].d, puts[0].base], [1, { text: "typed", mentions: [{ name: "a", id: "b_1" }] }, 4]);
+  await puts[0].ok(5);
+  answered(false);
+  assert.deepEqual([shown, local.d], [[], null]);
+  // the removal was taken once: a draft cleared elsewhere afterwards empties the box as before
+  s.arrived(6, null);
+  assert.deepEqual([shown, puts.length], [[{ text: "" }], 1]);
+});
+
+test("a Send that keeps the draft leaves what was typed and not saved yet, and a refused one changes nothing", async () => {
+  const a = counted(3, { text: "saved" });
+  a.s.keeping();
+  a.s.change("saved and more");
+  a.s.arrived(4, null);
+  assert.deepEqual(a.shown, []);
+  await tick(30);
+  assert.deepEqual([a.puts.length, a.puts[0].d, a.puts[0].base], [1, { text: "saved and more" }, 4]);
+  const b = counted(3, { text: "saved" });
+  b.s.keeping()(true); // refused: the server removed nothing
+  b.s.arrived(4, null); // another window's removal
+  assert.deepEqual([b.shown, b.puts.length], [[{ text: "" }], 0]);
+});
+
 test("saved text that another window sent or cleared goes, when no Send of this composer's is on its way", async () => {
   // typed and saved here, then sent from another window that showed it
   const a = counted(2);

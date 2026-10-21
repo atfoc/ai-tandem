@@ -26,6 +26,7 @@ import { attempt, newChat, openBoard, openChat } from "../shell/nav.ts";
 import { archiveBoard, archiveGroup, deleteBoard, deleteChat, deleteGroup, isCollapsed, renameChat, renameGroup, setCollapsed } from "./actions.ts";
 import { useDragGesture, useIsDragged, usePlace } from "./drag.tsx";
 import { AddChat, AddMenu, RowMenu, later, type RowItem } from "./menus.tsx";
+import { useBoardRowOpen } from "./rowsopen.ts";
 import { subline } from "./subline.ts";
 import { ArchivedTag, BranchBadge, Caret, DisabledTag, DraftTag, Frame, InlineName, Line, NewDot, PressArea, PressFrame, StatusDot, useDoublePress, Text } from "./parts.tsx";
 
@@ -156,7 +157,7 @@ export const BoardNode = memo(function BoardNode({ b, editing, setEditing }: Edi
   const showArchived = useStore((s) => s.showArchived);
   const other = useStore((s) => s.busyOn[b.id]?.agent);
   const inArchived = useContext(InArchived);
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useBoardRowOpen(b.id);
   const [err, setErr] = useState("");
   const chats = boardChats(all, b.id, showArchived);
   const working = chats.find((c) => !c.archived && chatBusy(c))?.agent ?? other;
@@ -205,7 +206,7 @@ export const BoardNode = memo(function BoardNode({ b, editing, setEditing }: Edi
               {b.archived && <ArchivedTag />}
               {!open && chats.length > 0 && <Count n={chats.length} />}
             </View>
-            {!b.archived && <AddChat title="New chat on this board" hovered={hovered} onPress={() => { setOpen(true); void newChat({ board: b.id }); }} />}
+            {!b.archived && <AddChat title="New chat on this board" hovered={hovered} onPress={() => void newChat({ board: b.id })} />}
             <RowMenu label="More" items={menu} hovered={hovered} />
           </>
         )}

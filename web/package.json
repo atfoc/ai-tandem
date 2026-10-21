@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test --experimental-strip-types dev/hostface.test.mjs dev/host.test.mjs dev/checklist.test.mjs dev/viewports.test.mjs",
+    "test": "node --test --experimental-strip-types dev/hostface.test.mjs dev/host.test.mjs dev/checklist.test.mjs dev/viewports.test.mjs dev/voicestandin.test.mjs",
     "mock": "node dev/mock.mjs",
     "uicheck": "node dev/uicheck.mjs",
     "uicheck:electron": "node dev/uicheck-electron.mjs"

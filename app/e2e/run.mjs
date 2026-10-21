@@ -35,6 +35,10 @@
 //   agent      the scratch server runs the stand-in agent of the tests (it answers "FAKE(<model>): <message>", no paid model)
 //   control    a control API on this computer for the flow's scripts (lib/serverctl.mjs): stop, start and give a new certificate to the
 //              scratch server, make a board or a chat (with a message the stand-in answers) through the client API; flow variable CONTROL_URL
+//   voice      the stand-in voice service (web/dev/voicestandin.mjs, lib/voice.mjs) alone on a free port of this computer: the development build is
+//              given EXPO_PUBLIC_AIWB_VOICE_BASE at it (and shows the status line `voice-dev`), the flow gets VOICE_CONTROL (the stand-in's control
+//              over HTTP: `script`, `pace`, `fail`, `reset`, `log`), and with `control` the routes `POST /voice/mic?action=grant|revoke` and `POST /voice/relaunch` (the microphone's answer is reset before each attempt); after
+//              the flow the stand-in's log is read and the run fails unless the microphone's chunks were 16 kHz and 100 ms (goal 6.6)
 // and `app=1` there: the build shows the app itself (no EXPO_PUBLIC_AIWB_SELFTEST), not the self-test root. Also in the header:
 //   report=1       the chip input of the build reports what it holds to the runner (EXPO_PUBLIC_AIWB_REPORT_URL, src/dev/chipreport.ts)
 //   gallery=<g>    the build shows a dev gallery (EXPO_PUBLIC_AIWB_GALLERY, src/dev/ChipDocGallery.tsx for `chipdoc`) instead of the app
@@ -69,6 +73,7 @@ import { makeFixtures } from "./lib/fixtures.mjs";
 import { measure } from "./lib/memory.mjs";
 import { freePort, startServer, startStandIns } from "./lib/scratch.mjs";
 import { apiClient, startServerControl } from "./lib/serverctl.mjs";
+import { checkLog, setMic, startVoiceStandin, voiceRoutes } from "./lib/voice.mjs";
 import { runXcuitest } from "./lib/xcuitest.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -177,6 +182,12 @@ async function main() {
     cleanups.push(() => things.control.close());
     say(`control API of the scratch server on ${things.control.url}`);
   }
+  if (needs.has("voice")) {
+    if (!realApp) throw new Error("`voice` needs `app=1`");
+    things.voice = await startVoiceStandin({ out });
+    cleanups.push(() => things.voice.stop());
+    say(`stand-in voice service on ${things.voice.base} (log: ${path.join(out, "voice-standin.log")})`);
+  }
   if (needs.has("standins")) {
     // Android reaches the computer through `adb reverse`: the servers the control server starts, one per case, are given to it as they start.
     const reverse = (verb, port) => androidSerial && spawnSync(adbPath(), ["-s", androidSerial, "reverse", ...(verb === "remove" ? ["--remove"] : []), `tcp:${port}`, ...(verb === "remove" ? [] : [`tcp:${port}`])], { stdio: "ignore" });
@@ -216,6 +227,7 @@ async function main() {
   // and closes it, which is no "refused"; a port nothing is reversed to is refused by the emulator itself.
   const ports = [metroPort, reportPort];
   if (things.server) ports.push(things.server.port);
+  if (things.voice) ports.push(things.voice.port);
   // (the control API is called by Maestro, on this computer: the device never reaches it)
   if (things.standins) ports.push(things.standins.plainPort, things.standins.h1Port, things.standins.blackholePort, Number(new URL(things.standins.control).port));
 
@@ -231,6 +243,7 @@ async function main() {
   await ensureBuild(device);
 
   const appId = platform === "ios" ? bundleId : androidPackage;
+  if (things.voice && things.control) things.control.add(voiceRoutes({ platform, device, appId, say, terminate: () => terminateApp(device, appId), open: () => openDevClient(device, appId, things.devUrl) }));
   if (devHooks) {
     if (!things.control) throw new Error("`devhooks=1` needs `control`");
     things.devUrl = ""; // (set below, once Metro has its port)
@@ -272,6 +285,7 @@ async function main() {
   };
   const flowEnv = { APP_ID: appId };
   if (things.control) flowEnv.CONTROL_URL = things.control.url;
+  if (things.voice) flowEnv.VOICE_CONTROL = things.voice.control;
   if (things.server) Object.assign(flowEnv, {
     SERVER_HOST: things.server.host, SERVER_DOTTED: things.server.dotted, SERVER_PORT: String(things.server.port),
     SERVER_FINGERPRINT: things.server.fingerprint, SERVER_SECRET: things.server.secret,
@@ -295,7 +309,9 @@ async function main() {
     for (const p of posts) oldRuns.add(p.run);
     posts.length = 0;
     if (attempt > 1 && things.control) { say("the scratch server is put back as the run began (control reset)"); await things.control.reset(); }
+    if (things.voice) await fetch(`${things.voice.control}/reset`, { method: "POST" }); // (nothing of an earlier attempt in the stand-in's log or script)
     terminateApp(device, appId);
+    if (things.voice) setMic({ platform, device, appId, action: "reset" }); // (the system asks again; the app is not running, which the system would end for it)
     if (release) openApp(device, appId); else openDevClient(device, appId, url);
     const dir = path.join(out, `maestro-${attempt}`);
     fs.mkdirSync(dir, { recursive: true });
@@ -334,6 +350,15 @@ async function main() {
       spawnSync(adbPath(), ["-s", device, "pull", `/sdcard/${adbkeys}.png`, path.join(out, `${adbkeys}-after-adbkeys.png`)], { stdio: "ignore" });
       await sleep(1500); // the app's last post (the verdict of the keys screen)
       status = x.ok && !reports.some((v) => v.kind === "verdict" && /FAILED/.test(v.text)) ? 0 : 1;
+      if (status !== 0) break;
+    }
+    if (status === 0 && things.voice) { // what the stand-in saw of the microphone and the speaker, after everything the flow did
+      const { problems, lines } = checkLog(await things.voice.log());
+      fs.writeFileSync(path.join(out, "voice-log.json"), JSON.stringify(await things.voice.log(), null, 1) + "\n");
+      for (const l of lines) say(`  voice| ${l}`);
+      for (const p of problems) say(`  voice| FAILED ${p}`);
+      if (!problems.length) say("voice: the microphone's chunks were 16 kHz and 100 ms, and the client broke no rule of the protocol");
+      status = problems.length ? 1 : 0;
       if (status !== 0) break;
     }
     if (status === 0 && verifyMod?.verify) { // what the flow's reports and the server say, after everything the flow did
@@ -584,6 +609,8 @@ async function startMetro({ metroPort, reportPort, things }) {
   for (const k of ["PROBE", "PROBE_SECRET_SHA256", "FORCE_OUTCOME"]) delete env[`EXPO_PUBLIC_AIWB_${k}`];
   delete env.EXPO_PUBLIC_AIWB_GALLERY;
   delete env.EXPO_PUBLIC_AIWB_REPORT_URL;
+  delete env.EXPO_PUBLIC_AIWB_VOICE_BASE;
+  if (things.voice) env.EXPO_PUBLIC_AIWB_VOICE_BASE = things.voice.base; // (honoured by a development build, and only for a local host: app/src/voice/platform/origin.ts)
   if (reportBox) env.EXPO_PUBLIC_AIWB_REPORT_URL = `http://127.0.0.1:${reportPort}`;
   if (gallery) env.EXPO_PUBLIC_AIWB_GALLERY = gallery;
   if (!realApp) Object.assign(env, { EXPO_PUBLIC_AIWB_SELFTEST: "1", EXPO_PUBLIC_AIWB_SELFTEST_REPORT: `http://127.0.0.1:${reportPort}` });

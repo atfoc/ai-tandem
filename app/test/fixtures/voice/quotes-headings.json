@@ -1,0 +1,15 @@
+{
+  "sentences": [
+    "Summary of the review.",
+    "The change is small.",
+    "What I found.",
+    "The old code kept a copy of the list.",
+    "It never freed it.",
+    "Quoting the reviewer: \"This is a leak.",
+    "Please fix it.\"",
+    "I agree. Next.",
+    "one quoted point.",
+    "another quoted point.",
+    "Thanks for waiting."
+  ]
+}

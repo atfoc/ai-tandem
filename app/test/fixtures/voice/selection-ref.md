@@ -1,0 +1,1 @@
+Make <selection ids="a1,b2" label="2 rectangles">rectangle id=a1 &quot;API&quot; (10,20 160×70); rectangle id=b2 (200,20 160×70)</selection> the same width. Then move the label near <point x="120" y="-40">near: rectangle id=a1 &quot;API&quot; (10,20 160×70) 20px left</point> up. Thanks!

@@ -272,6 +272,16 @@ export class DraftSaver {
     };
   }
 
+  /** A Send of this composer's that must leave its draft alone (a spoken turn: the box is not the message): like sending, and the draft
+   *  the saver holds as saved is also taken as text saved since the Send began, so that the removal of the branch's draft the server
+   *  makes for the Send is answered by saving it again, and the box is not emptied by it. What is typed and not yet saved stays pending,
+   *  and is saved over the removal as always. */
+  keeping(grace = SEND_GRACE): (refused?: boolean) => boolean {
+    const answered = this.sending(grace);
+    if (!this.pending && this.saved !== EMPTY && this.saved !== UNSURE) this.own = this.saved;
+    return answered;
+  }
+
   /** Keeps the unsaved copy of what is pending. */
   private note(base = this.base) {
     const d = this.pending;

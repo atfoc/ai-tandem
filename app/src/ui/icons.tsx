@@ -152,3 +152,41 @@ export const CupIcon = ({ size = 13, color }: IconProps) => (
 export const SideIcon = ({ size = 14, color }: IconProps) => (
   <Icon size={size} color={color} width={1.4} strokeLinejoin="round"><Rect x="1.5" y="2.5" width="13" height="11" rx="2" /><Path d="M6 2.5v11" /></Icon>
 );
+
+/** A microphone: Dictate. */
+export const MicIcon = ({ size = 14, color }: IconProps) => (
+  <Icon size={size} color={color} width={1.4} {...round}><Rect x="6" y="1.5" width="4" height="8" rx="2" /><Path d="M3.5 7.5a4.5 4.5 0 0 0 9 0M8 12v2.5M5.5 14.5h5" /></Icon>
+);
+
+/** Bars of a sound wave: Speech mode. */
+export const WaveIcon = ({ size = 14, color }: IconProps) => (
+  <Icon size={size} color={color} width={1.5} strokeLinecap="round"><Path d="M2 7v2M5 4.5v7M8 2.5v11M11 5v6M14 7v2" /></Icon>
+);
+
+/** A speaker with its sound: Read aloud. */
+export const SpeakerIcon = ({ size = 13, color }: IconProps) => (
+  <Icon size={size} color={color} width={1.4} {...round}><Path d="M2 6h2.5L8 3v10l-3.5-3H2z" /><Path d="M10.5 5.5a3.5 3.5 0 0 1 0 5M12.5 3.5a6.5 6.5 0 0 1 0 9" /></Icon>
+);
+
+/** A filled square: stop. */
+export const StopIcon = ({ size = 12, color }: IconProps) => (
+  <Icon size={size} color={color} fill><Rect x="3.5" y="3.5" width="9" height="9" rx="1.5" /></Icon>
+);
+
+/** A cog: the sidebar foot's Settings button. */
+export const GearIcon = ({ size = 13, color }: IconProps) => (
+  <Icon size={size} color={color} width={1.4}>
+    <Circle cx="8" cy="8" r="4.4" /><Circle cx="8" cy="8" r="1.8" />
+    <Path d="M8 .6V2.8M8 13.2v2.2M.6 8h2.2M13.2 8h2.2M4.3 4.3 2.8 2.8M11.7 4.3l1.5-1.5M4.3 11.7l-1.5 1.5M11.7 11.7l1.5 1.5" strokeWidth={2.4} />
+  </Icon>
+);
+
+/** An arrow up: the badge on the words that wait to be sent. */
+export const SendUpIcon = ({ size = 12, color }: IconProps) => (
+  <Icon size={size} color={color} width={1.7} {...round}><Path d="M8 13V3M3.5 7.5 8 3l4.5 4.5" /></Icon>
+);
+
+/** Four corners drawn in: collapse the board's voice pill. */
+export const CollapseIcon = ({ size = 13, color }: IconProps) => (
+  <Icon size={size} color={color} width={1.5} {...round}><Path d="M6 2.5V6H2.5M10 2.5V6h3.5M6 13.5V10H2.5M10 13.5V10h3.5" /></Icon>
+);

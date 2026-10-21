@@ -23,6 +23,7 @@ import { Text } from "../../ui/Text.tsx";
 import { useTheme } from "../../ui/theme.tsx";
 import { tid } from "../../ui/tid.ts";
 import { boardApp } from "../shell/boardside.ts";
+import { useSlots } from "../shell/slots.tsx";
 import { confirm, select } from "../shell/nav.ts";
 import { BoardOff, SaveBanner } from "./BoardOff.tsx";
 import { boardKeyHandler } from "./boardkeys.ts";
@@ -70,6 +71,7 @@ export function BoardCanvas({ board }: { board: string }) {
   const [away, setAway] = useState(false); // the read of the scene was answered 503: the board's server is not connected
   const [channel, setChannel] = useState<HostChannel | null>(null);
   const status = useViewStatus();
+  const slots = useSlots();
 
   useBlurFlush(board);
   useEffect(() => onKey(boardKeyHandler(onPhone)), []);
@@ -147,6 +149,7 @@ export function BoardCanvas({ board }: { board: string }) {
           <Presence board={board} />
         </PickLayer>
         {!archived && <RoleBar board={board} />}
+        {!archived && <slots.BoardVoice board={board} />}
         <SaveBanner board={board} />
         <DroppedNote board={board} />
       </>

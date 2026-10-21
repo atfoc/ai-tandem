@@ -12,14 +12,16 @@
 // is the chip it was, with its own list. Each control is drawn once, in the row or in the open popup; one that changes place is made anew
 // there, so it has no open list, and while the popup is open nothing leaves it for the row (a pick made there keeps its chip, with the
 // focus). The widths are measured with onLayout (measure.tsx): a control whose width is not kept is drawn in the measuring layer, and the
-// fit is made again with it when it reports; the row's width is its own onLayout. The fit rules are core's, unchanged.
+// fit is made again with it when it reports; the row's width is its own onLayout. The fit rules are core's, unchanged. Voice's two controls, Dictate
+// and Speech mode (the composer part VoiceButtons), are one child after the spacer, before the attach button, where core's fitWithTail puts them; where the
+// row has no room they are two entries of the popup, after the insert entry (fitWithTail brings the "more" chip if the row had none).
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { StyleSheet, View } from "react-native";
 
 import { api } from "@aiwb/core/api.ts";
 import { agentOpen, catalogFor, usableAgents } from "@aiwb/core/logic/agentlist.ts";
 import { notConnectedLine, sendOff, showsServer, toolbarLine } from "@aiwb/core/logic/chatserver.ts";
-import { CONTROLS, fitWithInsert, widthKey, type Control, type Fit, type InsertPlace } from "@aiwb/core/logic/composerfit.ts";
+import { CONTROLS, fitWithInsert, fitWithTail, widthKey, type Control, type Fit, type InsertPlace, type VoicePlace } from "@aiwb/core/logic/composerfit.ts";
 import { moveChoice, pickerMode, withEffort, withModel, type Choice } from "@aiwb/core/logic/models.ts";
 import { goneText } from "@aiwb/core/logic/remoteview.ts";
 import { serverOf } from "@aiwb/core/logic/serverlists.ts";
@@ -39,6 +41,7 @@ import { Text } from "../../ui/Text.tsx";
 import { useTheme } from "../../ui/theme.tsx";
 import { tid } from "../../ui/tid.ts";
 import { useControlRef } from "../../ui/useControlRef";
+import { useVoiceSession } from "../../voice/index.ts";
 import { webStyle } from "../../ui/webstyle.ts";
 import { Pressable } from "react-native";
 import { base, useWhere } from "../chat/hooks.ts";
@@ -54,13 +57,15 @@ import { CtxError, CtxRing } from "../usage/CtxRing.tsx";
 import { contextOf, ctxText } from "../usage/meter.ts";
 import { roundDown } from "./widths.ts";
 
-const MORE = widthKey("more"), INSERT = widthKey("insert"), ATTACH = widthKey("attach"), SEND = widthKey("send"), STOP = widthKey("stop");
+const MORE = widthKey("more"), INSERT = widthKey("insert"), VOICE = widthKey("voice"), ATTACH = widthKey("attach"), SEND = widthKey("send"), STOP = widthKey("stop");
 
 /** What the toolbar draws after its spacer, from the composer: the attach button (K4's), Stop while the agent works, Send. */
 export type Tail = { attach: ReactNode; stop: ReactNode; send: ReactNode };
 
 export type ToolbarProps = {
   chatId: string;
+  /** The branch the composer is of (voice's controls dictate and speak for it). */
+  branch: string;
   onError(msg: string): void;
   /** Opens the insert popup for the box (⌘P in it does the same). */
   onInsert(): void;
@@ -78,7 +83,7 @@ export function Toolbar({ chatId, ...p }: ToolbarProps) {
   return c ? <Tools c={c} chatId={chatId} {...p} /> : null;
 }
 
-function Tools({ c, chatId, onError, onInsert, sending, stop, tail, insertKey }: ToolbarProps & { c: ChatView }) {
+function Tools({ c, chatId, branch, onError, onInsert, sending, stop, tail, insertKey }: ToolbarProps & { c: ChatView }) {
   const { tokens: t } = useTheme();
   const parts = useComposerParts();
   const move = useStore((s) => s.moves[chatId]);
@@ -100,7 +105,7 @@ function Tools({ c, chatId, onError, onInsert, sending, stop, tail, insertKey }:
   const [room, setRoom] = useState<{ w: number; gap: number } | null>(null);
   const [, setMeasured] = useState(0); // counts the widths kept: the fit is made again with them
   const [more, setMore] = useState(false); // the "more" popup is open
-  const drawn = useRef<{ fit: Fit; more: boolean; insert: InsertPlace } | null>(null); // where the last commit drew each control and the way to the insert popup, and whether the popup was open
+  const drawn = useRef<{ fit: Fit; more: boolean; insert: InsertPlace; voice: VoicePlace | "" } | null>(null); // where the last commit drew each control, the way to the insert popup and voice's pair, and whether the popup was open
   const moreChip = useRef<View>(null);
   const zoomNow = useZoom(); // a change of the screen's zoom drops the kept widths: the measuring layer is made anew
   const epoch = useRef({ zoom: zoomNow, n: 0 });
@@ -145,15 +150,24 @@ function Tools({ c, chatId, onError, onInsert, sending, stop, tail, insertKey }:
   const meterKey = u.error ? widthKey("meter", "Context unavailable", { fixed: true }) : widthKey("meter", ctxText(u.used, u.win));
   const ringKey = widthKey("meter", "", { fixed: !!u.error, mark: u.error ? "icon" : "ring" });
   const hasAttach = !!parts.AttachButton;
-  const { fit: f, insert } = fitWithInsert({
+  const hasVoice = !!parts.VoiceButtons;
+  const row = {
     room: room?.w ?? Infinity, gap: room?.gap ?? 0, more: widths.get(MORE),
     controls: CONTROLS.filter((id) => keys[id]).map((id) => ({ id, w: widths.get(keys[id]!), ...(id === "subagents" && spare ? { optional: true } : {}) })),
     meter: { full: widths.get(meterKey), ring: widths.get(ringKey) },
     fixed: [...(hasAttach ? [widths.get(ATTACH)] : []), ...(stop ? [widths.get(STOP)] : []), widths.get(SEND)],
     held: more ? drawn.current?.fit.popup ?? [] : null,
     // The Subagents popover stays open through a pick, which can make its chip longer: the others leave before it.
-    pinned: openPicker === "subagents" && drawn.current?.fit.toolbar.includes("subagents") ? "subagents" : undefined,
-  }, widths.get(INSERT), more && drawn.current?.insert === "more");
+    pinned: openPicker === "subagents" && drawn.current?.fit.toolbar.includes("subagents") ? "subagents" as const : undefined,
+  };
+  const insertHeld = more && drawn.current?.insert === "more";
+  const { fit: f, insert, voice: voicePlace } = hasVoice
+    ? fitWithTail(row, { insert: widths.get(INSERT), voice: widths.get(VOICE) }, { insert: insertHeld, voice: more && drawn.current?.voice === "more" })
+    : { ...fitWithInsert(row, widths.get(INSERT), insertHeld), voice: "" as const };
+  // Voice is listening (or speaking) for this composer's chat: the "more" popup closes as it starts, and its chip says so while the pair is inside.
+  // (not while it starts: a start that fails hangs its problem popover from the entry that was pressed)
+  const voiceOn = useVoiceSession((s) => s.owner !== null && s.owner.kind !== "pill" && s.owner.chat === chatId && s.owner.branch === branch && s.phase !== "starting");
+  const voiceOff = frozen ? frozenWhy : ""; // the composer cannot send now: neither control starts anything
   // A control that changes place has no open list: it is made anew where it goes, and its list would open there by itself, at once or, for
   // one that went into the popup, when the popup is opened next.
   const placeOf = (x: { fit: Fit; more: boolean }, id: Control) => (x.fit.toolbar.includes(id) ? "row" : x.fit.popup.includes(id) && x.more ? "popup" : "");
@@ -161,10 +175,11 @@ function Tools({ c, chatId, onError, onInsert, sending, stop, tail, insertKey }:
   const opens = (id: Control) => ({ open: open === id, onOpenChange: (o: boolean) => setOpenPicker(o ? id : null) });
 
   useLayoutEffect(() => {
-    drawn.current = { fit: f, more, insert };
+    drawn.current = { fit: f, more, insert, voice: voicePlace };
     if (open !== openPicker) setOpenPicker(null);
     if (more && !f.more) setMore(false); // nothing is left in it
   });
+  useEffect(() => { if (voiceOn && voicePlace === "more") setMore(false); }, [voiceOn]);
 
   const chips: Record<Control, ReactNode> = {
     server: showsServer(where) ? <ServerChip c={c} /> : null,
@@ -203,20 +218,21 @@ function Tools({ c, chatId, onError, onInsert, sending, stop, tail, insertKey }:
   return (
     <MeasureEpoch.Provider value={epoch.current.n}>
     <View style={styles.wrap}>
-      <Sized {...tid("composer-tools", { more: f.more, meter: f.meter, insert })} style={[styles.row, { flexWrap: reason ? "wrap" : "nowrap" }]}
+      <Sized {...tid("composer-tools", { more: f.more, meter: f.meter, insert, voice: voicePlace })} style={[styles.row, { flexWrap: reason ? "wrap" : "nowrap" }]}
         onWidth={(width) => { const w = roundDown(width); setRoom((r) => (r && r.w === w ? r : { w, gap: 4 })); }}>
         {f.toolbar.filter((id) => keys[id] && widths.get(keys[id]!) !== undefined).map((id) => <View key={id} style={styles.control} {...tid("tool", { control: id })}>{chips[id]}</View>)}
         {f.more ? (
           <Measure k={MORE} onKept={kept} part="more">
             <TChip kind="more" testID="more-chip" square chipRef={moreChip} expanded={more} popup="dialog"
-              title={`More: ${[...f.popup, ...(insert === "more" ? ["insert a prompt"] : [])].join(", ")}`} onPress={() => setMore(!more)}>
-              <MoreIcon color={t.muted} />
+              title={`More: ${[...f.popup, ...(insert === "more" ? ["insert a prompt"] : []), ...(voicePlace === "more" ? ["dictate", "speech mode"] : [])].join(", ")}`} onPress={() => setMore(!more)}>
+              <MoreIcon color={voiceOn && voicePlace === "more" ? t.accent : t.muted} />
             </TChip>
           </Measure>
         ) : null}
         <Measure k={f.meter === "ring" ? ringKey : meterKey} onKept={kept} part="meter">{meter(f.meter === "ring")}</Measure>
         <View {...tid("tool-grow")} style={styles.grow} />
         {insert === "row" ? <Measure k={INSERT} onKept={kept} part="insert">{insertButton}</Measure> : null}
+        {voicePlace === "row" && parts.VoiceButtons ? <Measure k={VOICE} onKept={kept} part="voice"><parts.VoiceButtons chatId={chatId} branch={branch} place="row" disabled={voiceOff} /></Measure> : null}
         {hasAttach ? <Measure k={ATTACH} onKept={kept} part="attach">{tail.attach}</Measure> : null}
         {stop ? <Measure k={STOP} onKept={kept} part="stop">{tail.stop}</Measure> : null}
         <Measure k={SEND} onKept={kept} part="send">{tail.send}</Measure>
@@ -230,6 +246,7 @@ function Tools({ c, chatId, onError, onInsert, sending, stop, tail, insertKey }:
             measuring, so the fit is never made with only some of the widths, whatever the order the layouts are reported in) */}
         {widths.get(MORE) === undefined ? <Measure k={MORE} onKept={kept}><TChip kind="more" square title="More" onPress={() => {}}><MoreIcon color={t.muted} /></TChip></Measure> : null}
         {widths.get(INSERT) === undefined ? <Measure k={INSERT} onKept={kept}>{insertButton}</Measure> : null}
+        {parts.VoiceButtons && widths.get(VOICE) === undefined ? <Measure k={VOICE} onKept={kept}><parts.VoiceButtons chatId={chatId} branch={branch} place="row" disabled={voiceOff} /></Measure> : null}
         {widths.get(meterKey) === undefined ? <Measure k={meterKey} onKept={kept}>{measured(false)}</Measure> : null}
         {widths.get(ringKey) === undefined ? <Measure k={ringKey} onKept={kept}>{measured(true)}</Measure> : null}
         {widths.get(SEND) === undefined ? <Measure k={SEND} onKept={kept}>{tail.send}</Measure> : null}
@@ -250,6 +267,7 @@ function Tools({ c, chatId, onError, onInsert, sending, stop, tail, insertKey }:
               <MoreInsert keyName={insertKey} disabled={frozen} onPress={() => { setMore(false); onInsert(); }} />
             </View>
           ) : null}
+          {voicePlace === "more" && parts.VoiceButtons ? <parts.VoiceButtons chatId={chatId} branch={branch} place="more" disabled={voiceOff} /> : null}
         </View>
       </Overlay>
     </View>

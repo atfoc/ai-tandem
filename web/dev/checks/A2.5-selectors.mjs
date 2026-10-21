@@ -97,9 +97,10 @@ await check("A2.5 the scripts' chip selectors and the meter's text", async ({ ur
     const t = e.querySelector('[data-testid="ctx-text"]'), r = t?.getBoundingClientRect();
     return { count: document.querySelectorAll('[data-testid="composer"] [data-testid="ctx-meter"]').length, inner: e.innerText, title: e.getAttribute("title") ?? "", w: Math.round(e.getBoundingClientRect().width * 10) / 10, compact: e.dataset.compact === "true", text: r ? `${Math.round(r.width)}x${Math.round(r.height)}` : "" };
   });
-  // (beside a board a started chat's row has room for the meter's text from a panel of 430 px on: in the default one, of 400 px, the attach
-  // button takes the 30 px the text would need, and the meter is its ring)
-  for (const [id, pane, width, ringOnly] of wide ? [["board-started", "panel", 430, false], ["board-started", "panel", 400, true], ["board-started", "panel", 300, true], ["board-busy", "panel", 400, true], ["plain-started", "page", 300, true], ["plain-started-long", "page", 400, true]] : [["plain-started", "page", 300, true], ["plain-started-long", "page", 400, true]]) {
+  // (beside a board a started chat's row, whole, has room for the meter's text from a panel of 415 px on; but voice's pair, wider than the 16 px
+  // that are left at 430, goes into the "more" popup and brings the chip, which needs 32 px, so the text gives its room to the chip: the text is
+  // back from a panel of 460 px, where the chip fits beside it. In the default panel, of 400 px, the row has no room for the text anyway.)
+  for (const [id, pane, width, ringOnly] of wide ? [["board-started", "panel", 460, false], ["board-started", "panel", 430, true], ["board-started", "panel", 400, true], ["board-started", "panel", 300, true], ["board-busy", "panel", 400, true], ["plain-started", "page", 300, true], ["plain-started-long", "page", 400, true]] : [["plain-started", "page", 300, true], ["plain-started-long", "page", 400, true]]) {
     const p = await openAt(open, state(id), layout, width), name = `${id} in a ${pane} of ${width} px`, m = await meterIn(p.page);
     if (m.count !== 1) fail(`${name}: ${m.count} elements match the composer's meter`);
     if (!/\d+(\.\d+)?%/.test(m.inner)) fail(`${name}: innerText of the meter is "${m.inner}": no share in percent`);

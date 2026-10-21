@@ -19,6 +19,8 @@ import { installLifecycle } from "./platform/lifecycle";
 import { previews } from "./platform/previews";
 import { setPictureAddress } from "./platform/picturecommon.tsx";
 import { setUpTransport } from "./platform/transport";
+import { setVoicePorts } from "./voice/ports.ts";
+import { platformVoicePorts } from "./voice/platform/index";
 import { boardApp } from "./screens/shell/boardside.ts";
 import { appUi } from "./screens/shell/nav.ts";
 import { startsHidden } from "./screens/shell/widths.ts";
@@ -33,6 +35,7 @@ export function bootstrap(): boolean {
   setPageVersion(process.env.EXPO_PUBLIC_AIWB_VERSION ?? "dev");
   setUi(appUi);
   setBoardSide(boardApp);
+  setVoicePorts(platformVoicePorts()); // voice's ports: the key's store, the calls to the service, the audio; nothing is started until a tap
   if (previews) setPreviews(previews); // what an image's thumbnail shows while it uploads (the web build keeps core's own: the browser's)
   // The desktop window calls `window.aiwbFlush` and waits for it before it closes or reloads; true once every board is written.
   setFlushBeforeReload(() => boardApp.flushAll().then(() => !boardApp.hasPendingSaves()));

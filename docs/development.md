@@ -1,6 +1,6 @@
 # Build and develop
 
-What you need to build and run AI Whiteboard from source, how to run the desktop app in development, how to build the macOS app, how to put the app on a phone or tablet, how to run the app's web build in a headless browser, and how to run the tests, the browser checks and the device tests.
+What you need to build and run AI Whiteboard from source, how to run the desktop app in development, how to build the macOS app, how to put the app on a phone or tablet, how to run the app's web build in a headless browser, how to try voice against a stand-in of ElevenLabs, and how to run the tests, the browser checks and the device tests.
 
 ## Prerequisites
 
@@ -235,6 +235,64 @@ it is not the contract, the server is. Nothing is injected into the page by eith
 To work on the app with a live reload, `cd app && npm run web` (Expo's web server) or `npm start` (a development build on a
 simulator, an emulator or a device; the native folders are generated, never committed).
 
+## Voice without ElevenLabs
+
+No test and no check of voice calls ElevenLabs, and none needs a key of the real service. The **stand-in voice service**
+(`web/dev/voicestandin.mjs`, plain Node with no dependency) answers the parts of ElevenLabs that voice uses: the voices, a
+single-use token, the text-to-speech stream (chunked PCM, a tone whose length follows the text), the preview clips and the
+realtime transcription socket. It accepts a key that starts with `sk_test_` and refuses any other as ElevenLabs refuses a bad
+key; its header lists every route and every failure it can be told to give. What it does is under your control: the words
+the socket answers are a script by the number of audio chunks it has received, a failure can be set (`key_rejected`,
+`no_credits`, `rate_limited`, `offline`), and its log lists every call (never a key) with what the page sent and whether it
+sent anything against the protocol. The microphone is real, the page's or the simulator's own; the stand-in checks what it
+hears (16 kHz, chunks of 100 ms) and answers the script, whatever the sound is.
+
+It is mounted under `/voice` by the mock (`web/dev/mock.mjs`, its control is `voice` in `/mock/eval`) and by the test host
+(`startHost({ voice: true })` returns it as `host.voice`), so the browser checks and the free scripts of `web/e2e` have it
+with no step of yours. Alone:
+
+```sh
+node web/dev/voicestandin.mjs --port 5710                  # prints `Voice: http://127.0.0.1:5710/voice`; listens on 127.0.0.1 only
+node web/dev/voicestandin.mjs --port 5710 --prefix /       # the same at the root of the origin
+curl -X POST 127.0.0.1:5710/voice/_control/script -d '[{"after":3,"partial":"hel"},{"after":6,"committed":"hello"}]'
+curl 127.0.0.1:5710/voice/_control/log                     # also POST …/_control/{fail,pace,reset}
+```
+
+Point the app at it with a variable of the build. **A phone or tablet:** `EXPO_PUBLIC_AIWB_VOICE_BASE` is the stand-in's address
+with its prefix (`http://127.0.0.1:5710/voice`; a plain path of words, or none for a stand-in started with `--prefix /`). The
+app reads it when Metro bundles, so set it when you start Metro or build the development app:
+`cd app && EXPO_PUBLIC_AIWB_VOICE_BASE=http://127.0.0.1:5710/voice npm start`. It counts
+only in a development build (`__DEV__`) and only for a host on this computer or its network (`localhost`, `127.x`, `10.0.2.2`,
+a private IPv4 address); a Release build, such as the one the install script makes, and any other value are ignored, so the
+app calls ElevenLabs. An iOS simulator reaches the Mac at `127.0.0.1` and an Android emulator at `10.0.2.2`; the stand-in
+listens on loopback only, so a device cannot reach it. **The desktop app:**
+`cd desktop && AIWB_VOICE_BASE=http://127.0.0.1:5710/voice npm start`, with the prefix of the stand-in. The main process honours
+it only when the app is not packaged and the address is on this computer, and a packaged app ignores it. The key you type in
+Settings is then written to `<user data>/client/voice-key` as always, so run with `AIWB_USER_DATA` set to another folder to
+leave a real key alone. **The web build** needs no variable: served by the mock or the test host, it finds the stand-in at
+`/voice` of its own origin, and the key lives in the page's memory until it is loaded again.
+
+**The browser checks of voice** are `VC.1` to `VC.7` in `web/dev/checks` (`cd web && npm run uicheck -- VC`; the
+`README.md` there has a row for each and the stand-in's controls). Their Chromium is started with three flags,
+`--use-fake-ui-for-media-stream` (no prompt for the microphone), `--use-fake-device-for-media-stream` (a fake microphone)
+and `--autoplay-policy=no-user-gesture-required`, and every page has the `microphone` permission (`BROWSER_ARGS` and
+`launchChromium` in `web/dev/shot.mjs`); a blocked microphone is `window.__aiwbVoice.denyMic(true)`, which only a build for
+the checks has. The Electron shim of `uicheck:electron` ignores both the flags and the permission.
+
+On some machines Chromium's fake microphone never answers `getUserMedia`: Chromium 153 and 156 on macOS 15 with a virtual
+audio driver such as "NDI Audio" installed, and then the whole browser stops answering clicks. The checks that listen get their
+microphone from `web/dev/checks/mic.mjs`. It tries the browser's fake device once, in a browser of its own, and if that does not answer
+within six seconds it puts a stand-in microphone into the page, an oscillator on the page's own audio context, which goes through
+the same capture, conversion and framing from the stream on, and the check says that it did. `AIWB_MIC` sets the way: `device` never
+falls back (a hang fails the check), `synthetic` never tries the device. Without it the probe decides.
+
+The free scripts `web/e2e/voice.e2e.mjs` (a scratch server through the test host with the stand-in: a spoken turn becomes an
+ordinary message, the reply is spoken sentence by sentence, the key is found nowhere it should not be, and a page that never
+used voice makes no request to `/voice`) and the voice part of `desktop/e2e/app.e2e.mjs` (an Electron app at a standalone
+stand-in through `AIWB_VOICE_BASE`: the key file, no key on the page, Read aloud through the main process, Remove) run on it too.
+The microphone and the audio session of a phone are tested by a device flow, `voice-mic` (`app/e2e/README.md`), on a simulator;
+echo cancellation and voice barge-in need a real phone and a real speaker, and are tried by a person.
+
 ## Development
 
 ```sh
@@ -243,6 +301,7 @@ AIWB_TEST_FULL=1 go test -timeout 20m ./...    # server tests, full set: every t
 npm test && npm run check                      # at the root: the unit tests and the type checks of app/ and packages/* (core, conn, board-bridge, board-view, board-engine, headless)
 cd web && npm test                             # the test host, the mock's face, the browser checks' own helpers
 cd web && npm run uicheck                      # the browser checks of the app's web build on the mock (dev/checks; builds its own export; long)
+cd web && npm run uicheck -- VC                # the browser checks of voice, on the mock's stand-in voice service
 cd web && npm run uicheck:electron             # the same checks drawn by the desktop app's own Chromium (dev/electron); with no check named: L8
 cd desktop && npm test                         # desktop app tests: the main process, the IPC face
 cd desktop && npm run e2e                      # the app itself, with a stand-in server (opens a window for a few seconds; after `cd app && npm run build:web`)

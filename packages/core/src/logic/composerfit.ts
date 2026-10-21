@@ -110,6 +110,38 @@ export function fitWithInsert(r: Row, w?: number, held = false): { fit: Fit; ins
   return { fit: plain, insert: plain.more ? "more" : "" };
 }
 
+/** Where the voice pair (Dictate and Speech mode, drawn as one child of the row) is: "row", after the spacer and the
+ *  insert button, before the attach button; "more", two entries of the "more" popup. */
+export type VoicePlace = "row" | "more";
+
+/** fitWithInsert, and where the voice pair is. The pair is placed as the insert button is: in the row where the row, placed
+ *  with it, has every control where it is without it, the meter says what it says, and all of it fits; so the pair takes
+ *  nothing from the controls. Else the pair is in the "more" popup, as two entries, and brings the chip if the row had none
+ *  (the row is then fitted with the chip, which can send controls to the popup in turn). The insert button gives way first:
+ *  it is placed in what the pair leaves, and where the pair is in the popup the button's entry is in it too.
+ *  w: the widths of the button and of the pair as a whole; one that is not known yet counts nothing, so it is drawn, to be
+ *  measured. held: the open "more" popup has the button's entry, or the pair's; each stays in it however wide the row,
+ *  as a control does. fitWithInsert is this without a pair. */
+export function fitWithTail(r: Row, w: { insert?: number; voice?: number }, held: { insert: boolean; voice: boolean }):
+  { fit: Fit; insert: InsertPlace; voice: VoicePlace } {
+  const pair = fitWithInsert(r, w.voice, held.voice);
+  if (pair.insert === "row") {
+    const rest = fitWithInsert({ ...r, fixed: [w.voice, ...r.fixed] }, w.insert, held.insert);
+    return { fit: rest.fit, insert: rest.insert, voice: "row" };
+  }
+  if (pair.fit.more) return { fit: sparedToPopup(r, pair.fit), insert: "more", voice: "more" };
+  // The row has no chip and no room for the pair: the chip comes with it, and takes the room it needs.
+  const chip = fit({ ...r, fixed: [r.more, ...r.fixed] });
+  return { fit: sparedToPopup(r, { ...chip, more: true }), insert: "more", voice: "more" };
+}
+
+/** Where the "more" chip is there anyway (the pair is in its popup), an optional control that has no room in the toolbar goes to the popup, which
+ *  costs the row nothing: a choice is never left out of both (fit leaves one out only where there is no popup to put it in). */
+function sparedToPopup(r: Row, f: Fit): Fit {
+  const left = r.controls.filter((c) => c.optional && c.w !== undefined && !f.toolbar.includes(c.id) && !f.popup.includes(c.id)).map((c) => c.id);
+  return left.length ? { ...f, popup: CONTROLS.filter((id) => f.popup.includes(id) || left.includes(id)) } : f;
+}
+
 /** fit for the controls has, the row's that are not optional. */
 function place(r: Row, has: Control[], known: (id: Control) => boolean): Fit {
   const held = (r.held ?? []).filter((id) => has.includes(id));

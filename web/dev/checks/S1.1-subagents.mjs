@@ -14,7 +14,7 @@
 //   - new, no old check proved them: a press outside closes the list, the focus is on the current depth as the list opens, the arrows go
 //     through the rows that take a pick, and the focus returns to the chip as the list closes (C-SS-03, C-SS-06, C-CH-20).
 import { check, mockEval, seed, until } from "../shot.mjs";
-import { MORE, chip, frame, openAt, playable } from "./composer.mjs";
+import { MORE, POP, chip, frame, openAt, playable } from "./composer.mjs";
 import { byTid, press, tidSel } from "./sel.mjs";
 
 export const viewports = ["desktop", "tablet", "phone"];
@@ -154,15 +154,24 @@ await check("S1.1 the Subagents chip in the toolbar's row and in the \"more\" po
       if ((await at(p.page)).open) fail(`${name}: the fixed chip opened a list`);
     }
     await close(p);
-    // (400 px is the default panel, where the attach button has the room of the meter's text; at 430 px the row has
-    // all of its controls and that text, with less to spare than the chip is wide)
-    for (const [width, panel, whole] of [[400, "a started chat in the default panel beside a board", false], [430, "a started chat in a 430 px panel beside a board", true]]) {
+    // (400 px is the default panel, where the attach button has the room of the meter's text and voice's pair has room beside the controls; at
+    // 430 px the row has all of its controls and that text, with less to spare than the pair is wide: the pair goes into the "more" popup, which
+    // brings the chip, the meter's text gives its room to the chip, and the fixed chip on the default settings is in the popup with the pair)
+    for (const [width, panel, pair] of [[400, "a started chat in the default panel beside a board", false], [430, "a started chat in a 430 px panel beside a board", true]]) {
       const q = await openAt(open, state("board-started"), layout, width);
       const chips = await CHIP(q.page).count(), mores = await q.page.locator(MORE).count();
-      if (chips || mores) fail(`${panel}: ${chips} Subagents chips and ${mores} "more" chips`);
-      if (whole && await q.page.locator(tidSel("ctx-meter") + "[data-compact]").count()) fail(`${panel}: the meter is cut to its ring`);
+      if (chips || mores !== (pair ? 1 : 0)) fail(`${panel}: ${chips} Subagents chips in the row and ${mores} "more" chips`);
+      if (pair) {
+        await press(q.page, q.page.locator(MORE));
+        if (!await until(() => q.page.locator(POP).count(), 5000)) fail(`${panel}: the "more" chip opens no popup`);
+        else {
+          const rows = await byTid(q.page.locator(POP), "more-row").evaluateAll((es) => es.map((e) => e.dataset.control));
+          if (!rows.includes("dictate") || !rows.includes("speech")) fail(`${panel}: the popup holds ${rows}, not the pair`);
+          if (!await CHIP(q.page.locator(POP)).count()) fail(`${panel}: the fixed Subagents chip is not in the popup with the pair`);
+        }
+      }
       await close(q);
     }
-    note("a started chat: the chip is fixed and opens nothing; in the default panel a fixed chip on the default settings is not drawn, and costs no \"more\" chip, nor the meter's text where the row has it");
+    note("a started chat: the chip is fixed and opens nothing; in the default panel a fixed chip on the default settings is not drawn, and costs no \"more\" chip; where voice's pair has no room beside the controls it is in the popup, with the chip");
   }
 }, { viewports, page: false });

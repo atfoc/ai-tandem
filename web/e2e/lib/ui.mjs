@@ -96,6 +96,34 @@ export const q = {
   draftTag: T("draft-tag"),
   group: T("side-group"),
   board: T("side-board"),
+  // voice (screens/voice, plans/voice-chats/architecture.md): the foot's gear and Settings > Voice, the composer's two controls (or their
+  // entries in the "more" popup), the speech bar, the mic mark, Read aloud, the problem popover and the board's orb
+  settingsBtn: T("settings-btn"),
+  settingsDialog: T("settings-dialog"),
+  voiceKey: T("vs-key"),
+  voiceKeyTest: T("vs-key-test"),
+  voiceKeySave: T("vs-key-save"),
+  voiceKeyResult: T("vs-key-result"),
+  voiceKeyRemove: T("vs-key-remove"),
+  voiceSettingsClose: T("vs-close"),
+  voiceDictate: T("voice-dictate"),
+  voiceSpeech: T("voice-speech"),
+  moreChip: T("more-chip"),
+  moreDictate: T("more-dictate"),
+  moreSpeech: T("more-speech"),
+  composerTools: T("composer-tools"),
+  speechBar: T("speech-bar"),
+  speechWords: T("speech-words"),
+  speechCountdown: T("speech-countdown"),
+  speechEnd: T("speech-end"),
+  micMark: T("msg-mic"),
+  readAloudAct: T("fk-act", { kind: "read" }),
+  voiceReading: T("voice-reading"),
+  voiceProblem: T("voice-problem"),
+  voiceProblemText: T("voice-problem-text"),
+  voiceProblemAct: T("voice-problem-act"),
+  voiceProblemDismiss: T("voice-problem-dismiss"),
+  pillOrb: T("pill-orb"),
 };
 
 export const exact = (s) => new RegExp(`^\\s*${String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*$`);
@@ -259,6 +287,37 @@ export const outline = (p, of) => p.evaluate(({ of, q }) => {
 /** The state of a chat's row: the `data-state` of its `crow-dot`. */
 export async function rowState(row) {
   return (await row.locator(T("crow-dot")).first().getAttribute("data-state").catch(() => "")) ?? "";
+}
+
+// ---- voice
+
+/** Settings > Voice opened by the foot's gear (on the phone the list first). */
+export async function openVoiceSettings(p) {
+  await toList(p);
+  await click(p, p.locator(q.settingsBtn).first());
+  await p.locator(q.settingsDialog).first().waitFor();
+}
+/** Settings > Voice closed. */
+export async function closeVoiceSettings(p) {
+  await click(p, p.locator(q.voiceSettingsClose));
+  await p.locator(q.settingsDialog).first().waitFor({ state: "detached" });
+}
+/** A voice control of the composer by its testID (`q.voiceDictate`, `q.voiceSpeech`): pressed where the toolbar puts it, in its row or, on a
+ *  narrow row, as the entry of the "more" popup (`more` is that entry's selector). The toolbar draws the pair in the row until it has measured
+ *  itself and then places it, so the place is waited for until it stays. */
+export async function pressVoiceControl(p, row, more) {
+  let last = "";
+  for (let i = 0; i < 40; i++) {
+    const at = await p.evaluate((tools) => { const t = document.querySelector(tools); return t ? `${t.dataset.voice}/${t.dataset.insert}/${t.dataset.more}` : ""; }, q.composerTools);
+    if (at && at === last) break;
+    last = at;
+    await new Promise((r) => setTimeout(r, 150));
+  }
+  if (await p.locator(row).count()) { await click(p, p.locator(row).first()); return "row"; }
+  await click(p, p.locator(q.moreChip));
+  await p.locator(more).first().waitFor();
+  await click(p, p.locator(more).first());
+  return "more";
 }
 
 // ---- the composer and the thread

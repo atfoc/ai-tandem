@@ -24,6 +24,12 @@
 // that it started (window.aiwbReady), that the Content-Security-Policy of its index.html broke nothing,
 // and that its board (Excalidraw, from ./board/ under file://, with connect-src 'none') draws.
 //
+// Voice (voice-chats P16, goal 4.2 and 6.3 on the desktop): the window with AIWB_VOICE_BASE at the stand-in voice service (web/dev/voicestandin.mjs,
+// started alone as a process of its own), a scratch AIWB_USER_DATA, and a server of the stand-in with one chat. The key is typed in Settings > Voice,
+// tested through main (Test key), saved into <userData>/client/voice-key (0600 in a 0700 folder, written by main), and is nowhere in the page (its
+// storage, its text, its globals, what main sent it); Read aloud on the chat's reply plays through main's relay and the stand-in sees the key as the
+// header alone; Remove key deletes the file. Nothing calls ElevenLabs: the stand-in is the only voice service, and only sk_test_ keys work.
+//
 // The window itself (A.13): where it opens the first time (1280 × 800) and where the person left it (the app is quit and started again on one
 // AIWB_USER_DATA), the error box of a page that cannot be loaded (its `dialog.showErrorBox` is replaced by a recorder), the server log offered in the
 // section of this computer, and the page's `window.aiwbFlush`.
@@ -43,6 +49,7 @@ const desktop = path.resolve(here, '..');
 // AIWB_PAGE picks the page (a path from this folder or an absolute one); the default is the web build, as the app's own.
 const pageFile = process.env.AIWB_PAGE ? path.resolve(process.env.AIWB_PAGE) : path.resolve(desktop, '../app/dist-web/index.html');
 const { standin } = require('../../packages/conn/test/standin.js');
+const voiceStandin = path.resolve(desktop, '../web/dev/voicestandin.mjs');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -119,14 +126,14 @@ async function step(name, fn) {
 }
 
 // run starts the app against the stand-in and hands the page to body.
-async function withApp({ _electron }, { waits, config }, body) {
+async function withApp({ _electron }, { waits, config, env: more = {}, snapshot }, body) {
   const dir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'aiwb-app-e2e-'));
-  const s = await standin({ secret: 'e2e-secret-' + crypto.randomBytes(6).toString('hex') });
+  const s = await standin({ secret: 'e2e-secret-' + crypto.randomBytes(6).toString('hex'), ...(snapshot ? { snapshot } : {}) });
   const server = fakeServer(dir);
   const home = path.join(dir, 'home');
   server.configure(config(s, home));
   const userData = path.join(dir, 'userData');
-  const env = { ...process.env, AIWB_USER_DATA: userData, AIWB_SERVER_BIN: server.script, AIWB_APP_WAITS: waits, AIWB_HOME: home };
+  const env = { ...process.env, AIWB_USER_DATA: userData, AIWB_SERVER_BIN: server.script, AIWB_APP_WAITS: waits, AIWB_HOME: home, ...more };
   delete env.ELECTRON_RUN_AS_NODE;
   // AIWB_E2E_APP, the executable inside a built AI Whiteboard.app, runs the packaged app (and its own
   // page) instead of the checkout.
@@ -158,12 +165,91 @@ async function withApp({ _electron }, { waits, config }, body) {
     page.on('pageerror', (e) => pageErrors.push(String(e)));
     page.on('console', (m) => { if (m.type() === 'error' && /Content[- ]Security[- ]Policy/i.test(m.text())) policyErrors.push(m.text()); });
     await page.waitForLoadState('load');
-    await body({ app, page, s, server, dir, home, pageErrors, policyErrors, startAgain, relaunch });
+    await body({ app, page, s, server, dir, home, userData, pageErrors, policyErrors, startAgain, relaunch });
   } finally {
     await app.close().catch(() => {});
     await s.close().catch(() => {});
     fs.rmSync(dir, { recursive: true, force: true });
   }
+}
+
+
+// startVoiceStandin runs the stand-in voice service alone (web/dev/voicestandin.mjs, a process of its own on a free port): its base is what the app gets as
+// AIWB_VOICE_BASE, its log (kept per request, never with a key: `keyHeader` says only that one came) is read over its control.
+async function startVoiceStandin() {
+  const child = spawn(process.execPath, [voiceStandin, '--port', '0'], { stdio: ['ignore', 'pipe', 'pipe'] });
+  let out = '';
+  child.stderr.on('data', (d) => { out += d; });
+  const base = await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`the stand-in voice service did not start: ${out}`)), 20000);
+    child.stdout.on('data', (d) => {
+      out += d;
+      const m = /Voice: (http:\/\/127\.0\.0\.1:\d+\/voice)/.exec(out);
+      if (m) { clearTimeout(timer); resolve(m[1]); }
+    });
+    child.on('exit', (code) => { clearTimeout(timer); reject(new Error(`the stand-in voice service ended (${code}): ${out}`)); });
+  });
+  const control = async (name, body) => {
+    const r = await fetch(`${base}/_control/${name}`, body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    return r.json();
+  };
+  return { base, out: () => out, log: () => control('log'), reset: () => control('reset', null), stop: async () => { child.kill(); await new Promise((r) => child.once('exit', r)); } };
+}
+
+// filesWith lists the files under dir that hold needle.
+function filesWith(dir, needle) {
+  const found = [];
+  const walk = (d) => {
+    let entries = [];
+    try { entries = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      const f = path.join(d, e.name);
+      if (e.isDirectory()) walk(f);
+      else if (e.isFile()) { try { if (fs.statSync(f).size <= (64 << 20) && fs.readFileSync(f).includes(needle)) found.push(f); } catch { /* gone */ } }
+    }
+  };
+  walk(dir);
+  return found;
+}
+
+// inPage looks for needle in what the page holds: its storage, its text and markup, the value of every box, the globals of window (strings, and objects
+// to a depth of four, without walking into the document), IndexedDB, and what main sent it over the voice bridge (window.__voiceEvents, noted by 
+// the e2e). It answers the places that hold it.
+function inPage(page, needle) {
+  return page.evaluate(async (k) => {
+    const hits = [];
+    const has = (v) => typeof v === 'string' && v.includes(k);
+    for (const [name, store] of [['localStorage', localStorage], ['sessionStorage', sessionStorage]]) {
+      for (let i = 0; i < store.length; i++) { const key = store.key(i); if (has(key) || has(store.getItem(key))) hits.push(`${name}.${key}`); }
+    }
+    if (has(document.documentElement.outerHTML) || has(document.body.innerText)) hits.push('the page text or markup');
+    if ([...document.querySelectorAll('input, textarea')].some((e) => has(e.value) || has(e.getAttribute('placeholder')))) hits.push('a box');
+    const seen = new WeakSet();
+    const walk = (v, depth) => {
+      if (has(v)) return true;
+      if (!v || typeof v !== 'object' || depth > 4 || seen.has(v) || v instanceof Node || v === window) return false;
+      seen.add(v);
+      if (v instanceof ArrayBuffer || ArrayBuffer.isView(v)) return false;
+      let names = [];
+      try { names = Object.getOwnPropertyNames(v); } catch { return false; }
+      return names.some((n) => { try { return has(n) || walk(v[n], depth + 1); } catch { return false; } });
+    };
+    for (const name of Object.getOwnPropertyNames(window)) {
+      if (name === 'window' || name === 'self' || name === 'top' || name === 'parent' || name === 'frames' || name === 'document') continue;
+      try { if (walk(window[name], 0)) hits.push(`window.${name}`); } catch { /* a getter that throws */ }
+    }
+    try {
+      for (const info of (await indexedDB.databases?.()) ?? []) {
+        const db = await new Promise((ok, no) => { const r = indexedDB.open(info.name); r.onsuccess = () => ok(r.result); r.onerror = () => no(r.error); });
+        for (const store of db.objectStoreNames) {
+          const rows = await new Promise((ok, no) => { const r = db.transaction(store).objectStore(store).getAll(); r.onsuccess = () => ok(r.result); r.onerror = () => no(r.error); });
+          if (JSON.stringify(rows).includes(k)) hits.push(`indexedDB ${info.name}/${store}`);
+        }
+        db.close();
+      }
+    } catch { /* no databases */ }
+    return hits;
+  }, needle);
 }
 
 // watch makes the page record what the app sends it, through the transport of the bridge (the stream the
@@ -207,7 +293,7 @@ async function main() {
         // test is for what only Node's has (AD-44), not for `typeof window.process`.
         nodeProcess: window.process?.versions === undefined && window.process?.binding === undefined,
       }));
-      assert.deepEqual(exposed.aiwbGlobals, ['aiwbTransport'], 'the preload gives the page one surface');
+      assert.deepEqual(exposed.aiwbGlobals, ['aiwbTransport', 'aiwbVoice'], 'the preload gives the page its transport and the voice bridge, and nothing else');
       assert.deepEqual(exposed.transportKeys, ['app', 'call', 'pickImages', 'picture', 'stream', 'way']);
       assert.equal(exposed.way, 'ipc');
       assert.deepEqual(exposed.node, ['undefined', 'undefined', 'undefined']);
@@ -522,6 +608,148 @@ async function main() {
       assert.ok(!JSON.stringify(await seen(page)).includes(s.secret));
     });
   });
+
+
+  // 4. Voice (goal 4.2, 6.3): the key's whole life through the window. The stand-in voice service runs alone; main is told where it is (AIWB_VOICE_BASE,
+  //    honoured only because the app is not packaged and the address is the loopback); the server is the stand-in's, with one chat to read.
+  const voiceService = await startVoiceStandin();
+  const CANARY = `sk_test_DESKTOP_CANARY_${crypto.randomBytes(6).toString('hex')}`;
+  const scrub = (text) => String(text).split(CANARY).join('<canary>');
+  const REPLY = 'First sentence here. A second one follows. And a third ends it.';
+  const chatRecord = { id: 'c_voice', name: 'Read me', agent: 'claude', cwd: '/home/test', model: 'opus', effort: 'high', locked: true, created: new Date().toISOString(), status: 'ready',
+    usage: { ctxIn: 1000, ctxOut: 100, ctxWindow: 200000, turns: 1 }, group: '__ungrouped__' };
+  try {
+    await withApp(pw, {
+      waits: 'backoff=1s',
+      env: { AIWB_VOICE_BASE: voiceService.base },
+      snapshot: { agents: ['claude'], catalogs: {}, home: '/home/test', defaultCwd: '/home/test', chats: [chatRecord], groups: [], boards: [] },
+      config: (s, home) => ({
+        launch: launchOutput(s, home),
+        secret: s.secret,
+        status: { running: { build: 'this', mcp: { listener: { port: 6006, url: 'http://localhost:6006/mcp', up: true }, chats: [] } } },
+      }),
+    }, async ({ page, s, userData, pageErrors }) => {
+      const keyFile = path.join(userData, 'client', 'voice-key');
+      const consoleLines = [];
+      page.on('console', (m) => consoleLines.push(`${m.type()}: ${m.text()}`));
+      s.routes.set('GET /api/chats/c_voice/items', () => ({ json: { version: 1, branch: 'main', items: [
+        { kind: 'user', text: 'Say something.' }, { kind: 'text', text: REPLY, done: true }, { kind: 'end', point: 'p1' }] } }));
+      const tid = (id, data = {}) => `[data-testid="${id}"]` + Object.entries(data).map(([k, v]) => `[data-${k}="${v}"]`).join('');
+      const text = async (loc) => ((await loc.first().textContent().catch(() => '')) ?? '').replace(/\s+/g, ' ').trim();
+      await until(() => page.evaluate(() => window.aiwbReady === true), 'the page drawn');
+      await page.evaluate(() => {
+        window.__voiceEvents = [];
+        window.aiwbVoice.on((e) => window.__voiceEvents.push(JSON.parse(JSON.stringify({ ...e, bytes: e.bytes ? e.bytes.length : undefined }))));
+      });
+
+      await step('voice: the bridge is the shape of VC-5, and the key has no get', async () => {
+        const shape = await page.evaluate(() => ({ voice: Object.keys(window.aiwbVoice).sort(), key: Object.keys(window.aiwbVoice.key).sort(), mic: Object.keys(window.aiwbVoice.mic).sort(), socket: Object.keys(window.aiwbVoice.socket).sort() }));
+        assert.deepEqual(shape.voice, ['cancel', 'key', 'mic', 'on', 'preview', 'request', 'socket']);
+        assert.deepEqual(shape.key, ['clear', 'has', 'set'], 'the page can ask whether there is a key and set or clear it, never read it');
+        assert.deepEqual(shape.socket, ['close', 'open', 'send']);
+        assert.deepEqual(shape.mic, ['ask', 'openSettings', 'status']);
+      });
+
+      await step('voice: with no key there is no key file and the page is told so', async () => {
+        assert.equal(fs.existsSync(keyFile), false);
+        assert.equal(await page.evaluate(() => window.aiwbVoice.key.has()), false);
+        assert.deepEqual(await voiceService.log(), [], 'a window that never used voice asked the voice service for nothing');
+      });
+
+      await step('voice: Settings > Voice takes the key, Test key goes through main and finds the voices, nothing is stored yet', async () => {
+        await page.locator(tid('settings-btn')).first().click();
+        await page.locator(tid('settings-dialog')).first().waitFor({ timeout: 15000 });
+        await page.locator(tid('vs-key')).fill(CANARY);
+        await page.locator(tid('vs-key-test')).click();
+        await until(async () => /Works/.test(await text(page.locator(tid('vs-key-result')))), 'Test key answers');
+        assert.equal(await text(page.locator(tid('vs-key-result'))), 'Works: 6 voices found.');
+        assert.equal(fs.existsSync(keyFile), false, 'a key that was only tested is not stored');
+        const log = await voiceService.log();
+        assert.deepEqual(log.map((e) => [e.kind, e.keyHeader]), [['voices', true]], 'main made the call, with the key as the header');
+      });
+
+      await step('voice: Save writes the key file: owner only (0600) in a folder of its own (0700), the key and a newline', async () => {
+        await page.locator(tid('vs-key-save')).click();
+        await until(() => fs.existsSync(keyFile), 'the key file');
+        assert.equal(fs.readFileSync(keyFile, 'utf8'), `${CANARY}\n`);
+        assert.equal(fs.statSync(keyFile).mode & 0o777, 0o600);
+        assert.equal(fs.statSync(path.dirname(keyFile)).mode & 0o777, 0o700);
+        // (the page drops the key from its box when main has answered, a moment after the file is there)
+        await until(async () => (await page.locator(tid('vs-key')).inputValue()) === '', 'the box empties after Save');
+        await until(async () => (await page.locator(tid('vs-key-remove')).count()) > 0, 'Remove is offered');
+        assert.equal(await page.evaluate(() => window.aiwbVoice.key.has()), true);
+      });
+
+      await step('voice: the key is nowhere in the page: not its storage, text, boxes, globals, IndexedDB, nor what main sent it', async () => {
+        assert.deepEqual(await inPage(page, CANARY), []);
+        assert.ok(!JSON.stringify(await page.evaluate(() => window.__voiceEvents)).includes(CANARY));
+        assert.ok(!consoleLines.some((l) => l.includes(CANARY)), 'the console');
+        assert.ok(!pageErrors.some((l) => l.includes(CANARY)), 'an uncaught error');
+        // (the page that holds the key would be the only way for it to appear: the box that took it is empty and Show would show nothing)
+        await page.locator(tid('vs-close')).click();
+        await page.locator(tid('settings-dialog')).first().waitFor({ state: 'detached', timeout: 10000 });
+      });
+
+      await step('voice: Read aloud plays through main: one request for each sentence, the key only as the header, no key and no token in the page', async () => {
+        await voiceService.reset();
+        await page.evaluate(() => { window.__voiceEvents.length = 0; });
+        const row = page.locator(`${tid('side-row', { kind: 'chat' })}`).first();
+        await row.waitFor({ timeout: 30000 });
+        await row.click();
+        const reply = page.locator(tid('msg', { role: 'assistant' })).filter({ hasText: 'second one follows' }).last();
+        await reply.waitFor({ timeout: 30000 });
+        await reply.hover();
+        const read = reply.locator(tid('fk-act', { kind: 'read' })).first();
+        await read.waitFor({ state: 'visible', timeout: 15000 });
+        await read.click();
+        const tts = await until(async () => { const t = (await voiceService.log()).filter((e) => e.kind === 'tts'); return t.length >= 3 && t.every((e) => e.finishedAt || e.cancelled) ? t : null; }, 'the reply is spoken', 60000);
+        assert.deepEqual(tts.map((e) => e.text), ['First sentence here.', 'A second one follows.', 'And a third ends it.']);
+        assert.ok(tts.every((e) => e.keyHeader && !e.token && !e.problems.length && !e.cancelled), JSON.stringify(tts.map((e) => [e.keyHeader, e.token, e.problems, e.cancelled])));
+        const events = await page.evaluate(() => window.__voiceEvents);
+        assert.ok(events.some((e) => e.kind === 'data'), 'the audio came to the page as events from main');
+        assert.ok(!JSON.stringify(events).includes(CANARY));
+        assert.deepEqual(await inPage(page, CANARY), []);
+        // the reading ends when the last sound has played: the control says "Read aloud" again
+        await until(async () => (await page.locator(tid('voice-reading')).count()) === 0, 'the reading ends', 30000);
+      });
+
+      await step('voice: the key is in one file of the app\'s data and in no other; the voice service saw it only as the header', async () => {
+        assert.deepEqual(filesWith(userData, Buffer.from(CANARY)).map((f) => path.relative(userData, f)), [path.join('client', 'voice-key')]);
+        const log = await voiceService.log();
+        assert.ok(log.length > 0 && log.every((e) => e.keyHeader && !e.token && !e.problems?.length), JSON.stringify(log.map((e) => [e.kind, e.keyHeader, e.token])));
+        assert.ok(!JSON.stringify(log).includes(CANARY), 'its log never holds a key');
+        assert.ok(!voiceService.out().includes(CANARY), 'nor its output');
+        assert.ok(!consoleLines.some((l) => l.includes(CANARY)));
+      });
+
+      await step('voice: Remove key from this device deletes the file; Read aloud then asks for a key and asks the service for nothing', async () => {
+        await page.locator(tid('settings-btn')).first().click();
+        await page.locator(tid('settings-dialog')).first().waitFor({ timeout: 15000 });
+        await page.locator(tid('vs-key-remove')).click();
+        await page.locator(tid('confirm-dialog')).getByRole('button', { name: 'Remove key', exact: true }).click();
+        await until(() => !fs.existsSync(keyFile), 'the key file removed');
+        assert.equal(await page.evaluate(() => window.aiwbVoice.key.has()), false);
+        await until(async () => (await page.locator(tid('vs-key-remove')).count()) === 0, 'Remove is gone');
+        await page.locator(tid('vs-close')).click();
+        await page.locator(tid('settings-dialog')).first().waitFor({ state: 'detached', timeout: 10000 });
+        await voiceService.reset();
+        const reply = page.locator(tid('msg', { role: 'assistant' })).filter({ hasText: 'second one follows' }).last();
+        await reply.hover();
+        await reply.locator(tid('fk-act', { kind: 'read' })).first().click();
+        await page.locator(tid('voice-problem', { kind: 'no_key' })).first().waitFor({ timeout: 15000 });
+        assert.deepEqual(await voiceService.log(), []);
+        assert.deepEqual(filesWith(userData, Buffer.from(CANARY)), [], 'nothing of the app\'s data holds the key any more');
+        assert.deepEqual(await inPage(page, CANARY), []);
+      });
+
+      await step('voice: the page raised no uncaught error and the console never held the key', async () => {
+        assert.deepEqual(pageErrors.map(scrub), []);
+        assert.ok(!consoleLines.some((l) => l.includes(CANARY)));
+      });
+    });
+  } finally {
+    await voiceService.stop();
+  }
 
   // 3. The window itself (A.13): where it opens the first time and where the person left it, and the error box of a page that cannot be loaded.
   await withApp(pw, {

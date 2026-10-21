@@ -33,10 +33,10 @@ test("the page reaches the browser's storage through the store's four functions 
     for (const word of ["sessionStorage", "indexedDB", "IndexedDB", "document.cookie", "caches.open", "navigator.storage", "showSaveFilePicker"]) assert.equal(c.includes(word), false, `${f} uses ${word}`);
     if (f !== "app/platform/kv.web.ts") assert.equal(/\blocalStorage\b/.test(c), false, `${f} uses localStorage itself`);
   }
-  // the app's kv on the web is the browser's storage, and nothing else is; on a phone it is MMKV, and the servers' list is the secure storage's
+  // the app's kv on the web is the browser's storage, and nothing else is; on a phone it is MMKV, and the servers' list is the secure storage's, and so is voice's key (voice/platform/keystore.native.ts, test/voice.keystore.test.ts)
   const uses = code("app/platform/kv.web.ts").split("\n").filter((l) => /\blocalStorage\b/.test(l)).map((l) => l.trim());
   assert.deepEqual(uses, ['try { return (globalThis as { localStorage?: Storage }).localStorage ?? null; } catch { return null; }']);
-  for (const f of Object.keys(text)) if (/react-native-mmkv|expo-secure-store/.test(code(f))) assert.ok(["app/platform/kv.native.ts", "app/platform/serverstore.native.ts", "app/platform/serverstorecore.ts", "app/dev/StorageProbe.tsx"].includes(f), `${f} reaches the native storage itself`);
+  for (const f of Object.keys(text)) if (/react-native-mmkv|expo-secure-store/.test(code(f))) assert.ok(["app/platform/kv.native.ts", "app/platform/serverstore.native.ts", "app/platform/serverstorecore.ts", "app/dev/StorageProbe.tsx", "app/voice/platform/keystore.native.ts"].includes(f), `${f} reaches the native storage itself`);
   // (the device test's probe, V4: a development build with EXPO_PUBLIC_AIWB_PROBE=1 alone; it reads the storage and writes nothing to it)
   assert.ok(code("app/App.tsx").includes('const probe = __DEV__ && process.env.EXPO_PUBLIC_AIWB_PROBE === "1";'));
   assert.equal(/\.(set|remove|delete|clearAll|recrypt)\w*\(|setItem|deleteItem/.test(code("app/dev/StorageProbe.tsx")), false, "the probe writes to the storage");
@@ -67,7 +67,10 @@ test("every key the page writes, by the place that writes it: a setting, a key o
     "app/screens/shell/nav.ts \"aiwb.sel\"",                // what is selected: the keys of a board and a chat (entry id and id)
     "app/screens/shell/nav.ts \"aiwb.side\"",               // a setting
     "app/screens/sidebar/Foot.tsx \"aiwb.archived\"",       // a setting
+    "app/screens/voice/pill/collapse.ts PILL_KEY",          // a setting: whether the board's voice pill is collapsed to the orb
     "app/ui/theme.tsx THEME_KEY",                           // a setting
+    "app/voice/engine/marks.ts MARKS_KEY",                  // the mic marks: which of this device's chat messages were sent by voice (chat keys, branches, item indexes)
+    "app/voice/engine/state.ts SETTINGS_KEY",               // the voice settings (voice, models, speeds, Auto-send): settings, and never the ElevenLabs key
     "core/state/store.ts \"aiwb.sel\"",                     // this computer's snapshot, the tree of a section (applySection) and an entry that left (dropServer) judge the selection
     "core/state/store.ts COLLAPSE_KEY",                     // the collapse of 3.13: entry ids (and "local"), and the keys of groups
     "core/state/store.ts COLLAPSE_KEY",

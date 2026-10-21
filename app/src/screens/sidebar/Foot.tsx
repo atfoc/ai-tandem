@@ -1,5 +1,5 @@
-// The foot of the sidebar: "Show archived" (one switch for every section), the Servers button (S3's), the prompt library's button and the
-// theme's picker, in that order (the old page's Sidebar.tsx, Library.tsx LibraryButton). The library's dialog is drawn by its own screen (S11) from
+// The foot of the sidebar: "Show archived" (one switch for every section), the Servers button (S3's), the prompt library's button, the
+// Settings button (voice's) and the theme's picker, in that order (the old page's Sidebar.tsx, Library.tsx LibraryButton). The library's dialog is drawn by its own screen (S11) from
 // the store's `libraryDialog`.
 import { useRef, useState } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
@@ -12,11 +12,13 @@ import { useStore } from "../../state/useStore.ts";
 import { CupIcon, MoonIcon, SunIcon, SystemIcon } from "../../ui/icons.tsx";
 import { Menu, MenuHead, MenuItem } from "../../ui/Menu.tsx";
 import { Overlay } from "../../ui/Overlay.tsx";
+import { SwitchLook } from "../../ui/Switch.tsx";
 import { useTheme, useTokens } from "../../ui/theme.tsx";
 import { tid, type DataSet } from "../../ui/tid.ts";
 import { useControlRef } from "../../ui/useControlRef";
 import { webStyle } from "../../ui/webstyle.ts";
 import { ServersButton } from "../servers";
+import { SettingsButton } from "../voice/SettingsButton.tsx";
 import { useSideHidden, Text } from "./parts.tsx";
 
 export function Foot() {
@@ -27,13 +29,11 @@ export function Foot() {
     <View {...tid("side-foot")} style={[styles.foot, { borderTopColor: t.line }]}>
       <Pressable {...tid("side-archived")} role="switch" aria-checked={showArchived} accessibilityState={{ checked: showArchived }} aria-label="Show archived"
         style={styles.archived} onPress={() => set(!showArchived)}>
-        <View {...tid("side-switch", { on: showArchived })} style={[styles.track, { backgroundColor: showArchived ? t.accentFill : t.line2 }]}>
-          <View {...tid("side-knob")} style={[styles.knob, { backgroundColor: showArchived ? t.knobOn : t.knob }, showArchived && { transform: [{ translateX: 11 }] }]} />
-        </View>
+        <SwitchLook on={showArchived} testID="side-switch" knobTestID="side-knob" />
         <Text size={12} tone="muted" numberOfLines={1}>Show archived</Text>
       </Pressable>
       <ServersButton />
-      <View style={styles.end}><LibraryButton /><ThemePicker /></View>
+      <View style={styles.end}><LibraryButton /><SettingsButton /><ThemePicker /></View>
     </View>
   );
 }
@@ -112,8 +112,6 @@ function ThemePicker() {
 const styles = StyleSheet.create({
   foot: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: 8, rowGap: 6, paddingVertical: 7, paddingRight: 10, paddingLeft: 14, borderTopWidth: 1 },
   archived: { flexGrow: 1, flexShrink: 0, flexDirection: "row", alignItems: "center", gap: 8 },
-  track: { width: 26, height: 15, borderRadius: 8, flexShrink: 0 },
-  knob: { position: "absolute", top: 2, left: 2, width: 11, height: 11, borderRadius: 6 },
   footButton: { width: 28, height: 26, borderWidth: 1, borderRadius: 7, alignItems: "center", justifyContent: "center", flexShrink: 0 },
   dot: { position: "absolute", top: -3, right: -3, width: 7, height: 7, borderRadius: 4 },
   end: { flexShrink: 0, flexDirection: "row", alignItems: "center", justifyContent: "flex-end", gap: 4, minWidth: 74, marginLeft: "auto" },

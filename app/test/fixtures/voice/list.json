@@ -1,0 +1,17 @@
+{
+  "sentences": [
+    "Here is what I changed on the board:",
+    "Moved the API box to the right of the database.",
+    "Connected it with an arrow, and labelled the arrow \"reads\".",
+    "Still to do: colour the queue.",
+    "Done: renamed the cache node.",
+    "Next steps, in order:",
+    "Review the layout.",
+    "Tell me if anything overlaps.",
+    "Pick a colour for the queue.",
+    "Export the board as a picture.",
+    "A nested point about export formats.",
+    "Another one.",
+    "Let me know which one you want first."
+  ]
+}

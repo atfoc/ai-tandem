@@ -7,6 +7,7 @@
 //   POST /host/call?server=&method=&path=    one call; the body is the call's body (JSON, or bytes with their type)
 //   GET  /host/picture/<entry>/<chat>/<image>
 //   POST /host/app/<op>                      an app operation (the server list, the owner's things); the body is its arguments
+//   anything under the stand-in voice service's prefix, when there is one (dev/voicestandin.mjs; `voice` below)
 //   GET  anything else                       a file of distDir (/ is index.html)
 //
 // The face holds no secret and checks no route: the client answers a server that is not in its list, a path that is
@@ -34,9 +35,10 @@ export function ownRequest(req) {
 
 /** Creates the face of `client`, serving the page files of `distDir`. log(line) gets one line for a call the face
  *  could not hand to the client; it is never given a body. pingMs: the time between the pings of the stream, bodyMax the
- *  most a body may hold (a test lowers each). Answers { handle(req, res), close() }: close ends the
+ *  most a body may hold (a test lowers each). voice: a stand-in voice service (createVoiceStandin), whose paths the face
+ *  answers before the page's files, and whose socket `upgrade` takes (the same check of the Host and the Origin). Answers { handle(req, res), upgrade(req, socket, head) (only with `voice`), close() }: close ends the
  *  stream and its timer, and ends the client's subscription. It does not close the client. */
-export function createHostFace({ client, distDir, log = () => {}, pingMs = PING, bodyMax = BODY_MAX }) {
+export function createHostFace({ client, distDir, log = () => {}, pingMs = PING, bodyMax = BODY_MAX, voice = null }) {
   let stream = null; // the one open stream: { res, sub, timer }
 
   const endStream = (s) => {
@@ -157,6 +159,7 @@ export function createHostFace({ client, distDir, log = () => {}, pingMs = PING,
     try {
       if (!ownRequest(req)) return refuse(res, 403, "This host answers its own page alone.", "bad_host");
       const u = new URL(req.url, "http://host"), p = u.pathname;
+      if (voice?.handle(req, res)) return;
       if (p === "/host/events") return req.method === "GET" ? events(req, res) : refuse(res, 405, "The stream is read with GET.", "method_not_allowed");
       if (p === "/host/call") return req.method === "POST" ? await call(req, res, u) : refuse(res, 405, "A call is sent with POST.", "method_not_allowed");
       if (p.startsWith("/host/picture/")) return await picture(req, res, p.slice("/host/picture/".length));
@@ -169,8 +172,14 @@ export function createHostFace({ client, distDir, log = () => {}, pingMs = PING,
     }
   }
 
+  /** An upgrade of the server: the voice stand-in's socket, from the page this host serves alone. Give it to server.on("upgrade"). */
+  function upgrade(req, socket, head) {
+    if (!ownRequest(req) || !voice.upgrade(req, socket, head)) socket.destroy();
+  }
+
   return {
     handle,
+    ...(voice ? { upgrade } : {}), // (a face with no stand-in takes no upgrade)
     close() { endStream(stream); },
     /** Cuts the connection of the stream that is open, as a network does (the page's stream tries again by itself). Not part of the contract: for the mock's dropStreams(). */
     drop() { stream?.res.destroy(); },
