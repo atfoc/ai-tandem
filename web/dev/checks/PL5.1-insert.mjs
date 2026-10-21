@@ -8,9 +8,9 @@
 //   A chat's toolbar draws the button only where its row has room left (logic/composerfit.ts fitWithTail): beside
 //   a board, in a panel of 480 px, a started chat's whole row has the voice pair beside its controls and the meter's text,
 //   and leaves the button no room: there is no button and no "more" chip, and ⌘P is the box's all the same. In a panel of
-//   430 px the pair does not fit beside the controls: it is in the "more" popup, whose chip takes the room of the meter's
-//   text, and the button's entry is in the popup too. In a panel of 410 px the meter is its ring and the row has the
-//   button and the pair. In a pane of 300 px the composer fits its box, with the button or without.
+//   430 px the pair stays in the row and the folder gives way to it, into the "more" popup, where the button's entry is
+//   too; the meter keeps its text. In a panel of 410 px the model is in the popup as well, and what that leaves is the
+//   button's. In a pane of 300 px the composer fits its box, with the button or without.
 //   The box alone (src/RefInput.tsx, bundled here with a stand-in for the popup that takes the focus as the popup's
 //   search field will). A text goes in where the caret was when the popup opened: in the middle of typed text, in
 //   place of a selection, in an empty box, with its line breaks; what was before and after is unchanged, the box has
@@ -125,13 +125,13 @@ await check("PL5.1 a text put into a composer's text box, and ⌘P in it and els
     } catch (e) { fail(`${name}: ${e.message.split("\n")[0]}`); } finally { await ctx.close(); } // (one page at a time: the mock has one stream)
   }
   // a chat's toolbar draws the button where its row has room left, and the composer fits its box
-  // (what the toolbar has: button, the Insert button in the row; text, the meter's text; chip, the "more" chip; null, either. Voice's pair stands in the row where it fits
-  // beside the controls, and the Insert button gives way to it; where it does not fit, it is in the "more" popup, which brings the chip, and the meter's text gives the chip its room.
+  // (what the toolbar has: button, the Insert button in the row; text, the meter's text; chip, the "more" chip; null, either. Voice's pair stands in the row, and the
+  // controls give way to it, into the "more" popup, before the meter's text does; the Insert button has what is left.
   // The panes are the desktop's; a touch viewport's window is the phone layout.)
   for (const [name, id, width, want] of [
     ["a started chat beside a board, in a panel of 480 px", "board-started", 480, { button: false, text: true, chip: false }], // (a whole row, the pair beside it, no room for the button)
-    ["a started chat beside a board, in a panel of 430 px", "board-started", 430, { button: false, text: false, chip: true }], // (the pair is in the popup, with the chip, the button's entry and the ring)
-    ["a started chat beside a board, in a panel of 410 px", "board-started", 410, { button: true, text: false, chip: false }], // (the ring leaves room for the button and the pair)
+    ["a started chat beside a board, in a panel of 430 px", "board-started", 430, { button: false, text: true, chip: true }], // (the folder is in the popup, with the button's entry)
+    ["a started chat beside a board, in a panel of 410 px", "board-started", 410, { button: true, text: true, chip: true }], // (the model too: what is left is the button's)
     ["a started chat beside a board, at the default panel width", "board-started", 400, null],
     ["a chat's page of 300 px", "plain-started", 300, null]]) {
     const s = state(id);

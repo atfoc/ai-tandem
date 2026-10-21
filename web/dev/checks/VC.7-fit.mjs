@@ -2,10 +2,11 @@
 // stand-in voice service, at the desktop, the tablet and the phone. Goal 3.4, 4.5, 4.10, 6.6; architecture VC-17 (core's `fitWithTail`).
 //   the row        on a wide composer the pair stands after the row's spacer: insert button, Dictate, Speech mode, attach, Send, in that order, the pair
 //                  one gap from the attach button and Dictate beside Speech mode; both inside the box, none past the row
-//   the popup      on a narrow row the pair is two entries of the "more" popup (`more-row` control "dictate" and "speech"), after the insert entry, and the
-//                  row holds neither; the "more" chip is there (it comes with the pair when the row had none)
-//   the order      across rows of 256 to 736 px the pair is never in the popup while the insert button is in the row (the insert button leaves
-//                  first), never in the popup with no "more" chip, in the row when wide and in the popup when narrow
+//   the popup      on the narrowest row (a window of 200 px) the pair is two entries of the "more" popup (`more-row` control "dictate" and "speech"), after
+//                  the insert entry, and the row holds neither; the "more" chip is there (it comes with the pair when the row had none)
+//   the order      across rows from the widest to the narrowest the pair leaves last: it is never in the popup while the insert button, a control or the
+//                  meter's text is in the row, never in the popup with no "more" chip, in the row when wide and in the popup when narrowest, and once
+//                  it is in the row it stays there in every wider row
 //   both work      from the popup: Dictate puts the words in the box and a second press stops it; Speech mode starts speech mode, whose bar takes
 //                  the place of the box and the toolbar (so no chip is seen), and End on the bar ends it and the toolbar and the pair come back
 //                  as they were; the popup closes as listening starts, and its chip is tinted while Dictate inside is on
@@ -33,7 +34,7 @@ await check("VC.7 the composer's voice pair: in the row, in the \"more\" popup, 
   /** What the toolbar says of itself: where it put the insert button and the pair, whether it has the "more" chip. */
   const place = (p) => p.evaluate(() => {
     const t = document.querySelector('[data-testid="composer-tools"]');
-    return t ? { voice: t.dataset.voice, insert: t.dataset.insert, more: t.dataset.more === "true", w: innerWidth, row: Math.round(t.getBoundingClientRect().width) } : null;
+    return t ? { voice: t.dataset.voice, insert: t.dataset.insert, more: t.dataset.more === "true", meter: t.dataset.meter, tools: t.querySelectorAll('[data-testid="tool"]').length, w: innerWidth, row: Math.round(t.getBoundingClientRect().width) } : null;
   });
   const rect = (p, sel) => p.evaluate((s) => { const e = document.querySelector(s); if (!e) return null; const r = e.getBoundingClientRect(); return { l: r.left, r: r.right, t: r.top, b: r.bottom }; }, sel);
   const textOf = async (p) => ((await byTid(p, "composer-input").first().textContent()) ?? "").replace(/ /g, " ");
@@ -77,7 +78,7 @@ await check("VC.7 the composer's voice pair: in the row, in the \"more\" popup, 
   {
     const { page, ctx } = await openState(open, await stateOf("plain-new"), layout, 900);
     const widths = [];
-    for (let w = 1200; w >= 300; w -= (w > 700 ? 50 : 20)) widths.push(w);
+    for (let w = 1200; w >= 200; w -= (w > 700 ? 50 : 20)) widths.push(w);
     const seen = [];
     for (const w of widths) { await resize(page, w); const at = await place(page); if (at) seen.push({ ...at, w }); }
     // (the window's width is not the row's: the layout changes at 1100 and 700 px, and the pane with it. The room is the row's own.)
@@ -88,21 +89,24 @@ await check("VC.7 the composer's voice pair: in the row, in the \"more\" popup, 
     if (seen.some((s) => s.voice === "more" && !s.more)) fail(`the pair is in the popup with no "more" chip: rows of ${J(seen.filter((s) => s.voice === "more" && !s.more).map((s) => s.row))} px`);
     const firstNot = (key, value) => seen.find((s) => s[key] !== value)?.row ?? 0; // the widest row at which it is no longer there
     if (firstNot("insert", "row") < firstNot("voice", "row")) fail(`the pair left the row at ${firstNot("voice", "row")} px, before the insert button did (${firstNot("insert", "row")} px)`);
+    const early = seen.filter((s) => s.voice === "more" && (s.tools > 0 || s.meter !== "ring"));
+    if (early.length) fail(`the pair is in the popup while the row still holds a control or the meter's text: ${J(early.map((s) => ({ row: s.row, tools: s.tools, meter: s.meter })))}`);
     if (seen.at(-1)?.voice !== "more") fail(`in a row of ${seen.at(-1)?.row} px the pair is not in the popup`);
     if (seen[0]?.voice !== "row") fail(`in a row of ${seen[0]?.row} px the pair is not in the row`);
-    // (not monotonic, by core's rule: the pair takes nothing from the controls, so a narrower row that has sent a control to the popup may have room for the
-    // pair again; what holds at every width is the three claims above)
+    // (monotonic, by core's rule: the pair leaves only where the row cannot hold it at its last step, which does not depend on the room)
+    const back = seen.findIndex((s, i) => i > 0 && s.voice === "row" && seen[i - 1].voice === "more");
+    if (back >= 0) fail(`the pair is in the popup in a row of ${seen[back - 1].row} px and in the row in a narrower one of ${seen[back].row} px`);
     await ctx.close();
   }
 
-  // ---- the popup: a narrow row
+  // ---- the popup: the narrowest row
   {
     const { page, ctx } = await openState(open, await stateOf("plain-new"), layout, 300);
-    await resize(page, 300);
+    await resize(page, 200);
     await useMic(page, note);
     await page.evaluate((k) => window.__aiwbVoice.setKey(k), KEY);
     const at = await place(page);
-    if (at?.voice !== "more" || !at.more) fail(`a 300 px composer puts the pair in the ${at?.voice || "nowhere"} (the chip: ${at?.more})`);
+    if (at?.voice !== "more" || !at.more) fail(`a window of 200 px puts the pair in the ${at?.voice || "nowhere"} (the chip: ${at?.more}, a row of ${at?.row} px)`);
     if (await byTid(page, "voice-dictate").count() || await byTid(page, "voice-speech").count()) fail("the row still draws Dictate or Speech mode with the pair in the popup");
     await shot(page, "2-narrow-row");
     let chipLook = "";

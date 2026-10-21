@@ -168,8 +168,18 @@ await check("A2.2 the composer fits its box, at rest and in every frame", async 
         await p.page.waitForTimeout(150); // (frames are sampled while the branch is shown: the change is quick since calls go to the mock over one connection)
         await mockEval(`setSession(${chat}, ${JSON.stringify(branch)}, { status: "ready" });`, url);
       };
-      // (the model's chip of the toolbar: the other branch is on another model; with no chip in the row it is in the "more" popup)
-      const model = async () => (await byTid(p.page, "composer-tools").locator(tidSel("tchip", { kind: "model" })).first().textContent({ timeout: 1000 }).catch(() => null)) ?? "in more";
+      // (the model's chip of the toolbar: the other branch is on another model; with no chip in the row it is read in the "more" popup, which is closed again)
+      const model = async () => {
+        const inRow = await byTid(p.page, "composer-tools").locator(tidSel("tchip", { kind: "model" })).first().textContent({ timeout: 1000 }).catch(() => null);
+        if (inRow !== null) return inRow;
+        if (!await p.page.locator(MORE).count()) return "nowhere";
+        await press(p.page, p.page.locator(MORE));
+        if (!await until(() => p.page.locator(POP).count(), 5000)) return "in more";
+        const inMore = await p.page.locator(POP).locator(tidSel("tchip", { kind: "model" })).first().textContent({ timeout: 2000 }).catch(() => null);
+        await p.page.keyboard.press("Escape");
+        if (!await until(async () => !await p.page.locator(POP).count(), 5000)) fail(`${name}: Esc did not close the "more" popup`);
+        return `${inMore ?? "?"} (in more)`;
+      };
       const before = await model();
       const r = await sampled(p.page, name, async () => {
         await go("alt", "Is there a faster way?");

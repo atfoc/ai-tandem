@@ -63,9 +63,12 @@ the first call that needs it (`audio.native.ts`).
   before it has played. `playerStop` stops the node; the completions of the dropped buffers are ignored (a generation number).
 - The engine is taken down and the session deactivated with `.notifyOthersOnDeactivation` (the music of another app comes back) at once
   when listening ends, 1.5 s after a playback queue drained (the next sentence of Read aloud finds the engine running).
-- An interruption (`AVAudioSession.interruptionNotification`, began), a route change whose reason is `.oldDeviceUnavailable`, media
-  services reset, and the engine stopping by itself on a format change (`AVAudioEngineConfigurationChange`) end everything:
-  `onInterrupted`.
+- An interruption (`AVAudioSession.interruptionNotification`, began), a route change whose reason is `.oldDeviceUnavailable` and media
+  services reset end everything: `onInterrupted`.
+- The engine stopping by itself on a format change (`AVAudioEngineConfigurationChange`) is no end: voice processing does it just after
+  the engine starts (the input and the output take its formats), and so does a headset plugged in. The engine is started again on the new
+  formats, with the tap put back for the input's new format (muted if it was); what the player had queued is dropped (`drained`). Only an
+  engine that does not start again, or that stops a fourth time within two seconds, ends everything (`onInterrupted` `"route"`).
 - Permission: `AVAudioApplication` on iOS 17 and later, `AVAudioSession`'s record permission before. The Info.plist text is
   `NSMicrophoneUsageDescription` of `app.config.ts`. No background mode: the app does not listen in the background (goal §5).
 - Clips: `AVAudioPlayer(data:)`, through the session of the engine when one runs, else a `.playback` session.

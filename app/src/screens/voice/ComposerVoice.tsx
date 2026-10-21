@@ -1,5 +1,5 @@
 // The composer's two voice controls (VC-17, goal 3.2, 3.4): Dictate and Speech mode. The toolbar draws them as one pair after its spacer, before
-// the attach button (`place` "row": two icon buttons), or as two entries of its "more" popup when the row has no room (`place` "more"). Each is a
+// the attach button (`place` "row": two icon buttons), or as two entries of its "more" popup when even the narrowest row has no room (`place` "more"). Each is a
 // toggle: Dictate starts listening into the composer's box and stops when pressed again; Speech mode starts speech mode for the chat (its bar,
 // when there is one, is the composer part SpeechBar) and ends it when pressed again. With no key, or on any other failure, the engine shows the
 // problem popover on the anchor given here and the control hangs one from itself (ProblemPopover.tsx).

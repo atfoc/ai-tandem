@@ -102,8 +102,12 @@ final class VoiceAudio: NSObject, AVAudioPlayerDelegate {
   private var sessionActive = false
   private var idle: DispatchWorkItem?
 
-  // The microphone.
+  /// When the engine was last started again after a change of the hardware's format (restart), within the last two seconds.
+  private var restarts: [Date] = []
+
+  // The microphone, and the frames of a chunk it was started with.
   private var tap: MicTap?
+  private var tapFrames = 1600
 
   // The player's queue. A buffer has a number (`seq`); `generation` changes when the queue is stopped, so that the completions of the
   // buffers it dropped are ignored.
@@ -239,14 +243,51 @@ final class VoiceAudio: NSObject, AVAudioPlayerDelegate {
     shape = want
     voiceProcessing = processing
     echoAsked = want == .listening && echoCancel
-    // The engine stops by itself when the hardware's format changes (a headset plugged in or taken off, AirPods): that ends what runs.
+    // The engine stops by itself when the hardware's format changes: voice processing does it as the engine starts (the input and the
+    // output take its formats), and so does a headset plugged in or taken off. It is started again on the new formats (restart).
     engineObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: e, queue: nil) { [weak self] _ in
-      self?.queue.async {
-        guard let self, self.engine === e, !e.isRunning else { return }
-        self.interrupted("route")
-      }
+      self?.queue.async { self?.restart(e) }
     }
     trace("built \(want == .listening ? "listening" : "playback"), voice processing \(processing)")
+  }
+
+  /// The engine `e` stopped by itself on a change of the hardware's format: it is started again. The tap is put back for the input's new
+  /// format (muted if it was), and what the player had queued is dropped (`drained`), since the node lost it with the engine. Only an engine
+  /// that does not start again, or that stops again and again, ends what runs.
+  private func restart(_ e: AVAudioEngine) {
+    guard engine === e, !e.isRunning else { return }
+    let now = Date()
+    restarts = restarts.filter { now.timeIntervalSince($0) < 2 } + [now]
+    trace("configuration changed, restart \(restarts.count)")
+    if restarts.count > 3 {
+      interrupted("route")
+      return
+    }
+    let hadAudio = outstanding > 0
+    clearQueue()
+    player?.stop()
+    do {
+      if let old = tap {
+        e.inputNode.removeTap(onBus: 0)
+        tap = nil
+        let input = e.inputNode.outputFormat(forBus: 0)
+        guard input.sampleRate > 0, input.channelCount > 0 else { throw MicFailure.device("the device has no microphone input") }
+        guard let fresh = MicTap(from: input, chunkFrames: tapFrames, emit: emit) else { throw MicFailure.device("no converter for the input") }
+        fresh.muted = old.muted
+        e.inputNode.installTap(onBus: 0, bufferSize: 4096, format: input) { buffer, _ in fresh.take(buffer) }
+        tap = fresh
+        trace("mic on again, input \(input.sampleRate) Hz x\(input.channelCount)")
+      }
+      e.prepare()
+      try e.start()
+      player?.play()
+    } catch {
+      trace("restart: \(error)")
+      interrupted("route")
+      return
+    }
+    if hadAudio { emitPlayer(["kind": "drained"]) }
+    settle()
   }
 
   /// Takes the engine down. The player's queue is dropped (its completions are ignored).
@@ -331,6 +372,7 @@ final class VoiceAudio: NSObject, AVAudioPlayerDelegate {
         guard let tap = MicTap(from: input, chunkFrames: frames, emit: self.emit) else { throw MicFailure.device("no converter for the input") }
         e.inputNode.installTap(onBus: 0, bufferSize: 4096, format: input) { buffer, _ in tap.take(buffer) }
         self.tap = tap
+        self.tapFrames = frames
         self.trace("mic on, \(frames) frames a chunk, input \(input.sampleRate) Hz x\(input.channelCount)")
         done(.success(self.voiceProcessing))
       } catch let failure as MicFailure {

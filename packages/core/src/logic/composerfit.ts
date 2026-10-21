@@ -10,11 +10,14 @@ export type Control = "server" | "agent" | "folder" | "model" | "effort" | "suba
  *  what stands in its place: the fixed "model · effort" chip, "Loading models…". */
 export const CONTROLS: Control[] = ["server", "agent", "folder", "model", "effort", "subagents"];
 
-/** The order of leaving as room runs out, after the meter's text. Agent and model stay longest:
- *  they say whom the user talks to. The Subagents chip is the first to go: a setting made once,
- *  and the one control the toolbar did not always have, so the others are in the row wherever
- *  they were without it. */
+/** The order of leaving as room runs out. The agent stays longest: it says whom the user talks to.
+ *  The Subagents chip is the first to go: a setting made once, and the one control the toolbar
+ *  did not always have, so the others are in the row wherever they were without it. */
 export const LEAVING: Control[] = ["subagents", "server", "effort", "folder", "model", "agent"];
+
+/** The meter's text goes just before this control: after every other, since it tells how much of
+ *  the context the chat has used; and before the agent, which stays longest. */
+export const TEXT_BEFORE: Control = "agent";
 
 /** What decides the width a control of the toolbar asks for: its kind, what it says, whether it is
  *  a fixed chip or a choice, whether a lock stands with it, and what else is drawn in it (a glyph).
@@ -62,9 +65,10 @@ export function needs(r: Row, f: Fit): number {
 }
 
 /** Places the row's controls. With all of them in the toolbar and the meter's text shown when that
- *  fits; else the text goes, then one control after the other in the order of LEAVING, the "more"
- *  chip coming with the first, until the rest fits. The last step is the "more" chip, the ring,
- *  Stop and Send, whatever the room.
+ *  fits; else one control after the other leaves in the order of LEAVING, the "more" chip coming
+ *  with the first, and the meter's text goes just before TEXT_BEFORE (last, where the chat has no
+ *  such control), until the rest fits. The last step is the "more" chip, the ring, Stop and Send,
+ *  whatever the room.
  *  A control with no width stays where it is, which is the toolbar: it is measured there, and
  *  placed with the next call.
  *  While the popup is open (held) nothing it holds returns to the toolbar, however wide the row,
@@ -114,22 +118,23 @@ export function fitWithInsert(r: Row, w?: number, held = false): { fit: Fit; ins
  *  insert button, before the attach button; "more", two entries of the "more" popup. */
 export type VoicePlace = "row" | "more";
 
-/** fitWithInsert, and where the voice pair is. The pair is placed as the insert button is: in the row where the row, placed
- *  with it, has every control where it is without it, the meter says what it says, and all of it fits; so the pair takes
- *  nothing from the controls. Else the pair is in the "more" popup, as two entries, and brings the chip if the row had none
- *  (the row is then fitted with the chip, which can send controls to the popup in turn). The insert button gives way first:
- *  it is placed in what the pair leaves, and where the pair is in the popup the button's entry is in it too.
+/** fitWithInsert, and where the voice pair is. The pair stays in the row beside the attach button as long as the row can
+ *  hold it: the controls leave for the popup, and the meter's text goes, before the pair does (the row is fitted with the
+ *  pair as one of what never leaves). Only where the row cannot hold it even at the last step (every control in the popup,
+ *  the meter cut to its ring) is the pair in the "more" popup, as two entries, and brings the chip if the row had none (the
+ *  row is then fitted with the chip, which can send controls to the popup in turn). The insert button gives way first: it
+ *  is placed in what the pair leaves, and where the pair is in the popup the button's entry is in it too.
  *  w: the widths of the button and of the pair as a whole; one that is not known yet counts nothing, so it is drawn, to be
  *  measured. held: the open "more" popup has the button's entry, or the pair's; each stays in it however wide the row,
  *  as a control does. fitWithInsert is this without a pair. */
 export function fitWithTail(r: Row, w: { insert?: number; voice?: number }, held: { insert: boolean; voice: boolean }):
   { fit: Fit; insert: InsertPlace; voice: VoicePlace } {
-  const pair = fitWithInsert(r, w.voice, held.voice);
-  if (pair.insert === "row") {
-    const rest = fitWithInsert({ ...r, fixed: [w.voice, ...r.fixed] }, w.insert, held.insert);
+  const plain = fit(r), pinned: Row = { ...r, fixed: [w.voice, ...r.fixed] };
+  if (!(held.voice && plain.more) && needs(pinned, fit(pinned)) <= r.room + 1e-6) {
+    const rest = fitWithInsert(pinned, w.insert, held.insert);
     return { fit: rest.fit, insert: rest.insert, voice: "row" };
   }
-  if (pair.fit.more) return { fit: sparedToPopup(r, pair.fit), insert: "more", voice: "more" };
+  if (plain.more) return { fit: sparedToPopup(r, plain), insert: "more", voice: "more" };
   // The row has no chip and no room for the pair: the chip comes with it, and takes the room it needs.
   const chip = fit({ ...r, fixed: [r.more, ...r.fixed] });
   return { fit: sparedToPopup(r, { ...chip, more: true }), insert: "more", voice: "more" };
@@ -147,11 +152,14 @@ function place(r: Row, has: Control[], known: (id: Control) => boolean): Fit {
   const held = (r.held ?? []).filter((id) => has.includes(id));
   const leaves = LEAVING.filter((id) => has.includes(id) && !held.includes(id) && known(id));
   const leaving = [...leaves.filter((id) => id !== r.pinned), ...leaves.filter((id) => id === r.pinned)];
-  const step = (n: number, meter: Fit["meter"]): Fit => {
-    const popup = has.filter((id) => held.includes(id) || leaving.slice(0, n).includes(id));
-    return { toolbar: has.filter((id) => !popup.includes(id)), popup, more: popup.length > 0, meter };
+  // What goes, in order: the controls, and the meter's text ("text") just before TEXT_BEFORE.
+  const at = leaving.includes(TEXT_BEFORE) ? leaving.indexOf(TEXT_BEFORE) : leaving.length;
+  const order = [...leaving.slice(0, at), "text" as const, ...leaving.slice(at)];
+  const step = (n: number): Fit => {
+    const gone = order.slice(0, n);
+    const popup = has.filter((id) => held.includes(id) || gone.includes(id));
+    return { toolbar: has.filter((id) => !popup.includes(id)), popup, more: popup.length > 0, meter: gone.includes("text") ? "ring" : "full" };
   };
-  // The meter's text is the first to go: it shows only with every control in the toolbar.
-  const steps = [...(held.length ? [] : [step(0, "full")]), ...leaving.map((_, n) => step(n, "ring")), step(leaving.length, "ring")];
+  const steps = [...order.map((_, n) => step(n)), step(order.length)];
   return steps.find((f) => needs(r, f) <= r.room + 1e-6) ?? steps[steps.length - 1];
 }

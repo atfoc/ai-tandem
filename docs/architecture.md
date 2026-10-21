@@ -569,7 +569,8 @@ never used voice opens no socket, asks for no microphone, makes no audio context
   (`aiwb.voice.spoken`: the item indexes of this app's spoken messages, per chat and branch, at most 500, the oldest dropped).
   Another device, a fork, a branch and a reinstall do not show it.
 - **The composer and Read aloud.** **Dictate** and **Speech mode** are two buttons after the toolbar's spacer, before attach;
-  they leave together for the "more" popup when the row is short (`fitWithTail` in `@aiwb/core`), and they are off for the
+  they stay in the row as it narrows, while the other controls and the context meter's text give way to them, and leave
+  together for the "more" popup only when even the narrowest row cannot hold them (`fitWithTail` in `@aiwb/core`); they are off for the
   reasons Send is off. While speech mode is on, the **speech bar** takes the place of the box and the toolbar (the words, a
   waveform, the sentence being spoken, Mute, End, the Auto-send switch, and the countdown with Cancel or Send); the box
   and its draft are kept under it and come back at End. **Read aloud** is the last of a message's actions (the mouse's hover

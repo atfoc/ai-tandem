@@ -8,13 +8,15 @@
 // starts its agent again, which the chat is told of (pickOnFork): until that call ends the model is a fixed chip that names the choice the
 // agent is starting on, whatever the agent kind tells meanwhile.
 //
-// The row never holds more than fits it (logic/composerfit.ts): as room runs out the controls leave for the popup of a "more" chip, where each
+// The row never holds more than fits it (logic/composerfit.ts): as room runs out the controls leave for the popup of a "more" chip (the meter's text
+// goes after all of them but the agent), where each
 // is the chip it was, with its own list. Each control is drawn once, in the row or in the open popup; one that changes place is made anew
 // there, so it has no open list, and while the popup is open nothing leaves it for the row (a pick made there keeps its chip, with the
 // focus). The widths are measured with onLayout (measure.tsx): a control whose width is not kept is drawn in the measuring layer, and the
 // fit is made again with it when it reports; the row's width is its own onLayout. The fit rules are core's, unchanged. Voice's two controls, Dictate
-// and Speech mode (the composer part VoiceButtons), are one child after the spacer, before the attach button, where core's fitWithTail puts them; where the
-// row has no room they are two entries of the popup, after the insert entry (fitWithTail brings the "more" chip if the row had none).
+// and Speech mode (the composer part VoiceButtons), are one child after the spacer, before the attach button, where core's fitWithTail puts them: they stay
+// while the controls and the meter's text give way, and only where even the narrowest row has no room are they two entries of the popup, after the insert
+// entry (fitWithTail brings the "more" chip if the row had none).
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { StyleSheet, View } from "react-native";
 
