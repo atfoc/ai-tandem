@@ -132,8 +132,8 @@ arrives. `[user]`
   plays the voice's own preview clip, so that choosing a voice costs no credits. A control shows all of the voices. `[user]`
 - **Speech mode sends my turn**: Auto-send or Tap to send, the default of 3.1. `[user]`
 - **Advanced options** (collapsed by default) `[user]`:
-  - Speech model for text to speech. Default: Flash v2.5, the fastest and cheapest.
-  - Transcription model for speech to text. Default: Scribe, realtime.
+  - Speech model for text to speech: Flash v2.5, v4 Turbo or Multilingual v2. Default: Flash v2.5, the fastest and cheapest.
+  - Transcription model for speech to text. Default: Scribe v2 Realtime.
   - Language. Default: auto-detect.
   - Pause before auto-send. Default: 1.2 s.
   - Playback speed. Default: 1.0x.

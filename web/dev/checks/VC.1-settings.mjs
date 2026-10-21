@@ -177,9 +177,11 @@ await check("VC.1 Settings > Voice: the foot's button, the key, the voices, the 
   const defaults = await settings(page);
   if (defaults.ttsModel !== "eleven_flash_v2_5" || defaults.language !== null || defaults.pauseMs !== 1200 || defaults.speed !== 1 || defaults.skipCode !== true) fail(`the defaults are ${JSON.stringify(defaults)}`);
   const shownDefaults = await page.evaluate(() => Object.fromEntries(["vs-adv-tts", "vs-adv-stt", "vs-adv-language", "vs-adv-pause", "vs-adv-speed"].map((id) => [id, document.querySelector(`[data-testid="${id}"]`)?.innerText.replace(/[▾\s]+$/, "").trim()])));
-  if (JSON.stringify(shownDefaults) !== JSON.stringify({ "vs-adv-tts": "Flash v2.5", "vs-adv-stt": "Scribe, realtime", "vs-adv-language": "Auto-detect", "vs-adv-pause": "1.2 s", "vs-adv-speed": "1.0×" })) fail(`Advanced options show ${JSON.stringify(shownDefaults)}`);
+  if (JSON.stringify(shownDefaults) !== JSON.stringify({ "vs-adv-tts": "Flash v2.5", "vs-adv-stt": "Scribe v2 Realtime", "vs-adv-language": "Auto-detect", "vs-adv-pause": "1.2 s", "vs-adv-speed": "1.0×" })) fail(`Advanced options show ${JSON.stringify(shownDefaults)}`);
   if (await byTid(page, "vs-adv-skipcode").getAttribute("aria-checked") !== "true") fail("Skip code blocks is not on by default");
   await shot(page, "5-advanced");
+  await pick(page, "vs-adv-tts", "v4 Turbo");
+  await until(async () => (await settings(page)).ttsModel === "eleven_v4_turbo");
   await pick(page, "vs-adv-tts", "Multilingual v2");
   await pick(page, "vs-adv-language", "Croatian");
   await pick(page, "vs-adv-pause", "2.0 s");

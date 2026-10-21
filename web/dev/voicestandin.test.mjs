@@ -204,6 +204,11 @@ describe("the text to speech", () => {
     assert.equal(r.status, 400);
     assert.match(lastOf(c, "tts").problems[0], /pcm_24000/);
     assert.equal((await speak(base, { ...SENTENCE, model_id: "eleven_turbo_v2" })).status, 400);
+    c.pace({ chunkMs: 0, chunks: 1 });
+    r = await speak(base, { ...SENTENCE, model_id: "eleven_v4_turbo", language_code: "hr" });
+    assert.equal(r.status, 200);
+    await r.arrayBuffer();
+    assert.deepEqual([lastOf(c, "tts").model, lastOf(c, "tts").problems], ["eleven_v4_turbo", []]);
     assert.equal((await speak(base, { ...SENTENCE, text: " " })).status, 400);
     assert.equal((await speak(base, SENTENCE, { voice: "vs_nobody" })).status, 404);
     assert.equal((await speak(base, { ...SENTENCE, voice_settings: { speed: 2 } })).status, 400);

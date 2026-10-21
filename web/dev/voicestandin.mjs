@@ -41,7 +41,7 @@ import { pathToFileURL } from "node:url";
 
 const GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const STT_MODELS = ["scribe_v2_realtime"];
-const TTS_MODELS = ["eleven_flash_v2_5", "eleven_multilingual_v2"];
+const TTS_MODELS = ["eleven_flash_v2_5", "eleven_v4_turbo", "eleven_multilingual_v2"];
 const STT_PARAMS = new Set(["model_id", "audio_format", "language_code", "commit_strategy", "vad_silence_threshold_secs", "include_timestamps", "token"]);
 const COMMIT_STRATEGIES = new Set(["manual", "vad", "turn_prediction"]);
 const TOKEN_MS = 15 * 60 * 1000;
