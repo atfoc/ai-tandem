@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +12,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"ai-whiteboard/internal/agenttest"
 )
 
 // fakeAgent is a stand-in for `claude` and `agent` that records its pid and its child's pid in
@@ -32,7 +35,7 @@ while :; do sleep 1; done
 // Claude chat, a Cursor chat, the Claude sign-in check (`auth status`, the first step of its
 // model-list probe) and the Cursor model-list probe the server starts at startup.
 func TestStopEndsAgentProcesses(t *testing.T) {
-	serverTest(t, "TestCloseKillsOnlyTheProcess (internal/claude)", "TestCloseEndsTheGroup (internal/cursor)", "TestSignalGroup (internal/agent)")
+	serverTest(t, "TestCloseEndsTheTree (internal/claude)", "TestCloseEndsTheGroup (internal/cursor)", "TestSignalGroup (internal/agent)")
 	in := newInstance(t)
 	fakes := t.TempDir()
 	in.claude = filepath.Join(fakes, "claude")
@@ -103,6 +106,91 @@ func TestStopEndsAgentProcesses(t *testing.T) {
 			t.Fatalf("after the server stopped, fake agent processes %v of %v are still running", left, pids)
 		}
 	}
+}
+
+// Stopping the server ends the background command a waiting Claude chat has started, although it
+// runs detached, in a group of its own, and the stand-in's process is waiting on it: the chat's
+// process is closed with the server and the command goes with it. The command is told from every
+// other process by its sleep time, which only this run uses.
+func TestStopEndsBackgroundCommands(t *testing.T) {
+	serverTest(t, "TestEndAllEndsAdoptedGroups (internal/agent)", "TestCloseEndsTheTree (internal/claude)")
+	if !agenttest.HasNode() {
+		t.Skip("node is not on PATH (the fake claude is a Node script)")
+	}
+	in := newInstance(t)
+	in.claude = agenttest.FakeClaude(t)
+	pidFile := filepath.Join(t.TempDir(), "bgpids")
+	secs := fmt.Sprintf("60.%06d", 100000+rand.Intn(900000))
+	in.setenv("FAKE_CLAUDE_BGPIDS=" + pidFile)
+	t.Cleanup(func() { // a failing test leaves no sleep behind
+		for _, pid := range readPids(pidFile) {
+			syscall.Kill(-pid, syscall.SIGKILL)
+		}
+	})
+
+	serve := in.command(context.Background(), "serve", "-cwd", t.TempDir())
+	serve.Stdout, serve.Stderr = os.Stderr, os.Stderr
+	if err := serve.Start(); err != nil {
+		t.Fatal(err)
+	}
+	served := make(chan struct{})
+	go func() { serve.Wait(); close(served) }()
+	waitServes(t, in, serve.Process.Pid, 60*time.Second)
+
+	const client = testClient
+	in.activate(t, client)
+	var chat struct{ ID string }
+	in.must(t, client, "POST", "/api/chats", map[string]any{"agent": "claude", "group": "__ungrouped__"}, &chat)
+	in.must(t, client, "POST", "/api/chats/"+chat.ID+"/messages", map[string]any{"text": "[[bg " + secs + "]]"}, nil)
+
+	var pids []int
+	// A bound for what must happen, not a measure: node and the shell start slowly on a loaded machine.
+	for deadline := time.Now().Add(60 * time.Second); len(pids) < 1; time.Sleep(20 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the stand-in started no background command (pids %v)", pids)
+		}
+		pids = readPids(pidFile)
+	}
+	// The shell's pid is written as it starts; the sleep is its child a moment later.
+	for deadline := time.Now().Add(60 * time.Second); len(sleepingFor(secs)) != 1; time.Sleep(20 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("sleep %s runs as %v before the stop, want one", secs, sleepingFor(secs))
+		}
+	}
+
+	in.run(t, "stop")
+	select {
+	case <-served:
+	case <-time.After(15 * time.Second):
+		t.Fatal("the server process did not exit within 15 s of the stop")
+	}
+	for deadline := time.Now().Add(15 * time.Second); ; time.Sleep(100 * time.Millisecond) {
+		left := sleepingFor(secs)
+		if syscall.Kill(-pids[0], 0) == syscall.ESRCH && len(left) == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("after the server stopped, the background command is still there: group %d (ESRCH expected), sleep %s as %v", pids[0], secs, left)
+		}
+	}
+}
+
+// sleepingFor is the pids of the live `sleep SECONDS` processes in the machine's process list.
+func sleepingFor(seconds string) []int {
+	out, err := exec.Command("ps", "-axo", "pid=,stat=,command=").Output()
+	if err != nil {
+		return nil
+	}
+	var pids []int
+	for _, line := range strings.Split(string(out), "\n") {
+		f := strings.Fields(line)
+		if len(f) == 4 && f[2] == "sleep" && f[3] == seconds && !strings.HasPrefix(f[1], "Z") {
+			if pid, err := strconv.Atoi(f[0]); err == nil {
+				pids = append(pids, pid)
+			}
+		}
+	}
+	return pids
 }
 
 // fakePi is a stand-in for `pi --mode rpc`: it answers the boot version probe, the one-shot

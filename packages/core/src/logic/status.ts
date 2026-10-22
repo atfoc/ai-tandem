@@ -5,8 +5,13 @@ import type { BranchState, ChatView, Status } from "../types.ts";
 
 type Doing = Pick<ChatView, "status" | "subsRunning" | "subsOwed">;
 
-/** The agent is in a turn or waits for the user's approval: the chat takes no message. */
-export const isBusy = (s: Status | undefined) => s === "thinking" || s === "writing" || s === "tool" || s === "approval";
+/** The agent is in a turn, waits for the user's approval, or waits for its background work to end: the chat takes
+ *  no message, and Stop and Esc stop it. */
+export const isBusy = (s: Status | undefined) => s === "thinking" || s === "writing" || s === "tool" || s === "approval" || s === "waiting";
+
+/** Busy and not waiting on background work: the agent is in a turn (or waits for approval), so the thread shows
+ *  its typing line. A waiting chat shows the waiting row instead. */
+export const inTurn = (s: Status | undefined) => isBusy(s) && s !== "waiting";
 
 /** The agent process of a fork that has had no message of its own is being started (again, on the
  *  model picked): for such a fork a busy status is never a turn, and a stop does nothing. */
@@ -25,8 +30,8 @@ export function boardWorker<A extends string>(chats: Record<string, Pick<ChatVie
   return Object.values(chats).find((c) => c.board === board && !c.archived && chatBusy(c))?.agent ?? other;
 }
 
-/** One branch has work that a stop ends: its agent is busy, or the subagents it spawned still run
- *  while it waits for them. Results not sent yet do not count: they are kept, and go to the agent
+/** One branch has work that a stop ends: its agent is busy (in a turn, or waiting for its background work
+ *  to end), or the subagents it spawned still run while it waits for them. Results not sent yet do not count: they are kept, and go to the agent
  *  with the next message. */
 const branchWorking = (b: Pick<Doing, "status" | "subsRunning">): boolean => isBusy(b.status) || (b.subsRunning ?? 0) > 0;
 
@@ -53,11 +58,11 @@ export function workingOn<C extends Doing & Pick<ChatView, "board" | "archived" 
  *  subagents only: the chat's `working` (other branches) does not block it or show Stop. With a
  *  pending move the branch shown is the move's source, cut at its point.
  *  stop: the Stop control shows; for an idle chat whose subagents run, it stops them.
- *  blocked: no message can be sent, because the agent is busy; an idle chat takes one while its
- *  subagents run. A message that starts a new branch (o.newBranch: a move is pending) does not go
+ *  blocked: no message can be sent, because the agent is busy, which a chat waiting for its background
+ *  work is; an idle chat takes one while its subagents run. A message that starts a new branch (o.newBranch: a move is pending) does not go
  *  to the busy branch: it is blocked only when the agent kind cannot branch from a source whose
  *  turn runs (o.liveFork false).
- *  esc: Esc stops, only while the agent is busy.
+ *  esc: Esc stops, only while the agent is busy (a waiting chat is: Stop and Esc end its background work).
  *  While the agent of a fork without a message starts (starting), there is nothing to stop and no
  *  message is taken: no Stop, no Esc, blocked. A chat with no agent (agent "") takes none either,
  *  and has nothing to stop. */

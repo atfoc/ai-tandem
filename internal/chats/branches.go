@@ -531,18 +531,26 @@ func (m *Manager) stopBranch(id string) {
 func (m *Manager) stopOne(c *Chat) {
 	var out outbox
 	c.mu.Lock()
-	var toClose []agent.Agent
-	defer func() { c.mu.Unlock(); m.send(out); closeAgents(toClose) }()
+	toClose := m.stopLocked(c, &out)
+	c.mu.Unlock()
+	m.send(out)
+	closeAgents(toClose)
+}
+
+// stopLocked is what stopOne does, with c.mu held: it returns the subagents' processes, for the
+// caller to close once it has unlocked and sent out. Interrupt does it too, for an agent that has
+// background work (InterruptOf).
+func (m *Manager) stopLocked(c *Chat, out *outbox) (toClose []agent.Agent) {
 	if c.deleted || c.unlisted {
-		return
+		return nil
 	}
 	setHold(c)
 	if c.tr == nil && !c.interrupted {
-		return // unloaded: no agent, nothing open
+		return nil // unloaded: no agent, nothing open
 	}
-	tr, err := m.trOf(c, &out)
+	tr, err := m.trOf(c, out)
 	if err != nil {
-		return
+		return nil
 	}
 	wasBusy := busy(c)
 	var ups []transcript.Update
@@ -568,7 +576,7 @@ func (m *Manager) stopOne(c *Chat) {
 	}
 	if c.carry != nil { // its turn ends here: the pump drops what the old process still says
 		c.carry.human = true
-		m.endCarry(c, false, &out)
+		m.endCarry(c, false, out)
 	}
 	stopped := 0 // stopSubs stops every running subagent, a native one too
 	for _, s := range c.subs {
@@ -576,7 +584,7 @@ func (m *Manager) stopOne(c *Chat) {
 			stopped++
 		}
 	}
-	toClose = append(toClose, m.stopSubs(c, &out)...)
+	toClose = append(toClose, m.stopSubs(c, out)...)
 	m.revokeChatExtras(c.meta.ID)
 	if wasBusy || stopped > 0 {
 		ups = append(ups, tr.AddNote("muted", "Stopped.")...)
@@ -589,6 +597,7 @@ func (m *Manager) stopOne(c *Chat) {
 	m.logSave(c)
 	out.emitItems(c, ups)
 	out.emitChat(c)
+	return toClose
 }
 
 // retire takes a chat object that is being deleted out of the manager: nothing more is written

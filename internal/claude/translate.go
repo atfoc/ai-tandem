@@ -8,13 +8,52 @@ import (
 )
 
 // translate maps one Claude stream-json line (other than control lines) to agent events.
-// It keeps per-message state on p and is only called from the read loop.
+// It keeps per-message state on p and is only called from the read loop. Whatever the line
+// was, the change of the process's background work it caused is reported as one EvBackground,
+// ahead of the usage and the end of a turn that the same line gives, so that the manager sees the
+// new state before it sees the turn end.
 func (p *proc) translate(m map[string]any) []agent.Event {
+	evs := p.translate1(m)
+	s := p.bgState()
+	if s == p.bgSent {
+		return evs
+	}
+	p.bgSent = s
+	ev := agent.Event{Kind: agent.EvBackground, Background: s}
+	if n := len(evs); n >= 2 && evs[n-1].Kind == agent.EvTurnEnd && evs[n-2].Kind == agent.EvUsage {
+		return append(evs[:n-2:n-2], append([]agent.Event{ev}, evs[n-2:]...)...)
+	}
+	return append(evs, ev)
+}
+
+// bgState is the background work of the process as the manager's rule reads it (agent.Background).
+func (p *proc) bgState() agent.Background {
+	return agent.Background{Running: len(p.bgLive), Unread: p.bgUnread}
+}
+
+// translate1 is translate without the report of the background work.
+func (p *proc) translate1(m map[string]any) []agent.Event {
 	p.initMaps()
 	if m["type"] == "system" {
 		switch m["subtype"] {
 		case "task_started", "task_progress", "task_updated", "task_notification":
 			return p.taskEvent(m)
+		case "background_tasks_changed":
+			// The CLI's level signal: the full set of live background tasks, replaced with each
+			// payload. Ambient tasks are no activity, and native subagents have their own path.
+			p.bgLive = map[string]bool{}
+			for _, t := range list(m["tasks"]) {
+				task := obj(t)
+				id := str(task["task_id"])
+				if id == "" || task["task_type"] == "local_agent" {
+					continue
+				}
+				p.bgKnown[id] = true
+				if ambient, _ := task["ambient"].(bool); !ambient {
+					p.bgLive[id] = true
+				}
+			}
+			return nil // the change event comes from translate
 		case "init":
 			p.model = str(m["model"])
 			return nil
@@ -28,6 +67,8 @@ func (p *proc) translate(m map[string]any) []agent.Event {
 		switch m["subtype"] {
 		case "status":
 			if m["status"] == "requesting" {
+				// A request to the model reads the notices that were queued: none is unread now.
+				p.bgUnread = false
 				return []agent.Event{{Kind: agent.EvThinking}}
 			}
 		case "permission_denied":
@@ -78,7 +119,11 @@ func (p *proc) translate(m map[string]any) []agent.Event {
 		// The empty result a resume or a fork sends for each task its session lost: marked by its
 		// origin, or (a line without one) counted off against the notices. Any other result is a
 		// turn's own, and ends the count.
-		if num(m["num_turns"]) == 0 && (p.orphans > 0 || str(obj(m["origin"])["kind"]) == "task-notification") {
+		// A result with a text or an error is a turn's own even then: a turn that a notice began can
+		// fail before its first request.
+		isErr, _ := m["is_error"].(bool)
+		if num(m["num_turns"]) == 0 && !isErr && str(m["result"]) == "" &&
+			(p.orphans > 0 || str(obj(m["origin"])["kind"]) == "task-notification") {
 			if p.orphans > 0 {
 				p.orphans--
 			}
@@ -100,7 +145,6 @@ func (p *proc) translate(m map[string]any) []agent.Event {
 		}
 		// "aborted_streaming" or "aborted_tools", by what the interrupt cut.
 		aborted := strings.HasPrefix(str(m["terminal_reason"]), "aborted_")
-		isErr, _ := m["is_error"].(bool)
 		errText := ""
 		if isErr && !aborted {
 			errText = str(m["result"])
@@ -142,19 +186,26 @@ func (p *proc) translate(m map[string]any) []agent.Event {
 				CostUSD: num(m["total_cost_usd"]), HasCost: hasCost, NumTurns: int(num(m["num_turns"])),
 				OutTokens: int(num(obj(m["usage"])["output_tokens"])), CumOutTokens: cumOut,
 				CumTokens: cum, HasTokens: hasTok,
-				Final: str(m["result"])},
+				Final: str(m["result"]), Background: p.bgState()},
 		}
 	}
 	return nil
 }
 
 // taskEvent maps a system/task_* line of a subagent (task_type local_agent) to EvSub. Lines of
-// other task types (a subagent's Bash commands, local_bash) and of unknown tasks give nothing.
+// other task types (a subagent's Bash commands, local_bash) and of unknown tasks give nothing; those
+// of background commands only keep the state of p.bgKnown and p.bgUnread.
 func (p *proc) taskEvent(m map[string]any) []agent.Event {
 	id := str(m["task_id"])
 	if m["subtype"] == "task_started" {
 		tool := str(m["tool_use_id"])
-		if m["task_type"] != "local_agent" || id == "" || tool == "" {
+		if m["task_type"] != "local_agent" {
+			if id != "" {
+				p.bgKnown[id] = true
+			}
+			return nil
+		}
+		if id == "" || tool == "" {
 			return nil
 		}
 		p.taskTool[id] = tool
@@ -165,6 +216,14 @@ func (p *proc) taskEvent(m map[string]any) []agent.Event {
 	}
 	tool, ok := p.taskTool[id]
 	if !ok {
+		if m["subtype"] == "task_notification" && p.bgKnown[id] {
+			// A background command of this process ended: the model has a notice to read, and the
+			// turn that reads it comes by itself. Not a lost task, so no empty result follows.
+			if ambient, _ := m["ambient"].(bool); !ambient {
+				p.bgUnread = true
+			}
+			return nil
+		}
 		if m["subtype"] == "task_notification" && id != "" && (m["task_type"] == nil || m["task_type"] == "local_agent") {
 			p.orphans++ // a task lost with an earlier process or left in the source, reported after --resume
 		}
@@ -297,6 +356,12 @@ func (p *proc) initMaps() {
 	}
 	if p.windows == nil {
 		p.windows = map[string]int{}
+	}
+	if p.bgLive == nil {
+		p.bgLive = map[string]bool{}
+	}
+	if p.bgKnown == nil {
+		p.bgKnown = map[string]bool{}
 	}
 }
 

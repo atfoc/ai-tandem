@@ -541,6 +541,17 @@ describe("the reply", () => {
     assert.equal(session().spoken, "");
   });
 
+  test("a chat that goes on to wait for background work closes the reply at its turn's end item", async () => {
+    const { sock } = await speech();
+    setChat("thinking");
+    await sayAndSend(sock, "Start it.");
+    setItems([user("Start it."), reply("Started in the background.", true)]);
+    setItems([user("Start it."), reply("Started in the background.", true), { kind: "end" }]);
+    setChat("waiting");
+    await listeningAgain();
+    assert.deepEqual(ttsTexts(), ["Started in the background."]);
+  });
+
   test("a rewritten text repeats nothing", async () => {
     const { sock } = await speech();
     setChat("thinking");

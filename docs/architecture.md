@@ -20,8 +20,14 @@ How AI Whiteboard fits together: the server, the app on its four targets (the de
   Each branch of a chat counts its own: what runs on another branch does not count. A
   subagent that started subagents is not finished when its turn ends: it waits, still running,
   gets their results as messages that start further turns of it, and reports to whoever started
-  it only after a turn that ends with none of them running. A result that cannot be given to a
-  waiting subagent fails it. A subagent stops only the subagents it started, stopping one stops
+  it only after a turn that ends with none of them running. A Claude agent with background work
+  (a command run in the background, a Monitor) waits the same way, a chat's own agent too: the
+  Claude process starts turns of its own for each notice, so a turn end is not the end of the
+  agent, and it is finished, or the chat idle, only after a turn that ends with none of that work
+  running. A waiting chat has the status `waiting`: busy like a working one, so Stop applies and
+  a message is refused, but not in a turn. Ending an agent (a stop, a delete, a limit, the
+  server's shutdown, its own exit) ends what it started, detached shells included. A result that
+  cannot be given to a waiting subagent fails it. A subagent stops only the subagents it started, stopping one stops
   everything below it, and what a subagent's spawn does not name (agent, model, effort) is taken
   from that subagent. For pi
   the token travels only inside `AIWB_MCP_CONFIG` (never in argv or a URL); app-spawned subagents get

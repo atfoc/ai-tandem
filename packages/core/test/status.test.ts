@@ -1,18 +1,32 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { boardWorker, chatBusy, composerControls, headStatus, isBusy, isWorking, refreshAfterRefusal, starting, workingBranches, workingOn } from "../src/logic/status.ts";
+import { boardWorker, chatBusy, composerControls, headStatus, inTurn, isBusy, isWorking, refreshAfterRefusal, starting, workingBranches, workingOn } from "../src/logic/status.ts";
 import type { BranchState, Status } from "../src/types.ts";
 import { sourceOf } from "./fixtures/bundle.ts";
 
-const BUSY: Status[] = ["thinking", "writing", "tool", "approval"];
+const BUSY: Status[] = ["thinking", "writing", "tool", "approval", "waiting"];
 const QUIET: Status[] = ["ready", "stopped", "error"];
 const rec = (chat: string, branch: string, status: Status, subsRunning?: number): BranchState =>
   ({ chat, branch, cwd: "", model: "", locked: false, usage: { turns: 0 } as BranchState["usage"], status, subsRunning });
 
-test("isBusy: the agent is in a turn or waits for approval", () => {
+test("isBusy: the agent is in a turn, waits for approval, or waits for its background work", () => {
   for (const s of BUSY) assert.equal(isBusy(s), true, s);
   for (const s of QUIET) assert.equal(isBusy(s), false, s);
   assert.equal(isBusy(undefined), false);
+});
+
+test("inTurn: busy, but not waiting for background work", () => {
+  for (const s of BUSY) assert.equal(inTurn(s), s !== "waiting", s);
+  for (const s of QUIET) assert.equal(inTurn(s), false, s);
+  assert.equal(inTurn(undefined), false);
+});
+
+test("a waiting chat: Stop and Esc stop it, and no message is taken", () => {
+  assert.deepEqual(composerControls({ status: "waiting" }), { stop: true, blocked: true, esc: true });
+  assert.deepEqual(composerControls({ status: "waiting" }, { newBranch: false, liveFork: false }), { stop: true, blocked: true, esc: true });
+  assert.equal(chatBusy({ status: "waiting" }), true);
+  assert.equal(isWorking({ status: "waiting" }), true);
+  assert.deepEqual(workingBranches([rec("c", "main", "waiting"), rec("c", "b1", "ready")]).map((b) => b.branch), ["main"]);
 });
 
 test("boardWorker: the agent of a busy chat of the board, else of a chat that just edited it; none for a board whose server is not connected", () => {

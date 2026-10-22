@@ -251,6 +251,22 @@ func TestExitWhileBusy(t *testing.T) {
 	}
 }
 
+// A chat that waits on background work is busy: its process ending leaves the note and the
+// stopped status, as for a chat in a turn.
+func TestExitWhileWaitingNotesTheStop(t *testing.T) {
+	tr := newT(t)
+	tr.AddUser("go", "", nil)
+	tr.SetStatus(model.StatusWaiting)
+	tr.Apply(agent.Event{Kind: agent.EvExit, ExitErr: ""})
+	if status(tr) != model.StatusStopped {
+		t.Fatalf("status %q", status(tr))
+	}
+	its := items(tr)
+	if n := its[len(its)-1]; n.Kind != "note" || n.Text != "The agent stopped: process ended" {
+		t.Errorf("note %+v", n)
+	}
+}
+
 func TestExitWhileIdle(t *testing.T) {
 	tr := newT(t)
 	tr.AddUser("go", "", nil)

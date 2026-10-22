@@ -9,6 +9,10 @@
 // That is the chat's agent, the parent of the subagents it started. A subagent that started
 // subagents is the parent of those, and is handed their results the same way, as a message that
 // starts a further turn of it; what differs for it (no second attempt, no hold) is in nested.go.
+//
+// A chat whose agent waits on its background work (background.go) takes results as a subagent that
+// waits takes them: no turn runs, so the delivery starts one, and at its end the chat is waiting
+// again or idle, by the same rule as after any turn.
 package chats
 
 import (
@@ -144,11 +148,12 @@ func setHold(c *Chat) { c.hold = true }
 func releaseHold(c *Chat) { c.hold = false }
 
 // deliverable reports whether the app may start a turn on c: the chat is loaded, not deleted,
-// archived or legacy, has had its first message, is not busy, has a live process and is not held.
-// A delivery never starts or resumes a process. c.mu held.
+// archived or legacy, has had its first message, has no turn running (inTurn: a chat that waits on
+// its background work takes results), has a live process and is not held. A delivery never starts
+// or resumes a process. c.mu held.
 func deliverable(c *Chat) bool {
 	return c.tr != nil && !c.deleted && !c.meta.Archived && !c.meta.InstructionsSent && c.meta.Locked &&
-		!busy(c) && c.ag != nil && !c.hold
+		!inTurn(c) && c.ag != nil && !c.hold
 }
 
 // turnRunning reports whether a turn of the chat's agent is running, as far as the manager knows.
@@ -259,17 +264,18 @@ func (m *Manager) endCarry(c *Chat, clean bool, out *outbox) (lost bool) {
 }
 
 // deliver starts a turn that hands the parent agent every owed completion, when the chat can take
-// one (deliverable) and the cap on running turns leaves it a slot. Checking that, taking the
-// completions and marking the chat busy are one step under c.mu, so a completion is carried by
-// exactly one turn. In everything else the turn starts as Send starts one, without anything that
+// one (deliverable: idle, or waiting on its background work) and the cap on running turns leaves
+// it a slot. Checking that, taking the completions and marking the chat as in a turn are one step
+// under c.mu, so a completion is carried by exactly one turn. In everything else the turn starts as Send starts one, without anything that
 // is the human's: no user item, and the draft, the settings, the name and the references are not
 // touched. The caller passes the result to handOff after unlocking and sending out; nil when no
 // turn started. c.mu held.
 //
-// It is called at the three moments a chat becomes able to take a message, and at no other: a
-// completion becomes owed (finalizeAppSub), the agent's turn ends cleanly (turnOver), and the chat
-// leaves approval while no turn of its agent is running (Decide, and a subagent that ended or was
-// stopped holding the chat's last open request).
+// It is called at the moments a chat becomes able to take a message, and at no other: a
+// completion becomes owed (finalizeAppSub), the agent's turn ends cleanly (turnOver, whether the
+// chat is then idle or waiting), the quiet wait of a waiting chat is over (chatBgQuiet), and the
+// chat leaves approval while no turn of its agent is running (Decide, and a subagent that ended or
+// was stopped holding the chat's last open request).
 func (m *Manager) deliver(c *Chat, out *outbox) *carry {
 	if !deliverable(c) {
 		return nil

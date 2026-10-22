@@ -29,7 +29,38 @@
 //                                    write tokens to the process's modelUsage
 //   [[if TEXT]]                   -> the directives after it, up to the next [[if …]], run only when the
 //                                    message without its directives contains TEXT ([[if]] alone: always)
-// FAKE_CLAUDE_LOG=<file> appends one JSON line per invocation and per stdin line.
+//   [[bg 60]]                     -> starts a real background command, as claude's Bash tool with
+//                                    run_in_background does: shows the tool call, lists the process's live
+//                                    background tasks (system/background_tasks_changed), announces the
+//                                    new one (task_started), answers the call, and starts
+//                                    `sh -c "sleep 60; true"` detached (its own process group, not unref'd),
+//                                    the way claude starts its shell. The reply is "waiting" when the
+//                                    message has no other text. A message may start several. When the
+//                                    command ends the process says so (task_updated, task_notification,
+//                                    a background_tasks_changed without it) and begins a turn by itself
+//                                    (status requesting, the text "bg<n> done", a result whose origin is
+//                                    task-notification), after any turn that is running. The seconds
+//                                    may be fractional; one that no other process uses (60.481516) tells
+//                                    a test its own command in the process list
+//   [[bglate 60]]                 -> as [[bg]], but the shell is started late, as a claude that announces a command
+//                                    before it has spawned it would: the tool call, the task list and
+//                                    task_started come first, then the process waits for the file
+//                                    $FAKE_CLAUDE_BG_GATE to exist (at once when that is not set),
+//                                    starts the shell, and only then does the turn go on and end. A
+//                                    test uses it for a command that cannot be found when it is announced
+//   [[leave]]                     -> after this turn's result the process exits 0 and leaves its children
+//                                    as they are (a claude that ends by itself while its commands run).
+//                                    With FAKE_CLAUDE_LEAVE_GATE=<file> set it first waits for that file
+//                                    to exist: the app finds a command's group by a walk of the process
+//                                    tree that a process leaving at once outruns, and a test lets it
+//                                    exit when the walk is done
+// While a background command runs the process does not exit when its stdin closes, as the real one
+// does not; it exits once the last command has ended and the turn that follows has been written (at
+// once when none runs).
+// FAKE_CLAUDE_BGPIDS=<file> gets the pid of each background command's shell, one per line.
+// FAKE_CLAUDE_LOG=<file> appends one JSON line per invocation and per stdin line, and {"turn":"self"}
+// each time a turn begins after stdin has closed: a turn nobody asked for, such as the one the
+// notice of a command that ended starts. A process that was stopped must write none.
 const fs = require("node:fs");
 const readline = require("node:readline");
 const args = process.argv.slice(2);
@@ -73,15 +104,55 @@ const DIRECTIVE = /\[\[(\w+)\s*((?:[^\]]|\](?!\]))*)\]\]|<<(\w+)\s*([^>]*)>>/g;
 const TOKENS_PER_USD = 100000;
 let turns = 0, current = null; // current: { cancel() } while a turn runs
 let finalText = null;                    // kept for the reply to <subagent-results>
+const bgTasks = new Map();               // live background commands: id -> { seconds }, in the order they started
+let bgCount = 0, pending = 0, stdinClosed = false, leaving = false;
+function exitWhenDone() { if (stdinClosed && bgTasks.size === 0 && pending === 0) process.exit(0); }
+const bgList = () => ({ type: "system", subtype: "background_tasks_changed", session_id: session, uuid: uuid(),
+  tasks: [...bgTasks].map(([id, t]) => ({ task_id: id, task_type: "local_bash", description: `sleep ${t.seconds}` })) });
+// bgStart runs [[bg SECONDS]]: the stream claude writes for a Bash call in the background, then the
+// shell itself, started as claude starts it. A turn that begins by itself follows its end.
+// With late, the shell is started only after the announcement and the file $FAKE_CLAUDE_BG_GATE.
+async function bgStart(seconds, late = false) {
+  const n = ++bgCount, id = `bg${n}`, tool = `toolu_bg${n}`, command = `sleep ${seconds}`;
+  out({ type: "assistant", uuid: uuid(), session_id: session, parent_tool_use_id: null,
+    message: { id: "msg_" + uuid().slice(0, 8), role: "assistant", model, content: [{ type: "tool_use", id: tool, name: "Bash", input: { command, run_in_background: true } }] } });
+  const spawn = () => {
+    const child = require("node:child_process").spawn("sh", ["-c", `${command}; true`], { detached: true, stdio: "ignore" });
+    child.on("error", () => {});
+    if (process.env.FAKE_CLAUDE_BGPIDS && child.pid) fs.appendFileSync(process.env.FAKE_CLAUDE_BGPIDS, child.pid + "\n");
+    return child;
+  };
+  const child = late ? null : spawn();
+  bgTasks.set(id, { seconds });
+  out(bgList());
+  out({ type: "system", subtype: "task_started", task_id: id, tool_use_id: tool, description: command, task_type: "local_bash", is_backgrounded: true, session_id: session, uuid: uuid() });
+  out({ type: "user", uuid: uuid(), session_id: session, parent_tool_use_id: null,
+    message: { role: "user", content: [{ type: "tool_result", tool_use_id: tool, content: `Command running in background with ID: ${id}.` }] } });
+  const onExit = (child) => child.on("exit", (code) => {
+    const ok = code === 0;
+    bgTasks.delete(id);
+    out({ type: "system", subtype: "task_updated", task_id: id, patch: { status: ok ? "completed" : "killed", end_time: Date.now() }, session_id: session, uuid: uuid() });
+    out({ type: "system", subtype: "task_notification", task_id: id, tool_use_id: tool, status: ok ? "completed" : "stopped",
+      summary: ok ? `Background command "${command}" completed (exit code 0)` : `Background command "${command}" was stopped`, session_id: session, uuid: uuid() });
+    out(bgList());
+    run(() => turn("", id));
+  });
+  if (!late) return onExit(child);
+  const gate = process.env.FAKE_CLAUDE_BG_GATE;
+  while (gate && !fs.existsSync(gate)) await new Promise((r) => setTimeout(r, 20));
+  onExit(spawn());
+}
 let costTotal = 0, outTotal = 0;         // cumulative for the process, as claude reports them
 
-async function turn(text) {
+// done is the id of the background command that ended when this turn began by itself, else "".
+async function turn(text, done = "") {
+  if (stdinClosed) log({ turn: "self" });
   let aborted = false, wake = null;
   current = { cancel: () => { aborted = true; wake?.(); } };
-  out({ type: "system", subtype: "init", cwd: process.cwd(), session_id: session, model, tools: [], mcp_servers: [] });
+  if (!done) out({ type: "system", subtype: "init", cwd: process.cwd(), session_id: session, model, tools: [], mcp_servers: [] });
   out({ type: "system", subtype: "status", status: "requesting", session_id: session });
   const plain = text.replace(DIRECTIVE, "").trim();
-  let reply = `FAKE(${model}): ${plain}`, error = "", cost = 0, on = true;
+  let reply = done ? `${done} done` : `FAKE(${model}): ${plain}`, error = "", cost = 0, on = true, started = false;
   if (finalText !== null && text.trimStart().startsWith("<subagent-results>")) {
     reply = finalText; text = "";
   }
@@ -95,6 +166,9 @@ async function turn(text) {
     else if (verb === "fail") error = rest || "fake failure";
     else if (verb === "final") finalText = rest;
     else if (verb === "cost") cost += Number(rest) || 0;
+    else if (verb === "leave") leaving = true;
+    else if (verb === "bg") { bgStart(rest.trim() || "60"); started = true; }
+    else if (verb === "bglate") { await bgStart(rest.trim() || "60", true); started = true; }
     else if (verb === "write") {
       const sp = rest.indexOf(" "), file = require("node:path").resolve(sp < 0 ? rest : rest.slice(0, sp));
       const body = (sp < 0 ? "" : rest.slice(sp + 1)).replaceAll("\\n", "\n") + "\n";
@@ -139,6 +213,8 @@ async function turn(text) {
   }
   current = null;
   turns++;
+  if (started && plain === "") reply = "waiting";
+  const origin = done ? { origin: { kind: "task-notification" } } : {};
   // What the turn cost, as claude's result line says it: the total of the process so far, this
   // turn's output tokens, and the process's output tokens per model.
   const outNow = cost > 0 ? Math.round(cost * TOKENS_PER_USD) : 5;
@@ -147,15 +223,29 @@ async function turn(text) {
     usage: { input_tokens: 10, output_tokens: outNow, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
     modelUsage: { [model]: { inputTokens: 10 * turns, outputTokens: outTotal, cacheReadInputTokens: 1000 * turns,
       cacheCreationInputTokens: 100 * turns, contextWindow: 200000 } } };
-  if (aborted) return out({ type: "result", subtype: "error_during_execution", is_error: true, terminal_reason: "aborted_streaming", num_turns: turns, session_id: session, ...spent });
-  if (error) return out({ type: "result", subtype: "error_during_execution", is_error: true, result: error, num_turns: turns, session_id: session, ...spent });
+  if (aborted) return out({ type: "result", subtype: "error_during_execution", is_error: true, terminal_reason: "aborted_streaming", num_turns: turns, session_id: session, ...origin, ...spent });
+  if (error) return out({ type: "result", subtype: "error_during_execution", is_error: true, result: error, num_turns: turns, session_id: session, ...origin, ...spent });
   out({ type: "assistant", uuid: uuid(), session_id: session, parent_tool_use_id: null,
     message: { id: "msg_" + uuid().slice(0, 8), role: "assistant", model, content: [{ type: "text", text: reply }],
       usage: { input_tokens: 10, output_tokens: outNow, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } } });
-  out({ type: "result", subtype: "success", is_error: false, result: reply, num_turns: turns, session_id: session, ...spent });
+  out({ type: "result", subtype: "success", is_error: false, result: reply, num_turns: turns, session_id: session, ...origin, ...spent });
 }
 
+// run queues work behind the turn in progress, so a turn that begins by itself comes after it.
 let queue = Promise.resolve();
+function run(job) {
+  pending++;
+  queue = queue.then(job).catch((e) => out({ type: "result", subtype: "error_during_execution", is_error: true, result: "fake claude crashed: " + e.message, num_turns: ++turns }))
+    .then(async () => {
+      pending--;
+      if (leaving) {
+        const gate = process.env.FAKE_CLAUDE_LEAVE_GATE;
+        while (gate && !fs.existsSync(gate)) await new Promise((r) => setTimeout(r, 20));
+        process.exit(0);
+      }
+      exitWhenDone();
+    });
+}
 readline.createInterface({ input: process.stdin }).on("line", (line) => {
   let m; try { m = JSON.parse(line); } catch { return; }
   log({ stdin: m });
@@ -172,6 +262,6 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
   if (m.type === "control_response") { asks.get(m.response?.request_id)?.(m.response?.response || {}); return; }
   if (m.type === "user") {
     const text = (m.message?.content || []).map((c) => c.text ?? "").join("\n");
-    queue = queue.then(() => turn(text)).catch((e) => out({ type: "result", subtype: "error_during_execution", is_error: true, result: "fake claude crashed: " + e.message, num_turns: ++turns }));
+    run(() => turn(text));
   }
-}).on("close", () => queue.then(() => process.exit(0)));
+}).on("close", () => { stdinClosed = true; exitWhenDone(); });

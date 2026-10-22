@@ -416,6 +416,7 @@ const (
 	StatusWriting  Status = "writing"
 	StatusTool     Status = "tool"
 	StatusApproval Status = "approval"
+	StatusWaiting  Status = "waiting" // the agent's turn has ended but it is not done: its own background work runs or has just ended (Claude); not in a turn, busy for the person
 	StatusStopped  Status = "stopped" // the agent ended mid-turn (server stop, crash)
 	StatusError    Status = "error"   // cannot start: see ChatView.Error
 )
@@ -464,7 +465,7 @@ type ChatView struct {
 	ForkedAt        int    `json:"forkedAt,omitempty"`     // and the item count of that branch it starts with
 	// The two counts are over every branch of the chat, whichever is current. Like Branches and
 	// Branch, the chat manager sets them.
-	Working   int `json:"working,omitempty"`   // branches whose status is thinking, writing, tool or approval
+	Working   int `json:"working,omitempty"`   // branches whose status is thinking, writing, tool, approval or waiting
 	Approvals int `json:"approvals,omitempty"` // of those, the ones waiting for approval
 	// Draft above is the current branch's (each branch's own is in its BranchState).
 	HasDraft bool `json:"hasDraft,omitempty"` // a branch of the chat has a stored draft
@@ -703,4 +704,7 @@ type Subagent struct {
 	// running: it is not finished, counts against the chat's cap, and its own result goes to its
 	// parent only after it has had theirs.
 	Waiting bool `json:"waiting,omitempty"`
+	// BgWaiting is set while the subagent waits (Waiting) and its own background work is part of
+	// what it waits on; false whenever Waiting is false.
+	BgWaiting bool `json:"bgWaiting,omitempty"`
 }

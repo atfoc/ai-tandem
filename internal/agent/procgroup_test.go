@@ -3,6 +3,7 @@ package agent
 import (
 	"bufio"
 	"errors"
+	"fmt"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -22,7 +23,7 @@ func registered(pgid int) bool {
 // forgotten once the last process is gone: EndAll signals every number it remembers, and the
 // number of a group that no longer exists can by then be another program's.
 func TestExitedForgetsGroupOnceEmpty(t *testing.T) {
-	cmd := exec.Command("sh", "-c", "sleep 300 & echo $!")
+	cmd := exec.Command("perl", "-e", `$|=1; my $p = fork; if (!$p) { select(undef, undef, undef, 300); exit } print "$p\n"`)
 	out, err := cmd.StdoutPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -70,60 +71,55 @@ func TestExitedForgetsGroupOnceEmpty(t *testing.T) {
 	}
 }
 
-// startTree starts a leader with one child in its own group and one child that leads a group of
-// its own, and returns the three. When the test ends, what is left of the leader's group is ended
-// through SignalGroup, and the other child by its own pid while it still leads its group.
+// startTree starts the leader of leaderCommand under StartGroup, with one child in its own group
+// and one child that leads a group of its own, and returns the three. When the test ends, what is
+// left of the leader's group is ended through SignalGroup, the other child by its own pid while it
+// still leads its group, and the leader's wait is waited for (its Exited reads forgetEvery, which
+// other tests set).
 func startTree(t *testing.T) (cmd *exec.Cmd, inGroup, ownGroup int) {
 	t.Helper()
-	// perl is on every macOS and Linux: setpgrp makes the second child a group leader.
-	cmd = exec.Command("sh", "-c", `sleep 300 & echo $!; perl -e 'setpgrp(0,0); exec "sleep", "300"' & echo $!; wait`)
-	out, err := cmd.StdoutPipe()
-	if err != nil {
-		t.Fatal(err)
+	cmd = leaderCommand()
+	stdin, err1 := cmd.StdinPipe()
+	out, err2 := cmd.StdoutPipe()
+	if err1 != nil || err2 != nil {
+		t.Fatal(err1, err2)
 	}
 	if err := StartGroup(cmd); err != nil {
 		t.Fatal(err)
 	}
+	waited := make(chan struct{})
 	t.Cleanup(func() {
+		stdin.Close()
 		SignalGroup(cmd, syscall.SIGKILL)
-		if g, err := syscall.Getpgid(ownGroup); ownGroup > 1 && err == nil && g == ownGroup {
-			syscall.Kill(ownGroup, syscall.SIGKILL)
+		killIfLeads(ownGroup, ownGroup)
+		select {
+		case <-waited:
+		case <-time.After(10 * time.Second):
+			t.Error("the leader was not waited for")
 		}
 	})
-	r := bufio.NewReader(out)
-	read := func() int {
-		line, _ := r.ReadString('\n')
-		pid, _ := strconv.Atoi(strings.TrimSpace(line))
-		if pid <= 1 {
-			t.Fatalf("no child pid: %q", line)
-		}
-		return pid
+	line, _ := bufio.NewReader(out).ReadString('\n')
+	if n, _ := fmt.Sscan(line, &inGroup, &ownGroup); n != 2 || inGroup <= 1 || ownGroup <= 1 {
+		t.Fatalf("the leader did not start its children: %q", line)
 	}
-	inGroup, ownGroup = read(), read()
 	go func() {
+		defer close(waited)
 		cmd.Wait()
 		Exited(cmd)
 	}()
-	// The second child leads its group only once perl has run.
-	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
-		if g, err := syscall.Getpgid(ownGroup); err == nil && g == ownGroup {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("child %d never led a group of its own", ownGroup)
-		}
-	}
 	return cmd, inGroup, ownGroup
 }
 
 // gone waits until none of the processes runs any more (one that was killed and not yet waited
-// for by its parent is still there, as a zombie).
+// for by its parent is still there, as a zombie). The numbers are polled with the system call
+// alone; a ps that looks for zombies is made only for those still there after a second.
 func gone(t *testing.T, what string, pids ...int) {
 	t.Helper()
-	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+	start := time.Now()
+	for deadline := start.Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
 		left := 0
 		for _, pid := range pids {
-			if syscall.Kill(pid, 0) == nil && !zombie(pid) {
+			if syscall.Kill(pid, 0) == nil && (time.Since(start) < time.Second || !zombie(pid)) {
 				left = pid
 			}
 		}

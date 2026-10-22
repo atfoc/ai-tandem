@@ -537,7 +537,7 @@ func settled(it model.Item) bool {
 
 func (t *Transcript) busy() bool {
 	switch t.status {
-	case model.StatusThinking, model.StatusWriting, model.StatusTool, model.StatusApproval:
+	case model.StatusThinking, model.StatusWriting, model.StatusTool, model.StatusApproval, model.StatusWaiting:
 		return true
 	}
 	return false

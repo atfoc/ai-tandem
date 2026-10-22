@@ -12,7 +12,8 @@
 //   A message's parts (B-TH-03, 04): a message of quotes alone draws no words, one with words draws them under its quotes; each quote is a card
 //     with its comment; a message with nothing at all is still there.
 //   Lines at the foot (B-TH-10, 11): "Thinking…" and a tool's verb as the header says them, with dots; nothing while the agent writes or asks;
-//     an idle chat that waits on subagents says so.
+//     an idle chat that waits on subagents says so; a chat that waits for its background work says "Waiting for background work" in the header and
+//     at the foot (the still waiting row, not the typing line with dots), shows Stop and blocks Send, and a press on Stop sends the interrupt.
 //   No thread kept (B-RO-07): a load that failed while connected says so with "Try again"; a chat whose server went away before the thread came
 //     says that it shows again when the server is back, with the state's word and "Servers…".
 //     (sweep, rn-sw-webtest: a chat the server answers 404 not_found for says that it is no longer there, with neither "Servers…" nor "Try again".)
@@ -179,6 +180,31 @@ await check("L10 the chat view: header, empty thread, notes, quotes, status line
     const { page, ctx } = await open({ sel: { chat: "c_nested" }, wait: '[data-testid="chat-head"]' });
     if (!await until(async () => ((await byTid(page, "typing").first().textContent().catch(() => "")) ?? "").includes("Waiting on 3 subagents"), WAIT)) say(`an idle chat that waits on subagents says "${await byTid(page, "typing").first().textContent().catch(() => "")}" at its foot, not "Waiting on 3 subagents"`);
     await ctx.close();
+  }
+
+  // ---- a chat that waits for its background work (a shell or a Monitor): its turn has ended, the agent is not busy with it, and the chat takes no message
+  {
+    const WAITING = "Waiting for background work";
+    const { page, ctx } = await open({ sel: { chat: "c_plain" }, wait: '[data-testid="chat-head"]' });
+    const calls = callsOf(page);
+    await byTid(page, "msg").first().waitFor({ state: "visible", timeout: WAIT });
+    await mockEval(status("c_plain", "waiting"), url);
+    try {
+      if (!await until(async () => (await textOf(page, "chat-head-sub")).includes(WAITING), WAIT)) say(`a chat that waits for background work: the header says "${await textOf(page, "chat-head-sub")}", not "${WAITING}"`);
+      if (!await until(async () => ((await byTid(page, "typing").first().textContent().catch(() => "")) ?? "").trim() === WAITING, WAIT)) say(`a chat that waits for background work: the foot of the thread says "${await byTid(page, "typing").first().textContent().catch(() => "")}", not "${WAITING}"`);
+      if (await byTid(page, "typing").count() !== 1) say(`a chat that waits for background work has ${await byTid(page, "typing").count()} lines at the foot, not 1`);
+      if (await byTid(page, "dots").count()) say("a chat that waits for background work has the dots of a typing line: it is the still waiting row");
+      const send = byTid(page, "send").first(), stop = byTid(page, "stop").first();
+      if (!await stop.count()) say("a chat that waits for background work has no Stop");
+      if (!await send.isDisabled()) say("Send of a chat that waits for background work is on");
+      else if (await send.getAttribute("title") !== "The agent is working") say(`Send of a chat that waits for background work says "${await send.getAttribute("title")}"`);
+      const from = calls.length;
+      await press(page, stop);
+      if (!await until(() => calls.slice(from).some((c) => c.method === "POST" && /\/chats\/c_plain\/interrupt/.test(c.path)), WAIT)) say("a press on Stop of a chat that waits for background work made no interrupt call");
+    } finally {
+      await mockEval(status("c_plain", "ready"), url); // (put back: the checks below read this chat as idle)
+      await ctx.close();
+    }
   }
 
   // ---- a fork: its note, its source, and where the copy ends

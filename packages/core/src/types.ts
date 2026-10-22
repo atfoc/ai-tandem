@@ -165,7 +165,9 @@ export type ChatMeta = Archive & {
   usage: Usage;
 };
 
-export type Status = "ready" | "thinking" | "writing" | "tool" | "approval" | "stopped" | "error";
+/** "waiting": the agent's turn has ended but its background work (a shell, a Monitor) still runs; the chat takes no
+ *  message until that is done or the user stops it. */
+export type Status = "ready" | "thinking" | "writing" | "tool" | "approval" | "waiting" | "stopped" | "error";
 
 /** What clients see: ChatMeta without token, sessionId, turnActive (and mcpInstructionsSent), plus live state.
  *  instructionsSent is the curl-era disable marker. */
@@ -352,6 +354,7 @@ export type Subagent = {
   delivery?: SubDelivery;
   notCarried?: boolean; // a copy's record of one still running in the source when the copy was made: stopped, nothing owed
   waiting?: boolean; // running, its own turn ended: subagents it started still run, or their results have not reached it yet
+  bgWaiting?: boolean; // with waiting: its own background work is part of what it waits on
 };
 
 /** A server's tree: its groups in its order, with its boards, chats, branch records and defaults. What the

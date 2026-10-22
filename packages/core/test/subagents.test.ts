@@ -378,6 +378,26 @@ test("subLine: a waiting subagent says what it waits on, neither working nor don
   assert.deepEqual(subLine(call(), sub({ status: "stopped", waiting: true }), undefined, undefined, subs), { text: "Stopped", tone: "muted" });
 });
 
+test("subLine: a subagent that waits on background work says so, alone or with its subagents", () => {
+  const subs = nested();
+  const bg = { ...subs.a, bgWaiting: true };
+  // one child runs
+  assert.equal(subWaitingText(bg, subs), "Waiting on 1 subagent and background work");
+  assert.deepEqual(subLine(call(), bg, undefined, undefined, subs), { text: "Waiting on 1 subagent and background work", tone: "muted" });
+  const two: Record<string, Subagent> = { a: bg, b: subs.b, c: sub({ id: "c", tool: "t4", started: 250, parent: "a" }) };
+  assert.equal(subWaitingText(two.a, two), "Waiting on 2 subagents and background work");
+  // none runs: only its background work
+  const alone = { a: bg };
+  assert.equal(subWaitingText(bg, alone), "Waiting for background work");
+  assert.equal(subWaitingText(bg, undefined), "Waiting for background work");
+  assert.deepEqual(subLine(call(), bg, undefined, undefined, alone), { text: "Waiting for background work", tone: "muted" });
+  // a child that finished does not count
+  const done = { a: bg, b: sub({ id: "b", parent: "a", status: "completed", delivery: "owed" }) };
+  assert.equal(subWaitingText(bg, done), "Waiting for background work");
+  // without the flag: as before
+  assert.equal(subWaitingText({ ...bg, bgWaiting: false }, alone), "Waiting on its subagents' results");
+});
+
 test("subagentOf: the linked state keeps waiting and parent", () => {
   const sa = subagentOf(call({ subagent: "b" }), { b: sub({ id: "b", parent: "a", waiting: true }) }, false);
   assert.equal(sa.waiting, true);

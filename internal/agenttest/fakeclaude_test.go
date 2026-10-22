@@ -1,19 +1,26 @@
 package agenttest_test
 
 import (
+	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
 	"ai-whiteboard/internal/agent"
 	"ai-whiteboard/internal/agenttest"
 	"ai-whiteboard/internal/claude"
+	"ai-whiteboard/internal/testset"
 )
 
 // claudeTurn sends one message to a process of the real Claude adapter and returns the text items
@@ -312,4 +319,215 @@ func TestFakeClaudeMCPConfigFromAFile(t *testing.T) {
 	if last := texts[len(texts)-1]; strings.Contains(last, "no --mcp-config") || !strings.Contains(last, "from the endpoint") {
 		t.Errorf("the reply:\n%s", last)
 	}
+}
+
+// [[bg SECONDS]] is a real background command in the stream claude writes: the turn that starts it
+// ends with one task running, the command's end gives the notice, and the turn the process begins by
+// itself ends with none.
+func TestFakeClaudeBackgroundCommand(t *testing.T) {
+	pids := filepath.Join(t.TempDir(), "bgpids")
+	t.Setenv("FAKE_CLAUDE_BGPIDS", pids)
+	t.Cleanup(func() { // a failing test leaves no sleep behind
+		b, _ := os.ReadFile(pids)
+		for _, f := range strings.Fields(string(b)) {
+			if pid, err := strconv.Atoi(f); err == nil && pid > 1 {
+				syscall.Kill(-pid, syscall.SIGKILL)
+			}
+		}
+	})
+	ag := startFakeClaude(t)
+	if err := ag.Send([]agent.ContentBlock{{Text: "[[bg 0.3]]"}}); err != nil {
+		t.Fatal(err)
+	}
+	var states []agent.Background
+	var ends []agent.Event
+	var texts []string
+	timeout := time.After(30 * time.Second)
+	for len(ends) < 2 {
+		select {
+		case ev, ok := <-ag.Events():
+			if !ok {
+				t.Fatalf("the process ended early (states %v, texts %q)", states, texts)
+			}
+			switch ev.Kind {
+			case agent.EvBackground:
+				states = append(states, ev.Background)
+			case agent.EvText:
+				texts = append(texts, ev.Text)
+			case agent.EvTurnEnd:
+				ends = append(ends, ev)
+			case agent.EvExit:
+				t.Fatalf("the process exited: %s", ev.ExitErr)
+			}
+		case <-timeout:
+			t.Fatalf("no second turn end (states %v, ends %d)", states, len(ends))
+		}
+	}
+	want := []agent.Background{{Running: 1}, {Running: 1, Unread: true}, {Running: 0, Unread: true}, {Running: 0}}
+	if len(states) != len(want) {
+		t.Fatalf("background states %v, want %v", states, want)
+	}
+	for i := range want {
+		if states[i] != want[i] {
+			t.Errorf("background state %d: %v, want %v", i, states[i], want[i])
+		}
+	}
+	if ends[0].SelfBegun || ends[0].Background != want[0] {
+		t.Errorf("first turn end: self-begun %v, background %v; want a message's turn with %v", ends[0].SelfBegun, ends[0].Background, want[0])
+	}
+	if !ends[1].SelfBegun || ends[1].Background != (agent.Background{}) {
+		t.Errorf("second turn end: self-begun %v, background %v; want a self-begun turn with none", ends[1].SelfBegun, ends[1].Background)
+	}
+	if len(texts) != 2 || texts[0] != "waiting" || texts[1] != "bg1 done" {
+		t.Errorf("texts %q, want waiting and bg1 done", texts)
+	}
+	if b, _ := os.ReadFile(pids); len(strings.Fields(string(b))) != 1 {
+		t.Errorf("recorded pids %q, want one", b)
+	}
+}
+
+// pidsOf reads the pids the fake wrote to file, one per line.
+func pidsOf(t *testing.T, file string) []int {
+	t.Helper()
+	b, _ := os.ReadFile(file)
+	var pids []int
+	for _, f := range strings.Fields(string(b)) {
+		if pid, err := strconv.Atoi(f); err == nil && pid > 1 {
+			pids = append(pids, pid)
+		}
+	}
+	return pids
+}
+
+// groupGone waits until no process is left in the group pgid. A shell the fake started is the
+// leader of its group, and it is waited for by the fake or by init.
+func groupGone(t *testing.T, what string, pgid int) {
+	t.Helper()
+	for deadline := time.Now().Add(20 * time.Second); !errors.Is(syscall.Kill(-pgid, 0), syscall.ESRCH); time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			syscall.Kill(-pgid, syscall.SIGKILL)
+			t.Fatalf("%s: the group %d is still there", what, pgid)
+		}
+	}
+}
+
+// waitEvent returns the first event of kind k, failing at the exit of the process.
+func waitEvent(t *testing.T, ag agent.Agent, k agent.EventKind) agent.Event {
+	t.Helper()
+	timeout := time.After(30 * time.Second)
+	for {
+		select {
+		case ev, ok := <-ag.Events():
+			if !ok {
+				t.Fatalf("the events ended before kind %v", k)
+			}
+			if ev.Kind == k {
+				return ev
+			}
+			if ev.Kind == agent.EvExit {
+				t.Fatalf("the process exited before kind %v: %s", k, ev.ExitErr)
+			}
+		case <-timeout:
+			t.Fatalf("no event of kind %v", k)
+		}
+	}
+}
+
+// Stopping an agent with a command in the background starts no turn: Close ends the process
+// before its shell, so the notice of the shell's end has no process to begin a turn on (the
+// stand-in logs {"turn":"self"} for a turn begun after stdin closed). The shell's group is gone.
+func TestFakeClaudeCloseStartsNoTurn(t *testing.T) {
+	dir := t.TempDir()
+	pids, log := filepath.Join(dir, "bgpids"), filepath.Join(dir, "log")
+	t.Setenv("FAKE_CLAUDE_BGPIDS", pids)
+	t.Setenv("FAKE_CLAUDE_LOG", log)
+	t.Cleanup(func() { // a failing test leaves no sleep behind
+		for _, pid := range pidsOf(t, pids) {
+			syscall.Kill(-pid, syscall.SIGKILL)
+		}
+	})
+	ag := startFakeClaude(t)
+	if err := ag.Send([]agent.ContentBlock{{Text: "[[bg 60.481516]]"}}); err != nil {
+		t.Fatal(err)
+	}
+	if end := waitEvent(t, ag, agent.EvTurnEnd); end.Background.Running != 1 {
+		t.Fatalf("the turn ended with %+v, want one command running", end.Background)
+	}
+	shells := pidsOf(t, pids)
+	if len(shells) != 1 {
+		t.Fatalf("shells %v, want one", shells)
+	}
+
+	ag.Close()
+	waitEvent(t, ag, agent.EvExit)
+	groupGone(t, "after Close", shells[0])
+	// The stand-in writes the line when its turn begins, which is after the shell's end reached it.
+	// Give it the time it would take; the process itself is gone, so nothing is waited for.
+	time.Sleep(200 * time.Millisecond)
+	if b, _ := os.ReadFile(log); strings.Contains(string(b), `"turn":"self"`) {
+		t.Errorf("the stopped process began a turn of its own:\n%s", b)
+	}
+}
+
+// A command that is announced before its shell exists is still ended with the process when it
+// exits by itself: the end of the turn looks for the shell again, while it is the process's
+// descendant.
+func TestFakeClaudeLateShellEndsWithASelfExit(t *testing.T) {
+	testset.SkipUnlessFull(t, "needs node and waits for a ps to end; TestLateShellEndsWithASelfExit in internal/claude covers the same behaviour on the test binary's own fake")
+	dir := t.TempDir()
+	pids, bgGate, leaveGate := filepath.Join(dir, "bgpids"), filepath.Join(dir, "bggate"), filepath.Join(dir, "leavegate")
+	t.Setenv("FAKE_CLAUDE_BGPIDS", pids)
+	t.Setenv("FAKE_CLAUDE_BG_GATE", bgGate)
+	t.Setenv("FAKE_CLAUDE_LEAVE_GATE", leaveGate)
+	logFile := filepath.Join(dir, "log")
+	t.Setenv("FAKE_CLAUDE_LOG", logFile)
+	t.Cleanup(func() {
+		for _, pid := range pidsOf(t, pids) {
+			syscall.Kill(-pid, syscall.SIGKILL)
+		}
+	})
+	ag := startFakeClaude(t)
+	// A test that fails before it opens the gates leaves no fake waiting for them.
+	t.Cleanup(func() { os.WriteFile(bgGate, nil, 0o644); os.WriteFile(leaveGate, nil, 0o644) })
+	if err := ag.Send([]agent.ContentBlock{{Text: "[[bglate 60.481517]] [[leave]]"}}); err != nil {
+		t.Fatal(err)
+	}
+	// The announcement is out, the shell does not exist: what looks for it at the announcement
+	// finds nothing. Then the shell starts and the turn ends.
+	waitEvent(t, ag, agent.EvBackground)
+	// What the announcement started lists the machine's processes once (a ps): wait for longer
+	// than a ps takes now, so that the shell does not exist when that list is made.
+	start := time.Now()
+	exec.Command("ps", "-A", "-o", "pid=").Run()
+	time.Sleep(3 * time.Since(start))
+	if len(pidsOf(t, pids)) != 0 {
+		t.Fatal("the shell started before its gate was opened")
+	}
+	if err := os.WriteFile(bgGate, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	waitEvent(t, ag, agent.EvTurnEnd)
+	shells := pidsOf(t, pids)
+	if len(shells) != 1 {
+		t.Fatalf("shells %v, want one", shells)
+	}
+	// The process may leave once the walk after the turn's end has found the shell.
+	var first struct{ Pid int }
+	b, _ := os.ReadFile(logFile)
+	if err := json.Unmarshal([]byte(strings.SplitN(string(b), "\n", 2)[0]), &first); err != nil || first.Pid <= 1 {
+		t.Fatalf("the stand-in's log does not start with its pid: %q", b)
+	}
+	pid := first.Pid
+	for deadline := time.Now().Add(20 * time.Second); !slices.Contains(agent.AdoptedGroups(pid), shells[0]); time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the shell %d was not adopted at the end of the turn: %v", shells[0], agent.AdoptedGroups(pid))
+		}
+	}
+	if err := os.WriteFile(leaveGate, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if ev := waitEvent(t, ag, agent.EvExit); ev.ExitErr != "" {
+		t.Errorf("exit error %q, want the stand-in's own clean exit", ev.ExitErr)
+	}
+	groupGone(t, "after the process exited by itself", shells[0])
 }

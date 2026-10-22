@@ -53,6 +53,12 @@ test("the lines at the foot come after the message on its way, in the order: sta
   assert.deepEqual(rows.filter((r) => r.kind === "wait").map((r) => r.key), ["wait:send", "wait:fork"]);
 });
 
+test("a chat that waits for background work has the waiting row at its foot, not the typing line", () => {
+  const rows = threadRows({ ...base, items: [user("a")], waiting: "Waiting for background work" });
+  assert.deepEqual(rows.map((r) => r.kind), ["item", "waiting"]);
+  assert.equal(rows[1].kind === "waiting" && rows[1].text, "Waiting for background work");
+});
+
 test("drawn: what is drawn at all", () => {
   assert.equal(drawn(undefined), false);
   assert.equal(drawn({ kind: "end" }), false);

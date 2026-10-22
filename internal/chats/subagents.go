@@ -25,6 +25,7 @@ type sub struct {
 	stop  chan struct{}          // closed so the runner exits even if Events() stays open
 	app   bool                   // started by SpawnSubagent (has its own process)
 	carry *carry                 // the turn carrying it results of subagents it started; nil once that turn ended
+	bg    bgWork                 // its process's background work (Claude)
 }
 
 var ErrNoSubagent = errors.New("no such subagent")
@@ -64,7 +65,7 @@ func (m *Manager) loadSubs(c *Chat) (cut []*sub) {
 			c.subByTool[sa.Tool] = sa.ID
 		}
 		if sa.Status == model.SubRunning {
-			s.meta.Status, s.meta.Ended, s.meta.Waiting = model.SubStopped, m.nowMs(), false
+			s.meta.Status, s.meta.Ended, s.meta.Waiting, s.meta.BgWaiting = model.SubStopped, m.nowMs(), false, false
 			ended(s, endRestart)
 			m.saveSub(c, s)
 			cut = append(cut, s)
@@ -286,7 +287,7 @@ func (m *Manager) stopSub(c *Chat, s *sub, why subEnding, out *outbox) (ag agent
 		ag = s.ag
 		s.ag = nil
 	}
-	s.meta.Status, s.meta.Ended, s.meta.Waiting = model.SubStopped, m.nowMs(), false
+	s.meta.Status, s.meta.Ended, s.meta.Waiting, s.meta.BgWaiting = model.SubStopped, m.nowMs(), false, false
 	ended(s, why)
 	leftApproval = m.endSub(c, s, out)
 	if s.app {

@@ -129,6 +129,9 @@ test("statusText", () => {
 const usage = { ctxIn: 0, ctxOut: 0, ctxWindow: 0, turns: 3 };
 const SENT_ONE = "1 subagent result not sent yet. It goes to the agent after your next message.";
 const SENT_TWO = "2 subagent results not sent yet. They go to the agent after your next message.";
+// A waiting chat refuses messages: its results go out when its current or next turn ends.
+const WAIT_ONE = "1 subagent result not sent yet. It goes to the agent when its current or next turn ends.";
+const WAIT_TWO = "2 subagent results not sent yet. They go to the agent when its current or next turn ends.";
 
 test("waitingText: what an idle chat waits on", () => {
   // neither
@@ -147,6 +150,13 @@ test("waitingText: what an idle chat waits on", () => {
   for (const status of ["thinking", "writing", "tool", "approval"] as const) {
     assert.equal(waitingText({ status, subsRunning: 2, subsOwed: 1 }), "", status);
   }
+  // a chat that waits for its background work says so first; the subagent parts follow as for an idle chat
+  assert.equal(waitingText({ status: "waiting" }), "Waiting for background work");
+  assert.equal(waitingText({ status: "waiting", subsRunning: 2 }), "Waiting for background work. Waiting on 2 subagents");
+  assert.equal(waitingText({ status: "waiting", subsRunning: 1, subsOwed: 1 }), "Waiting for background work. Waiting on 1 subagent. " + WAIT_ONE);
+  assert.equal(waitingText({ status: "waiting", subsOwed: 2 }), "Waiting for background work. " + WAIT_TWO);
+  assert.equal(statusText({ status: "waiting", usage, subsOwed: 1 }), "Waiting for background work. " + WAIT_ONE);
+  assert.equal(waitingText({ status: "waiting", archived: true }), "");
   // not busy, whatever the status: the thread's line shows under a stopped chat too
   assert.equal(waitingText({ status: "stopped", subsOwed: 1 }), SENT_ONE);
   assert.equal(waitingText({ status: "error", subsOwed: 2 }), SENT_TWO);
@@ -168,6 +178,9 @@ test("statusText: an idle chat says what it waits on", () => {
   assert.equal(statusText({ status: "writing", usage, subsRunning: 2 }), "Writing…");
   assert.equal(statusText({ status: "tool", statusTool: "Bash", usage, subsRunning: 2 }), "Running a command…");
   assert.equal(statusText({ status: "approval", usage, subsRunning: 2 }), "Needs your approval");
+  // a chat that waits for its background work
+  assert.equal(statusText({ status: "waiting", usage }), "Waiting for background work");
+  assert.equal(statusText({ status: "waiting", usage, subsRunning: 2 }), "Waiting for background work. Waiting on 2 subagents");
   // the louder states keep their word; the thread's line carries the rest
   assert.equal(statusText({ status: "stopped", usage, subsOwed: 1 }), "Stopped");
   assert.equal(statusText({ status: "error", usage, subsOwed: 1 }), "Can't start");
@@ -184,6 +197,11 @@ test("rowLine: a sidebar row's second line", () => {
   for (const c of [{ status: "ready", usage, subsRunning: 1, subsOwed: 2 }, { status: "ready", usage, subsRunning: 3 }] as const) {
     assert.equal(rowLine(c, settings), statusText(c));
   }
+  // a chat that waits for its background work, with the muted dot
+  assert.equal(rowLine({ status: "waiting", usage }, settings), "Waiting for background work");
+  assert.equal(dotState({ status: "waiting", usage }), "waiting");
+  assert.equal(dotState({ status: "waiting", usage, working: 1 }), "waiting");
+  assert.equal(dotState({ status: "waiting", usage, approvals: 1 }), "approval");
   // as before
   assert.equal(rowLine({ status: "thinking", usage, subsRunning: 2 }, settings), "Thinking…");
   assert.equal(rowLine({ status: "approval", usage }, settings), "Needs your approval");

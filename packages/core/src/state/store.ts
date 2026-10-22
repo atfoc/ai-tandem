@@ -633,7 +633,7 @@ export const lastChat = {
 
 // ---- chats
 
-export { isBusy } from "../logic/status.ts";
+export { inTurn, isBusy } from "../logic/status.ts";
 
 /** Curl-era Cursor board chats: disabled in the UI, still listed (not archived). */
 export const isLegacy = (c?: { instructionsSent?: boolean } | null) => !!c?.instructionsSent;

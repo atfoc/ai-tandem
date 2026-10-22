@@ -2,7 +2,7 @@
 // B-SM-10, B-US-12, C-SS-07, C-SS-11; the old S1.1, ported as S1.1-subagents.mjs here, proves the Subagents chip's list). Four parts:
 //   rows     c_nested of the mock (subagents three levels deep): a row for each, nested ones under the one that started them, the mark of its
 //            state (a ring that stands still for one that waits), the name with its glyph, the "background" tag, the line (the waiting one
-//            says what it waits on, a finished one "Done · …"), the stats (model, tool calls, run time, the ring with its percentage), the row
+//            says what it waits on, alone or with its background work, a finished one "Done · …"), the stats (model, tool calls, run time, the ring with its percentage), the row
 //            of a result in the thread; a press opens the subagent, the open row is marked, a second press on it closes the drawer, Enter
 //            does the same on a focused row (desktop, tablet); the row of a call not linked yet opens nothing, and the line of one not
 //            carried over, of one that failed, one that stopped and one with a status this client does not know
@@ -103,6 +103,27 @@ await check("L19 subagents: the rows in the thread, the drawer, its thread and r
     } catch (e) { fail(`${viewport}: ${name}: ${e.message.split("\n")[0]}`); }
     await ctx.close();
     note("six rows, nested ones under theirs, the marks and lines of a waiting, a running and a finished subagent, their stats, the result row; a press opens and a second closes");
+  }
+
+  // ---- a subagent that waits on background work (a shell or a Monitor of its own) says so: alone, and with the subagents it waits on
+  {
+    const { page, ctx } = await open({ sel: { chat: "c_nested" }, wait: tidSel("sub-row") });
+    const mark = (id, o) => `{ const x = subs.c_nested.find((s) => s.id === ${J(id)}); Object.assign(x, ${J(o)}); send({ type: "sub", chat: "c_nested", branch: "main", subagent: x }); }`;
+    try {
+      await until(async () => (await rowsOf(page)).length === 6, WAIT);
+      // sa1a1 runs and has no subagent: its own background work is all it waits on. sa1 waits on sa1a, which runs, and on background work.
+      await mockEval(`${mark("sa1a1", { waiting: true, bgWaiting: true })} ${mark("sa1", { bgWaiting: true })}`, url);
+      const lines = async () => Object.fromEntries((await rowsOf(page)).map((r) => [r.sub, r]));
+      if (!await until(async () => (await lines()).sa1a1?.line === "Waiting for background work", WAIT)) fail(`${viewport}: a subagent that waits on background work alone says "${(await lines()).sa1a1?.line}", not "Waiting for background work"`);
+      const by = await lines();
+      if (!by.sa1a1.waiting || by.sa1a1.status !== "running" || by.sa1a1.dot || by.sa1a1.tone !== "muted") fail(`${viewport}: the subagent that waits on background work is ${J(by.sa1a1)}: a ring that stands still, in the muted tone`);
+      if (by.sa1?.line !== "Waiting on 1 subagent and background work") fail(`${viewport}: the subagent that waits on one it started and on background work says "${by.sa1?.line}", not "Waiting on 1 subagent and background work"`);
+      if (by.sa1a?.line.startsWith("Waiting")) fail(`${viewport}: a subagent at work that has no mark of waiting says "${by.sa1a?.line}"`);
+    } catch (e) { fail(`${viewport}: background work: ${e.message.split("\n")[0]}`); }
+    // (put back: other parts of this check count the waiting subagents of the seed)
+    await mockEval(`${mark("sa1a1", { waiting: false, bgWaiting: false })} ${mark("sa1", { bgWaiting: false })}`, url);
+    await ctx.close();
+    note("a subagent that waits on background work says so, alone and with the subagent it waits on");
   }
 
   // ---- the drawer

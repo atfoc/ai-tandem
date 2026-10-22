@@ -114,7 +114,10 @@ type Agent interface {
 	Interrupt() error
 	Decide(requestID string, allow bool) error
 	// Close ends the process: its input is closed, and what has not exited by itself after a grace
-	// period is signalled. Claude is killed after 3 s and Close does not wait for that. pi's group
+	// period is signalled. Claude's Close ends what the process started too: the groups of its
+	// detached shells get SIGTERM at once, its own group is killed after 3 s, and once the process
+	// has exited, by Close or by itself, what is left of its tree gets SIGTERM and SIGKILL 2 s
+	// later (EndTree); Close does not wait for any of that. pi's group
 	// gets SIGTERM after 3 s and SIGKILL 3 s later; Close does not wait either. Cursor's group gets
 	// SIGTERM after 0.3 s and SIGKILL 3 s later, and Close returns only when the process has ended
 	// (within about 7 s).
@@ -141,7 +144,16 @@ const (
 	EvTurnEnd                         // Aborted, Error, Point, and the cost fields below
 	EvExit                            // ExitErr
 	EvSub                             // SubInfo: a subagent appeared or changed (a patch; zero fields are unchanged)
+	EvBackground                      // Background: the agent's background work changed (Claude only)
 )
+
+// Background is what an adapter knows of the background work of its process: commands the agent
+// started that run on after the turn that started them (Claude: a Bash command run in the
+// background, a Monitor). Only Claude reports it; for Cursor and pi it is always the zero value.
+type Background struct {
+	Running int  // background tasks the process reports live (Claude: background_tasks_changed, ambient ones and native subagents left out)
+	Unread  bool // a background task ended after the process's last request to the model: a turn that reads its notice may be to come
+}
 
 type Event struct {
 	Kind                     EventKind
@@ -165,6 +177,9 @@ type Event struct {
 	// not known to have been read in it. Only Claude reports it; pi and Cursor begin no turn
 	// themselves.
 	SelfBegun bool
+	// Background, EvTurnEnd: the background work at the end of the turn; EvBackground: its new
+	// state. Zero for Cursor and pi.
+	Background Background
 	// EvTurnEnd only, as far as the provider reports them: Claude from its result line, pi from
 	// get_session_stats, Cursor nothing. The numbers are raw: nothing is summed or subtracted here.
 	//

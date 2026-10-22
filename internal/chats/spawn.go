@@ -426,7 +426,7 @@ func (m *Manager) finalizeAppSub(c *Chat, s *sub, status model.SubStatus, errTex
 	if s.meta.Status != model.SubRunning {
 		return
 	}
-	s.meta.Status, s.meta.Ended, s.meta.Waiting = status, m.nowMs(), false
+	s.meta.Status, s.meta.Ended, s.meta.Waiting, s.meta.BgWaiting = status, m.nowMs(), false, false
 	if errText != "" {
 		s.meta.Error = errText
 	}
@@ -448,6 +448,27 @@ func (m *Manager) finalizeAppSub(c *Chat, s *sub, status model.SubStatus, errTex
 	}
 	if leftApproval || (owed && s.meta.Parent == "") {
 		aft.add(m.deliver(c, out))
+	}
+}
+
+// subBgQuiet is what the quiet wait of the background work of subagent sid does when it is over
+// (armBgQuiet): the work has ended and no turn came for it, so it counts as read. s then stops
+// waiting on its background work, and is finished when nothing else holds it (D4, background.go);
+// it goes on waiting for the subagents it started, as it did before. c.mu held by the caller of fire.
+func (m *Manager) subBgQuiet(c *Chat, sid string) func(out *outbox, aft *after) {
+	return func(out *outbox, aft *after) {
+		s := c.subs[sid]
+		if s == nil || s.meta.Status != model.SubRunning || !s.meta.Waiting || s.carry != nil {
+			return
+		}
+		s.bg.report(agent.Background{})
+		s.meta.BgWaiting = false
+		if runningKids(c, sid) == 0 && len(owedTo(c, sid)) == 0 {
+			m.finalizeAppSub(c, s, model.SubCompleted, "", endTurn, out, aft)
+			return
+		}
+		m.saveSub(c, s)
+		out.emitSub(c, s.meta)
 	}
 }
 
@@ -474,8 +495,9 @@ func (m *Manager) runSub(c *Chat, sid, prompt string, ag agent.Agent, stop <-cha
 // handleSubEv applies one event of the process of c's app-spawned subagent sid. A subagent's
 // process has as many turns as it takes: the one its prompt starts, and one for each message that
 // carries it results of subagents it started (deliverSub). A turn that ends cleanly while
-// subagents it started still run, or while a result is owed to it, leaves it waiting (subWaits);
-// any other end of a turn, and a clean end with nothing below, finishes it.
+// subagents it started still run, while a result is owed to it, or while its own background work
+// holds it (waitsOnBackground, background.go), leaves it waiting (subWaits); any other end of a
+// turn, and a clean end with nothing left, finishes it.
 func (m *Manager) handleSubEv(c *Chat, sid string, ev agent.Event) {
 	var out outbox
 	var aft after
@@ -504,11 +526,18 @@ func (m *Manager) handleSubEv(c *Chat, sid string, ev agent.Event) {
 	if s.carry != nil && (modelOutput(ev) || ev.Kind == agent.EvThinking) {
 		s.carry.quiet++ // its process is in a turn: not silent (subUnread)
 	}
+	if ev.Kind == agent.EvThinking || modelOutput(ev) {
+		s.bg.turnSign() // a turn began: a quiet wait armed before it does nothing
+	}
+	if s.meta.Status == model.SubRunning && ev.Kind == agent.EvThinking && s.meta.Waiting && s.meta.BgWaiting && s.carry == nil {
+		// A turn its process began by itself, for the notice of its background work: it is working again.
+		s.meta.Waiting, s.meta.BgWaiting = false, false
+	}
 	if s.meta.Status == model.SubRunning && modelOutput(ev) {
 		if s.carry != nil {
 			s.carry.settled = true // the results it carries are delivered
 		}
-		s.meta.Waiting = false // a turn its process began by itself: it is working again
+		s.meta.Waiting, s.meta.BgWaiting = false, false // a turn its process began by itself: it is working again
 	}
 
 	switch ev.Kind {
@@ -544,10 +573,22 @@ func (m *Manager) handleSubEv(c *Chat, sid string, ev agent.Event) {
 		}
 	case agent.EvCatalog:
 		return
+	case agent.EvBackground:
+		if s.meta.Status != model.SubRunning {
+			return
+		}
+		s.bg.report(ev.Background)
+		// What ran has ended and nothing else holds it: the notice that starts its last turn is
+		// still to come, and the quiet wait bounds the time it may take.
+		if s.meta.Waiting && s.meta.BgWaiting && s.carry == nil && s.bg.idle() && runningKids(c, sid) == 0 && len(owedTo(c, sid)) == 0 {
+			m.armBgQuiet(c, &s.bg, m.subBgQuiet(c, sid))
+		}
 	case agent.EvTurnEnd:
 		if s.meta.Status != model.SubRunning {
 			return
 		}
+		s.bg.report(ev.Background)
+		s.bg.turnSign()
 		st, why, errText := model.SubCompleted, endTurn, ev.Error
 		switch {
 		case ev.Aborted:

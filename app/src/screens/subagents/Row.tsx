@@ -6,7 +6,7 @@ import { Pressable, StyleSheet, View, type LayoutChangeEvent } from "react-nativ
 
 import { serverOf } from "@aiwb/core/logic/serverlists.ts";
 import { subagentOf, subChildren, subLine, subResultLine, subStatus, subWaiting } from "@aiwb/core/logic/subagents.ts";
-import { boardNames, isBusy, subsOf } from "@aiwb/core/state/store.ts";
+import { boardNames, inTurn, subsOf } from "@aiwb/core/state/store.ts";
 import type { ChatView, Item, Subagent } from "@aiwb/core/types.ts";
 
 import { useStore } from "../../state/useStore.ts";
@@ -28,7 +28,7 @@ const NARROW = 400;
 export function SubagentRow({ item, chat, within }: { item: Item; chat: ChatView; within?: Subagent }) {
   const subs = useStore((s) => subsOf(s, chat.id));
   // a call not linked yet runs only while its caller's turn does
-  const sa = subagentOf(item, subs, within ? within.status === "running" && !within.waiting : isBusy(chat.status));
+  const sa = subagentOf(item, subs, within ? within.status === "running" && !within.waiting : inTurn(chat.status));
   return <SubBranch it={item} sa={sa} chat={chat} />;
 }
 

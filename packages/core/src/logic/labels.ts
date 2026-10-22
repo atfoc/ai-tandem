@@ -7,7 +7,7 @@
 import type { BranchState, CatalogModel, ChatView, Item } from "../types.ts";
 import { IMAGE_WORD } from "./chatimage.ts";
 import { plainText } from "./refs.ts";
-import { isBusy, starting } from "./status.ts";
+import { inTurn, isBusy, starting } from "./status.ts";
 
 const EFFORT_LABELS: Record<string, string> = { low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", max: "Max" };
 
@@ -122,17 +122,23 @@ export function chatTitle(c: Pick<ChatView, "name">, items?: Item[]): string {
   return t.length > 42 ? t.slice(0, 40) + "…" : t;
 }
 
-/** What a chat that is not busy waits on, from its two subagent counts: the subagents it spawned
- *  that still run, and the results the agent has not been sent. "" with neither, while the agent is
- *  busy, and for an archived chat, which takes no message. */
+/** What a chat that is not in a turn waits on: its background work when its status is waiting, then,
+ *  from its two subagent counts, the subagents it spawned that still run and the results the agent
+ *  has not been sent. "" with none of them, while the agent is in a turn, and for an archived chat,
+ *  which takes no message. */
 export function waitingText(c: Pick<ChatView, "status" | "subsRunning" | "subsOwed" | "archived">): string {
-  if (isBusy(c.status) || c.archived) return "";
+  if (inTurn(c.status) || c.archived) return "";
   const running = c.subsRunning ?? 0, owed = c.subsOwed ?? 0;
   const parts: string[] = [];
+  if (c.status === "waiting") parts.push("Waiting for background work");
   if (running > 0) parts.push(`Waiting on ${running} subagent${running === 1 ? "" : "s"}`);
-  if (owed > 0) parts.push(owed === 1
-    ? "1 subagent result not sent yet. It goes to the agent after your next message."
-    : `${owed} subagent results not sent yet. They go to the agent after your next message.`);
+  if (owed > 0) {
+    // A waiting chat takes no message: its results go out when its current or next turn ends.
+    const when = c.status === "waiting" ? "when its current or next turn ends" : "after your next message";
+    parts.push(owed === 1
+      ? `1 subagent result not sent yet. It goes to the agent ${when}.`
+      : `${owed} subagent results not sent yet. They go to the agent ${when}.`);
+  }
   return parts.join(". ");
 }
 
@@ -148,6 +154,7 @@ export function statusText(c: Stated, nameOf: BoardNames = noNames): string {
     case "writing": return "Writing…";
     case "tool": return toolVerb(c.statusTool ?? "", null, nameOf) + "…";
     case "approval": return "Needs your approval";
+    case "waiting": return waitingText(c);
     case "stopped": return "Stopped";
     case "error": return "Can't start";
   }

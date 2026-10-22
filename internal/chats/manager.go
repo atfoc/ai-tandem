@@ -59,6 +59,10 @@ type Manager struct {
 	// subQuietWait is how long a subagent's process may stay silent before results it was handed
 	// during a turn of its own count as read in that turn (the constant of that name; tests lower it).
 	subQuietWait time.Duration
+	// bgQuietWait is how long an agent that waits on background work, and has none running any
+	// more, may stay without a turn before it counts as done (the constant of that name; tests
+	// lower it). See background.go.
+	bgQuietWait time.Duration
 
 	// extrasMu protects extras, extraBySID and used. Never take Chat.mu while holding extrasMu
 	// (issue/revoke run with Chat.mu then extrasMu).
@@ -105,6 +109,7 @@ type Chat struct {
 	carry         *carry             // the turn carrying subagent results to the agent; nil once it ended
 	lateEnd       string             // the error of a refused delivery whose own turn end may still come (see lateEvent)
 	hold          bool               // the app starts no turn until the user sends (see setHold); not saved
+	bg            bgWork             // the background work of the chat's agent process (Claude; see background.go)
 
 	// The cap on running turns (see cap.go). reserved says that a turn admitted on this chat
 	// object is starting and pub does not show it yet; Manager.capMu guards it, not mu. noTurn
@@ -263,6 +268,7 @@ func New(d Deps) *Manager {
 		now:        time.Now,
 
 		subQuietWait: subQuietWait,
+		bgQuietWait:  bgQuietWait,
 	}
 }
 
@@ -347,7 +353,7 @@ const (
 // pubOf is the value of Chat.pub for the status st.
 func pubOf(st model.Status) uint32 {
 	switch st {
-	case model.StatusThinking, model.StatusWriting, model.StatusTool:
+	case model.StatusThinking, model.StatusWriting, model.StatusTool, model.StatusWaiting:
 		return pubWorking
 	case model.StatusApproval:
 		return pubApproval
@@ -577,17 +583,38 @@ func (m *Manager) trOf(c *Chat, out *outbox) (*transcript.Transcript, error) {
 	return tr, nil
 }
 
-// busy reports whether the chat's agent is working. c.mu held. An unloaded chat is never busy.
+// busy reports whether the chat's agent is working, or waits on its background work. c.mu held.
+// An unloaded chat is never busy.
 func busy(c *Chat) bool {
 	if c.tr == nil {
 		return false
 	}
 	st, _ := c.tr.Status()
 	switch st {
-	case model.StatusThinking, model.StatusWriting, model.StatusTool, model.StatusApproval:
+	case model.StatusThinking, model.StatusWriting, model.StatusTool, model.StatusApproval, model.StatusWaiting:
 		return true
 	}
 	return false
+}
+
+// inTurn reports whether a turn of the chat's agent runs, as far as its thread shows: busy, but not
+// waiting on background work. c.mu held. An unloaded chat is never in a turn.
+func inTurn(c *Chat) bool {
+	if c.tr == nil {
+		return false
+	}
+	st, _ := c.tr.Status()
+	return st != model.StatusWaiting && busy(c)
+}
+
+// waiting reports whether the chat's agent waits on its background work: its turn ended cleanly
+// while that work held (background.go), and no turn has begun since. c.mu held.
+func waiting(c *Chat) bool {
+	if c.tr == nil {
+		return false
+	}
+	st, _ := c.tr.Status()
+	return st == model.StatusWaiting
 }
 
 func (m *Manager) get(id string) (*Chat, error) {
@@ -1095,7 +1122,49 @@ func (m *Manager) attach(c *Chat, ag agent.Agent) {
 	c.gen++
 	c.ag = ag
 	c.lateEnd = ""
+	newBgProcess(c)
 	go m.pump(c, ag, c.gen)
+}
+
+// newBgProcess forgets what the chat knew of the background work of a process it no longer has:
+// a new process has none, and a quiet wait armed for the old one must not end a wait of the new.
+// The count of turn signs goes on rather than starting again, so that such a wait can never match
+// it. c.mu held.
+func newBgProcess(c *Chat) {
+	c.bg.report(agent.Background{})
+	c.bg.turnSign()
+}
+
+// dropProcess takes the chat's process away from it as Stop of a waiting chat does (design D7): the
+// pump drops what the old process still says, the chat knows no background work of the process it
+// no longer has, and the caller closes the returned process (closeAgents) with everything it
+// started. c.mu held.
+func dropProcess(c *Chat) agent.Agent {
+	ag := c.ag
+	c.gen++
+	c.ag = nil
+	newBgProcess(c)
+	return ag
+}
+
+// chatBgQuiet is what the quiet wait of the chat's agent does when it is over (armBgQuiet): a chat
+// still waiting on background work that has ended, with no turn after it, is done. It becomes idle
+// as after a clean turn end, and the results owed to its agent go out. c.mu held.
+func (m *Manager) chatBgQuiet(c *Chat) func(out *outbox, aft *after) {
+	return func(out *outbox, aft *after) {
+		if !waiting(c) {
+			return
+		}
+		c.bg.report(agent.Background{})
+		c.tr.SetStatus(model.StatusReady)
+		c.meta.TurnActive = false
+		if err := c.tr.Flush(false); err != nil {
+			log.Printf("chats: flush %s: %v", c.meta.ID, err)
+		}
+		m.logSave(c)
+		out.emitChat(c)
+		aft.add(m.deliver(c, out))
+	}
 }
 
 // spawnFailed shows on the chat that its agent could not be started. c.mu held.
@@ -1199,6 +1268,12 @@ func (m *Manager) spawnOptions(c *Chat) agent.SpawnOptions {
 }
 
 // pump turns one agent process's events into items and chat changes.
+//
+// A turn that ends cleanly while the process still has background work (background.go) leaves
+// the chat waiting, not idle: its status is StatusWaiting, TurnActive stays set and the chat stays
+// busy for the person, but no turn runs, so subagent results are delivered to it (deliverable). A
+// turn the process then begins by itself shows as working, and the chat is idle only after a turn
+// that ends with none of that work left, or once the quiet wait of bgQuietWait is over.
 func (m *Manager) pump(c *Chat, ag agent.Agent, gen int) {
 	for ev := range ag.Events() {
 		var out outbox
@@ -1208,7 +1283,7 @@ func (m *Manager) pump(c *Chat, ag agent.Agent, gen int) {
 			continue // replaced by Stop
 		}
 		before := view(c)
-		wasBusy := busy(c)
+		wasInTurn := inTurn(c)
 		if ev.Sub != "" && ev.Kind != agent.EvPermRequest {
 			d := m.routeSub(c, ev, &out)
 			out.emitCounts(c)
@@ -1230,6 +1305,10 @@ func (m *Manager) pump(c *Chat, ag agent.Agent, gen int) {
 		if c.carry != nil && modelOutput(ev) {
 			c.carry.settled = true // the results it carries are delivered
 		}
+		turnSign := ev.Kind == agent.EvThinking || modelOutput(ev)
+		if turnSign {
+			c.bg.turnSign() // a turn runs: a quiet wait armed before it is over
+		}
 		switch {
 		case ev.Kind == agent.EvThinking, ev.Kind == agent.EvPermRequest, ev.Kind == agent.EvTurnEnd,
 			ev.Kind == agent.EvExit, modelOutput(ev):
@@ -1238,6 +1317,8 @@ func (m *Manager) pump(c *Chat, ag agent.Agent, gen int) {
 		if ev.Kind == agent.EvPermRequest && ev.Sub != "" {
 			ev.Sub = c.subByTool[ev.Sub] // the perm item names the sid ("" if unknown)
 		}
+		// A clean turn end with background work left is no end of the chat's turn (background.go).
+		waits := ev.Kind == agent.EvTurnEnd && !ev.Aborted && ev.Error == "" && waitsOnBackground(ev.Background)
 		switch ev.Kind {
 		case agent.EvSession:
 			c.meta.SessionID = ev.SessionID
@@ -1265,10 +1346,19 @@ func (m *Manager) pump(c *Chat, ag agent.Agent, gen int) {
 				}
 				u.CtxError = ""
 			}
+		case agent.EvBackground:
+			c.bg.report(ev.Background)
+			if waiting(c) && c.bg.idle() {
+				m.armBgQuiet(c, &c.bg, m.chatBgQuiet(c))
+			}
 		case agent.EvTurnEnd:
 			u := &c.meta.Usage
 			u.Turns++
-			c.meta.TurnActive = false
+			c.bg.report(ev.Background)
+			c.bg.turnSign()
+			if !waits {
+				c.meta.TurnActive = false // a chat that waits on its background work is not done
+			}
 			if c.sentGen == gen {
 				// The forked session has had a turn of its own and can be resumed from now on.
 				// A turn end before any Send to this process drops nothing.
@@ -1282,6 +1372,18 @@ func (m *Manager) pump(c *Chat, ag agent.Agent, gen int) {
 			// The end mark of the turn, after its "Stopped." or error note.
 			ups = append(ups, c.tr.AddEnd(ev.Point)...)
 		}
+		if turnSign && waiting(c) {
+			// A turn the process began by itself, with output that sets no status of its own (a
+			// whole text): it works, whatever the event.
+			c.tr.SetStatus(model.StatusThinking)
+		}
+		if waits {
+			// Before the view is compared below, so that the chat event says waiting.
+			c.tr.SetStatus(model.StatusWaiting)
+			if c.bg.idle() {
+				m.armBgQuiet(c, &c.bg, m.chatBgQuiet(c))
+			}
+		}
 		if len(c.pendingLinks) > 0 {
 			m.reconcileSpawnLinks(c, &out)
 		}
@@ -1293,8 +1395,16 @@ func (m *Manager) pump(c *Chat, ag agent.Agent, gen int) {
 			// A normal turn end leaves them alone: Claude's background subagents outlive it.
 			toClose = m.stopSubs(c, &out)
 		}
-		if st, _ := c.tr.Status(); !wasBusy && busy(c) && st != model.StatusApproval && !c.meta.TurnActive {
-			// A turn the agent started by itself (Claude, when a background subagent finishes).
+		if ev.Kind == agent.EvTurnEnd && (ev.Aborted || ev.Error != "") && waitsOnBackground(ev.Background) && c.ag != nil {
+			// A turn that does not end cleanly leaves no wait (background.go): the commands it
+			// leaves running would begin turns of a chat that shows idle. The process is closed
+			// with them, as Stop of a waiting chat does; the chat keeps the note of this end, and
+			// the next message resumes the session in a new process.
+			toClose = append(toClose, dropProcess(c))
+		}
+		if st, _ := c.tr.Status(); !wasInTurn && inTurn(c) && st != model.StatusApproval && !c.meta.TurnActive {
+			// A turn the agent started by itself (Claude, when a background subagent finishes). A
+			// waiting chat's TurnActive is still set: its turn goes on, and is not begun again.
 			c.meta.TurnActive = true
 			m.logSave(c)
 		}
@@ -2052,6 +2162,12 @@ func (m *Manager) dropDraft(c *Chat, rev int64) {
 // While subagent results are being handed to the agent (handOff), the agent is signalled only once
 // it has the message, and Interrupt does not wait for that.
 //
+// An agent that has background work (background.go), or a chat that waits on it, is not only
+// interrupted: an interrupt ends the turn and leaves the commands running, and the process would
+// begin turns of its own for them. Its process is closed instead, with everything it started, as
+// stopping a branch does (stopLocked): the chat is idle and held, with a "Stopped." note, and the
+// next message resumes the session in a new process.
+//
 // It acts on the chat's current branch.
 func (m *Manager) Interrupt(id string) error { return m.InterruptOf(id, "") }
 
@@ -2061,6 +2177,14 @@ func (m *Manager) InterruptOf(id, branch string) error {
 	c, _, err := m.lockBranch(id, branch)
 	if err != nil {
 		return err
+	}
+	if c.ag != nil && !c.deleted && !c.unlisted && (c.bg.holds() || waiting(c)) {
+		toClose := m.stopLocked(c, &out)
+		newBgProcess(c) // the closed process's work ends with it
+		c.mu.Unlock()
+		m.send(out)
+		closeAgents(toClose)
+		return nil
 	}
 	setHold(c)
 	ag := c.ag

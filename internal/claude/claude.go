@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"ai-whiteboard/internal/agent"
@@ -93,15 +94,17 @@ func steering(o agent.SpawnOptions) string {
 }
 
 type proc struct {
-	cmd     *exec.Cmd
-	stdin   io.WriteCloser
-	writeMu sync.Mutex
-	events  chan agent.Event // buffered 1024
-	perms   sync.Map         // request id → can_use_tool request (pending)
-	replies sync.Map         // request id → chan controlReply: our control requests waiting for their answer
-	stderr  *bytes.Buffer
-	s       *Spawner
-	done    chan struct{} // closed once the process has been waited for
+	cmd      *exec.Cmd
+	stdin    io.WriteCloser
+	writeMu  sync.Mutex
+	events   chan agent.Event // buffered 1024
+	perms    sync.Map         // request id → can_use_tool request (pending)
+	replies  sync.Map         // request id → chan controlReply: our control requests waiting for their answer
+	stderr   *bytes.Buffer
+	s        *Spawner
+	done     chan struct{} // closed once the process has been waited for
+	closing  sync.Once     // Close does its work once
+	adopting atomic.Int32  // walks of the process tree under way for the read loop (adopt), for tests
 
 	// initID is the id of the initialize request this process wrote, until its answer has been
 	// taken (only touched by the read loop after start).
@@ -124,6 +127,10 @@ type proc struct {
 	windows  map[string]int    // model id → context window, from result.modelUsage
 	orphans  int               // task_notifications for tasks this process never started whose empty result is still to come
 	point    string            // uuid of the turn's last own assistant or user line so far: its fork point
+	bgLive   map[string]bool   // non-ambient, non-local_agent task ids of the last background_tasks_changed
+	bgKnown  map[string]bool   // every task id announced as other than local_agent: background work, never a subagent or a lost task
+	bgUnread bool              // a known background task's notice came after the last request to the model
+	bgSent   agent.Background  // the state last emitted as EvBackground
 }
 
 // Args are the command-line arguments for one chat process.
@@ -301,6 +308,8 @@ func (s *Spawner) start(o agent.SpawnOptions, extra ...string) (*proc, error) {
 		taskTool: map[string]string{},
 		subModel: map[string]string{},
 		windows:  map[string]int{},
+		bgLive:   map[string]bool{},
+		bgKnown:  map[string]bool{},
 	}
 	cmd := exec.Command(bin, append(s.Args(o), extra...)...)
 	cmd.Dir = o.Cwd
@@ -347,7 +356,18 @@ func (w *cappedWriter) Write(b []byte) (int, error) {
 
 func (p *proc) Events() <-chan agent.Event { return p.events }
 
+// adopt looks for the detached shells of the process on a goroutine (agent.Adopt); the read
+// loop does not wait for the process table.
+func (p *proc) adopt() {
+	p.adopting.Add(1)
+	go func() {
+		defer p.adopting.Add(-1)
+		agent.Adopt(p.cmd)
+	}()
+}
+
 func (p *proc) readLoop(stdout io.Reader) {
+	var bgSeen map[string]bool // the task ids of the last background_tasks_changed line
 	sc := bufio.NewScanner(stdout)
 	sc.Buffer(make([]byte, 1024*1024), 64*1024*1024)
 	for sc.Scan() {
@@ -381,6 +401,28 @@ func (p *proc) readLoop(stdout io.Reader) {
 				close(p.early)
 			}
 		}
+		// A background command's shell runs detached, in a group of its own: it is adopted while
+		// this process is still its ancestor, so that it is ended with the process even after the
+		// process has exited and the shell has become the child of init. The level signal is read
+		// here, not from the events, so that every announced task counts, ambient ones too. The
+		// shell may be started after it is announced, so it is looked for again at the end of
+		// each turn while a task runs, and when a task other than a subagent starts.
+		if m["type"] == "system" && m["subtype"] == "background_tasks_changed" {
+			now, joined := map[string]bool{}, false
+			for _, t := range list(m["tasks"]) {
+				id := str(obj(t)["task_id"])
+				now[id] = true
+				joined = joined || !bgSeen[id]
+			}
+			if joined {
+				p.adopt()
+			}
+			bgSeen = now
+		}
+		if (m["type"] == "system" && m["subtype"] == "task_started" && str(m["task_type"]) != "local_agent") ||
+			(m["type"] == "result" && len(bgSeen) > 0) {
+			p.adopt()
+		}
 		for _, ev := range p.translate(m) {
 			p.events <- ev
 		}
@@ -388,6 +430,9 @@ func (p *proc) readLoop(stdout io.Reader) {
 	// Drain whatever is left so the process is not blocked writing to a full pipe.
 	io.Copy(io.Discard, stdout)
 	err := p.cmd.Wait()
+	// Whatever ended the process (Close, a kill, its own exit), what it started does not outlive
+	// it. The groups are forgotten only after that, when they are empty.
+	agent.EndTree(p.cmd, time.Duration(endGraceNanos.Load()))
 	agent.Exited(p.cmd)
 	close(p.done)
 	msg := strings.TrimSpace(p.stderr.String())
@@ -480,12 +525,31 @@ func (p *proc) Interrupt() error {
 		"request": map[string]any{"subtype": "interrupt"}})
 }
 
-// Close closes stdin, then kills the process if it has not exited after 3 s.
+// Close ends the process and what it started, and returns at once: it is called under the chat's
+// lock, and finding the shells (one ps) and the write grace must not hold that. The work is one
+// goroutine, in this order. The detached shells (a background command among them) are found
+// while the process is still their ancestor. When there are any, the process itself is sent
+// SIGTERM first and then the shells' groups: a shell that ends makes the CLI write a notice and
+// begin a turn of its own, which a stopped agent must not do (the shells were recorded, so the
+// read loop's EndTree still reaches them). Then stdin is closed, and the process's group is
+// killed if the process has not exited after 3 s. Once the process has exited, the read loop
+// ends what is left of its tree (EndTree). A second Close does nothing.
 //
 // A write the process does not read (a Send larger than the pipe takes, to a process that is
 // stuck) is not waited for beyond writeGrace: stdin is then closed under it, which fails that
 // write and so returns its Send.
 func (p *proc) Close() {
+	p.closing.Do(func() { go p.closeNow() })
+}
+
+func (p *proc) closeNow() {
+	// Before stdin closes: the process may exit at once, and a shell that is no longer its
+	// descendant cannot be found.
+	agent.Adopt(p.cmd)
+	if len(agent.AdoptedGroups(p.cmd.Process.Pid)) > 0 {
+		p.cmd.Process.Signal(syscall.SIGTERM)
+		agent.SignalAdopted(p.cmd, syscall.SIGTERM)
+	}
 	closed := make(chan struct{})
 	go func() {
 		defer close(closed)
@@ -499,13 +563,13 @@ func (p *proc) Close() {
 		p.stdin.Close() // releases the write that holds writeMu
 		<-closed
 	}
-	go func() {
-		select {
-		case <-p.done:
-		case <-time.After(time.Duration(closeGraceNanos.Load())):
+	select {
+	case <-p.done:
+	case <-time.After(time.Duration(closeGraceNanos.Load())):
+		if !agent.SignalGroup(p.cmd, syscall.SIGKILL) {
 			p.cmd.Process.Kill()
 		}
-	}()
+	}
 }
 
 // closeGraceNanos is how long Close waits for the process to exit by itself before it kills it.
@@ -516,9 +580,14 @@ var closeGraceNanos atomic.Int64
 // stdin regardless. Atomic for the same reason.
 var writeGraceNanos atomic.Int64
 
+// endGraceNanos is how long what an exited process left behind has, after SIGTERM, before it is
+// killed (EndTree). Atomic for the same reason.
+var endGraceNanos atomic.Int64
+
 func init() {
 	closeGraceNanos.Store(int64(3 * time.Second))
 	writeGraceNanos.Store(int64(time.Second))
+	endGraceNanos.Store(int64(2 * time.Second))
 }
 
 func randHex(n int) string {

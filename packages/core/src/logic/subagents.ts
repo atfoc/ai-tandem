@@ -57,10 +57,12 @@ const lastText = (items?: Item[]) => [...(items ?? [])].reverse().find((i) => i?
  *  or their results have not reached it yet. Neither working nor finished. */
 export const subWaiting = (sa: Subagent): boolean => subStatus(sa) === "running" && !!sa.waiting;
 
-/** What a waiting subagent's line says: how many of the subagents it started still run, else that
- *  their results have not reached it yet. subs: the chat's subagents. */
+/** What a waiting subagent's line says: how many of the subagents it started still run, and its own
+ *  background work (bgWaiting) when that is part of what it waits on; else that their results have
+ *  not reached it yet. subs: the chat's subagents. */
 export function subWaitingText(sa: Subagent, subs?: Record<string, Subagent>): string {
   const n = subChildren(subs, sa.id).filter((x) => subStatus(x) === "running").length;
+  if (sa.bgWaiting) return n ? `Waiting on ${n} subagent${n === 1 ? "" : "s"} and background work` : "Waiting for background work";
   return n ? `Waiting on ${n} subagent${n === 1 ? "" : "s"}` : "Waiting on its subagents' results";
 }
 

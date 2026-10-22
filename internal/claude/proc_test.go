@@ -41,11 +41,18 @@ const (
 	envForkEr = "CLAUDE_FAKE_FORKERR" // text a run with --fork-session among its arguments prints to stderr, exiting at once (status 1) with nothing on stdout; other runs go on
 	envStay   = "CLAUDE_FAKE_STAY"    // file: the fake starts one child in its own process group and one that leads a group of its own (each sleeps 30 s), writes "<pid> <pid>" there, and keeps running after stdin closes
 	envDeaf   = "CLAUDE_FAKE_DEAF"    // set: after the script the fake reads nothing from stdin and stays for 30 s
+	envDetach = "CLAUDE_FAKE_DETACH"  // file: after the script the fake starts a child in a session of its own that starts a grandchild (both sleep 30 s), writes "<child pid> <grandchild pid>" there, announces one background task, waits for the file of CLAUDE_FAKE_GATE and exits by itself (status 0)
+	envLate   = "CLAUDE_FAKE_LATE"    // file: after the script the fake announces one background task, waits for the file <file>.shell to exist, then starts a child in a session of its own that starts a grandchild (as CLAUDE_FAKE_DETACH does) and writes "<child pid> <grandchild pid>" to the file, prints a result line, waits for the file <file>.leave and exits by itself (status 0): a command announced before its shell exists
+	envShell  = "CLAUDE_FAKE_SHELL"   // set: the test binary starts a grandchild that sleeps, prints its pid and sleeps 30 s (the child of envDetach)
 )
 
 func TestMain(m *testing.M) {
 	if os.Getenv(envSleep) != "" {
 		time.Sleep(30 * time.Second)
+		os.Exit(0)
+	}
+	if os.Getenv(envShell) != "" {
+		detachedShell()
 		os.Exit(0)
 	}
 	if os.Getenv(envScript) != "" {
@@ -116,6 +123,22 @@ func helperProcess() {
 	if f := os.Getenv(envStay); f != "" {
 		startStayChildren(f)
 	}
+	if f := os.Getenv(envDetach); f != "" {
+		startDetachedShell(f)
+		fmt.Println(`{"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"b1","task_type":"local_bash","description":"d"}]}`)
+		waitGate()
+		os.Exit(0)
+	}
+	if f := os.Getenv(envLate); f != "" {
+		fmt.Println(`{"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"b1","task_type":"local_bash","description":"d"}]}`)
+		fmt.Println(`{"type":"system","subtype":"task_started","task_id":"b1","task_type":"local_bash","description":"d"}`)
+		fmt.Println(`{"type":"assistant","message":{"id":"msg_1","content":[{"type":"text","text":"announced"}]},"parent_tool_use_id":null}`)
+		waitFile(f + ".shell")
+		startDetachedShell(f)
+		fmt.Println(`{"type":"result","subtype":"success","is_error":false,"result":"ok","num_turns":1,"session_id":"s"}`)
+		waitFile(f + ".leave")
+		os.Exit(0)
+	}
 	if os.Getenv(envExit) != "" {
 		fmt.Fprintln(os.Stderr, os.Getenv(envStderr))
 		os.Exit(3)
@@ -158,12 +181,7 @@ func helperProcess() {
 					fmt.Printf("%s\n", l)
 					continue
 				}
-				for {
-					if _, err := os.Stat(os.Getenv(envGate)); err == nil {
-						break
-					}
-					time.Sleep(5 * time.Millisecond)
-				}
+				waitGate()
 			}
 			if len(turns) > 1 {
 				turns = turns[1:]
@@ -210,6 +228,51 @@ func helperProcess() {
 	if msg := os.Getenv(envStderr); msg != "" {
 		fmt.Fprintln(os.Stderr, msg)
 	}
+}
+
+// waitGate waits until the file of envGate exists.
+func waitGate() { waitFile(os.Getenv(envGate)) }
+
+// waitFile waits until the file exists.
+func waitFile(file string) {
+	for {
+		if _, err := os.Stat(file); err == nil {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// startDetachedShell starts the child of envDetach, detached as Claude starts its shells, and
+// writes its pid and its child's to file.
+func startDetachedShell(file string) {
+	child := exec.Command(os.Args[0])
+	child.Env = append(os.Environ(), envShell+"=1")
+	child.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	out, err := child.StdoutPipe()
+	if err == nil {
+		err = child.Start()
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	line, _ := bufio.NewReader(out).ReadString('\n')
+	os.WriteFile(file, []byte(strconv.Itoa(child.Process.Pid)+" "+strings.TrimSpace(line)), 0o644)
+}
+
+// detachedShell is the child of envDetach: it starts a grandchild that sleeps, in its own group,
+// prints the grandchild's pid and sleeps.
+func detachedShell() {
+	g := exec.Command(os.Args[0])
+	g.Env = append(os.Environ(), envSleep+"=1")
+	if err := g.Start(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	go g.Wait()
+	fmt.Println(g.Process.Pid)
+	time.Sleep(30 * time.Second)
 }
 
 // startStayChildren starts the two children of envStay. Neither holds the fake's output.
@@ -587,8 +650,9 @@ func TestMissingFolder(t *testing.T) {
 }
 
 // stayPids reads the two child pids the fake wrote (envStay): the one in the fake's group and the
-// one that leads its own. Both are ended when the test ends, each by its own pid and only while
-// it is still a child the fake started (a sleeping copy of the test binary).
+// one that leads its own (envDetach: the detached child and its child). Both are ended when the
+// test ends, each by its own pid and only while it is still a process the fake started (a
+// sleeping copy of the test binary).
 func stayPids(t *testing.T, file string) (inGroup, ownGroup int) {
 	t.Helper()
 	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(5 * time.Millisecond) {
@@ -611,16 +675,43 @@ func stayPids(t *testing.T, file string) (inGroup, ownGroup int) {
 }
 
 // alive reports whether pid is a running copy of the test binary (not a zombie, not another
-// program that got the number).
+// program that got the number). The system call tells a number nobody has any more without the
+// ps that is the slow part.
 func alive(pid int) bool {
+	if errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) {
+		return false
+	}
 	out, err := exec.Command("ps", "-o", "stat=,comm=", "-p", strconv.Itoa(pid)).Output()
 	f := strings.Fields(string(out))
 	return err == nil && len(f) >= 2 && !strings.HasPrefix(f[0], "Z") && filepath.Base(f[len(f)-1]) == filepath.Base(os.Args[0])
 }
 
-// Close kills the process alone when it is still there after the grace period: what it started,
-// in its own group or in another, stays. It sends no interrupt first.
-func TestCloseKillsOnlyTheProcess(t *testing.T) {
+// gone waits until none of pids is a running copy of the test binary any more. One that was
+// killed and is not yet waited for by its parent counts as gone: it is a zombie and runs nothing.
+// The numbers are polled with the system call alone, and a ps that looks for zombies is made only
+// for those still there after a second.
+func gone(t *testing.T, what string, pids ...int) {
+	t.Helper()
+	start := time.Now()
+	for deadline := start.Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		left := 0
+		for _, pid := range pids {
+			if !errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) && (time.Since(start) < time.Second || alive(pid)) {
+				left = pid
+			}
+		}
+		if left == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s: process %d is still running", what, left)
+		}
+	}
+}
+
+// Close ends the process and what it started: a child in its group and a child that leads a
+// group of its own, as Claude's detached shells do. It sends no interrupt first.
+func TestCloseEndsTheTree(t *testing.T) {
 	// An interrupt sent by mistake has to reach the fake's record of stdin within the grace,
 	// before the fake is killed.
 	old := closeGraceNanos.Swap(int64(300 * time.Millisecond))
@@ -638,13 +729,171 @@ func TestCloseKillsOnlyTheProcess(t *testing.T) {
 	a.Close()
 	for range a.Events() {
 	}
-	if !alive(inGroup) || !alive(ownGroup) {
-		t.Error("Close ended more than the process")
-	}
+	gone(t, "after Close", inGroup, ownGroup)
 	b, _ := os.ReadFile(f.stdin)
 	if strings.Contains(string(b), `"subtype":"interrupt"`) {
 		t.Error("Close sent an interrupt")
 	}
+}
+
+// A process with detached shells gets its signal from Close itself, at once and not after the
+// grace after which its group is killed; its shells' groups follow it. The order (the process
+// first, so that it cannot begin a turn on the shells' notices) is proved with the stand-in
+// claude: TestFakeClaudeCloseStartsNoTurn in internal/agenttest.
+func TestCloseSignalsTheProcessWhenItHasBackgroundWork(t *testing.T) {
+	// Far longer than the test: what ends the process is the signal, not the grace.
+	old := closeGraceNanos.Swap(int64(time.Minute))
+	t.Cleanup(func() { closeGraceNanos.Store(old) })
+
+	f := newFake(t)
+	pidFile := filepath.Join(f.dir, "pids")
+	t.Setenv(envStay, pidFile)
+	a, err := f.spawner().Spawn(agent.SpawnOptions{SessionID: "s1", Cwd: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inGroup, ownGroup := stayPids(t, pidFile)
+	f.waitStdin(t, `"initialize"`)
+	a.Close()
+	for ev := range a.Events() {
+		if ev.Kind == agent.EvExit && !strings.Contains(ev.ExitErr, "terminated") {
+			t.Errorf("exit error %q, want the process ended by SIGTERM", ev.ExitErr)
+		}
+	}
+	gone(t, "after Close", inGroup, ownGroup)
+}
+
+// Close does not wait: not for the walk of the process tree, not for a write to stdin that is
+// under way (its grace), not for the process to exit. It is called under the chat's lock. Twice is
+// as once.
+func TestCloseReturnsAtOnce(t *testing.T) {
+	// Far longer than Close may take: a Close that waited for either would show.
+	oldClose := closeGraceNanos.Swap(int64(time.Minute))
+	oldWrite := writeGraceNanos.Swap(int64(time.Minute))
+	t.Cleanup(func() { closeGraceNanos.Store(oldClose); writeGraceNanos.Store(oldWrite) })
+
+	f := newFake(t)
+	t.Setenv(envDeaf, "1")
+	a, err := f.spawner().Spawn(agent.SpawnOptions{SessionID: "s1", Cwd: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sent := make(chan error, 1)
+	go func() { sent <- a.Send([]agent.ContentBlock{{Text: strings.Repeat("x", 4<<20)}}) }()
+	select {
+	case err := <-sent:
+		t.Fatalf("Send returned %v although nothing reads stdin", err)
+	case <-time.After(100 * time.Millisecond): // Send is in its write by now
+	}
+	closed := make(chan struct{})
+	go func() { a.Close(); a.Close(); close(closed) }()
+	select {
+	case <-closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close did not return while a write to stdin was under way")
+	}
+	// Close is still waiting for the write: ending the process fails it, and the rest of Close
+	// goes on to its end.
+	if !agent.SignalGroup(a.(*proc).cmd, syscall.SIGKILL) {
+		t.Fatal("no group to kill")
+	}
+	select {
+	case err := <-sent:
+		if err == nil {
+			t.Error("Send returned no error")
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("Send did not return after the process was killed")
+	}
+	exits := 0
+	for ev := range a.Events() {
+		if ev.Kind == agent.EvExit {
+			exits++
+		}
+	}
+	if exits != 1 {
+		t.Errorf("%d exit events, want 1", exits)
+	}
+}
+
+// A background command's shell, detached and announced, is ended when the process exits by
+// itself: it was adopted while the process was its ancestor, and the read loop ends the tree
+// after the exit, although the shell is by then the child of init.
+func TestAnnouncedShellEndsWithASelfExit(t *testing.T) {
+	f := newFake(t)
+	pidFile := filepath.Join(f.dir, "pids")
+	gate := filepath.Join(f.dir, "gate")
+	t.Setenv(envDetach, pidFile)
+	t.Setenv(envGate, gate)
+	a, err := f.spawner().Spawn(agent.SpawnOptions{SessionID: "s1", Cwd: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(a.Close)
+	child, grandchild := stayPids(t, pidFile)
+	pid := a.(*proc).cmd.Process.Pid
+	for deadline := time.Now().Add(10 * time.Second); !slices.Contains(agent.AdoptedGroups(pid), child); time.Sleep(20 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the announced shell %d was not adopted: %v", child, agent.AdoptedGroups(pid))
+		}
+	}
+	if err := os.WriteFile(gate, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if ev := next(t, a); ev.Kind == agent.EvExit {
+			if ev.ExitErr != "" {
+				t.Errorf("exit error %q, want the fake's own clean exit", ev.ExitErr)
+			}
+			break
+		}
+	}
+	gone(t, "after the process exited by itself", child, grandchild)
+}
+
+// A command announced before its shell exists: the walk made at the announcement finds nothing,
+// and the one made at the end of the turn (a result line while a task is known) finds the shell,
+// so that the process's own exit ends it.
+func TestLateShellEndsWithASelfExit(t *testing.T) {
+	f := newFake(t)
+	pidFile := filepath.Join(f.dir, "pids")
+	t.Setenv(envLate, pidFile)
+	a, err := f.spawner().Spawn(agent.SpawnOptions{SessionID: "s1", Cwd: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(a.Close)
+	// A test that fails before it opens the gates leaves no fake waiting for them.
+	t.Cleanup(func() { os.WriteFile(pidFile+".shell", nil, 0o644); os.WriteFile(pidFile+".leave", nil, 0o644) })
+	// The text comes after the announcement's lines, so the walks they started are all under way
+	// when it arrives. They end without a shell to find: it does not exist before the gate opens.
+	for ev := next(t, a); ev.Kind != agent.EvText; ev = next(t, a) {
+	}
+	p := a.(*proc)
+	for deadline := time.Now().Add(30 * time.Second); p.adopting.Load() != 0; time.Sleep(5 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the walk at the announcement did not end")
+		}
+	}
+	if err := os.WriteFile(pidFile+".shell", nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	child, grandchild := stayPids(t, pidFile)
+	pid := p.cmd.Process.Pid
+	for deadline := time.Now().Add(10 * time.Second); !slices.Contains(agent.AdoptedGroups(pid), child); time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the shell %d was not adopted after the turn's end: %v", child, agent.AdoptedGroups(pid))
+		}
+	}
+	if err := os.WriteFile(pidFile+".leave", nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if ev := next(t, a); ev.Kind == agent.EvExit {
+			break
+		}
+	}
+	gone(t, "after the process exited by itself", child, grandchild)
 }
 
 // Send writes to the process's stdin and so waits for as long as a stuck process does not read
@@ -673,7 +922,9 @@ func TestCloseReleasesABlockedSend(t *testing.T) {
 
 	closed := make(chan struct{})
 	go func() { a.Close(); close(closed) }()
-	limit := time.After(2 * time.Second)
+	// Close does its work on a goroutine, which first lists the machine's processes (one ps),
+	// which takes seconds on a busy machine.
+	limit := time.After(10 * time.Second)
 	select {
 	case err := <-sent:
 		if err == nil {

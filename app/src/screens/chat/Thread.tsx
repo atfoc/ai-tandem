@@ -15,7 +15,7 @@ import { prefixText } from "@aiwb/core/logic/prefix.ts";
 import { remoteView } from "@aiwb/core/logic/remoteview.ts";
 import { serverConnected, serverName, serverState } from "@aiwb/core/logic/serverlists.ts";
 import { threadWait } from "@aiwb/core/logic/waits.ts";
-import { boardNames, isBusy, shownBranch, shownView, threadOf } from "@aiwb/core/state/store.ts";
+import { boardNames, inTurn, shownBranch, shownView, threadOf } from "@aiwb/core/state/store.ts";
 import { openChat } from "../shell/nav.ts";
 import type { ChatView, Item } from "@aiwb/core/types.ts";
 
@@ -54,8 +54,8 @@ export function Thread({ chatId }: { chatId: string }) {
   const waits = useStore((s) => s.waits[chatId]);
   const forkedFrom = useStore((s) => !!s.chats[chatId]?.forkedFrom);
   if (!c) return null;
-  const busy = isBusy(c.status);
-  const waiting = waitingText(c); // "" while busy
+  const busy = inTurn(c.status); // a chat that waits for its background work is not in a turn: its foot is the waiting row
+  const waiting = waitingText(c); // "" while in a turn
   const wait = threadWait(waits, { shown: branch, loaded: !!loaded, count: all.length, move: cut !== undefined, busy, server: inSection(chatId) ? serverIs : "", archived: !!c.archived });
   // (the history a wait keeps stands for the list: what is said of a server that is not connected is said beside it)
   const remote = remoteView({ connected, gone }, serverIs, state, !!loaded || !!wait.kept, loadErr);

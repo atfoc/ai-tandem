@@ -3,12 +3,14 @@
 // starts is a record of the chat like any other, with the one that started it as Parent, and its
 // result is owed to that one, not to the chat's agent.
 //
-// So a subagent that started subagents is not finished when its turn ends. It waits
-// (model.Subagent.Waiting): its status stays running, its process lives, and it counts against
-// the chat's cap. It is handed the results it is owed as a message that starts a further turn of
-// it, in the block the chat's agent gets (delivery.go). Only a turn of it that ends cleanly with
-// none of its subagents running and nothing owed to it finishes it, and then its own result goes
-// to whoever started it.
+// So a subagent that started subagents is not finished when its turn ends. It waits for the
+// subagents it started and for its own background work (Claude: a background command or a
+// Monitor; the rule is in background.go). It waits (model.Subagent.Waiting, with BgWaiting when
+// background work is part of why): its status stays running, its process lives, and it counts
+// against the chat's cap. It is handed the results it is owed as a message that starts a further
+// turn of it, in the block the chat's agent gets (delivery.go). Only a turn of it that ends cleanly
+// with none of its subagents running, nothing owed to it and no background work left finishes it,
+// and then its own result goes to whoever started it.
 //
 // The delivery to a subagent is simpler than the chat's: there is no second attempt and no hold.
 // A result that cannot be delivered fails the subagent, and whoever started that one is told, as
@@ -123,20 +125,24 @@ func (m *Manager) giveUp(c *Chat, sids []string, out *outbox) {
 }
 
 // subWaits is the clean end of a turn of s, a running app-spawned subagent. It reports whether
-// that leaves s waiting and not finished: subagents it started still run, or a result is owed to
-// it. Then s is marked as waiting, and the results it is owed go to it at once, in a turn that
-// takes it out of waiting again (the delivery is added to aft). c.mu held.
+// that leaves s waiting and not finished: subagents it started still run, a result is owed to
+// it, or its own background work holds it. Then s is marked as waiting, and the results it is owed
+// go to it at once, in a turn that takes it out of waiting again (the delivery is added to aft).
+// When only background work that has ended holds it, the quiet wait is armed (armBgQuiet). c.mu held.
 func (m *Manager) subWaits(c *Chat, s *sub, out *outbox, aft *after) bool {
-	if runningKids(c, s.meta.ID) == 0 && len(owedTo(c, s.meta.ID)) == 0 {
+	if runningKids(c, s.meta.ID) == 0 && len(owedTo(c, s.meta.ID)) == 0 && !s.bg.holds() {
 		return false
 	}
 	if tr, err := m.subTr(c, s); err == nil {
 		out.emitSubItems(c, s.meta.ID, tr.Version(), tr.CloseOpen())
 	}
-	s.meta.Waiting = true
+	s.meta.Waiting, s.meta.BgWaiting = true, s.bg.holds()
 	if d := m.deliverSub(c, s, out); d != nil {
 		aft.add(d) // it has written and sent s, working again
 		return true
+	}
+	if s.meta.BgWaiting && s.bg.idle() && runningKids(c, s.meta.ID) == 0 && len(owedTo(c, s.meta.ID)) == 0 {
+		m.armBgQuiet(c, &s.bg, m.subBgQuiet(c, s.meta.ID))
 	}
 	m.flushSub(c, s, false)
 	out.emitSub(c, s.meta)
@@ -144,7 +150,7 @@ func (m *Manager) subWaits(c *Chat, s *sub, out *outbox, aft *after) bool {
 }
 
 // waitOver finishes p, a subagent that waits, when nothing is left for it to wait for: none of
-// its subagents runs and no result is owed to it. That is how its wait ends when the last one it
+// its subagents runs, no result is owed to it and no background work holds it. That is how its wait ends when the last one it
 // waited for ended without owing it a result, which only a spawn that failed after its turn had
 // ended does: the spawn call itself told it. Its last turn ended cleanly, so it has finished.
 // c.mu held.
@@ -153,6 +159,14 @@ func (m *Manager) waitOver(c *Chat, p *sub, out *outbox, aft *after) {
 		return
 	}
 	if runningKids(c, p.meta.ID) > 0 || len(owedTo(c, p.meta.ID)) > 0 {
+		return
+	}
+	if p.bg.holds() {
+		// Its own background work is all that is left. When that has ended too, a turn for its
+		// notice is still to come, and the quiet wait bounds it.
+		if p.meta.BgWaiting && p.bg.idle() {
+			m.armBgQuiet(c, &p.bg, m.subBgQuiet(c, p.meta.ID))
+		}
 		return
 	}
 	m.finalizeAppSub(c, p, model.SubCompleted, "", endTurn, out, aft)
@@ -198,7 +212,7 @@ func (m *Manager) deliverSub(c *Chat, s *sub, out *outbox) *carry {
 		out.emitSub(c, k.meta)
 	}
 	d.blocks = []agent.ContentBlock{{Text: resultsBlock(taken, runningKids(c, s.meta.ID), false, true)}}
-	s.meta.Waiting = false
+	s.meta.Waiting, s.meta.BgWaiting = false, false
 	s.carry = d
 	m.flushSub(c, s, false)
 	out.emitSubItems(c, s.meta.ID, tr.Version(), ups)

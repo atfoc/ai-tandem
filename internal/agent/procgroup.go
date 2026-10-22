@@ -10,16 +10,20 @@ import (
 
 // Each agent process runs as the leader of a process group of its own, so that when the server
 // stops it can end the agent together with everything the agent started (Cursor's worker-server,
-// language servers, ...), which would otherwise outlive the server.
+// language servers, ...), which would otherwise outlive the server. What the agent started in
+// groups of their own is found and remembered too (Adopt, in proctree.go).
 
 // ErrStopping is what StartGroup reports once EndAll has begun.
 var ErrStopping = errors.New("the server is stopping")
 
 var groups = struct {
 	sync.Mutex
-	pgids  map[int]bool // the groups of agent processes started and not known to be empty
-	ending bool
-}{pgids: map[int]bool{}}
+	pgids map[int]bool // the groups of agent processes started, and the groups Adopt found, not known to be empty
+	// adopted holds, per leader's pgid, the groups Adopt found under it: groups that a descendant
+	// of the leader leads, such as Claude's detached shells. Each is in pgids as well.
+	adopted map[int]map[int]bool
+	ending  bool
+}{pgids: map[int]bool{}, adopted: map[int]map[int]bool{}}
 
 // StartGroup starts cmd as the leader of a new process group and remembers the group for
 // EndAll. Call Exited once cmd.Wait has returned.
@@ -37,6 +41,9 @@ func StartGroup(cmd *exec.Cmd) error {
 		return err
 	}
 	groups.pgids[cmd.Process.Pid] = true
+	// Groups adopted under an earlier leader that had this number are no longer that leader's to
+	// end through this one; they stay remembered for EndAll until they are empty.
+	delete(groups.adopted, cmd.Process.Pid)
 	return nil
 }
 
@@ -49,6 +56,12 @@ func Exited(cmd *exec.Cmd) {
 	if forget(pgid) {
 		return
 	}
+	watch(pgid)
+}
+
+// watch forgets the remembered group pgid, on a goroutine, once it is gone. It reads forgetEvery
+// before it returns.
+func watch(pgid int) {
 	every := forgetEvery
 	go func() {
 		for !forget(pgid) {
@@ -57,8 +70,8 @@ func Exited(cmd *exec.Cmd) {
 	}()
 }
 
-// forgetEvery is how often Exited looks whether a group it could not forget is gone. A variable
-// so that a test need not wait it out.
+// forgetEvery is how often a remembered group that may still have processes is looked at again
+// (Exited, Adopt). A variable so that a test need not wait it out.
 var forgetEvery = time.Second
 
 // forget drops pgid if its group is gone, and reports whether the group is no longer remembered.
@@ -66,9 +79,21 @@ func forget(pgid int) bool {
 	groups.Lock()
 	defer groups.Unlock()
 	if errors.Is(syscall.Kill(-pgid, 0), syscall.ESRCH) {
-		delete(groups.pgids, pgid)
+		dropLocked(pgid)
 	}
 	return !groups.pgids[pgid]
+}
+
+// dropLocked forgets the group pgid, as one of its own and as one adopted under a leader.
+// groups held.
+func dropLocked(pgid int) {
+	delete(groups.pgids, pgid)
+	for leader, set := range groups.adopted {
+		delete(set, pgid)
+		if len(set) == 0 {
+			delete(groups.adopted, leader)
+		}
+	}
 }
 
 // SignalGroup sends sig to the group of cmd, started by StartGroup, and reports whether a group
@@ -85,20 +110,30 @@ func SignalGroup(cmd *exec.Cmd, sig syscall.Signal) bool {
 	if pgid <= 1 || !groups.pgids[pgid] {
 		return false
 	}
+	return signalLocked(pgid, sig)
+}
+
+// signalLocked sends sig to the remembered group pgid and reports whether it was there to take
+// it; a group found gone is forgotten. groups held.
+func signalLocked(pgid int, sig syscall.Signal) bool {
 	if err := syscall.Kill(-pgid, sig); err != nil {
 		if errors.Is(err, syscall.ESRCH) {
-			delete(groups.pgids, pgid)
+			dropLocked(pgid)
 		}
 		return false
 	}
 	return true
 }
 
-// EndAll ends every group StartGroup started: SIGTERM, then SIGKILL to what is still there after
-// grace. StartGroup fails from now on.
+// EndAll ends every group StartGroup started, and every group a descendant of one of their
+// leaders leads (see Adopt): SIGTERM, then SIGKILL to what is still there after grace. StartGroup
+// fails from now on.
 func EndAll(grace time.Duration) {
 	groups.Lock()
 	groups.ending = true
+	groups.Unlock()
+	adoptAll()
+	groups.Lock()
 	var pgids []int
 	for pgid := range groups.pgids {
 		pgids = append(pgids, pgid)

@@ -12,6 +12,7 @@
 //   A-SB-35  the "+" and "…" of a row show under the pointer (a mouse), and are always drawn for a finger
 //   A-SB-36  a menu is a popover (a sheet on the phone), headed for a "+", its Delete in the danger colour; Esc closes only it; a press outside does
 //   A-SB-37  a collapsed group shows what it holds and a dot while one of its chats works; a double press renames it
+//   (new)    a chat that waits for its background work has the muted dot (`crow-dot` of state "waiting") and the line "Waiting for background work"
 //   A-SB-41  an empty group says "Empty — use + or drag chats here."
 //   A-SB-06  the foot: Show archived, Servers, the prompt library, Settings (voice's), the theme picker, in that order; the Servers button's title
 // The touch layouts run the same body: a double press is two taps, hover is not asked of a finger.
@@ -71,6 +72,21 @@ await check("L11 the sidebar's rows, heads and menus: the parts nothing proved o
   const badge = byTid(branched, "branch-badge");
   if (await badge.count() !== 1 || (await badge.textContent()).trim() !== "3" || await badge.getAttribute("title") !== "3 branches") fail(`the branch badge: ${await badge.count()} of them, saying "${await badge.first().textContent().catch(() => "")}", titled "${await badge.first().getAttribute("title").catch(() => "")}"`);
   if (await byTid(rowNamed(page, "Working chat", loc), "branch-badge").count()) fail("a chat with one branch shows a branch badge");
+
+  // ---- a chat that waits for its background work: the muted dot and its words (the chat is put back at the end of this part)
+  {
+    const setWaiting = (st) => mockEval(`chats.c_L3.status = ${J(st)}; send({ type: "chat", chat: chats.c_L3 });`, url);
+    const dotOf = () => byTid(branched, "crow-dot").first().getAttribute("data-state").catch(() => null);
+    const lineOf = async () => ((await byTid(branched, "side-sub").first().textContent().catch(() => "")) ?? "").trim();
+    await setWaiting("waiting");
+    if (!await until(async () => (await dotOf()) === "waiting", 10000)) fail(`${viewport}: the dot of a chat that waits for background work is "${await dotOf()}", not "waiting"`);
+    else {
+      if (await lineOf() !== "Waiting for background work") fail(`${viewport}: the row of a chat that waits for background work says "${await lineOf()}", not "Waiting for background work"`);
+      if (!/ — Waiting for background work$/.test(await title(branched) ?? "")) fail(`${viewport}: the tooltip of that row is "${await title(branched)}"`);
+    }
+    await setWaiting("ready");
+    if (!await until(async () => (await dotOf()) !== "waiting", 10000)) fail(`${viewport}: the dot stays "waiting" when the chat is ready again`);
+  }
 
   // ---- the board row: new dot, caret and count, archived tag
   const dot = byTid(plan, "new-dot");
