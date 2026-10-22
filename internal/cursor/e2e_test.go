@@ -1,3 +1,5 @@
+//go:build !windows
+
 package cursor
 
 // Real-CLI end-to-end test. It calls the real, logged-in Cursor agent with cheap models and

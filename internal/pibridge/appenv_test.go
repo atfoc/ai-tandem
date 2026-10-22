@@ -1,3 +1,5 @@
+//go:build !windows
+
 package pibridge
 
 // Tests for the extension's handling of the app's AIWB_* handles (app-env.ts): the Node unit tests,

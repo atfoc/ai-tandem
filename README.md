@@ -162,7 +162,8 @@ There is no download: you build AI Whiteboard from source.
 
 **You need**
 
-- macOS for the desktop app. The server alone also builds for Linux.
+- macOS to build the macOS desktop app; macOS or Linux to build the Windows one. The server alone
+  builds for Linux too.
 - Go 1.25+
 - Node.js 22.19+ and npm
 - At least one agent CLI, installed and logged in:
@@ -175,6 +176,12 @@ There is no download: you build AI Whiteboard from source.
 scripts/build-app.sh    # makes bin/AI Whiteboard.app
 scripts/install-app.sh  # copies it to ~/Applications, so Spotlight finds it
 ```
+
+On a Mac, `scripts/build-app.sh` with no argument makes the macOS app for the Mac's own processor. The
+other processor, and the Windows app (an unpacked folder, `bin/windows-<arch>/AI Whiteboard/`, built on
+a Mac or on Linux), are named with `--os macos|windows` and `--arch arm64|x64`; the Windows app is not
+tested on a Windows computer yet. See
+[Build and install the desktop app](docs/development.md#build-and-install-the-desktop-app).
 
 **Set the server up, once.** The app starts the server of your computer itself, but the server
 does not start until it has been set up: set-up makes its certificate and its secret. Run it once

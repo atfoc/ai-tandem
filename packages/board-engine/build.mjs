@@ -69,6 +69,8 @@ export async function buildEngine({ ifStale = false } = {}) {
   fs.mkdirSync(path.dirname(outFile), { recursive: true });
   await esbuild.build({
     entryPoints: [path.join(here, "src", "bundle.ts")], bundle: true, format: "esm", platform: "node", target: "node22",
+    // the repository root, whatever the working directory: esbuild's comments in the bundle name modules by paths relative to it
+    absWorkingDir: path.resolve(here, "..", ".."),
     outfile: tmp, conditions: ["production"], jsx: "automatic", logLevel: "warning", legalComments: "none",
     external: ["skia-canvas"],
     define: { "process.env.NODE_ENV": '"production"', "process.env.IS_PREACT": '"false"', __EXCALIDRAW_VERSION__: JSON.stringify(version) },

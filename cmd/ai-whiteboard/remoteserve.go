@@ -4,12 +4,10 @@ import (
 	"log"
 	"net"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync/atomic"
-	"syscall"
 
 	"ai-whiteboard/internal/remote"
 	"ai-whiteboard/internal/server"
@@ -61,7 +59,7 @@ func (rem *remoteStart) bind() {
 func (rem *remoteStart) attach(srv *server.Server) {
 	// Not SIGHUP: a terminal that closes sends that, and the signal's default action ends a process.
 	reload := make(chan os.Signal, 1)
-	signal.Notify(reload, syscall.SIGUSR1)
+	notifyReload(reload)
 	id, err := remote.EnsureInstanceID(rem.root)
 	if err != nil {
 		log.Printf("instance id: %v", err) // hello goes without one, rather than with one that does not last

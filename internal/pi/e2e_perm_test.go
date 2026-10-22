@@ -1,3 +1,5 @@
+//go:build !windows
+
 package pi
 
 // Real-pi end-to-end tests for the permission path: the app extension's tool_call hook → the app

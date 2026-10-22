@@ -3,6 +3,7 @@
 Outputs:
   assets/icon/AppIcon.png        1024 master on Apple's macOS grid (824 squircle, 100 margin, shadow)
   assets/icon/AppIcon.icns       for the .app bundle (Contents/Resources, CFBundleIconFile=AppIcon)
+  assets/icon/AppIcon.ico        for the Windows exe (electron-builder's win.icon): 16, 24, 32, 48, 64, 128, 256, squircle filling the canvas
   app/public/favicon.ico         16 + 32, squircle filling the canvas
   app/public/favicon.png         32
   app/public/apple-touch-icon.png 180, full-bleed (iOS/Safari round it themselves)
@@ -22,6 +23,7 @@ ICON = os.path.join(ROOT, "assets", "icon")
 PUBLIC = os.path.join(ROOT, "app", "public")
 
 CANVAS, BODY = 1024, 824   # Apple macOS icon grid
+WIN_SIZES = [(n, n) for n in (16, 24, 32, 48, 64, 128, 256)]
 CROP = 0.78                # keep the centre of the artwork so the glyph stays big at 16 px
 SS = 4                     # supersampling for smooth mask edges
 
@@ -90,6 +92,7 @@ def main():
     shutil.rmtree(tmp)
 
     fav = rounded(256)
+    fav.save(os.path.join(ICON, "AppIcon.ico"), sizes=WIN_SIZES)
     fav.save(os.path.join(PUBLIC, "favicon.ico"), sizes=[(16, 16), (32, 32)])
     fav.resize((32, 32), Image.LANCZOS).save(os.path.join(PUBLIC, "favicon.png"))
     artwork(180).convert("RGB").save(os.path.join(PUBLIC, "apple-touch-icon.png"))

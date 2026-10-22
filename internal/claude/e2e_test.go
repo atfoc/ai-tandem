@@ -1,3 +1,5 @@
+//go:build !windows
+
 package claude
 
 // Real-CLI end-to-end tests. They call the real, logged-in claude with cheap models and therefore

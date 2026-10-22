@@ -3,8 +3,6 @@ package agent
 import (
 	"os/exec"
 	"slices"
-	"strconv"
-	"strings"
 	"syscall"
 	"time"
 )
@@ -19,33 +17,6 @@ import (
 // given to another program by now.
 
 type procInfo struct{ pid, ppid, pgid int }
-
-// listProcs lists every process of the machine with its parent and its group. A line that does
-// not read as three numbers is skipped.
-func listProcs() ([]procInfo, error) {
-	out, err := exec.Command("ps", "-A", "-o", "pid=,ppid=,pgid=").Output()
-	if err != nil {
-		return nil, err
-	}
-	var ps []procInfo
-	for _, line := range strings.Split(string(out), "\n") {
-		f := strings.Fields(line)
-		if len(f) != 3 {
-			continue
-		}
-		var n [3]int
-		ok := true
-		for i, s := range f {
-			if n[i], err = strconv.Atoi(s); err != nil {
-				ok = false
-			}
-		}
-		if ok {
-			ps = append(ps, procInfo{pid: n[0], ppid: n[1], pgid: n[2]})
-		}
-	}
-	return ps, nil
-}
 
 // descendants is every process below root by the parent links of ps, root itself left out. A
 // listing whose links make a loop is walked once around it.
@@ -70,7 +41,7 @@ func descendants(root int, ps []procInfo) []procInfo {
 
 // Adopt records the process groups that the descendants of cmd's process lead (pid == pgid), so
 // that EndTree and EndAll reach them after cmd's process is gone and they have been reparented.
-// It never adopts cmd's own group, the server's own (syscall.Getpgrp()), or a pgid <= 1. Each
+// It never adopts cmd's own group, the server's own (ownGroup()), or a pgid <= 1. Each
 // adopted group is watched and forgotten once empty. A cmd whose group is not registered
 // (StartGroup) is ignored.
 func Adopt(cmd *exec.Cmd) {
@@ -108,7 +79,7 @@ func adoptLocked(leader int, ps []procInfo) []int {
 	for _, p := range ps {
 		byPid[p.pid] = p
 	}
-	own := syscall.Getpgrp()
+	own := ownGroup()
 	set := groups.adopted[leader]
 	var added []int
 	for queue := append([]int{leader}, adoptedOf(leader)...); len(queue) > 0; queue = queue[1:] {

@@ -1,3 +1,5 @@
+//go:build !windows
+
 package pi
 
 // Real-pi end-to-end tests. They call a real, authenticated pi with a cheap model and therefore

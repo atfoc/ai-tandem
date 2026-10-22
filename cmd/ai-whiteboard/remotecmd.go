@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"ai-whiteboard/internal/remote"
@@ -266,12 +265,16 @@ func announceNewSecret(f *ownFlags, stderr io.Writer) {
 		st, ok := run.statusOf()
 		return st.Client.SecretReloads, ok && st.Client.Listening
 	}
+	if !reloadSupported {
+		fmt.Fprintln(stderr, "On this system a running server reads a new secret only when it is restarted. "+nextStart)
+		return
+	}
 	before, ok := reloads()
 	if !ok {
 		fmt.Fprintln(stderr, "The running server does not listen for clients. "+nextStart)
 		return
 	}
-	if err := syscall.Kill(run.hello.Pid, syscall.SIGUSR1); err != nil {
+	if err := signalReload(run.hello.Pid); err != nil {
 		fmt.Fprintf(stderr, "The running server could not be told (%v). %s\n", err, nextStart)
 		return
 	}

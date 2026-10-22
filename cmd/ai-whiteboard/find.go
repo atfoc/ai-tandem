@@ -104,15 +104,20 @@ func folderInstanceID(root string) string {
 	return id
 }
 
-// controlGet asks the control socket at path for route, an HTTP/1.1 GET, and decodes the JSON
-// answer into v. ok is false for anything but a 200 with JSON within the time.
-func controlGet(path, route string, timeout time.Duration, v any) bool {
-	c := &http.Client{Timeout: timeout, Transport: &http.Transport{
+// controlClient is an HTTP/1.1 client whose every request goes to the Unix socket at path.
+func controlClient(path string, timeout time.Duration) *http.Client {
+	return &http.Client{Timeout: timeout, Transport: &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, "unix", path)
 		},
 		DisableKeepAlives: true,
 	}}
+}
+
+// controlGet asks the control socket at path for route, an HTTP/1.1 GET, and decodes the JSON
+// answer into v. ok is false for anything but a 200 with JSON within the time.
+func controlGet(path, route string, timeout time.Duration, v any) bool {
+	c := controlClient(path, timeout)
 	defer c.CloseIdleConnections()
 	resp, err := c.Get("http://control" + route)
 	if err != nil {
@@ -120,6 +125,19 @@ func controlGet(path, route string, timeout time.Duration, v any) bool {
 	}
 	defer resp.Body.Close()
 	return resp.StatusCode == http.StatusOK && json.NewDecoder(resp.Body).Decode(v) == nil
+}
+
+// controlPost sends the control socket at path an HTTP/1.1 POST of route with no body and returns
+// the status of the answer; err is set when there is none within the time.
+func controlPost(path, route string, timeout time.Duration) (status int, err error) {
+	c := controlClient(path, timeout)
+	defer c.CloseIdleConnections()
+	resp, err := c.Post("http://control"+route, "application/json", nil)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode, nil
 }
 
 // legacyClient asks a server of the build before within 1 s.

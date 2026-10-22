@@ -5,7 +5,7 @@ import path from "node:path";
 import { copyEngineAssets, createNodeEndpoint, type NodeEndpoint } from "../src/node.ts";
 import type { EngineOp, FromBoard } from "@aiwb/board-bridge/messages.ts";
 
-export const target = { os: process.platform as "darwin" | "linux", arch: process.arch as "arm64" | "x64" };
+export const target = { os: process.platform as "darwin" | "linux" | "win32", arch: process.arch as "arm64" | "x64" };
 
 /** A new temp folder (removed with `rmTemp`). */
 export function tempDir(prefix: string): string {

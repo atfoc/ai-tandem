@@ -107,11 +107,11 @@ If the first two come when you expect the headless writer to work, ask the serve
 
 - **No Node.** The server uses, in this order, the program of `-headless-node` (or the variable
   `AIWB_HEADLESS_NODE`), the desktop app's own Electron when the server runs from inside the Mac
-  app, and `node` on the `PATH` of the server, which must be version 22 or later. A server started from a
+  app (or, on Windows, when `AI Whiteboard.exe` is next to `ai-whiteboard.exe`), and `node` on the `PATH` of the server, which must be version 22 or later. A server started from a
   launcher may have a shorter `PATH` than your terminal: give the full path with `-headless-node`.
 - **No bundle, or one of another version.** The folder with `headless.mjs` and `manifest.json` is
   `-headless-dir`, else `Resources/headless/` of the Mac app, else `headless/` beside the server
-  program. A bundle whose `manifest.json` names another version than the server is not used: the
+  program, else, on Windows, `resources/headless/` beside it (the Windows app). A bundle whose `manifest.json` names another version than the server is not used: the
   reason names both versions. Put the bundle of the server's build there. A server built from source
   without a version (`dev`) takes any bundle.
 - **A start that failed.** The reason is the one the process gave. The usual ones are in its engine:

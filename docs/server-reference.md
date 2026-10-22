@@ -107,8 +107,8 @@ The flags of `serve`, `launch` and `relaunch` (`-json` is for the last two):
 | `-cursor-cost` | `cursor-cost`  | binary that reports the Cursor plan's usage (`~/bin` is tried too) |
 | `-pi`      | `pi`               | pi binary                                 |
 | `-pi-namer-model` | pi's default | pi model used to name new chats (empty = the CLI's current model) |
-| `-headless-node` | the desktop app's Electron, else `node` 22 or later on `PATH` (or `AIWB_HEADLESS_NODE`) | program that runs the headless writer, which edits boards while no window is open |
-| `-headless-dir` | `headless/` beside the server (`Resources/headless/` in the Mac app) | folder with the headless writer's `headless.mjs`, `manifest.json` and `engine/`; a bundle of another version than the server is not used (a development build takes any) |
+| `-headless-node` | the desktop app's Electron (the Mac app's, or on Windows the `AI Whiteboard.exe` next to `ai-whiteboard.exe`), else `node` 22 or later on `PATH` (or `AIWB_HEADLESS_NODE`) | program that runs the headless writer, which edits boards while no window is open |
+| `-headless-dir` | `headless/` beside the server (`Resources/headless/` in the Mac app; on Windows also `resources/headless/` beside `ai-whiteboard.exe`, as in the Windows app) | folder with the headless writer's `headless.mjs`, `manifest.json` and `engine/`; a bundle of another version than the server is not used (a development build takes any) |
 | `-headless-quiet` | `1m` | how long the headless writer keeps a board after an agent's last call on it, before it lets it go; above 0 |
 | `-json`    | off                | `launch` and `relaunch` only: one JSON line for the app |
 
@@ -134,14 +134,14 @@ board is open. These are the ways to say where it is:
 
 | What | Flag | Variable | Without it |
 | ---- | ---- | -------- | ---------- |
-| the program that runs it | `-headless-node` | `AIWB_HEADLESS_NODE` (the flag wins) | the desktop app's Electron when the server runs from `…/AI Whiteboard.app/Contents/MacOS/`, else `node` on `PATH`, which must be version 22 or later |
-| the folder with `headless.mjs` and `manifest.json` | `-headless-dir` | | `Resources/headless/` of the Mac app, else `headless/` beside the server program |
+| the program that runs it | `-headless-node` | `AIWB_HEADLESS_NODE` (the flag wins) | the desktop app's Electron when the server runs from `…/AI Whiteboard.app/Contents/MacOS/`, or, on Windows, when the server is `ai-whiteboard.exe` and `AI Whiteboard.exe` is next to it; else `node` on `PATH`, which must be version 22 or later |
+| the folder with `headless.mjs` and `manifest.json` | `-headless-dir` | | `Resources/headless/` of the Mac app, else `headless/` beside the server program, else, on Windows, `resources/headless/` beside it (the Windows app) |
 | the quiet time | `-headless-quiet` | | 1 minute |
 
 A flag names the program or the folder and nothing else is tried in its place: if it cannot be used
 the headless writer is unavailable and `status` says why. The folder's `manifest.json` must name the
 server's version (a development build takes any); the server and its headless writer are one build.
-What the machine needs is Node 22 or later, or the Mac app's Electron, and the bundle, which holds the
+What the machine needs is Node 22 or later, or the desktop app's Electron (the Mac app's or the Windows app's), and the bundle, which holds the
 board engine, its fonts and the native canvas for the bundle's operating system and processor
 (`engine/node_modules/skia-canvas/lib/skia.node`), so nothing else is installed. A bundle built for another
 system or processor does not start: the reason in `status` names the missing or unloadable file. Text in

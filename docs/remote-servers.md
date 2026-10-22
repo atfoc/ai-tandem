@@ -6,7 +6,7 @@ How the app uses servers as sections of the sidebar, this computer's first and a
 
 ```sh
 scripts/build-server.sh              # for this machine's system and processor
-scripts/build-server.sh linux/amd64  # or darwin/arm64, darwin/amd64, linux/arm64
+scripts/build-server.sh linux/amd64  # or darwin/arm64, darwin/amd64, linux/arm64, windows/amd64, windows/arm64
 ```
 
 It makes `bin/ai-whiteboard-server-<os>-<arch>/`: the server binary, `setup-remote.sh`,
@@ -18,6 +18,9 @@ of them, without cgo; the canvas of a target other than the machine's own is fet
 that build needs the registry (or npm's cache), and it fails if a target's canvas can't be had.
 The machine that runs the server needs Node 22 or later for `headless/`; without it the server works
 as before. There is no installer and no service file: copy the folder to the machine.
+A Windows folder holds `ai-whiteboard.exe`, but `setup-remote.sh` and `start-server.sh` are shell scripts that
+are not made to run on Windows, and the agents are not covered there; the Windows server has not been run on a
+Windows computer yet ([Windows](development.md#windows)).
 See [Use a server on another machine](#use-a-server-on-another-machine).
 
 ## Use a server on another machine
@@ -69,7 +72,7 @@ server that has not started yet is started by the app, which tries again by itse
 the addresses (every name and address the machine has, with the client port, 4748), the
 certificate's fingerprint and the secret, and how to restart the server. Run again, it
 changes nothing and prints the same. A set-up takes effect at the server's next start, except a
-new secret, which a running server takes at once. On macOS
+new secret, which a running server takes at once (on Windows, which has no such signal, at its next start). On macOS
 with the firewall on, incoming connections to the server can be blocked: allow `ai-whiteboard`
 when macOS asks, or add it in System Settings, Network, Firewall.
 

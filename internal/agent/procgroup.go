@@ -28,10 +28,7 @@ var groups = struct {
 // StartGroup starts cmd as the leader of a new process group and remembers the group for
 // EndAll. Call Exited once cmd.Wait has returned.
 func StartGroup(cmd *exec.Cmd) error {
-	if cmd.SysProcAttr == nil {
-		cmd.SysProcAttr = &syscall.SysProcAttr{}
-	}
-	cmd.SysProcAttr.Setpgid = true
+	setNewGroup(cmd)
 	groups.Lock()
 	defer groups.Unlock()
 	if groups.ending {
@@ -78,7 +75,7 @@ var forgetEvery = time.Second
 func forget(pgid int) bool {
 	groups.Lock()
 	defer groups.Unlock()
-	if errors.Is(syscall.Kill(-pgid, 0), syscall.ESRCH) {
+	if errors.Is(KillGroup(pgid, 0), syscall.ESRCH) {
 		dropLocked(pgid)
 	}
 	return !groups.pgids[pgid]
@@ -116,7 +113,7 @@ func SignalGroup(cmd *exec.Cmd, sig syscall.Signal) bool {
 // signalLocked sends sig to the remembered group pgid and reports whether it was there to take
 // it; a group found gone is forgotten. groups held.
 func signalLocked(pgid int, sig syscall.Signal) bool {
-	if err := syscall.Kill(-pgid, sig); err != nil {
+	if err := KillGroup(pgid, sig); err != nil {
 		if errors.Is(err, syscall.ESRCH) {
 			dropLocked(pgid)
 		}
@@ -143,12 +140,12 @@ func EndAll(grace time.Duration) {
 		return
 	}
 	for _, pgid := range pgids {
-		syscall.Kill(-pgid, syscall.SIGTERM)
+		KillGroup(pgid, syscall.SIGTERM)
 	}
 	for deadline := time.Now().Add(grace); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
 		left := false
 		for _, pgid := range pgids {
-			if !errors.Is(syscall.Kill(-pgid, 0), syscall.ESRCH) {
+			if !errors.Is(KillGroup(pgid, 0), syscall.ESRCH) {
 				left = true
 				break
 			}
@@ -158,6 +155,6 @@ func EndAll(grace time.Duration) {
 		}
 	}
 	for _, pgid := range pgids {
-		syscall.Kill(-pgid, syscall.SIGKILL)
+		KillGroup(pgid, syscall.SIGKILL)
 	}
 }

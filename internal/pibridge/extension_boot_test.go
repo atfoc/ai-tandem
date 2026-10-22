@@ -1,3 +1,5 @@
+//go:build !windows
+
 package pibridge
 
 // Real-pi boot tests for the MCP wiring: the standalone (--mcp-config, no

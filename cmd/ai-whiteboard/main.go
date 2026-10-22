@@ -35,6 +35,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -257,6 +258,10 @@ func serve(o options) {
 			model.Cursor: (&agent.UsageCache{Fetch: (&cursor.CostReader{Bin: o.cursorCostBin, Home: home}).Usage, TTL: time.Minute}).Get,
 		},
 		MCPPort: mcpBoundPort, MCPURL: boardapi.Endpoint(mcpBoundPort), MCPUp: mcpUp.Load}
+	// POST /stop of the control socket asks for the same shutdown as SIGINT and SIGTERM.
+	stopAsked := make(chan struct{})
+	var stopOnce sync.Once
+	srv.Stop = func() { stopOnce.Do(func() { close(stopAsked) }) }
 	// The headless writer, for the board calls no window answers: nothing is looked up or started
 	// until the first of them. It connects as a client, so it needs the instance id and the secret
 	// that attach gives the server, and the relay has it before the MCP listener serves a call.
@@ -287,7 +292,7 @@ func serve(o options) {
 			log.Printf("control socket: %v", err)
 		}
 	}()
-	go onSignal(func() {
+	go onSignal(stopAsked, func() {
 		br.StopAndFlush(2 * time.Second) // the clients write pending board changes, the headless writer's too
 		hm.Close()                       // then it ends
 		cm.Shutdown()                    // history written; agents end
@@ -321,7 +326,7 @@ func bindControl(root string) (net.Listener, string, error) {
 		return nil, path, err
 	}
 	ln, err := net.Listen("unix", path)
-	if errors.Is(err, syscall.EADDRINUSE) {
+	if addrInUse(err) {
 		if c, derr := net.DialTimeout("unix", path, time.Second); derr == nil {
 			c.Close()
 			return nil, path, errControlAnswers
@@ -388,11 +393,14 @@ func expand(path, home string) string {
 	return path
 }
 
-// onSignal runs f once the first of sigs arrives.
-func onSignal(f func(), sigs ...os.Signal) {
+// onSignal runs f once the first of sigs arrives, or asked is closed.
+func onSignal(asked <-chan struct{}, f func(), sigs ...os.Signal) {
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, sigs...)
-	<-ch
+	select {
+	case <-ch:
+	case <-asked:
+	}
 	f()
 }
 

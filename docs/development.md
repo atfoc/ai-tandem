@@ -1,10 +1,11 @@
 # Build and develop
 
-What you need to build and run AI Whiteboard from source, how to run the desktop app in development, how to build the macOS app, how to put the app on a phone or tablet, how to run the app's web build in a headless browser, how to try voice against a stand-in of ElevenLabs, and how to run the tests, the browser checks and the device tests.
+What you need to build and run AI Whiteboard from source, how to run the desktop app in development, how to build and install the desktop app for macOS and for Windows, how to put the app on a phone or tablet, how to run the app's web build in a headless browser, how to try voice against a stand-in of ElevenLabs, and how to run the tests, the browser checks and the device tests.
 
 ## Prerequisites
 
-- macOS (the desktop app build is macOS only; the server alone also builds for Linux, see
+- macOS to build the macOS desktop app, macOS or Linux to build the Windows one (Linux is not a target of
+  the app; the server alone also builds for Linux, see
   [Build the server for another machine](remote-servers.md#build-the-server-for-another-machine))
 - Go 1.25+
 - Node.js 22.19+ and npm
@@ -39,19 +40,126 @@ server (set the server up there too, with `-home`), `AIWB_SERVER_BIN` another se
 server list and window state). The MCP port 6006 is fixed, so a second server on the same machine
 does not start while another runs.
 
-## Build and install the macOS app
+## Build and install the desktop app
 
 ```sh
-scripts/build-app.sh    # makes bin/AI Whiteboard.app
-scripts/install-app.sh  # copies it to ~/Applications, so Spotlight finds it
+scripts/build-app.sh [--os macos|windows] [--arch arm64|x64]
+scripts/install-app.sh  # installs the build made for this computer's system and processor
 ```
 
-The web build is built into the bundle (`Contents/Resources/web`), and so is the headless writer
-(`Contents/Resources/headless`: its program, its manifest and the board engine with its fonts and the
-native canvas, [The board engine in Node](architecture.md#the-board-engine-in-node)), so the macOS app is
-one build of the app, its web build, the server program and the headless writer, all of one version. The
-script builds the writer for this Mac's processor and fails, saying so, if that build fails. For a server on
-another machine see [Build the server for another machine](remote-servers.md#build-the-server-for-another-machine).
+The target is an operating system and a processor. `--os` takes `macos` (also `mac`, `darwin`) or `windows` (also
+`win`, `win32`); `--arch` takes `arm64` or `x64` (also `amd64`). Each build lands in its own place under `bin/`, and a
+build replaces only its own, so builds for several targets can exist together:
+
+| Target | Built on | Lands in |
+|---|---|---|
+| macOS, this Mac's processor | a Mac | `bin/AI Whiteboard.app` |
+| macOS, the other processor | a Mac | `bin/macos-<arch>/AI Whiteboard.app` |
+| Windows, arm64 or x64 | Linux, or a Mac | `bin/windows-<arch>/AI Whiteboard/` |
+
+- **On a Mac with no argument** the script makes what it always made: the macOS app for the Mac's own
+  processor, in `bin/AI Whiteboard.app`. `--arch` alone means macOS for that processor; `--os windows` alone means
+  Windows for the Mac's processor.
+- **On Linux with no `--os`** it builds nothing, lists the targets Linux can build (Windows, arm64 and x64) and
+  the arguments that name them, and exits with 2. `--arch` alone is refused the same way.
+- **What cannot be built** is refused first, before any work, with one sentence that names the target and the
+  reason, and exit 2; nothing in `bin/` is touched. That is an unknown system or processor, Linux as a target, the macOS
+  app on Linux (it is built only on a Mac), and any host that is neither macOS nor Linux.
+- **The processor of the computer never decides** what can be built: an arm64 and an x64 Mac each build both
+  macOS processors, and a Linux computer of either processor builds both Windows ones. The server of every
+  target is built with `CGO_ENABLED=0`, so two computers make the same server for the same target.
+- **The version** is stamped into the server, the web build, the bundle's `CFBundleVersion` and the headless writer's
+  `manifest.json`. `build-app.sh` and `build-server.sh` take it from the environment variable `AIWB_VERSION` when it
+  is set and not empty (`AIWB_VERSION=v2 scripts/build-app.sh`), else from `git describe --tags --always --dirty`,
+  else it is `dev`. A copy of the repository with no `.git`, such as the one in the Linux container, cannot be
+  described, so `scripts/linux-build/run.sh` passes the host's version as `AIWB_VERSION`
+  ([Linux build environment](../scripts/linux-build/README.md)). The build's checks fail when the server does not
+  hold the version (except for `dev`).
+
+The web build, the headless writer and the setup for a remote server go into the app. The headless writer
+(its program, its manifest and the board engine with its fonts and the native canvas,
+[The board engine in Node](architecture.md#the-board-engine-in-node)) is built for the target's system and
+processor, and the script fails, saying so, if that build fails. So an app is one build of the window, its web
+build, the server program and the headless writer, all of one version and one target. For a server on another
+machine see [Build the server for another machine](remote-servers.md#build-the-server-for-another-machine).
+
+The macOS app is the bundle `AI Whiteboard.app`; the Windows app is the unpacked folder `AI Whiteboard`, not an
+installer and not a single file. Both hold the same parts:
+
+| Part | macOS bundle | Windows folder |
+|---|---|---|
+| The window (Electron) | `Contents/MacOS/AI Whiteboard` | `AI Whiteboard.exe` |
+| The server | `Contents/MacOS/ai-whiteboard` | `ai-whiteboard.exe`, beside the window's |
+| The window's code | `Contents/Resources/app.asar` | `resources/app.asar` |
+| The app's web build | `Contents/Resources/web/` | `resources/web/` |
+| The setup for a remote server | `Contents/Resources/remote/setup-remote.sh` | `resources/remote/setup-remote.sh` |
+| The headless writer | `Contents/Resources/headless/` | `resources/headless/` |
+| The icon | `Contents/Resources/AppIcon.icns` | `resources/AppIcon.ico` |
+
+After electron-builder, the script checks the build for its target with `scripts/check-build.mjs`, which reads
+files and headers in Node and uses no macOS tool, so a Windows folder is checked as well on Linux as on a Mac. It
+checks that the window, the server and the native canvas are executables of the target's system and processor
+(and the app holds no server of the other system); that `headless.mjs`, `manifest.json` and `engine/engine.mjs` arrived
+byte for byte; that the manifest's version is the build's, its system and processor the target's, and the web
+build carries the version; and that Electron's RunAsNode fuse is on (the server needs it to run the headless
+writer). A macOS build also has the signature checks of `codesign`. The macOS app is signed ad hoc, enough to run on
+the Mac that built it; the Windows app is not signed, so Windows may warn before it starts it.
+
+**The Windows build fetches Electron's Windows zip** at build time, so it needs the network (also with the zip in
+electron-builder's cache), and a build on a Mac or on Linux runs no Windows program and needs no Wine. To build it
+without installing Node and Go on the computer, the container of `scripts/linux-build` makes the Windows app on a
+Mac or on a Linux computer that has Docker (its README has the images and the caches):
+
+```sh
+AIWB_LINUX_DESKTOP=1 scripts/linux-build/run.sh arm64 'scripts/build-app.sh --os windows --arch x64'   # arm64 or amd64: the container's processor
+```
+
+`AIWB_LINUX_DESKTOP=1` also installs the packager in the container. The result is copied to
+`bin/linux-<arch>/bin/windows-<arch>/` of the repository, unless `AIWB_LINUX_OUT` names another folder.
+
+### Install
+
+`scripts/install-app.sh` finds out which system it runs on and installs the build made for that system and
+processor; the person does not say which.
+
+- **macOS:** copies the app of the Mac's processor (`bin/AI Whiteboard.app` if it is of that processor, else
+  `bin/macos-<arch>/AI Whiteboard.app`) to `~/Applications`, so Spotlight finds it.
+- **Windows:** `scripts/install-app.ps1`, or `scripts/install-app.sh` from Git Bash, copies
+  `bin\windows-<arch>\AI Whiteboard` to `%LOCALAPPDATA%\Programs\AI Whiteboard` and makes the Start Menu shortcut
+  `AI Whiteboard`. It needs no administrator and replaces an older install. It never stops a running server, as on
+  macOS: that would end running agent chats. The window starts the server (`ai-whiteboard.exe` in the install folder)
+  detached, and it keeps running after the window closes, so its files keep the old install from being moved. Then
+  the install changes nothing and says what to do: quit the window, stop the server it started with
+  `"%LOCALAPPDATA%\Programs\AI Whiteboard\ai-whiteboard.exe" stop` (this ends running agent chats) and run the
+  install again; it says this in particular when `%USERPROFILE%\.ai-whiteboard\server.json` exists. A leftover
+  `AI Whiteboard.old` or `AI Whiteboard.new` of an earlier run is removed first; if it cannot be, the install stops
+  with a message. If putting the new build in place fails, it says whether the previous install is back.
+  The folder of the build must be on the Windows computer, as `bin\windows-<arch>` of a copy of the
+  repository (only `scripts\install-app.ps1` and that folder are needed); or copy the folder to the Windows computer
+  and run `AI Whiteboard.exe` from it, with no install.
+- **Linux:** there is no app to install. The script says so and installs nothing.
+- **No build for this computer:** the script names the build that is missing and the command that makes it, and
+  installs nothing; a previous install stays.
+
+A server that an older build started keeps running that build, since opening the app never restarts it (that would
+end running agent chats). When one runs, the install says so and gives the command that restarts it
+(`ai-whiteboard relaunch` of the installed app); the app also offers **Restart server** in the section "This computer".
+
+### Windows
+
+The Windows app and server compile, are checked in the build as above, and are built on Linux, but **nobody
+has run them on a Windows computer yet**: that they start, that the window starts this computer's server from the
+folder and shows it running, that the headless writer starts, and that the install works is to be confirmed on one.
+What the server does there, as far as the code says:
+
+- The agents (Claude, Cursor, pi) are not covered. The goal for Windows is that the app and the server start and run.
+- `setup-remote.sh` and `start-server.sh` are shell scripts; they are not made to run on Windows.
+- Stopping or relaunching the server asks it to stop over its control socket, which is its normal shutdown (boards
+  flushed, agents ended), and ends it with `TerminateProcess` only if it does not stop.
+- The install does not stop a running server; reinstalling needs the window quit and the server stopped (see
+  [Install](#install)).
+- A new remote secret is taken up by a running server on macOS and Linux at once, with a signal. Windows has none:
+  restart the server.
 
 ## Install the app on a phone or tablet
 

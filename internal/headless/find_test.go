@@ -1,8 +1,9 @@
+//go:build !windows
+
 package headless
 
 import (
 	"context"
-	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,53 +12,6 @@ import (
 
 	"ai-whiteboard/internal/testset"
 )
-
-// fakeMachine builds lookups over a folder: the server binary is root/exe, PATH holds only what is in
-// onPath (name → path), and `--version` of a path answers versions[path].
-type fakeMachine struct {
-	exe      string
-	onPath   map[string]string
-	versions map[string]string
-	env      map[string]string
-	versRuns int
-}
-
-func (f *fakeMachine) lookups() lookups {
-	l := systemLookups()
-	l.Executable = func() (string, error) { return f.exe, nil }
-	l.LookPath = func(name string) (string, error) {
-		if p, ok := f.onPath[name]; ok {
-			return p, nil
-		}
-		if filepath.IsAbs(name) {
-			if _, err := os.Stat(name); err == nil {
-				return name, nil
-			}
-		}
-		return "", &exec.Error{Name: name, Err: exec.ErrNotFound}
-	}
-	l.Getenv = func(k string) string { return f.env[k] }
-	l.NodeVer = func(p string) (string, error) {
-		f.versRuns++
-		v, ok := f.versions[p]
-		if !ok {
-			return "", errors.New("cannot run")
-		}
-		return v, nil
-	}
-	return l
-}
-
-func touch(t *testing.T, path string) string {
-	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte("x"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	return path
-}
 
 func TestFindRuntimeOrder(t *testing.T) {
 	t.Parallel()

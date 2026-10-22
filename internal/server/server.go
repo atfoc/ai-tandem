@@ -37,6 +37,9 @@ type Server struct {
 	MCPPort int
 	MCPURL  string
 	MCPUp   func() bool
+	// Stop asks the program to shut down as it does on SIGTERM (nil = it cannot): the control
+	// socket's POST /stop calls it, once per request, after it has answered. It must return at once.
+	Stop func()
 	// InstanceID is this installation's id, given in hello ("" = left out). Clients is the client
 	// listener (see clients.go); nil only in tests of the routes, which then serve nothing.
 	InstanceID string

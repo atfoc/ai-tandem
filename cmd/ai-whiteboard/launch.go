@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"ai-whiteboard/internal/agent"
 	"ai-whiteboard/internal/remote"
 	"ai-whiteboard/internal/store"
 )
@@ -152,11 +153,11 @@ func lockLaunch(p store.Paths) (unlock func(), err error) {
 		return nil, err
 	}
 	for deadline := time.Now().Add(time.Minute); ; time.Sleep(50 * time.Millisecond) {
-		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		err := tryLock(f)
 		if err == nil {
 			return func() { f.Close() }, nil
 		}
-		if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EINTR) || time.Now().After(deadline) {
+		if !lockBusy(err) || time.Now().After(deadline) {
 			f.Close()
 			return nil, fmt.Errorf("another start of the server did not finish within a minute (%v)", err)
 		}
@@ -184,7 +185,7 @@ func startDetached(p store.Paths, exe, command string, args []string, what strin
 	cmd := exec.Command(exe, append([]string{command}, args...)...)
 	cmd.Dir = home
 	cmd.Stdout, cmd.Stderr = logf, logf
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.SysProcAttr = detachedAttr()
 	if err := cmd.Start(); err != nil {
 		return nil, logPath, from, err
 	}
@@ -211,36 +212,45 @@ func relaunch(o options, out, errOut io.Writer) int {
 	return launchLocked(o, out, errOut)
 }
 
-// stopServer sends SIGTERM to the running server (the pid its hello reports) and waits up to 10 s
-// for it to stop answering. It takes its normal SIGTERM path: flush the boards, end the agents,
-// remove server.json, exit. title is "" when the server is gone, else the title and detail of the
+// stopServer asks the running server (the pid its hello reports) to stop (requestStop: SIGTERM, on
+// Windows POST /stop) and waits up to 10 s for it to stop answering. It takes its normal shutdown
+// path: flush the boards, end the agents, remove server.json, exit. title is "" when the server is gone, else the title and detail of the
 // failure.
 func stopServer(p store.Paths, run runningServer) (title, detail string) {
 	pid := run.hello.Pid
 	if pid <= 0 {
 		return "cannot stop the running server", fmt.Sprintf("it reports pid %d", pid)
 	}
-	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
+	if err := requestStop(p, run); err != nil && !errors.Is(err, syscall.ESRCH) {
 		return fmt.Sprintf("cannot stop the running server (pid %d)", pid), err.Error()
 	}
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(100 * time.Millisecond) {
-		if again, ok := findRunning(p); !ok || again.hello.Pid != pid {
-			break
-		}
-		if time.Now().After(deadline) {
-			return "the running server did not stop within 10 seconds", fmt.Sprintf("pid %d", pid)
-		}
+	if !waitStopped(p, pid, 10*time.Second) {
+		return "the running server did not stop within 10 seconds", fmt.Sprintf("pid %d", pid)
 	}
 	// The server stops answering just before it exits, and the new server binds the ports it held.
 	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
-		if errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) {
+		if !agent.ProcessAlive(pid) {
 			break
 		}
 	}
 	return "", ""
 }
 
-// stopCommand is `stop`: SIGTERM to the running server and a wait for it to finish shutting down.
+// waitStopped waits up to within for the server with pid to stop answering for the data folder p
+// (or for another server to have taken its place), and reports whether it did.
+func waitStopped(p store.Paths, pid int, within time.Duration) bool {
+	for deadline := time.Now().Add(within); ; time.Sleep(100 * time.Millisecond) {
+		if again, ok := findRunning(p); !ok || again.hello.Pid != pid {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+	}
+}
+
+// stopCommand is `stop`: a request to the running server to stop (requestStop) and a wait for it
+// to finish shutting down.
 func stopCommand(args []string, stdout, stderr io.Writer) int {
 	f := newOwnFlags("stop", stderr)
 	if code, ok := f.parse(args, stderr); !ok {

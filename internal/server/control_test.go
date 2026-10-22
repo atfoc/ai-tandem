@@ -198,3 +198,23 @@ func TestControlMCPStatus(t *testing.T) {
 		t.Fatalf("known contact %+v", *known)
 	}
 }
+
+// POST /stop answers 202 and calls Stop once; without a Stop it answers 501 and stops nothing; GET
+// /stop is no route.
+func TestControlStop(t *testing.T) {
+	t.Parallel()
+	stops := 0
+	e := newEnv(t, func(s *Server) { s.Stop = func() { stops++ } })
+	if w := e.controlDo("POST", "/stop"); w.Code != http.StatusAccepted {
+		t.Fatalf("POST /stop: %d %s", w.Code, w.Body)
+	}
+	if stops != 1 {
+		t.Fatalf("Stop was called %d times by one POST /stop", stops)
+	}
+	if w := e.controlDo("GET", "/stop"); w.Code != 404 && w.Code != 405 || stops != 1 {
+		t.Fatalf("GET /stop: %d %s (Stop called %d times)", w.Code, w.Body, stops)
+	}
+	if w := newRawEnv(t).controlDo("POST", "/stop"); w.Code != http.StatusNotImplemented {
+		t.Fatalf("POST /stop of a server with no Stop: %d %s", w.Code, w.Body)
+	}
+}

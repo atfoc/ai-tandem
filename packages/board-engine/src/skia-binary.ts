@@ -6,8 +6,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+// (one header check for the build checks too; plain ESM at the repository root, so that scripts run it without type stripping)
+import { targetProblem } from "../../../scripts/lib/binary-target.mjs";
 
-export type Target = { os: "darwin" | "linux"; arch: "arm64" | "x64" };
+export type Target = { os: "darwin" | "linux" | "win32"; arch: "arm64" | "x64" };
 
 /** The version of the binary packages: skia-canvas's own, which `package.json` pins. */
 export const SKIA_VERSION = "4.0.0";
@@ -18,45 +20,33 @@ const PUBLISHED_SIZE: Record<string, number> = {
   "@skia-canvas/darwin-x64": 29_968_712,
   "@skia-canvas/linux-arm64-glibc": 37_079_472,
   "@skia-canvas/linux-x64-glibc": 37_769_600,
+  "@skia-canvas/win32-arm64": 27_146_752,
+  "@skia-canvas/win32-x64": 30_086_656,
 };
 
 /** The npm package of skia-canvas's binary for a target (the glibc build for Linux: the musl one is not a server target). */
 export function skiaPackage(target: Target): string {
   if (target.os === "darwin") return `@skia-canvas/darwin-${target.arch}`;
+  if (target.os === "win32") return `@skia-canvas/win32-${target.arch}`;
   return `@skia-canvas/linux-${target.arch}-glibc`;
 }
 
-/** Why `file` is not a native library of the target, in words, or null when its header (ELF for Linux, 64-bit Mach-O for macOS, with
- *  the machine type of the architecture) and its size (within 10% of the published one) are right. */
+/** Why `file` is not a native library of the target, in words, or null when its header (ELF for Linux, 64-bit Mach-O for macOS, a PE
+ *  DLL for Windows, with the machine type of the architecture; `scripts/lib/binary-target.mjs`) and its size (within 10% of the
+ *  published one) are right. */
 export function binaryProblem(file: string, target: Target): string | null {
   const pkg = skiaPackage(target);
-  const what = `${file} is not a ${target.os}/${target.arch} binary`;
-  const head = Buffer.alloc(24);
+  const problem = targetProblem(file, { os: target.os, arch: target.arch, dll: target.os === "win32" ? true : undefined });
+  if (problem) return problem;
   let size: number;
   try {
-    const fd = fs.openSync(file, "r");
-    try {
-      size = fs.fstatSync(fd).size;
-      fs.readSync(fd, head, 0, head.length, 0);
-    } finally { fs.closeSync(fd); }
+    size = fs.statSync(file).size;
   } catch (e) {
     return `${file} cannot be read (${(e as Error).message})`;
   }
-  if (target.os === "linux") {
-    // ELF, 64-bit, little-endian; e_machine at offset 18: 0x3e x86-64, 0xb7 AArch64
-    const machine = target.arch === "x64" ? 0x3e : 0xb7;
-    if (head.readUInt32BE(0) !== 0x7f454c46) return `${what} (no ELF header)`;
-    if (head[4] !== 2 || head[5] !== 1) return `${what} (not a 64-bit little-endian ELF)`;
-    if (head.readUInt16LE(18) !== machine) return `${what} (ELF machine type 0x${head.readUInt16LE(18).toString(16)})`;
-  } else {
-    // 64-bit Mach-O, little-endian; cputype at offset 4: CPU_TYPE_X86_64 0x01000007, CPU_TYPE_ARM64 0x0100000c
-    const cpu = target.arch === "x64" ? 0x01000007 : 0x0100000c;
-    if (head.readUInt32LE(0) !== 0xfeedfacf) return `${what} (no 64-bit Mach-O header)`;
-    if (head.readUInt32LE(4) !== cpu) return `${what} (Mach-O cpu type 0x${head.readUInt32LE(4).toString(16)})`;
-  }
   const published = PUBLISHED_SIZE[pkg];
   if (published === undefined) return `no published size is known for ${pkg}`;
-  if (Math.abs(size - published) > published / 10) return `${what} (${size} bytes; ${pkg}@${SKIA_VERSION} publishes ${published})`;
+  if (Math.abs(size - published) > published / 10) return `${file} is not a ${target.os}/${target.arch} binary (${size} bytes; ${pkg}@${SKIA_VERSION} publishes ${published})`;
   return null;
 }
 

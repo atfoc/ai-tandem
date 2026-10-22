@@ -1,3 +1,5 @@
+//go:build !windows
+
 package pibridge
 
 // The order of an attached image and the text in the request the real pi makes for a `prompt`

@@ -1,3 +1,5 @@
+//go:build !windows
+
 package headless
 
 import (
@@ -110,20 +112,6 @@ func (r *rig) config() config {
 		r.t.Fatalf("the configuration line is not JSON: %v: %s", err, b)
 	}
 	return c
-}
-
-func writeBundle(t *testing.T, dir, version, program string) {
-	t.Helper()
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, BundleFile), []byte(program), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	mf, _ := json.Marshal(Manifest{Version: version, OS: "darwin", Arch: "arm64"})
-	if err := os.WriteFile(filepath.Join(dir, ManifestFile), mf, 0o644); err != nil {
-		t.Fatal(err)
-	}
 }
 
 // fakeBridge is the Bridge: a client is "known" once the stand-in has written its connected file.

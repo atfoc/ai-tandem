@@ -5,12 +5,22 @@ const path = require('node:path');
 const fsPromises = require('node:fs/promises');
 
 // serverBin is the Go program the app runs for this computer's server: AIWB_SERVER_BIN when set; in a
-// packaged app the ai-whiteboard next to the Electron executable (X.app/Contents/MacOS); with
-// `npm start`, the one that `go build -o bin/ai-whiteboard` makes in the repository.
-function serverBin({ env, execPath, isPackaged, dirname }) {
+// packaged app the ai-whiteboard next to the Electron executable (X.app/Contents/MacOS; on Windows
+// ai-whiteboard.exe next to AI Whiteboard.exe); with `npm start`, the one that
+// `go build -o bin/ai-whiteboard` (bin/ai-whiteboard.exe on Windows) makes in the repository.
+// platform is process.platform; tests give another.
+function serverBin({ env, execPath, isPackaged, dirname, platform = process.platform }) {
   if (env.AIWB_SERVER_BIN) return env.AIWB_SERVER_BIN;
-  if (isPackaged) return path.join(path.dirname(execPath), 'ai-whiteboard');
-  return path.resolve(dirname, '../bin/ai-whiteboard');
+  const name = platform === 'win32' ? 'ai-whiteboard.exe' : 'ai-whiteboard';
+  if (isPackaged) return path.join(path.dirname(execPath), name);
+  return path.resolve(dirname, '../bin', name);
+}
+
+// quitsWithLastWindow says whether closing the last window quits the app. On macOS it does not (the
+// app stays in the Dock until Cmd+Q); on Windows and Linux it does, since nothing else would show
+// that the app is running or let the person quit it.
+function quitsWithLastWindow(platform = process.platform) {
+  return platform !== 'darwin';
 }
 
 // pagePath is the page's file: AIWB_PAGE when set (tests: another build's index.html);
@@ -399,6 +409,7 @@ async function pickImages({
 
 module.exports = {
   serverBin,
+  quitsWithLastWindow,
   pagePath,
   serverLogPath,
   withoutHash,

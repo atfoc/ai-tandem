@@ -1,6 +1,7 @@
-# Packages AI Whiteboard.app (run by scripts/build-app.sh, which builds the web build and the Go
-# binary first). The app is Electron; the Go server binary sits next to it in Contents/MacOS, and
-# the web build it shows (app/dist-web) is in Contents/Resources/web.
+# Packages AI Whiteboard.app, or for Windows the unpacked folder with AI Whiteboard.exe (run by
+# scripts/build-app.sh, which builds the web build and the Go binary first). The app is Electron;
+# the Go server binary sits next to it (Contents/MacOS/ai-whiteboard; ai-whiteboard.exe beside
+# AI Whiteboard.exe), and the web build it shows (app/dist-web) is in Resources/web.
 appId: local.ai-whiteboard
 productName: AI Whiteboard
 directories:
@@ -17,18 +18,14 @@ files:
   - voice.js
   - package.json
 asar: true
-# Outside app.asar: a binary can't be run from inside an asar.
-extraFiles:
-  - from: build/ai-whiteboard
-    to: MacOS/ai-whiteboard
+# Outside app.asar: a binary can't be run from inside an asar. The server binary is the one file that differs
+# per platform (extraFiles of mac and win below); the rest, extraResources, is common except the icon.
 extraResources:
   - from: ../app/dist-web
     to: web
   # Sets the app's own server up as a remote server; run through sh (scripts/remote).
   - from: ../scripts/remote/setup-remote.sh
     to: remote/setup-remote.sh
-  - from: ../assets/icon/AppIcon.icns
-    to: AppIcon.icns
   # The headless writer (scripts/build-app.sh builds it into build/headless): headless.mjs, manifest.json and engine/ with the
   # native canvas (engine/node_modules/skia-canvas/lib/skia.node). A resource, not part of app.asar: a native module can't be
   # loaded from an asar archive, and the server runs headless.mjs from this folder (asarUnpack would not give it a plain folder).
@@ -38,8 +35,27 @@ extraResources:
 mac:
   target: dir
   icon: ../assets/icon/AppIcon.icns
+  extraFiles:
+    - from: build/ai-whiteboard
+      to: MacOS/ai-whiteboard
+  extraResources:
+    - from: ../assets/icon/AppIcon.icns
+      to: AppIcon.icns
   identity: "-" # ad-hoc: enough to run on this Mac
   hardenedRuntime: false
   # The microphone's prompt (voice): macOS shows this sentence, and without it the app cannot ask for the microphone.
   extendInfo:
     NSMicrophoneUsageDescription: AI Whiteboard uses the microphone only when you dictate or talk to a chat. Your voice goes to ElevenLabs with your own key.
+# Windows: the unpacked folder (dist/win-unpacked for x64, dist/win-arm64-unpacked for arm64), not signed.
+# The exe's icon and version info are set by electron-builder itself (resedit, in pure JS; no Wine, so this
+# builds on Linux and macOS); signExecutable: false keeps that edit and turns signing (signtool) off.
+win:
+  target: dir
+  signExecutable: false
+  icon: ../assets/icon/AppIcon.ico
+  extraFiles:
+    - from: build/ai-whiteboard.exe
+      to: ai-whiteboard.exe
+  extraResources:
+    - from: ../assets/icon/AppIcon.ico
+      to: AppIcon.ico

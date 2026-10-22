@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
 	"os"
 	"strconv"
@@ -11,7 +12,9 @@ import (
 // ControlHandler is the handler of the control socket: a Unix socket in the data folder that
 // only the user of this machine can open. It answers the server program's own commands (status,
 // stop, launch, ...) and nothing else: it is no listener on the network and no part of the client
-// API, and it asks no secret. It serves GET /hello and GET /status; every other route is 404.
+// API, and it asks no secret. It serves GET /hello and GET /status, and POST /stop, which answers
+// 202 and then has the program shut down as it does on SIGTERM (Server.Stop; 501 when there is
+// none): the way to stop a server where a signal cannot be sent, on Windows. Every other route is 404.
 // dataDir is the data folder, which hello names so that a command can tell the server of its own
 // folder from another.
 func (s *Server) ControlHandler(dataDir string) http.Handler {
@@ -23,7 +26,24 @@ func (s *Server) ControlHandler(dataDir string) http.Handler {
 		writeJSON(w, out)
 	})
 	mux.HandleFunc("GET /status", s.controlStatus)
+	mux.HandleFunc("POST /stop", s.controlStop)
 	return mux
+}
+
+// controlStop is POST /stop: it answers 202 and, once the answer is on its way, calls Stop. The
+// shutdown closes the control socket, so the answer has to be written and flushed first.
+func (s *Server) controlStop(w http.ResponseWriter, r *http.Request) {
+	if s.Stop == nil {
+		writeError(w, http.StatusNotImplemented, "this server cannot be stopped from here")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	json.NewEncoder(w).Encode(map[string]any{"stopping": true})
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+	s.Stop()
 }
 
 // controlStatus is GET /status: the client listener's state and the MCP listener's identity with

@@ -1,7 +1,7 @@
 // Builds the headless writer: `dist/headless.mjs` (one file, ESM, Node 22), `dist/engine/` (the board engine's files for the
 // target) and `dist/manifest.json` {version, os, arch}, which the server's manager checks against its own version.
 //
-//   node build.mjs [--os darwin|linux] [--arch arm64|x64] [--version <v>] [--out <dir>]
+//   node build.mjs [--os darwin|linux|win32] [--arch arm64|x64] [--version <v>] [--out <dir>]
 //
 // The board engine (another package: `@aiwb/board-engine/node`) tells which modules stay outside the bundle (its native canvas)
 // and copies its files. The build fails, with a message, when that module does not resolve: there is no build without the engine.
@@ -21,7 +21,7 @@ const os = flags.get("os") ?? process.platform;
 const arch = flags.get("arch") ?? process.arch;
 const version = flags.get("version") ?? process.env.AIWB_VERSION ?? "dev";
 const out = path.resolve(flags.get("out") ?? path.join(here, "dist"));
-if (!["darwin", "linux"].includes(os) || !["arm64", "x64"].includes(arch)) throw new Error(`not a target: ${os}/${arch}`);
+if (!["darwin", "linux", "win32"].includes(os) || !["arm64", "x64"].includes(arch)) throw new Error(`not a target: ${os}/${arch}`);
 
 /** The board engine's build-time module; the build ends with a message when it does not resolve. */
 async function engineModule() {

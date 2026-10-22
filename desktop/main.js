@@ -15,6 +15,7 @@ const { createIpcFace } = require('./ipcface');
 const { makePermissionHandler } = require('./voice');
 const {
   serverBin,
+  quitsWithLastWindow,
   pagePath,
   attachLinkHandlers,
   attachCloseFlush,
@@ -151,9 +152,11 @@ if (!app.requestSingleInstanceLock()) {
   app.on('second-instance', showWindow);
   app.whenReady().then(start);
 
-  // macOS convention: closing the last window keeps the app running; Cmd+Q quits it. The server
-  // keeps running either way.
-  app.on('window-all-closed', () => {});
+  // macOS convention: closing the last window keeps the app running; Cmd+Q quits it. On Windows
+  // (and Linux) closing the last window quits the app. The server keeps running either way.
+  app.on('window-all-closed', () => {
+    if (quitsWithLastWindow()) app.quit();
+  });
 
   // will-quit comes only when the quit goes through (the unsaved-changes dialog can still cancel it
   // before). The connections end; no server is stopped.

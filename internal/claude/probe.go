@@ -126,7 +126,12 @@ func (s *Spawner) Catalog(timeout time.Duration) (*model.Catalog, error) {
 // still alive when the process was waited for).
 func reap(cmd *exec.Cmd, stdout io.Closer, waited <-chan struct{}) {
 	defer forgetGroup(cmd)
-	killGroup(cmd)
+	select {
+	case <-waited: // the leader was waited for: on Windows its pid may be another program's
+		agent.KillGroupAfterExit(cmd.Process.Pid, syscall.SIGKILL)
+	default:
+		killGroup(cmd)
+	}
 	select {
 	case <-waited:
 		return
@@ -143,7 +148,7 @@ func reap(cmd *exec.Cmd, stdout io.Closer, waited <-chan struct{}) {
 // processes are gone when the group no longer answers a signal), waiting at most a moment for it.
 func forgetGroup(cmd *exec.Cmd) {
 	for deadline := time.Now().Add(200 * time.Millisecond); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
-		if errors.Is(syscall.Kill(-cmd.Process.Pid, 0), syscall.ESRCH) {
+		if errors.Is(agent.KillGroup(cmd.Process.Pid, 0), syscall.ESRCH) {
 			break
 		}
 	}
@@ -152,7 +157,7 @@ func forgetGroup(cmd *exec.Cmd) {
 
 // killGroup kills the process group cmd leads (started by agent.StartGroup), else just cmd.
 func killGroup(cmd *exec.Cmd) {
-	if syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) != nil {
+	if agent.KillGroup(cmd.Process.Pid, syscall.SIGKILL) != nil {
 		cmd.Process.Kill()
 	}
 }
@@ -172,7 +177,7 @@ func signedIn(ctx context.Context, bin string, timeout time.Duration) error {
 	done := make(chan error, 1)
 	go func() {
 		err := cmd.Wait()
-		syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) // nothing of the check is left behind
+		agent.KillGroupAfterExit(cmd.Process.Pid, syscall.SIGKILL) // nothing of the check is left behind
 		forgetGroup(cmd)
 		done <- err
 	}()

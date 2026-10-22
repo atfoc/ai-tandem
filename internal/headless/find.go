@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -26,6 +27,10 @@ const (
 	MinNodeMajor = 22
 	// ElectronProgram is the desktop app's executable, next to the server binary in the Mac app.
 	ElectronProgram = "AI Whiteboard"
+	// ElectronProgramWindows is the desktop app's executable, next to the server's ai-whiteboard.exe in the Windows app.
+	ElectronProgramWindows = "AI Whiteboard.exe"
+	// ServerProgramWindows is the server binary's name in the Windows app.
+	ServerProgramWindows = "ai-whiteboard.exe"
 	// NodeEnv names the runtime like -headless-node does.
 	NodeEnv = "AIWB_HEADLESS_NODE"
 )
@@ -45,6 +50,7 @@ type Bundle struct {
 
 // lookups are the things find asks of the machine, each replaceable by a test.
 type lookups struct {
+	GOOS       string                                 // runtime.GOOS: the layout of the desktop app depends on it
 	Executable func() (string, error)                 // the server binary's path
 	LookPath   func(name string) (string, error)      // exec.LookPath
 	Getenv     func(string) string                    // os.Getenv
@@ -55,6 +61,7 @@ type lookups struct {
 
 func systemLookups() lookups {
 	return lookups{
+		GOOS: runtime.GOOS,
 		Executable: func() (string, error) {
 			p, err := os.Executable()
 			if err != nil {
@@ -99,7 +106,8 @@ func nodeMajor(v string) (int, bool) {
 // findRuntime finds the program that runs the bundle (D33), the first that exists:
 //  1. node, the flag -headless-node (or AIWB_HEADLESS_NODE): that program, as it is;
 //  2. the desktop app's own Electron, when the server binary is …/Contents/MacOS/<exe> and
-//     …/Contents/MacOS/AI Whiteboard is there;
+//     …/Contents/MacOS/AI Whiteboard is there, or, on Windows, when the server binary is
+//     <dir>/ai-whiteboard.exe and <dir>/AI Whiteboard.exe is there;
 //  3. `node` on PATH, of Node 22 or later.
 //
 // The error says why none could be used.
@@ -117,8 +125,16 @@ func findRuntime(node string, l lookups) (Runtime, error) {
 	var why []string
 	if exe, err := l.Executable(); err == nil {
 		dir := filepath.Dir(exe)
-		if filepath.Base(dir) == "MacOS" && filepath.Base(filepath.Dir(dir)) == "Contents" {
-			electron := filepath.Join(dir, ElectronProgram)
+		electron := ""
+		switch {
+		case l.GOOS == "windows":
+			if strings.EqualFold(filepath.Base(exe), ServerProgramWindows) {
+				electron = filepath.Join(dir, ElectronProgramWindows)
+			}
+		case filepath.Base(dir) == "MacOS" && filepath.Base(filepath.Dir(dir)) == "Contents":
+			electron = filepath.Join(dir, ElectronProgram)
+		}
+		if electron != "" {
 			if electron != exe {
 				if fi, err := l.Stat(electron); err == nil && !fi.IsDir() {
 					return Runtime{Path: electron, Electron: true, Source: "electron"}, nil
@@ -161,7 +177,8 @@ type Manifest struct {
 }
 
 // findBundle finds the folder with the program (D34): dir (-headless-dir) when given, and then nothing
-// else; else <exe dir>/../Resources/headless, else <exe dir>/headless. The manifest's version must be the
+// else; else <exe dir>/../Resources/headless, else <exe dir>/headless, and, on Windows only, else
+// <exe dir>/resources/headless (the Windows app). The manifest's version must be the
 // server's version, unless the server is "dev", which takes any: the server and its headless writer are
 // one build. The error says why no folder could be used.
 func findBundle(dir, version string, l lookups) (Bundle, error) {
@@ -178,10 +195,14 @@ func findBundle(dir, version string, l lookups) (Bundle, error) {
 	}
 	exeDir := filepath.Dir(exe)
 	var why []string
-	for _, c := range []string{
+	candidates := []string{
 		filepath.Join(exeDir, "..", "Resources", "headless"),
 		filepath.Join(exeDir, "headless"),
-	} {
+	}
+	if l.GOOS == "windows" {
+		candidates = append(candidates, filepath.Join(exeDir, "resources", "headless"))
+	}
+	for _, c := range candidates {
 		c = filepath.Clean(c)
 		b, err := checkBundle(c, version, l)
 		if err == nil {

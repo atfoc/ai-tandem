@@ -210,14 +210,17 @@ a scene itself.
   process, with the same result. A failed start is remembered for 60 seconds: calls in that time fail at
   once, and the server log has one line with the reason.
 - **Where Node comes from.** The first that exists: the program of `-headless-node` (or
-  `AIWB_HEADLESS_NODE`); the desktop app's own Electron, when the server runs from inside the Mac app,
-  started as Node; `node` of version 22 or later on the server's `PATH`. A Mac app needs no Node of its own.
+  `AIWB_HEADLESS_NODE`); the desktop app's own Electron, when the server runs from inside the Mac app, or
+  from the Windows app (`AI Whiteboard.exe` stands next to `ai-whiteboard.exe`), started as Node; `node` of
+  version 22 or later on the server's `PATH`. The desktop app needs no Node of its own.
 - **Where the bundle comes from.** The bundle is a folder with the writer's program (`headless.mjs`), its
   `manifest.json` and `engine/`, the board engine's files ([below](#the-board-engine-in-node)). It is
   built with the server, and the server finds it in the folder of `-headless-dir`, else in
   `Resources/headless/` of the Mac app (outside `app.asar`, since a native module cannot load from
   inside it), else in `headless/` beside the server program, which is how a server folder made by
-  `scripts/build-server.sh` has it. The manifest names the version of the build, and a bundle of another
+  `scripts/build-server.sh` has it, else in `resources/headless/` beside the server program, which is
+  the Windows app (the folder `AI Whiteboard`: `AI Whiteboard.exe`, `ai-whiteboard.exe` and `resources/`; the
+  Mac bundle and the Windows folder are described in [Build and develop](development.md#build-and-install-the-desktop-app)). The manifest names the version of the build, and a bundle of another
   version than the server is not used; a development build of the server (version `dev`) takes any.
   The bundle is for one operating system and one processor, the server's.
 - **If it is not there.** If no Node or no bundle is found, the headless writer is

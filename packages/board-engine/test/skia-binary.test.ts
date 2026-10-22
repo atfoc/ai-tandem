@@ -12,18 +12,28 @@ const SIZE: Record<string, number> = {
   "darwin/x64": 29_968_712,
   "linux/arm64": 37_079_472,
   "linux/x64": 37_769_600,
+  "win32/arm64": 27_146_752,
+  "win32/x64": 30_086_656,
 };
 const TARGETS: Target[] = [
   { os: "darwin", arch: "arm64" }, { os: "darwin", arch: "x64" }, { os: "linux", arch: "arm64" }, { os: "linux", arch: "x64" },
+  { os: "win32", arch: "arm64" }, { os: "win32", arch: "x64" },
 ];
 
 /** A file with the header of a native library of a kind, padded (sparsely) to `size`. */
 function fake(dir: string, kind: Target, size = SIZE[`${kind.os}/${kind.arch}`], name = "skia.node"): string {
-  const head = Buffer.alloc(64);
+  const head = Buffer.alloc(128);
   if (kind.os === "linux") {
     head.writeUInt32BE(0x7f454c46, 0);
     head[4] = 2; head[5] = 1; head[6] = 1;
     head.writeUInt16LE(kind.arch === "x64" ? 0x3e : 0xb7, 18);
+  } else if (kind.os === "win32") {
+    // "MZ", the PE offset (0x40) at 0x3c, "PE\0\0" there, the machine type, and the DLL flag of the characteristics
+    head.write("MZ", 0, "latin1");
+    head.writeUInt32LE(0x40, 0x3c);
+    head.write("PE\0\0", 0x40, "latin1");
+    head.writeUInt16LE(kind.arch === "x64" ? 0x8664 : 0xaa64, 0x44);
+    head.writeUInt16LE(0x2022, 0x40 + 4 + 18);
   } else {
     head.writeUInt32LE(0xfeedfacf, 0);
     head.writeUInt32LE(kind.arch === "x64" ? 0x01000007 : 0x0100000c, 4);
@@ -34,9 +44,10 @@ function fake(dir: string, kind: Target, size = SIZE[`${kind.os}/${kind.arch}`],
   return file;
 }
 
-test("the packages of the four targets", () => {
+test("the packages of the six targets", () => {
   assert.deepEqual(TARGETS.map(skiaPackage), [
     "@skia-canvas/darwin-arm64", "@skia-canvas/darwin-x64", "@skia-canvas/linux-arm64-glibc", "@skia-canvas/linux-x64-glibc",
+    "@skia-canvas/win32-arm64", "@skia-canvas/win32-x64",
   ]);
 });
 
@@ -51,7 +62,7 @@ test("a binary of the right kind, architecture and size passes; the same file fo
   } finally { rmTemp(dir); }
 });
 
-test("a file that is not a native library fails: text, a short file, a 32-bit ELF, a fat Mach-O", () => {
+test("a file that is not a native library fails: text, a short file, a 32-bit ELF, a fat Mach-O, a PE that is no DLL", () => {
   const dir = tempDir("bad");
   try {
     const linux: Target = { os: "linux", arch: "x64" };
@@ -71,6 +82,11 @@ test("a file that is not a native library fails: text, a short file, a 32-bit EL
     const fat = fake(dir, mac, SIZE["darwin/arm64"], "fat");
     const fd2 = fs.openSync(fat, "r+"); fs.writeSync(fd2, Buffer.from([0xca, 0xfe, 0xba, 0xbe]), 0, 4, 0); fs.closeSync(fd2);
     assert.match(binaryProblem(fat, mac) ?? "", /no 64-bit Mach-O header/);
+    const win: Target = { os: "win32", arch: "x64" };
+    assert.match(binaryProblem(text, win) ?? "", /no PE header/);
+    const exe = fake(dir, win, SIZE["win32/x64"], "exe");
+    const fd3 = fs.openSync(exe, "r+"); fs.writeSync(fd3, Buffer.from([0x22, 0x00]), 0, 2, 0x40 + 4 + 18); fs.closeSync(fd3);
+    assert.match(binaryProblem(exe, win) ?? "", /a PE executable, not a DLL/);
     assert.match(binaryProblem(path.join(dir, "missing"), linux) ?? "", /cannot be read/);
   } finally { rmTemp(dir); }
 });

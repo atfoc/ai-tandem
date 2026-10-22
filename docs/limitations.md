@@ -5,7 +5,8 @@ What the app does not do, or does not do fully, and the limits it enforces.
 - The app is the only client. AI Whiteboard is not used in a browser tab, and a machine without the
   app cannot show it whatever server runs on it. The app runs on macOS (the desktop app), on an iPhone
   and an iPad, and on Android; the server alone also builds for Linux, and is used from the app on
-  any of those. There is no Windows or Linux app.
+  any of those. A Windows app can be built, as an unpacked folder, but it has not been run on a Windows
+  computer yet (see the [Windows notes](development.md#windows)). There is no Linux app.
 - A phone or tablet has no server of its own, so its first section is not "this computer": it shows the
   servers you add. It is put on a device with a script, not from a store (see
   [Build and develop](development.md#install-the-app-on-a-phone-or-tablet)). What the device tests

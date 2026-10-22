@@ -10,7 +10,10 @@ machine's network and firewall. A server that was never set up does not start.
 
 ## What the machine needs
 
-- macOS or Linux, on the processor this folder was built for (the folder's name says which).
+- macOS or Linux, on the processor this folder was built for (the folder's name says which). A
+  `windows` folder holds `ai-whiteboard.exe` and `headless/`, but the two scripts here are shell scripts
+  that are not made to run on Windows, and the agents are not covered there: it has not been run on a Windows
+  computer yet.
 - At least one agent CLI, installed and logged in for the user that runs the server: `claude`
   (Claude Code), `agent` (Cursor CLI) or `pi`, on that user's `PATH`.
 - For editing boards with no window open: **Node 22 or later** on the server user's `PATH` (`node

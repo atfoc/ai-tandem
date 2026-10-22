@@ -1,7 +1,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const path = require('node:path');
 const {
   serverBin,
+  quitsWithLastWindow,
   pagePath,
   serverLogPath,
   pictureAllowed,
@@ -20,13 +22,42 @@ test('serverBin: AIWB_SERVER_BIN wins, packaged or not', () => {
 
 test('serverBin: packaged → next to process.execPath', () => {
   assert.equal(
-    serverBin({ env: {}, execPath, isPackaged: true, dirname }),
+    serverBin({ env: {}, execPath, isPackaged: true, dirname, platform: 'darwin' }),
     '/Applications/AI Whiteboard.app/Contents/MacOS/ai-whiteboard',
   );
 });
 
 test('serverBin: dev → ../bin/ai-whiteboard', () => {
-  assert.equal(serverBin({ env: {}, execPath, isPackaged: false, dirname }), '/repo/bin/ai-whiteboard');
+  assert.equal(serverBin({ env: {}, execPath, isPackaged: false, dirname, platform: 'darwin' }), '/repo/bin/ai-whiteboard');
+});
+
+test('serverBin: win32 → ai-whiteboard.exe, next to the executable when packaged, in ../bin in dev', () => {
+  const winExec = path.join('C:\\Users\\me\\AI Whiteboard', 'AI Whiteboard.exe');
+  assert.equal(
+    serverBin({ env: {}, execPath: winExec, isPackaged: true, dirname, platform: 'win32' }),
+    path.join(path.dirname(winExec), 'ai-whiteboard.exe'),
+  );
+  assert.equal(
+    serverBin({ env: {}, execPath, isPackaged: false, dirname, platform: 'win32' }),
+    path.resolve(dirname, '../bin', 'ai-whiteboard.exe'),
+  );
+  assert.ok(serverBin({ env: {}, execPath, isPackaged: false, dirname, platform: 'win32' }).endsWith('ai-whiteboard.exe'));
+});
+
+test('serverBin: AIWB_SERVER_BIN wins on win32 too; linux has no .exe', () => {
+  assert.equal(serverBin({ env: { AIWB_SERVER_BIN: 'X:\\s.exe' }, execPath, isPackaged: true, dirname, platform: 'win32' }), 'X:\\s.exe');
+  assert.equal(serverBin({ env: {}, execPath: '/opt/aiwb/aiwb', isPackaged: true, dirname, platform: 'linux' }), '/opt/aiwb/ai-whiteboard');
+});
+
+test('serverBin: the platform defaults to the running one', () => {
+  const want = process.platform === 'win32' ? 'ai-whiteboard.exe' : 'ai-whiteboard';
+  assert.equal(path.basename(serverBin({ env: {}, execPath, isPackaged: false, dirname })), want);
+});
+
+test('quitsWithLastWindow: not on macOS, on Windows and Linux', () => {
+  assert.equal(quitsWithLastWindow('darwin'), false);
+  assert.equal(quitsWithLastWindow('win32'), true);
+  assert.equal(quitsWithLastWindow('linux'), true);
 });
 
 test('pagePath: AIWB_PAGE wins, packaged or not', () => {

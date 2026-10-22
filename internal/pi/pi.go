@@ -372,8 +372,9 @@ func (p *proc) waitExit() {
 	// way (stdin closed, SIGTERM), so a command running when pi crashes or is SIGKILLed stays. This
 	// runs for Close too (not only unexpected exits): Close's graceful window can end with the
 	// leader exiting first. After Wait the leader's pid may already be reused, so this check is
-	// best-effort; killing the remaining group below is the backstop.
-	if pgid := p.cmd.Process.Pid; syscall.Kill(-pgid, 0) == nil {
+	// best-effort; killing the remaining group below is the backstop. KillGroupAfterExit, not
+	// KillGroup: on Windows the pid of a waited-for leader may be another program's.
+	if pgid := p.cmd.Process.Pid; agent.KillGroupAfterExit(pgid, 0) == nil {
 		go killGroup(pgid, killGrace())
 	}
 	if p.runToken != "" && p.s.Bridge != nil {
@@ -416,17 +417,17 @@ func exitText(stderr string, err error) string {
 }
 
 // killGroup ends what is left of a run's process group after its leader exited: SIGTERM, then
-// SIGKILL after grace.
+// SIGKILL after grace. Only for a leader that was waited for (see KillGroupAfterExit).
 func killGroup(pgid int, grace time.Duration) {
-	if err := syscall.Kill(-pgid, syscall.SIGTERM); err != nil {
+	if err := agent.KillGroupAfterExit(pgid, syscall.SIGTERM); err != nil {
 		return
 	}
 	for deadline := time.Now().Add(grace); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
-		if errors.Is(syscall.Kill(-pgid, 0), syscall.ESRCH) {
+		if errors.Is(agent.KillGroupAfterExit(pgid, 0), syscall.ESRCH) {
 			return
 		}
 	}
-	syscall.Kill(-pgid, syscall.SIGKILL)
+	agent.KillGroupAfterExit(pgid, syscall.SIGKILL)
 }
 
 // Send posts one user turn. It waits for the handshake, joins the blocks' texts and writes one
@@ -559,11 +560,11 @@ func (p *proc) Close() {
 			// The leader exited; waitExit reaps the rest of the group.
 		case <-time.After(grace):
 			// The graceful window is over: end the group, then SIGKILL what survives.
-			syscall.Kill(-pgid, syscall.SIGTERM)
+			agent.KillGroup(pgid, syscall.SIGTERM)
 			select {
 			case <-p.done:
 			case <-time.After(grace):
-				syscall.Kill(-pgid, syscall.SIGKILL)
+				agent.KillGroup(pgid, syscall.SIGKILL)
 			}
 		}
 	}()

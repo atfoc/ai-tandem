@@ -1,3 +1,5 @@
+//go:build !windows
+
 package pi
 
 // Real-pi end-to-end tests for the app's handles in pi's environment: the extension takes
