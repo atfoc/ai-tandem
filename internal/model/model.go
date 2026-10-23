@@ -416,9 +416,10 @@ const (
 	StatusWriting  Status = "writing"
 	StatusTool     Status = "tool"
 	StatusApproval Status = "approval"
-	StatusWaiting  Status = "waiting" // the agent's turn has ended but it is not done: its own background work runs or has just ended (Claude); not in a turn, busy for the person
-	StatusStopped  Status = "stopped" // the agent ended mid-turn (server stop, crash)
-	StatusError    Status = "error"   // cannot start: see ChatView.Error
+	StatusWaiting  Status = "waiting"  // the agent's turn has ended but it is not done: its own background work runs or has just ended (Claude); not in a turn, busy for the person
+	StatusRetrying Status = "retrying" // the agent's turn failed with a temporary error: it waits to be started again on its session, or is being started; shown as working, takes a message
+	StatusStopped  Status = "stopped"  // the agent ended mid-turn (server stop, crash)
+	StatusError    Status = "error"    // cannot start: see ChatView.Error
 )
 
 // ChatView is what clients see: the metadata without the token, plus live state.
@@ -444,6 +445,7 @@ type ChatView struct {
 	Status        Status `json:"status"`
 	StatusTool    string `json:"statusTool,omitempty"`
 	Error         string `json:"error,omitempty"`
+	Retry         Retry  `json:"retry,omitzero"` // the chat's agent is being retried after a temporary error (StatusRetrying); zero otherwise
 	FolderMissing bool   `json:"folderMissing,omitempty"`
 
 	// The two counts come from the chat's subagent records, so both are zero for a chat whose
@@ -634,7 +636,8 @@ type TreeItem struct {
 	OK     bool   `json:"ok,omitempty"`     // pointOK at End (text) or at Before (user)
 }
 
-// SubStatus is a subagent's lifecycle state. Every state but running is final.
+// SubStatus is a subagent's lifecycle state. Running is live; paused is neither live nor final;
+// every other state is final.
 type SubStatus string
 
 const (
@@ -642,6 +645,37 @@ const (
 	SubCompleted SubStatus = "completed"
 	SubFailed    SubStatus = "failed"
 	SubStopped   SubStatus = "stopped"
+	SubPaused    SubStatus = "paused" // its retries ran out: no process, its session kept; neither running nor finished
+)
+
+// Retry is the state of an agent that is being retried after a temporary error (goal 2.6).
+type Retry struct {
+	Attempt int    `json:"attempt"`         // the attempt waited for or running, 1 to Of
+	Of      int    `json:"of"`              // how many attempts there are (4)
+	At      int64  `json:"at,omitempty"`    // unix ms the attempt is due; in the past once it waits for the limiter or runs
+	Kind    string `json:"kind"`            // the agent.Temporary of the failed turn
+	Error   string `json:"error,omitempty"` // the failed turn's error text
+}
+
+// SubCause says why a subagent is in a status that is not running (stored, for the list of
+// messages to its parent).
+type SubCause string
+
+const (
+	CauseTurn           SubCause = "turn"
+	CauseTurnError      SubCause = "turn-error"
+	CauseFailed         SubCause = "failed"
+	CauseAborted        SubCause = "aborted"
+	CauseGone           SubCause = "gone"
+	CauseSpawnFailed    SubCause = "spawn-failed"
+	CauseStopTool       SubCause = "stop-tool"
+	CauseParent         SubCause = "parent"
+	CausePerson         SubCause = "person"
+	CauseShutdown       SubCause = "shutdown"
+	CauseRestart        SubCause = "restart"
+	CauseNative         SubCause = "native"
+	CauseRetriesFailed  SubCause = "retries-failed"   // paused: its retries ran out
+	CauseRetryingAtStop SubCause = "retrying-at-stop" // paused: it was being retried when the server stopped
 )
 
 // SubDelivery says what the app owes the parent agent for an app-spawned subagent's result. Only
@@ -707,4 +741,13 @@ type Subagent struct {
 	// BgWaiting is set while the subagent waits (Waiting) and its own background work is part of
 	// what it waits on; false whenever Waiting is false.
 	BgWaiting bool `json:"bgWaiting,omitempty"`
+	// Session is the session its process runs on, recorded when it is started (Claude, pi) or when
+	// the agent reports it (Cursor); "" for a record from before, which cannot be resumed.
+	Session string `json:"session,omitempty"`
+	// Retry is set while it is being retried after a temporary error (running); zero otherwise.
+	Retry Retry `json:"retry,omitzero"`
+	// ErrorKind is, for a paused subagent, the agent.Temporary of its last failed turn.
+	ErrorKind string `json:"errorKind,omitempty"`
+	// Cause is why it is in its status when that is not running; "" in a record from before.
+	Cause SubCause `json:"cause,omitempty"`
 }

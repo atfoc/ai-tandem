@@ -449,7 +449,7 @@ func TestStopNoteKeepsTheBranchsEnd(t *testing.T) {
 	t.Parallel()
 	// left is a chat that is back on main, whose branch was stopped while it waited on a
 	// subagent: its thread is six items and the note. Main has finished the turn that left it.
-	left := func(e *env) (id, b, bid string, mainAg *fakeAgent) {
+	left := func(e *env) (id, b, bid, sid string, mainAg *fakeAgent) {
 		e.t.Helper()
 		id, b, bid, _ = e.branchWaiting()
 		mainAg = e.claude.last(e.t) // main's, which the branch did not stop
@@ -462,13 +462,13 @@ func TestStopNoteKeepsTheBranchsEnd(t *testing.T) {
 		if got := e.diskItems(bid); len(got) != 7 || got[5].Kind != "end" {
 			e.t.Fatalf("the items of the branch left %+v", got)
 		}
-		return id, b, bid, mainAg
+		return id, b, bid, sa.ID, mainAg
 	}
 
 	for name, at := range map[string]int{"right after its end mark": 6, "after the note": 7} {
 		t.Run("carried on "+name, func(t *testing.T) {
 			e := newEnv(t)
-			id, b, bid, mainAg := left(e)
+			id, b, bid, sid, mainAg := left(e)
 			session, spawns := e.meta(bid).SessionID, e.claude.count()
 
 			e.sendTo(id, Target{Branch: b, At: at}, "back on the branch")
@@ -482,7 +482,9 @@ func TestStopNoteKeepsTheBranchsEnd(t *testing.T) {
 			if o := a.opts; o.ChatID != bid || o.SessionID != session || !o.Resume {
 				t.Fatalf("spawn options %+v", o)
 			}
-			if sent := a.sent(); len(sent) != 1 || !reflect.DeepEqual(texts(sent[0]), []string{"back on the branch"}) {
+			// The subagent the branch's stop stopped is listed with the message (D14).
+			sent := a.sent()
+			if len(sent) != 1 || !reflect.DeepEqual(texts(wantPausedList(t, sent[0], sid)), []string{"back on the branch"}) {
 				t.Fatalf("the branch's process got %v", sent)
 			}
 			got := e.diskItems(bid)
@@ -499,7 +501,7 @@ func TestStopNoteKeepsTheBranchsEnd(t *testing.T) {
 
 	t.Run("a new branch at its end mark", func(t *testing.T) {
 		e := newEnv(t)
-		id, b, bid, _ := left(e)
+		id, b, bid, _, _ := left(e)
 		session := e.meta(bid).SessionID
 
 		e.sendTo(id, Target{Branch: b, At: 6, New: true}, "from the branch's end")

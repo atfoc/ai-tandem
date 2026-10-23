@@ -13,7 +13,8 @@
 //     with its comment; a message with nothing at all is still there.
 //   Lines at the foot (B-TH-10, 11): "Thinking…" and a tool's verb as the header says them, with dots; nothing while the agent writes or asks;
 //     an idle chat that waits on subagents says so; a chat that waits for its background work says "Waiting for background work" in the header and
-//     at the foot (the still waiting row, not the typing line with dots), shows Stop and blocks Send, and a press on Stop sends the interrupt.
+//     at the foot (the still waiting row, not the typing line with dots), shows Stop and blocks Send, and a press on Stop sends the interrupt; a chat whose agent is retried after a temporary error says
+//     "Retrying in … · 1 of 4" in the header, shows Stop, does not block Send, and a press on Stop sends the interrupt.
 //   No thread kept (B-RO-07): a load that failed while connected says so with "Try again"; a chat whose server went away before the thread came
 //     says that it shows again when the server is back, with the state's word and "Servers…".
 //     (sweep, rn-sw-webtest: a chat the server answers 404 not_found for says that it is no longer there, with neither "Servers…" nor "Try again".)
@@ -203,6 +204,31 @@ await check("L10 the chat view: header, empty thread, notes, quotes, status line
       if (!await until(() => calls.slice(from).some((c) => c.method === "POST" && /\/chats\/c_plain\/interrupt/.test(c.path)), WAIT)) say("a press on Stop of a chat that waits for background work made no interrupt call");
     } finally {
       await mockEval(status("c_plain", "ready"), url); // (put back: the checks below read this chat as idle)
+      await ctx.close();
+    }
+  }
+
+  // ---- a chat whose agent is retried after a temporary error: the header says when the next attempt is, Stop shows and cancels the retry, and a message is still taken
+  {
+    const { page, ctx } = await open({ sel: { chat: "c_plain" }, wait: '[data-testid="chat-head"]' });
+    const calls = callsOf(page);
+    await byTid(page, "msg").first().waitFor({ state: "visible", timeout: WAIT });
+    await mockEval(`chats.c_plain.retry = { attempt: 1, of: 4, at: Date.now() + 20000, kind: "login" }; ${status("c_plain", "retrying")}`, url);
+    try {
+      // (the header counts the wait down from the clock: 20 s when it was drawn at once, less when the machine was slow to draw it)
+      if (!await until(async () => /Retrying in (1\d|20) s · 1 of 4/.test(await textOf(page, "chat-head-sub")), WAIT)) say(`a chat whose agent is retried: the header says "${await textOf(page, "chat-head-sub")}", not "Retrying in … · 1 of 4"`);
+      const send = byTid(page, "send").first(), stop = byTid(page, "stop").first();
+      if (!await stop.count()) say("a chat whose agent is retried has no Stop");
+      // (Send is off for an empty draft whatever the status: a message has to be typed for it to be taken)
+      const box = byTid(page, "composer-input").first();
+      await press(page, box); await page.keyboard.type("a message between attempts");
+      if (!await until(async () => !(await send.isDisabled()), WAIT)) say("Send of a chat whose agent is retried is off with a message typed: a message is taken, and starts the turn in place of the retry");
+      await page.keyboard.press(process.platform === "darwin" ? "Meta+a" : "Control+a"); await page.keyboard.press("Backspace"); // (the draft is put back: empty)
+      const from = calls.length;
+      await press(page, stop);
+      if (!await until(() => calls.slice(from).some((c) => c.method === "POST" && /\/chats\/c_plain\/interrupt/.test(c.path)), WAIT)) say("a press on Stop of a chat whose agent is retried made no interrupt call");
+    } finally {
+      await mockEval(`delete chats.c_plain.retry; ${status("c_plain", "ready")}`, url); // (put back: the checks below read this chat as idle)
       await ctx.close();
     }
   }

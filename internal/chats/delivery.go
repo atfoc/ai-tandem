@@ -23,7 +23,6 @@ import (
 
 	"ai-whiteboard/internal/agent"
 	"ai-whiteboard/internal/model"
-	"ai-whiteboard/internal/prompts"
 	"ai-whiteboard/internal/transcript"
 )
 
@@ -42,6 +41,8 @@ const (
 	endParent                       // parent interrupt, aborted parent turn, parent exit, Stop, Shutdown
 	endRestart                      // still running on disk when the chat was loaded
 	endNative                       // a native Agent/Task subagent, however it ended
+	endPerson                       // the user stopped the chat's agent (Interrupt, Stop, archive, delete)
+	endShutdown                     // the server stopped while it ran
 )
 
 // endingNotifies is the policy: the endings that leave the parent owed the result. A subagent
@@ -58,12 +59,32 @@ var endingNotifies = map[subEnding]bool{
 	endParent:      false,
 	endRestart:     false,
 	endNative:      false,
+	endPerson:      false,
+	endShutdown:    false,
 }
 
-// ended records, on a subagent that just reached a final status, whether the parent is owed its
-// result. Only an app-spawned subagent ever is; that flag is not restored at load, where a
+// causeOf is the cause a subagent's record keeps for each ending, for the list of paused and
+// stopped subagents its parent's messages carry (retry.go).
+var causeOf = map[subEnding]model.SubCause{
+	endTurn:        model.CauseTurn,
+	endTurnError:   model.CauseTurnError,
+	endFailed:      model.CauseFailed,
+	endAborted:     model.CauseAborted,
+	endGone:        model.CauseGone,
+	endSpawnFailed: model.CauseSpawnFailed,
+	endStopTool:    model.CauseStopTool,
+	endParent:      model.CauseParent,
+	endPerson:      model.CausePerson,
+	endShutdown:    model.CauseShutdown,
+	endRestart:     model.CauseRestart,
+	endNative:      model.CauseNative,
+}
+
+// ended records, on a subagent that just reached a final status, its cause and whether the parent
+// is owed its result. Only an app-spawned subagent ever is; that flag is not restored at load, where a
 // result is owed only if its record says so. c.mu held; the caller writes the record (endSub).
 func ended(s *sub, why subEnding) {
+	s.meta.Cause = causeOf[why]
 	if s.app && endingNotifies[why] {
 		s.meta.Delivery = model.SubOwed
 	}
@@ -135,7 +156,8 @@ type carry struct {
 
 // setHold makes the app start no turn on c until the human sends: the triggers do nothing, and the
 // results that become owed meanwhile wait. It is set when the human stops the agent (Interrupt,
-// Stop), when a turn of the agent ends aborted or with an error, when its process exits, when the
+// Stop), when a turn of the agent ends aborted or with an error (not one with a temporary error
+// that is retried, retrychat.go: that turn goes on), when its process exits, when the
 // adapter refuses the human's message (sendRefused), and when results did not reach the agent (a
 // carrying turn settled as not received, a record that could not be written). A new branch or fork
 // starts held (addUnlisted): its process is there before the human has written in it. A CLI does
@@ -220,8 +242,9 @@ func modelOutput(ev agent.Event) bool {
 // unreceived puts back the completions of d, a carrying turn that is over with no model output:
 // they are owed again, and the chat is held. failed says the attempt counts against them, which it
 // does not when the human stopped the turn. A completion is retried once: at its second failed
-// attempt it is given up. c.mu held.
-func (m *Manager) unreceived(c *Chat, d *carry, failed bool, out *outbox) {
+// attempt it is given up. The chat is held unless hold is false, which is a turn that failed with a
+// temporary error that the app retries (retrychat.go): the retry carries the results again. c.mu held.
+func (m *Manager) unreceived(c *Chat, d *carry, failed, hold bool, out *outbox) {
 	for _, sid := range d.sids {
 		s := c.subs[sid]
 		if s == nil || s.meta.Delivery != model.SubSent {
@@ -238,7 +261,9 @@ func (m *Manager) unreceived(c *Chat, d *carry, failed bool, out *outbox) {
 		m.saveSub(c, s)
 		out.emitSub(c, s.meta)
 	}
-	setHold(c)
+	if hold {
+		setHold(c)
+	}
 }
 
 // endCarry settles the chat's carrying turn, which is over, unless model output has settled it or
@@ -259,7 +284,7 @@ func (m *Manager) endCarry(c *Chat, clean bool, out *outbox) (lost bool) {
 	if clean && !d.human && c.meta.Agent != model.Pi {
 		return false
 	}
-	m.unreceived(c, d, !d.human, out)
+	m.unreceived(c, d, !d.human, true, out)
 	return true
 }
 
@@ -275,7 +300,9 @@ func (m *Manager) endCarry(c *Chat, clean bool, out *outbox) (lost bool) {
 // completion becomes owed (finalizeAppSub), the agent's turn ends cleanly (turnOver, whether the
 // chat is then idle or waiting), the quiet wait of a waiting chat is over (chatBgQuiet), and the
 // chat leaves approval while no turn of its agent is running (Decide, and a subagent that ended or
-// was stopped holding the chat's last open request).
+// was stopped holding the chat's last open request). Its message is the results block and, when
+// there are any, the list of the subagents that are paused or were stopped without the agent's
+// asking (retry.go).
 func (m *Manager) deliver(c *Chat, out *outbox) *carry {
 	if !deliverable(c) {
 		return nil
@@ -302,14 +329,13 @@ func (m *Manager) deliver(c *Chat, out *outbox) *carry {
 	c.tr.SetStatus(model.StatusThinking)
 	c.meta.TurnActive = true
 	var blocks []agent.ContentBlock
-	if c.meta.Board != "" { // every board chat message names its board
-		name := c.meta.Board
-		if bd, ok := m.Boards.Get(c.meta.Board); ok {
-			name = bd.Name
-		}
-		blocks = append(blocks, agent.ContentBlock{Text: prompts.BoardContext(name, c.meta.Board)})
+	if b := m.boardContextBlock(c); b != nil { // every board chat message names its board
+		blocks = append(blocks, *b)
 	}
 	blocks = append(blocks, agent.ContentBlock{Text: subResultsBlock(taken, runningKids(c, ""), false)})
+	if subs := pausedOrStopped(c, ""); len(subs) > 0 {
+		blocks = append(blocks, agent.ContentBlock{Text: pausedListBlock(subs, false)})
+	}
 	if err := c.tr.Flush(false); err != nil {
 		log.Printf("chats: flush %s: %v", c.meta.ID, err)
 	}

@@ -29,6 +29,15 @@ test("a waiting chat: Stop and Esc stop it, and no message is taken", () => {
   assert.deepEqual(workingBranches([rec("c", "main", "waiting"), rec("c", "b1", "ready")]).map((b) => b.branch), ["main"]);
 });
 
+test("a chat whose agent is retried after a temporary error: Stop and Esc cancel the retry, and a message is taken", () => {
+  assert.equal(isBusy("retrying"), false);
+  assert.equal(inTurn("retrying"), false);
+  assert.deepEqual(composerControls({ status: "retrying" }), { stop: true, blocked: false, esc: true });
+  assert.deepEqual(composerControls({ status: "retrying", subsRunning: 2 }), { stop: true, blocked: false, esc: true });
+  assert.deepEqual(composerControls({ status: "retrying" }, { newBranch: true, liveFork: false }), { stop: true, blocked: false, esc: true });
+  assert.deepEqual(composerControls({ status: "retrying", fresh: true }), { stop: true, blocked: false, esc: true }, "not busy, so not starting");
+});
+
 test("boardWorker: the agent of a busy chat of the board, else of a chat that just edited it; none for a board whose server is not connected", () => {
   const chats = {
     c_idle: { board: "b_1", agent: "claude", status: "ready" as Status },

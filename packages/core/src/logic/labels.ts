@@ -7,6 +7,7 @@
 import type { BranchState, CatalogModel, ChatView, Item } from "../types.ts";
 import { IMAGE_WORD } from "./chatimage.ts";
 import { plainText } from "./refs.ts";
+import { retryLine } from "./retry.ts";
 import { inTurn, isBusy, starting } from "./status.ts";
 
 const EFFORT_LABELS: Record<string, string> = { low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", max: "Max" };
@@ -76,6 +77,7 @@ export function toolVerb(name: string, input: any, nameOf: BoardNames = noNames)
     case "show_board": return `Showing ${board}`;
     case "wait_subagents": return "Waiting for subagents";
     case "stop_subagent": return "Stopping subagent";
+    case "resume_subagent": return "Resuming subagent";
     case "list_subagent_models": return "Listing subagent models";
     default: return short(name);
   }
@@ -107,6 +109,7 @@ export function toolDone(name: string, input: any, result: string | undefined, n
     case "show_board": return `Showed ${board}`;
     case "wait_subagents": return "Waited for subagents";
     case "stop_subagent": return "Stopped subagent";
+    case "resume_subagent": return "Resumed subagent";
     case "list_subagent_models": return "Listed subagent models";
     default: return short(name);
   }
@@ -142,11 +145,12 @@ export function waitingText(c: Pick<ChatView, "status" | "subsRunning" | "subsOw
   return parts.join(". ");
 }
 
-type Stated = Pick<ChatView, "status" | "statusTool" | "usage" | "subsRunning" | "subsOwed" | "archived" | "fresh">;
+type Stated = Pick<ChatView, "status" | "statusTool" | "retry" | "usage" | "subsRunning" | "subsOwed" | "archived" | "fresh">;
 
 /** The chat's status line. An idle chat says what it waits on (waitingText), when it does; a fork
- *  without a message whose agent starts says that, not what a turn would. */
-export function statusText(c: Stated, nameOf: BoardNames = noNames): string {
+ *  without a message whose agent starts says that, not what a turn would; a chat whose agent is retried
+ *  says when the next attempt is (now: unix ms). */
+export function statusText(c: Stated, nameOf: BoardNames = noNames, now = Date.now()): string {
   if (starting(c)) return "Starting the agent…";
   switch (c.status) {
     case "ready": return waitingText(c) || (c.usage?.turns ? "Idle" : "Ready");
@@ -155,6 +159,7 @@ export function statusText(c: Stated, nameOf: BoardNames = noNames): string {
     case "tool": return toolVerb(c.statusTool ?? "", null, nameOf) + "…";
     case "approval": return "Needs your approval";
     case "waiting": return waitingText(c);
+    case "retrying": return c.retry ? retryLine(c.retry, now) : "Retrying";
     case "stopped": return "Stopped";
     case "error": return "Can't start";
   }
@@ -170,6 +175,7 @@ type Row = Stated & Pick<ChatView, "working" | "approvals">;
 export const dotState = (c: Row): ChatView["status"] | "waiting" => {
   if ((c.approvals ?? 0) > 0) return "approval";
   if (isBusy(c.status)) return c.status;
+  if (c.status === "retrying") return "thinking";
   if ((c.working ?? 0) > 0) return "thinking";
   if (c.status !== "ready") return c.status;
   return waitingText(c) ? "waiting" : c.status;
@@ -178,8 +184,9 @@ export const dotState = (c: Row): ChatView["status"] | "waiting" => {
 /** A sidebar chat row's second line: an approval any branch waits for; else what the current
  *  branch is doing when that says something (busy, stopped, can't start); else how many other
  *  branches work; else what it waits on (subagents, their results), else its settings line. */
-export function rowLine(c: Row & Pick<ChatView, "error">, settings: string, nameOf: BoardNames = noNames): string {
+export function rowLine(c: Row & Pick<ChatView, "error">, settings: string, nameOf: BoardNames = noNames, now = Date.now()): string {
   if ((c.approvals ?? 0) > 0) return "Needs your approval";
+  if (c.status === "retrying") return statusText(c, nameOf, now);
   if (isBusy(c.status)) return statusText(c, nameOf);
   const n = c.working ?? 0;
   if (n > 0) return n === 1 ? "1 branch working" : `${n} branches working`;

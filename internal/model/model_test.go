@@ -435,3 +435,55 @@ func TestSubLimits(t *testing.T) {
 		}
 	}
 }
+
+// The retry's additions to the records are additive (goal: clients are older than servers): a
+// record that sets none of the new fields has the keys it had, and a zero Retry is not written.
+func TestNewSubagentFieldsAreAdditive(t *testing.T) {
+	keys := func(v any) map[string]json.RawMessage {
+		t.Helper()
+		raw, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var m map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &m); err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+
+	old := keys(Subagent{ID: "s1", Tool: "t1", Status: SubRunning})
+	if len(old) != 3 {
+		t.Fatalf("a subagent that sets none of the new fields has the keys %v, want id, tool and status", old)
+	}
+	for _, k := range []string{"id", "tool", "status"} {
+		if _, ok := old[k]; !ok {
+			t.Errorf("no key %q in %v", k, old)
+		}
+	}
+
+	paused := keys(Subagent{ID: "s1", Tool: "t1", Status: SubPaused, Error: "x", ErrorKind: "login", Cause: CauseRetriesFailed, Session: "sess"})
+	if string(paused["status"]) != `"paused"` {
+		t.Errorf(`status = %s, want "paused"`, paused["status"])
+	}
+	if _, ok := paused["retry"]; ok {
+		t.Errorf("a paused subagent has a retry key: %s", paused["retry"])
+	}
+	for k, want := range map[string]string{"errorKind": `"login"`, "cause": `"retries-failed"`, "session": `"sess"`} {
+		if string(paused[k]) != want {
+			t.Errorf("%s = %s, want %s", k, paused[k], want)
+		}
+	}
+
+	retrying := keys(Subagent{ID: "s1", Tool: "t1", Status: SubRunning, Retry: Retry{Attempt: 2, Of: 4, At: 5, Kind: "login", Error: "x"}})
+	if string(retrying["retry"]) != `{"attempt":2,"of":4,"at":5,"kind":"login","error":"x"}` {
+		t.Errorf("retry = %s", retrying["retry"])
+	}
+
+	if _, ok := keys(ChatView{})["retry"]; ok {
+		t.Error("a chat view with a zero Retry has a retry key")
+	}
+	if _, ok := keys(ChatView{Status: StatusRetrying, Retry: Retry{Attempt: 1, Of: 4}})["retry"]; !ok {
+		t.Error("a chat view with a Retry has no retry key")
+	}
+}

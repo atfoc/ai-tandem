@@ -165,7 +165,9 @@ failure line, and go on; do not investigate it at length.
   variable, a context value) and let the test lower it; the production value stays as it is.
   A test of real server processes (`cmd/ai-whiteboard`) cannot reach into the server, so the
   server reads the hidden variable `AIWB_TEST_WAITS` (`cmd/ai-whiteboard/testwaits.go`): a list
-  such as `ping=500ms,images=2s`, with the names `ping`, `agents` and `images`; unset, every wait is
+  such as `ping=500ms,images=2s`, with the names `ping`, `agents`, `images`, `quiet`, `hstart`, `linger`,
+  `handover`, `calls` and `retry` (the first pause of the retry of an agent after a temporary error, 20 s; the
+  other three pauses keep their ratio to it); unset, every wait is
   the production one. The test does not write the list by hand: it picks a `clock`
   (`testwaits_test.go`; `fast` divides by 10), passes `fast.env(t, "ping")` as the environment of
   its servers and divides its own times with `fast.of(60 * time.Second)`, so it crosses the same

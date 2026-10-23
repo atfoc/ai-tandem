@@ -46,6 +46,9 @@ type Deps struct {
 	// its last use (see images.go); 0 = an hour. Shorter in a test. The cleanup that runs by
 	// itself (CleanImages) looks twelve times in it.
 	ImageWait time.Duration
+	// RetryFirst is the first pause of the retry schedule (retry.go); 0 = the production 20 s.
+	// Only a test sets it (cmd's AIWB_TEST_WAITS retry=).
+	RetryFirst time.Duration
 }
 
 type Manager struct {
@@ -63,6 +66,14 @@ type Manager struct {
 	// more, may stay without a turn before it counts as done (the constant of that name; tests
 	// lower it). See background.go.
 	bgQuietWait time.Duration
+	// retryWaits are the pauses before the attempts of a retry (retrySchedule, scaled by
+	// Deps.RetryFirst); retryJitter spreads each one (defaultJitter; a test sets the identity).
+	// retryGate limits the retries that start at once, for the whole server; retryLog takes the
+	// lines of the retry's log (log.Print; a test captures them). See retry.go.
+	retryWaits  [retryAttempts]time.Duration
+	retryJitter func(time.Duration) time.Duration
+	retryGate   *retryGate
+	retryLog    func(string)
 
 	// extrasMu protects extras, extraBySID and used. Never take Chat.mu while holding extrasMu
 	// (issue/revoke run with Chat.mu then extrasMu).
@@ -110,6 +121,7 @@ type Chat struct {
 	lateEnd       string             // the error of a refused delivery whose own turn end may still come (see lateEvent)
 	hold          bool               // the app starts no turn until the user sends (see setHold); not saved
 	bg            bgWork             // the background work of the chat's agent process (Claude; see background.go)
+	retry         *retryWait         // the chat's agent is being retried (retrychat.go); nil otherwise
 
 	// The cap on running turns (see cap.go). reserved says that a turn admitted on this chat
 	// object is starting and pub does not show it yet; Manager.capMu guards it, not mu. noTurn
@@ -269,6 +281,10 @@ func New(d Deps) *Manager {
 
 		subQuietWait: subQuietWait,
 		bgQuietWait:  bgQuietWait,
+		retryWaits:   scaledSchedule(d.RetryFirst),
+		retryJitter:  defaultJitter,
+		retryGate:    newRetryGate(retryGateLimit, retryGateHold),
+		retryLog:     func(s string) { log.Print(s) },
 	}
 }
 
@@ -353,7 +369,7 @@ const (
 // pubOf is the value of Chat.pub for the status st.
 func pubOf(st model.Status) uint32 {
 	switch st {
-	case model.StatusThinking, model.StatusWriting, model.StatusTool, model.StatusWaiting:
+	case model.StatusThinking, model.StatusWriting, model.StatusTool, model.StatusWaiting, model.StatusRetrying:
 		return pubWorking
 	case model.StatusApproval:
 		return pubApproval
@@ -501,8 +517,15 @@ func view(c *Chat) model.ChatView {
 	}
 	n := countSubs(c)
 	v.SubsRunning, v.SubsOwed = n.running, n.owed
+	if c.retry != nil {
+		v.Retry = c.retry.model()
+	}
 	return v
 }
+
+// retrying reports whether the chat's agent is being retried after a temporary error. It is no
+// busy, inTurn or waiting: the chat takes the person's message. c.mu held.
+func retrying(c *Chat) bool { return c.retry != nil }
 
 // subCounts are the two numbers of a chat's view that come from its subagents' records.
 type subCounts struct {
@@ -904,7 +927,7 @@ func (m *Manager) CreateChat(n NewChat) (model.ChatView, error) {
 		}
 	}
 	meta.Model, meta.Effort = mc.Model, mc.Effort
-	sub, err := subChoice(m.startSub(group), n.SubDepth, n.SubCap)
+	sub, err := subChoice(m.subStartLimits(group), n.SubDepth, n.SubCap)
 	if err != nil {
 		return none, err
 	}
@@ -1017,9 +1040,9 @@ func (m *Manager) startChoice(group string, a model.AgentKind) (cwd string, mc m
 	return defaults.Resolve(d, group, a, m.DefaultCwd, cat)
 }
 
-// startSub is the subagent settings a chat in group starts with: the sticky ones of the group
+// subStartLimits is the subagent settings a chat in group starts with: the sticky ones of the group
 // (defaults.Sub), which are the same for every agent.
-func (m *Manager) startSub(group string) model.SubLimits {
+func (m *Manager) subStartLimits(group string) model.SubLimits {
 	var l model.SubLimits
 	m.Store.Read(func(s *model.State) { l = defaults.Sub(s.Defaults, group) })
 	return l
@@ -1309,6 +1332,9 @@ func (m *Manager) pump(c *Chat, ag agent.Agent, gen int) {
 		if turnSign {
 			c.bg.turnSign() // a turn runs: a quiet wait armed before it is over
 		}
+		if c.retry != nil && c.retry.started && (modelOutput(ev) || (ev.Kind == agent.EvTurnEnd && !ev.Aborted && ev.Error == "")) {
+			m.chatRetryOK(c) // the attempt got a reply: the next temporary error counts from the first
+		}
 		switch {
 		case ev.Kind == agent.EvThinking, ev.Kind == agent.EvPermRequest, ev.Kind == agent.EvTurnEnd,
 			ev.Kind == agent.EvExit, modelOutput(ev):
@@ -1319,6 +1345,17 @@ func (m *Manager) pump(c *Chat, ag agent.Agent, gen int) {
 		}
 		// A clean turn end with background work left is no end of the chat's turn (background.go).
 		waits := ev.Kind == agent.EvTurnEnd && !ev.Aborted && ev.Error == "" && waitsOnBackground(ev.Background)
+		// A temporary error with an attempt left (retrychat.go) is applied as a clean end: no error
+		// note, no hold, and the turn goes on across the attempts (TurnActive stays set). failed
+		// keeps the event as it was.
+		temp := ev.Kind == agent.EvTurnEnd && !ev.Aborted && ev.Error != "" && ev.Temporary != ""
+		retried := temp && retryLeftChat(c)
+		failed := ev
+		if retried {
+			ev.Error, ev.Temporary = "", ""
+		} else if ev.Kind == agent.EvTurnEnd && !temp && c.retry != nil && c.retry.started {
+			m.cancelChatRetry(c, "the process ended") // the attempt failed for good: not a temporary error
+		}
 		switch ev.Kind {
 		case agent.EvSession:
 			c.meta.SessionID = ev.SessionID
@@ -1356,7 +1393,7 @@ func (m *Manager) pump(c *Chat, ag agent.Agent, gen int) {
 			u.Turns++
 			c.bg.report(ev.Background)
 			c.bg.turnSign()
-			if !waits {
+			if !waits && !retried {
 				c.meta.TurnActive = false // a chat that waits on its background work is not done
 			}
 			if c.sentGen == gen {
@@ -1366,6 +1403,7 @@ func (m *Manager) pump(c *Chat, ag agent.Agent, gen int) {
 			}
 		case agent.EvExit:
 			c.ag = nil
+			m.cancelChatRetry(c, "the process ended")
 		}
 		ups := c.tr.Apply(ev)
 		if ev.Kind == agent.EvTurnEnd {
@@ -1393,7 +1431,7 @@ func (m *Manager) pump(c *Chat, ag agent.Agent, gen int) {
 		if (ev.Kind == agent.EvTurnEnd && ev.Aborted) || ev.Kind == agent.EvExit {
 			// An interrupt or cancel stops every subagent; background ones die with the process.
 			// A normal turn end leaves them alone: Claude's background subagents outlive it.
-			toClose = m.stopSubs(c, &out)
+			toClose = m.stopSubs(c, endParent, &out)
 		}
 		if ev.Kind == agent.EvTurnEnd && (ev.Aborted || ev.Error != "") && waitsOnBackground(ev.Background) && c.ag != nil {
 			// A turn that does not end cleanly leaves no wait (background.go): the commands it
@@ -1401,6 +1439,11 @@ func (m *Manager) pump(c *Chat, ag agent.Agent, gen int) {
 			// with them, as Stop of a waiting chat does; the chat keeps the note of this end, and
 			// the next message resumes the session in a new process.
 			toClose = append(toClose, dropProcess(c))
+		}
+		if retried {
+			toClose = append(toClose, m.chatTempFail(c, failed, &out))
+		} else if temp {
+			m.chatRetryGaveUp(c, failed, &out)
 		}
 		if st, _ := c.tr.Status(); !wasInTurn && inTurn(c) && st != model.StatusApproval && !c.meta.TurnActive {
 			// A turn the agent started by itself (Claude, when a background subagent finishes). A
@@ -1419,7 +1462,7 @@ func (m *Manager) pump(c *Chat, ag agent.Agent, gen int) {
 			out.emitChat(c)
 		}
 		var d *carry
-		if ev.Kind == agent.EvTurnEnd || ev.Kind == agent.EvExit {
+		if (ev.Kind == agent.EvTurnEnd && !retried) || ev.Kind == agent.EvExit {
 			d = m.turnOver(c, ev, &out)
 		}
 		out.emitCounts(c)
@@ -1576,6 +1619,10 @@ func (m *Manager) sendOn(c *Chat, text, context string, refs []model.Reference, 
 		m.send(out)
 		return false, err
 	}
+	// A message between the attempts of a retry (retrychat.go) is the next turn: the retry is cancelled
+	// and the message starts the session in a new process, as after any closed process.
+	wasRetrying := c.retry != nil
+	m.cancelChatRetry(c, "a message of the user")
 	// The message is taken here: the draft it was typed as is the one of this counter. The start
 	// below may release c.mu (spawnFork), and a branch's draft is under its top-level chat's mu
 	// anyway, so a draft may be saved before the drop at the end.
@@ -1587,6 +1634,10 @@ func (m *Manager) sendOn(c *Chat, text, context string, refs []model.Reference, 
 	}
 	if err != nil {
 		m.releaseTurn(c) // no turn: c shows what the failed start left, which is not working
+		if wasRetrying {
+			c.meta.TurnActive = false // the turn of the retry is over, and no other began
+			m.logSave(c)
+		}
 		c.mu.Unlock()
 		m.send(out)
 		return false, err
@@ -1634,6 +1685,9 @@ func (m *Manager) sendOn(c *Chat, text, context string, refs []model.Reference, 
 	if d != nil {
 		blocks = append(blocks, agent.ContentBlock{Text: subResultsBlock(taken, runningKids(c, ""), true)})
 		c.carry = d
+	}
+	if subs := pausedOrStopped(c, ""); len(subs) > 0 {
+		blocks = append(blocks, agent.ContentBlock{Text: pausedListBlock(subs, true)})
 	}
 	blocks = append(blocks, pictures...) // directly before the block of the user's text
 	blocks = append(blocks, agent.ContentBlock{Text: withReferences(refs, text)})
@@ -2178,6 +2232,24 @@ func (m *Manager) InterruptOf(id, branch string) error {
 	if err != nil {
 		return err
 	}
+	noted := false // the "Stopped." note of a retry that waited
+	if c.retry != nil && !c.deleted && !c.unlisted && c.tr != nil {
+		// Between the attempts there is no process and no turn to end: the chat is stopped here. An
+		// attempt that runs is interrupted below as any turn is, and its aborted end writes the note.
+		wait := c.retry.started
+		m.cancelChatRetry(c, "stopped")
+		if !wait {
+			c.meta.TurnActive = false
+			c.tr.SetStatus(model.StatusReady)
+			out.emitItems(c, c.tr.AddNote("muted", "Stopped."))
+			if err := c.tr.Flush(false); err != nil {
+				log.Printf("chats: flush %s: %v", c.meta.ID, err)
+			}
+			m.logSave(c)
+			out.emitChat(c)
+			noted = true
+		}
+	}
 	if c.ag != nil && !c.deleted && !c.unlisted && (c.bg.holds() || waiting(c)) {
 		toClose := m.stopLocked(c, &out)
 		newBgProcess(c) // the closed process's work ends with it
@@ -2189,9 +2261,9 @@ func (m *Manager) InterruptOf(id, branch string) error {
 	setHold(c)
 	ag := c.ag
 	stopped := runningAppSubs(c)
-	toClose := m.stopAppSubs(c, &out)
+	toClose := m.stopAppSubs(c, endPerson, &out)
 	if stopped > 0 && c.tr != nil {
-		if !turnRunning(c) {
+		if !noted && !turnRunning(c) {
 			out.emitItems(c, c.tr.AddNote("muted", "Stopped."))
 		}
 		if err := c.tr.Flush(false); err != nil {
@@ -2455,7 +2527,8 @@ func (m *Manager) Shutdown() {
 		var out outbox
 		c.mu.Lock()
 		setHold(c)
-		if c.tr != nil && !c.unlisted { // nothing is written for an unlisted chat; its process is still closed
+		m.cancelChatRetry(c, "shutdown") // TurnActive stays set: the next load shows the chat as stopped
+		if c.tr != nil && !c.unlisted {  // nothing is written for an unlisted chat; its process is still closed
 			if c.carry != nil {
 				c.carry.human = true
 				m.endCarry(c, false, &out)
@@ -2468,7 +2541,17 @@ func (m *Manager) Shutdown() {
 			}
 			m.logSave(c)
 		}
-		toClose := m.stopAppSubs(c, &out) // app-spawned processes must not outlive the server
+		// A subagent that is being retried was doing no work a stop loses: it is paused, with its
+		// session and the reason, for its parent to resume after the next start (design D11). No
+		// turn may start now, so its parent is not told.
+		var aft after
+		for _, s := range c.subs {
+			if w := s.retry; w != nil && s.app && s.meta.Status == model.SubRunning {
+				m.cancelSubRetry(c, s, "shutdown")
+				m.pauseSub(c, s, w.reason, w.kind, model.CauseRetryingAtStop, false, &out, &aft)
+			}
+		}
+		toClose := append(aft.close, m.stopAppSubs(c, endShutdown, &out)...) // app-spawned processes must not outlive the server
 		m.revokeChatExtras(c.meta.ID)
 		if c.ag != nil {
 			go c.ag.Close() // Cursor's Close waits for the process, forever when its children hold its output

@@ -63,13 +63,16 @@ export function workingOn<C extends Doing & Pick<ChatView, "board" | "archived" 
  *  to the busy branch: it is blocked only when the agent kind cannot branch from a source whose
  *  turn runs (o.liveFork false).
  *  esc: Esc stops, only while the agent is busy (a waiting chat is: Stop and Esc end its background work).
+ *  A chat whose agent is retried after a temporary error (status retrying) is not busy: it takes a message, which
+ *  starts a new turn and cancels the retry, and Stop and Esc cancel the retry.
  *  While the agent of a fork without a message starts (starting), there is nothing to stop and no
  *  message is taken: no Stop, no Esc, blocked. A chat with no agent (agent "") takes none either,
  *  and has nothing to stop. */
 export function composerControls(c: Doing & Pick<ChatView, "fresh"> & Partial<Pick<ChatView, "agent">>, o?: { newBranch: boolean; liveFork: boolean }): { stop: boolean; blocked: boolean; esc: boolean } {
   if (starting(c) || c.agent === "") return { stop: false, blocked: true, esc: false };
   const busy = isBusy(c.status);
-  return { stop: branchWorking(c), blocked: o?.newBranch ? busy && !o.liveFork : busy, esc: busy };
+  const retrying = c.status === "retrying";
+  return { stop: branchWorking(c) || retrying, blocked: o?.newBranch ? busy && !o.liveFork : busy, esc: busy || retrying };
 }
 
 /** What a chat's header says after its agent and folder: "Archived", "Disabled" for a chat of the

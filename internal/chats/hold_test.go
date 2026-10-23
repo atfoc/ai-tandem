@@ -124,7 +124,13 @@ func TestHoldStartsNoTurn(t *testing.T) {
 				parent = nil
 			}
 			e.clock.Store(testNow + 20)
-			e.afterHold(id, parent, want...)
+			// A subagent the hold stopped is listed with the person's message (D14); one that kept
+			// running is not.
+			var listed []string
+			if !runs {
+				listed = []string{running.ID}
+			}
+			e.afterHoldListing(id, parent, listed, want...)
 		})
 	}
 }
@@ -134,7 +140,7 @@ func TestHoldStartsNoTurn(t *testing.T) {
 func TestInterruptThenResultThenTurnEnd(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)
-	id, parent, owed, _, _ := e.pendingParent()
+	id, parent, owed, running, _ := e.pendingParent()
 	if err := e.m.Interrupt(id); err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +155,8 @@ func TestInterruptThenResultThenTurnEnd(t *testing.T) {
 	if n := notes(e.items(id), "muted"); len(n) != 0 {
 		t.Fatalf("notes %q for a turn that did not end aborted", n)
 	}
-	e.afterHold(id, parent, owed.ID, last.ID)
+	// The subagent the interrupt stopped is listed with the human's message (D14).
+	e.afterHoldListing(id, parent, []string{running.ID}, owed.ID, last.ID)
 }
 
 // An interrupted turn's own permission card is closed at its end; a late answer to it is refused
@@ -157,7 +164,7 @@ func TestInterruptThenResultThenTurnEnd(t *testing.T) {
 func TestInterruptedTurnsCardStartsNothing(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)
-	id, parent, owed, _, _ := e.pendingParent()
+	id, parent, owed, running, _ := e.pendingParent()
 	ask(t, parent, "", "r1")
 	if err := e.m.Interrupt(id); err != nil {
 		t.Fatal(err)
@@ -176,7 +183,8 @@ func TestInterruptedTurnsCardStartsNothing(t *testing.T) {
 		t.Fatalf("the agent was sent an answer: %+v %+v", d, s)
 	}
 	e.held("after the late answer", id, parent, 1, owed.ID)
-	e.afterHold(id, parent, owed.ID)
+	// The subagent the interrupt stopped is listed with the human's message (D14).
+	e.afterHoldListing(id, parent, []string{running.ID}, owed.ID)
 }
 
 // Interrupt with no turn running: the subagents stop and the agent is signalled, as with a turn.
@@ -206,9 +214,9 @@ func TestInterruptIdleParent(t *testing.T) {
 		e := newEnv(t)
 		evs := listen(t, e.br)
 		id, parent := e.idleParent()
-		e.spawn(id, SpawnSubRequest{Prompt: "a"})
+		sa := e.spawn(id, SpawnSubRequest{Prompt: "a"})
 		ca := waitChild(t, e.claude, 2)
-		e.spawn(id, SpawnSubRequest{Prompt: "b"})
+		sb := e.spawn(id, SpawnSubRequest{Prompt: "b"})
 		cb := waitChild(t, e.claude, 3)
 		evs.drain(t, e.br)
 		if err := e.m.Interrupt(id); err != nil {
@@ -245,7 +253,8 @@ func TestInterruptIdleParent(t *testing.T) {
 		last := e.spawn(id, SpawnSubRequest{Prompt: "spawned last"})
 		e.finish(waitChild(t, e.claude, 4), "late report")
 		e.held("after a later result", id, parent, 1, last.ID)
-		e.afterHold(id, parent, last.ID)
+		// The two the interrupt stopped are listed with the human's message (D14).
+		e.afterHoldListing(id, parent, []string{sa.ID, sb.ID}, last.ID)
 	})
 
 	t.Run("no running subagent", func(t *testing.T) {
@@ -287,7 +296,7 @@ func TestInterruptIdleParent(t *testing.T) {
 			t.Fatalf("notes %q", n)
 		}
 		e.held("after the interrupt", id, parent, 1)
-		e.afterHold(id, parent)
+		e.afterHoldListing(id, parent, []string{sa.ID})
 	})
 }
 
@@ -305,7 +314,7 @@ func TestInterruptDuringHandOff(t *testing.T) {
 			id, parent := e.idleParent()
 			sa := e.spawn(id, SpawnSubRequest{Prompt: "finishes"})
 			child := waitChild(t, e.claude, 2)
-			e.spawn(id, SpawnSubRequest{Prompt: "runs on"})
+			running := e.spawn(id, SpawnSubRequest{Prompt: "runs on"})
 			runner := waitChild(t, e.claude, 3)
 			if tc.refuse {
 				parent.failSends(errors.New("stdin closed"))
@@ -341,7 +350,8 @@ func TestInterruptDuringHandOff(t *testing.T) {
 				if f := e.subFile(id, sa.ID); f.Delivery != model.SubOwed {
 					t.Fatalf("subagent.json %+v", f)
 				}
-				e.afterHold(id, parent, sa.ID)
+				// The one the interrupt stopped is listed with the human's message (D14).
+				e.afterHoldListing(id, parent, []string{running.ID}, sa.ID)
 				return
 			}
 
@@ -364,7 +374,7 @@ func TestInterruptDuringHandOff(t *testing.T) {
 			if f := e.subFile(id, sa.ID); f.Delivery != model.SubOwed {
 				t.Fatalf("subagent.json %+v", f)
 			}
-			e.afterHold(id, parent, sa.ID)
+			e.afterHoldListing(id, parent, []string{running.ID}, sa.ID)
 		})
 	}
 }

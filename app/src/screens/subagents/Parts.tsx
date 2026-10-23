@@ -16,13 +16,16 @@ import { tid } from "../../ui/tid.ts";
 import { agentColours } from "../chat/colour.ts";
 import { SubMeter } from "../usage/index.ts";
 
-/** The mark of a subagent's state: a pulsing dot while it runs, ✓ done, ! failed, ■ stopped. waiting: it runs and waits for the subagents it
- *  started (subWaiting): a ring that stands still, not the dot of one at work (B-SA-04). */
+/** The mark of a subagent's state: a pulsing dot while it runs, ✓ done, ! failed, ■ stopped, and the ring that stands still, in the danger colour,
+ *  when it is paused. waiting: it runs and waits for the subagents it started (subWaiting): a ring that stands still, not the dot of one at work
+ *  (B-SA-04). */
 export function SubMark({ status, waiting = false }: { status: SubStatus; waiting?: boolean }) {
   const t = useTokens();
   return (
     <View {...tid("sub-mark", { status, waiting })} style={styles.mark}>
-      {status === "running"
+      {status === "paused"
+        ? <View style={[styles.dot, { borderWidth: 1.5, borderColor: t.danger }]} />
+        : status === "running"
         ? (waiting ? <View style={[styles.dot, { borderWidth: 1.5, borderColor: t.muted }]} /> : <Pulse colour={t.ok} />)
         : <Text size={12} weight="700" style={{ color: status === "completed" ? t.ok : status === "failed" ? t.danger : t.muted }}>{status === "completed" ? "✓" : status === "failed" ? "!" : "■"}</Text>}
     </View>

@@ -7,7 +7,7 @@ How AI Whiteboard fits together: the server, the app on its four targets (the de
   `get_image`, `apply`, `delete_elements`, `create_board`, `show_board`). Claude, Cursor and pi get these over
   MCP: one fixed MCP endpoint, `http://localhost:6006/mcp`, carries the chat's token in
   the `Authorization` header (every chat). The spawn family (`spawn_subagent`, `stop_subagent`,
-  `list_subagent_models`) is on every chat and replaces native Agent / Task / subagent on app chats;
+  `resume_subagent`, `list_subagent_models`) is on every chat and replaces native Agent / Task / subagent on app chats;
   `list_subagent_models` tells an agent which `model` and `effort` values `spawn_subagent` accepts
   for each agent. An agent does not wait for a subagent or fetch its result: it ends its turn, and
   when the subagent finishes the app sends the result to the agent as a message, in a turn of its
@@ -29,7 +29,22 @@ How AI Whiteboard fits together: the server, the app on its four targets (the de
   server's shutdown, its own exit) ends what it started, detached shells included. A result that
   cannot be given to a waiting subagent fails it. A subagent stops only the subagents it started, stopping one stops
   everything below it, and what a subagent's spawn does not name (agent, model, effort) is taken
-  from that subagent. For pi
+  from that subagent. Every subagent the app starts has its session recorded on its record when it
+  starts, for every agent kind (one started before that was built has none). A turn that ends with
+  an error the CLI reports as temporary (Claude: a login failure, a rate limit, an overload, a
+  server error; pi: an error it retried itself and gave up on) is retried by the app, in a new
+  process on the same session. It is retried four times, after about 20 s, 1 min, 3 min and 8 min,
+  each with random jitter, and at most two retries start at once across the server. Meanwhile the
+  agent is running: a chat shows `retrying` and counts as working, a message of the person cancels
+  the retry and is the next turn, and Stop and Interrupt cancel it, as they cancel the retries of
+  its subagents. A subagent whose retries run out is `paused`: it has no process and does not count
+  against the cap, it keeps its session and what is owed to it, and the subagents it started run on.
+  A subagent that is retrying or paused when the server stops is paused when the chat is loaded
+  again. A parent resumes a paused or stopped subagent that it started itself with
+  `resume_subagent`, which starts it again on its recorded session with the results it is owed.
+  Every message to an agent lists the subagents it started that are paused or were stopped without
+  its asking, so a "continue" to the chat's agent is enough for it to resume them; the app never
+  resumes one by itself. For pi
   the token travels only inside `AIWB_MCP_CONFIG` (never in argv or a URL); app-spawned subagents get
   their own extra token. The owner-only UDS bridge carries a per-run, non-secret handle for permission
   asks, subagent activity, abort and MCP failure notices. pi tool

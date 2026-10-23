@@ -70,7 +70,7 @@ func TestSpawnToolsNameOnlyUsableAgents(t *testing.T) {
 		t.Fatalf("agent enums with no usable agent = %v", got)
 	}
 	names := e.listNames(plain)
-	if !joinEq(names, []string{"spawn_subagent", "stop_subagent", "list_subagent_models"}) {
+	if !joinEq(names, []string{"spawn_subagent", "stop_subagent", "list_subagent_models", "resume_subagent"}) {
 		t.Fatalf("tools with no usable agent = %v", names)
 	}
 }

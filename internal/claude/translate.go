@@ -73,6 +73,11 @@ func (p *proc) translate1(m map[string]any) []agent.Event {
 			}
 		case "permission_denied":
 			return []agent.Event{{Kind: agent.EvToolDenied, ToolID: str(m["tool_use_id"])}}
+		case "api_retry":
+			// The CLI retries a class of error itself before it gives up; that it did is a statement
+			// that the error could pass, even where the class is "unknown".
+			p.apiRetried, p.apiRetryErr = true, str(m["error"])
+			return nil
 		}
 	case "stream_event":
 		return p.streamEvent(obj(m["event"]))
@@ -84,6 +89,9 @@ func (p *proc) translate1(m map[string]any) []agent.Event {
 		// follows carries the same text. The CLI's mark decides, not the "<synthetic>" model name,
 		// which its other locally written messages have too.
 		apiErr, _ := m["is_api_error_message"].(bool)
+		if apiErr {
+			p.apiErr = str(m["error"])
+		}
 		var evs []agent.Event
 		for _, c := range list(msg["content"]) {
 			b := obj(c)
@@ -116,6 +124,8 @@ func (p *proc) translate1(m map[string]any) []agent.Event {
 		// line's own uuid (neither names an entry).
 		point := p.point
 		p.point = ""
+		class, retryClass, retried := p.apiErr, p.apiRetryErr, p.apiRetried
+		p.apiErr, p.apiRetryErr, p.apiRetried = "", "", false
 		// The empty result a resume or a fork sends for each task its session lost: marked by its
 		// origin, or (a line without one) counted off against the notices. Any other result is a
 		// turn's own, and ends the count.
@@ -163,6 +173,10 @@ func (p *proc) translate1(m map[string]any) []agent.Event {
 				errText = "Error: " + reason
 			}
 		}
+		temp := agent.Temporary("")
+		if isErr && !aborted {
+			temp = claudeTemporary(class, retryClass, retried)
+		}
 		// The raw numbers of the line: total_cost_usd and modelUsage are cumulative for the
 		// process, num_turns and usage are this turn's.
 		_, hasCost := m["total_cost_usd"].(float64)
@@ -182,7 +196,7 @@ func (p *proc) translate1(m map[string]any) []agent.Event {
 		}
 		return []agent.Event{
 			{Kind: agent.EvUsage, CtxWindow: win},
-			{Kind: agent.EvTurnEnd, Aborted: aborted, Error: errText, Point: point, SelfBegun: selfBegun(m),
+			{Kind: agent.EvTurnEnd, Aborted: aborted, Error: errText, Temporary: temp, Point: point, SelfBegun: selfBegun(m),
 				CostUSD: num(m["total_cost_usd"]), HasCost: hasCost, NumTurns: int(num(m["num_turns"])),
 				OutTokens: int(num(obj(m["usage"])["output_tokens"])), CumOutTokens: cumOut,
 				CumTokens: cum, HasTokens: hasTok,
@@ -190,6 +204,34 @@ func (p *proc) translate1(m map[string]any) []agent.Event {
 		}
 	}
 	return nil
+}
+
+// claudeTemporary is the Temporary of an errored turn from its api-error class (the "error" of the
+// assistant line, else the "error" of the last system/api_retry line) and whether the CLI retried the turn
+// itself. The classes are those of Claude Code 2.1.309's enum of that field; the text of the error is
+// never read. A class that is a statement about the request or the account is not temporary; one the CLI
+// does not name is temporary only if it retried the turn itself.
+func claudeTemporary(class, retryClass string, retried bool) agent.Temporary {
+	if class == "" {
+		class = retryClass
+	}
+	switch class {
+	case "authentication_failed", "cloud_credential_error":
+		return agent.TempLogin
+	case "rate_limit":
+		return agent.TempRate
+	case "overloaded":
+		return agent.TempOverloaded
+	case "server_error":
+		return agent.TempServer
+	case "billing_error", "invalid_request", "model_not_found", "max_output_tokens",
+		"oauth_org_not_allowed", "account_on_hold", "verification_required":
+		return ""
+	}
+	if retried {
+		return agent.TempRetried
+	}
+	return ""
 }
 
 // taskEvent maps a system/task_* line of a subagent (task_type local_agent) to EvSub. Lines of

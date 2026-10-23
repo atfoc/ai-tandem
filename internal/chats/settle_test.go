@@ -327,7 +327,7 @@ func TestHumanStopsCarryingTurn(t *testing.T) {
 
 	t.Run("after model output", func(t *testing.T) {
 		e := newEnv(t)
-		id, parent, carried, _, runner := e.delivering(model.Claude)
+		id, parent, carried, running, runner := e.delivering(model.Claude)
 		parent.emit(t, agent.Event{Kind: agent.EvText, Text: "reading the report"})
 		interrupt(t, e, id, parent, runner)
 		parent.emit(t, agent.Event{Kind: agent.EvTurnEnd, Aborted: true})
@@ -336,13 +336,14 @@ func TestHumanStopsCarryingTurn(t *testing.T) {
 		if !e.holding(id) || len(parent.sent()) != 2 {
 			t.Fatalf("held %v, %d sends", e.holding(id), len(parent.sent()))
 		}
-		e.afterHold(id, parent)
+		// The subagent the person's stop (or the closing server) stopped is listed with the human's message (D14).
+		e.afterHoldListing(id, parent, []string{running.ID})
 	})
 
 	// A permission request of the agent's own is model output: only a tool call raises one.
 	t.Run("after its own permission request", func(t *testing.T) {
 		e := newEnv(t)
-		id, parent, carried, _, runner := e.delivering(model.Claude)
+		id, parent, carried, running, runner := e.delivering(model.Claude)
 		ask(t, parent, "", "r1")
 		interrupt(t, e, id, parent, runner)
 		parent.emit(t, agent.Event{Kind: agent.EvTurnEnd, Aborted: true})
@@ -351,7 +352,8 @@ func TestHumanStopsCarryingTurn(t *testing.T) {
 		if c := e.card(id, "", "r1"); c.Decided != "deny" {
 			t.Fatalf("card %+v", c)
 		}
-		e.afterHold(id, parent)
+		// The subagent the person's stop (or the closing server) stopped is listed with the human's message (D14).
+		e.afterHoldListing(id, parent, []string{running.ID})
 	})
 }
 
@@ -802,7 +804,7 @@ func TestStopDuringCarryingTurn(t *testing.T) {
 	t.Parallel()
 	t.Run("no model output", func(t *testing.T) {
 		e := newEnv(t)
-		id, parent, carried, _, _ := e.delivering(model.Claude)
+		id, parent, carried, running, _ := e.delivering(model.Claude)
 		e.m.Stop(id)
 		e.delivery("after Stop", id, carried.ID, model.SubOwed)
 		if e.m.Busy(id) || !e.holding(id) {
@@ -814,16 +816,18 @@ func TestStopDuringCarryingTurn(t *testing.T) {
 		if errs := notes(e.items(id), "error"); len(errs) != 0 {
 			t.Fatalf("error notes %q", errs)
 		}
-		e.afterHold(id, nil, carried.ID)
+		// The subagent the person's stop (or the closing server) stopped is listed with the human's message (D14).
+		e.afterHoldListing(id, nil, []string{running.ID}, carried.ID)
 	})
 
 	t.Run("with model output", func(t *testing.T) {
 		e := newEnv(t)
-		id, parent, carried, _, _ := e.delivering(model.Claude)
+		id, parent, carried, running, _ := e.delivering(model.Claude)
 		parent.emit(t, agent.Event{Kind: agent.EvToolStart, ToolID: "t1", ToolName: "Read"})
 		e.m.Stop(id)
 		e.delivery("after Stop", id, carried.ID, model.SubSent)
-		e.afterHold(id, nil)
+		// The subagent the person's stop (or the closing server) stopped is listed with the human's message (D14).
+		e.afterHoldListing(id, nil, []string{running.ID})
 	})
 }
 
@@ -905,18 +909,20 @@ func TestShutdownDuringCarryingTurn(t *testing.T) {
 		if rows := resultRows(e.items(id)); len(rows) != 1 || rows[0] != carried.ID {
 			t.Fatalf("result rows after boot %v", rows)
 		}
-		e.afterHold(id, nil, carried.ID)
+		// The subagent the person's stop (or the closing server) stopped is listed with the human's message (D14).
+		e.afterHoldListing(id, nil, []string{running.ID}, carried.ID)
 	})
 
 	t.Run("with model output", func(t *testing.T) {
 		e := newEnv(t)
-		id, parent, carried, _, _ := e.delivering(model.Claude)
+		id, parent, carried, running, _ := e.delivering(model.Claude)
 		parent.emit(t, agent.Event{Kind: agent.EvTextStart}, agent.Event{Kind: agent.EvTextDelta, Text: "reading"})
 		e.m.Shutdown()
 		parent.exit(t)
 		e.boot()
 		e.delivery("after boot", id, carried.ID, model.SubSent)
-		e.afterHold(id, nil)
+		// The subagent the person's stop (or the closing server) stopped is listed with the human's message (D14).
+		e.afterHoldListing(id, nil, []string{running.ID})
 	})
 
 	// A retry in flight keeps its one failed attempt: the shutdown is not a second.

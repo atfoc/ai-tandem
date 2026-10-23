@@ -37,9 +37,9 @@ func TestSpawnFamilyFor(t *testing.T) {
 				t.Fatalf("%v: tool %d is %q", tc.agents, i, tool.Name)
 			}
 			p, ok := agentProp(tool)
-			if tool.Name == "stop_subagent" {
+			if tool.Name == "stop_subagent" || tool.Name == "resume_subagent" {
 				if ok || tool.Summary != SpawnFamily[i].Summary {
-					t.Fatalf("%v: stop_subagent changed: %+v", tc.agents, tool)
+					t.Fatalf("%v: %s changed: %+v", tc.agents, tool.Name, tool)
 				}
 				continue
 			}

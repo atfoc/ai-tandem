@@ -533,3 +533,38 @@ func TestFakeClaudeLateShellEndsWithASelfExit(t *testing.T) {
 	}
 	groupGone(t, "after the process exited by itself", shells[0])
 }
+
+// [[apierror CLASS N]] fails the turn and the next N-1 of the session as the CLI fails a turn the API
+// refused, across processes: a process started again with --resume fails its turn too, whatever it is
+// sent, and the turn after the count answers.
+func TestFakeClaudeAPIError(t *testing.T) {
+	if !agenttest.HasNode() {
+		t.Skip("node is not on PATH")
+	}
+	t.Setenv("FAKE_CLAUDE_STATE", t.TempDir())
+	sp := &claude.Spawner{Bin: agenttest.FakeClaude(t), AppRoot: t.TempDir(), Home: t.TempDir()}
+	const session = "22222222-2222-4222-8222-222222222222"
+	start := func(resume bool) agent.Agent {
+		ag, err := sp.Spawn(agent.SpawnOptions{ChatID: "c1", SessionID: session, Resume: resume, Cwd: t.TempDir(), Model: "sonnet"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			ag.Close()
+			for range ag.Events() { // until the process has exited
+			}
+		})
+		return ag
+	}
+	const text = "Failed to authenticate. API Error: 401 OAuth token has expired."
+	for i, msg := range []string{"[[apierror authentication_failed 2]] hi", "carry on"} {
+		texts, end := claudeTurn(t, start(i > 0), msg)
+		if end.Error != text || end.Temporary != agent.TempLogin || len(texts) != 0 {
+			t.Errorf("process %d: texts %q, turn end %+v; want no text, error %q and Temporary login", i+1, texts, end, text)
+		}
+	}
+	texts, end := claudeTurn(t, start(true), "carry on")
+	if end.Error != "" || end.Temporary != "" || len(texts) != 1 || texts[0] != "FAKE(sonnet): carry on" {
+		t.Errorf("process 3: texts %q, turn end %+v; want the answer", texts, end)
+	}
+}

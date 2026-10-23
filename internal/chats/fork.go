@@ -358,6 +358,10 @@ func sentPast(items []model.Item, count int) bool {
 // with the copy's first human message (NoticeOwed, see notCarriedBlock). No open item is carried
 // over either: unfinished text, a tool call without a result and an undecided permission request
 // in the copied items are closed in the copy (transcript.CloseAll). src's own stay as they are.
+//
+// A copy resumes nothing: every copied subagent record loses its Session and Retry, and one that
+// is paused becomes stopped and NotCarried, as a running one does. Only the source keeps the
+// sessions and resumes its subagents.
 func (m *Manager) addUnlisted(src *Chat, meta model.ChatMeta, at int) (*Chat, error) {
 	if err := m.copyPrefix(src, meta.ID, at); err != nil {
 		return nil, err
@@ -383,6 +387,17 @@ func (m *Manager) addUnlisted(src *Chat, meta model.ChatMeta, at int) (*Chat, er
 		s.meta.NotCarried = true
 		m.saveSub(c, s)
 		told = told && s.meta.Parent != ""
+	}
+	// A copy resumes nothing: its records lose the sessions (two processes must never write one
+	// session, and only the source resumes its subagents), and a paused one is stopped, as a
+	// running one is.
+	for _, s := range c.subs {
+		s.meta.Session, s.meta.Retry = "", model.Retry{}
+		if s.meta.Status == model.SubPaused {
+			s.meta.Status, s.meta.NotCarried = model.SubStopped, true
+			told = told && s.meta.Parent != ""
+		}
+		m.saveSub(c, s)
 	}
 	c.meta.NoticeOwed = !told && len(notCarried(c)) > 0
 	if told {
@@ -485,7 +500,7 @@ func (m *Manager) sourceKept(id string, count int) bool {
 func (m *Manager) dropUnlisted(c *Chat, forked bool) {
 	var out outbox // never sent: nothing is emitted for an unlisted chat
 	c.mu.Lock()
-	toClose := m.stopSubs(c, &out)
+	toClose := m.stopSubs(c, endParent, &out)
 	c.deleted = true
 	c.gen++
 	ag := c.ag

@@ -32,10 +32,12 @@ import (
 //	calls    how long an agent's board call waits for the answer of the client it was given to
 //	         (boardapi's 30 s); it is also how long a window that holds a board may stay silent
 //	         before it loses the board
+//	retry    the first pause of the retry of an agent after a temporary error
+//	         (chats.Deps.RetryFirst, 20 s); the other three keep their ratio to it
 type testWaits struct {
 	ping, agents, images       time.Duration
 	quiet, hstart, linger, hov time.Duration
-	calls                      time.Duration
+	calls, retry               time.Duration
 }
 
 // readTestWaits is the AIWB_TEST_WAITS of this process; a value that cannot be read ends it.
@@ -53,12 +55,12 @@ func parseTestWaits(v string) (w testWaits, err error) {
 		return w, nil
 	}
 	fields := map[string]*time.Duration{"ping": &w.ping, "agents": &w.agents, "images": &w.images,
-		"quiet": &w.quiet, "hstart": &w.hstart, "linger": &w.linger, "handover": &w.hov, "calls": &w.calls}
+		"quiet": &w.quiet, "hstart": &w.hstart, "linger": &w.linger, "handover": &w.hov, "calls": &w.calls, "retry": &w.retry}
 	for _, part := range strings.Split(v, ",") {
 		name, value, ok := strings.Cut(strings.TrimSpace(part), "=")
 		f := fields[name]
 		if !ok || f == nil {
-			return testWaits{}, fmt.Errorf("%q is not name=duration with one of the names ping, agents, images, quiet, hstart, linger, handover, calls", part)
+			return testWaits{}, fmt.Errorf("%q is not name=duration with one of the names ping, agents, images, quiet, hstart, linger, handover, calls, retry", part)
 		}
 		d, err := time.ParseDuration(value)
 		if err != nil || d <= 0 {

@@ -32,7 +32,9 @@ import (
 //	                                         session's cost so far, with pi's error text when the
 //	                                         turn's last assistant message ended in pi's error state
 //	extension_error                          logged once
-//	compaction_*, auto_retry_*,              ignored, like every unknown type, so a newer pi
+//	auto_retry_end                           its failure is kept for the turn end, which then
+//	                                         has Temporary retried (D3)
+//	compaction_*, auto_retry_start,          ignored, like every unknown type, so a newer pi
 //	summarization_retry_*, queue_update,     cannot break the stream
 //	bash_execution_update, session_info_changed, thinking_level_changed,
 //	entry_appended, extension_ui_request, …
@@ -77,6 +79,13 @@ func (p *proc) translate(m map[string]any) []agent.Event {
 		in := int(num(u["input"]) + num(u["cacheRead"]) + num(u["cacheWrite"]))
 		return []agent.Event{{Kind: agent.EvUsage, CtxIn: in, CtxOut: int(num(u["output"])),
 			CtxWindow: int(p.modelWindow.Load())}}
+
+	case "auto_retry_end":
+		// pi's retries ran out (or one succeeded, which clears the mark): the error that ends the turn
+		// is one pi itself judged it could retry.
+		success, _ := m["success"].(bool)
+		p.retryGaveUp = !success
+		return nil
 
 	case "agent_settled":
 		p.onSettled()
@@ -203,6 +212,10 @@ func (p *proc) onSettled() {
 	if end.Aborted {
 		end.Error = ""
 	}
+	if end.Error != "" && p.retryGaveUp {
+		end.Temporary = agent.TempRetried
+	}
+	p.retryGaveUp = false
 	if p.rpc == nil {
 		p.emit(end)
 		return

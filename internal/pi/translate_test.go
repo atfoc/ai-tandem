@@ -480,39 +480,70 @@ func TestFailedTurnFixtures(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.file, func(t *testing.T) {
-			raw, err := os.ReadFile(filepath.Join("testdata", c.file))
-			if err != nil {
-				t.Fatal(err)
-			}
-			p, w := unitProc()
-			for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
-				var m map[string]any
-				if err := json.Unmarshal([]byte(line), &m); err != nil {
-					t.Fatalf("bad fixture line %s: %v", line, err)
-				}
-				if m["type"] != "response" {
-					p.translateLine([]byte(line))
-					continue
-				}
-				if m["command"] != "get_session_stats" {
-					continue
-				}
-				// the stats answer, under the id this proc asked with; the fixtures have no
-				// get_fork_messages answer, so that one fails
-				cmds := w.commands(t)
-				if got := commandTypes(cmds); !equalStrings(got, []string{"get_session_stats", "get_fork_messages"}) {
-					t.Fatalf("commands %q, want get_session_stats then get_fork_messages", got)
-				}
-				m["id"] = cmds[0]["id"]
-				p.rpc.handleLine(mustJSON(m))
-				answer(t, p, w, 1, `"success":false,"error":"no messages"`)
-			}
-			evs := drainEvents(p)
+			evs := replayFixture(t, c.file)
 			if end := turnEnd(t, evs); end.Error != c.err || end.Aborted {
 				t.Errorf("turn ended %+v, want error %q", end, c.err)
 			}
 			if got := textOf(evs); got != c.text {
 				t.Errorf("text %q, want %q", got, c.text)
+			}
+		})
+	}
+}
+
+// replayFixture plays a fixture of testdata through a proc, the stats answer included, and returns the
+// events it gave.
+func replayFixture(t *testing.T, file string) []agent.Event {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("testdata", file))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, w := unitProc()
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		var m map[string]any
+		if err := json.Unmarshal([]byte(line), &m); err != nil {
+			t.Fatalf("bad fixture line %s: %v", line, err)
+		}
+		if m["type"] != "response" {
+			p.translateLine([]byte(line))
+			continue
+		}
+		if m["command"] != "get_session_stats" {
+			continue
+		}
+		// the stats answer, under the id this proc asked with; the fixtures have no
+		// get_fork_messages answer, so that one fails
+		cmds := w.commands(t)
+		if got := commandTypes(cmds); !equalStrings(got, []string{"get_session_stats", "get_fork_messages"}) {
+			t.Fatalf("commands %q, want get_session_stats then get_fork_messages", got)
+		}
+		m["id"] = cmds[0]["id"]
+		p.rpc.handleLine(mustJSON(m))
+		answer(t, p, w, 1, `"success":false,"error":"no messages"`)
+	}
+	return drainEvents(p)
+}
+
+func TestPiTemporaryOnlyAfterItsOwnRetries(t *testing.T) {
+	for _, c := range []struct {
+		file string
+		want agent.Temporary
+	}{
+		{"failed_turn_retries.jsonl", agent.TempRetried},
+		{"failed_turn.jsonl", ""},
+		{"retry_recovered.jsonl", ""},
+	} {
+		t.Run(c.file, func(t *testing.T) {
+			end := turnEnd(t, replayFixture(t, c.file))
+			if end.Temporary != c.want {
+				t.Errorf("Temporary %q, want %q (turn end %+v)", end.Temporary, c.want, end)
+			}
+			if c.want != "" && end.Error != "Connection error." {
+				t.Errorf("error %q, want Connection error.", end.Error)
+			}
+			if c.file == "retry_recovered.jsonl" && end.Error != "" {
+				t.Errorf("error %q, want none", end.Error)
 			}
 		})
 	}

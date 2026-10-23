@@ -104,7 +104,7 @@ function SubThread({ chat, sid, branch, readOnly, onClose, onOpen }: { chat: Cha
     </View>
   ), [chat, sa, branch, readOnly, off, report]);
   if (!sa) return null;
-  const line = subLine(it, sa, items, names, subs);
+  const line = subLine(it, sa, items, names, subs, now);
   const step = (by: number) => { const n = list[(idx + by + list.length) % list.length]; if (n) onOpen(n.id); };
   return (
     <>

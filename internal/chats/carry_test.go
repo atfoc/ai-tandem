@@ -283,33 +283,35 @@ func TestHumanCarryingTurnSettled(t *testing.T) {
 		want model.SubDelivery
 		held bool
 		note string // the error note the turn's end leaves; "" for none
+		// listed: the end stops the subagent that was running, and the person's next message lists it (D14).
+		listed bool
 	}{
 		{"model output, clean end", model.Claude, emits(agent.Event{Kind: agent.EvText, Text: "thanks"}, agent.Event{Kind: agent.EvTurnEnd}),
-			model.SubSent, false, ""},
+			model.SubSent, false, "", false},
 		{"no output, clean end on claude", model.Claude, emits(agent.Event{Kind: agent.EvThinking}, agent.Event{Kind: agent.EvTurnEnd}),
-			model.SubSent, false, ""},
+			model.SubSent, false, "", false},
 		{"no output, clean end on cursor", model.Cursor, emits(agent.Event{Kind: agent.EvThinking}, agent.Event{Kind: agent.EvTurnEnd}),
-			model.SubSent, false, ""},
+			model.SubSent, false, "", false},
 		{"no output, clean end on pi", model.Pi, emits(agent.Event{Kind: agent.EvThinking}, agent.Event{Kind: agent.EvTurnEnd}),
-			model.SubOwedAgain, true, backstopNote},
+			model.SubOwedAgain, true, backstopNote, false},
 		{"no output, errored end", model.Claude, emits(agent.Event{Kind: agent.EvThinking}, agent.Event{Kind: agent.EvTurnEnd, Error: "API Error: overloaded"}),
-			model.SubOwedAgain, true, "API Error: overloaded"},
+			model.SubOwedAgain, true, "API Error: overloaded", false},
 		{"no output, exit", model.Claude, func(t *testing.T, e *env, id string, parent *fakeAgent) bool {
 			parent.exit(t)
 			return false
-		}, model.SubOwedAgain, true, "The agent stopped: process ended"},
+		}, model.SubOwedAgain, true, "The agent stopped: process ended", true},
 		{"tool call, errored end", model.Claude, emits(agent.Event{Kind: agent.EvToolStart, ToolID: "t1", ToolName: "Bash"},
-			agent.Event{Kind: agent.EvTurnEnd, Error: "limit reached"}), model.SubSent, true, "limit reached"},
+			agent.Event{Kind: agent.EvTurnEnd, Error: "limit reached"}), model.SubSent, true, "limit reached", false},
 		// The human's stop is not a failed attempt, however the CLI then reports the end.
-		{"interrupt, aborted end", model.Claude, interrupt(agent.Event{Kind: agent.EvTurnEnd, Aborted: true}), model.SubOwed, true, ""},
+		{"interrupt, aborted end", model.Claude, interrupt(agent.Event{Kind: agent.EvTurnEnd, Aborted: true}), model.SubOwed, true, "", true},
 		{"interrupt, errored end", model.Claude, interrupt(agent.Event{Kind: agent.EvTurnEnd, Error: "request cancelled"}),
-			model.SubOwed, true, "request cancelled"},
-		{"interrupt, clean end", model.Claude, interrupt(agent.Event{Kind: agent.EvTurnEnd}), model.SubOwed, true, backstopNote},
+			model.SubOwed, true, "request cancelled", true},
+		{"interrupt, clean end", model.Claude, interrupt(agent.Event{Kind: agent.EvTurnEnd}), model.SubOwed, true, backstopNote, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			e := newEnv(t)
-			id, parent, owed, _, _ := e.heldResult(tc.kind)
+			id, parent, owed, running, _ := e.heldResult(tc.kind)
 			e.send(id, "go on", "")
 			if n := len(parent.sent()); n != 2 || !reflect.DeepEqual(deliveredSids(parent.sent()[1]), []string{owed.ID}) {
 				t.Fatalf("%d sends, want the human's message carrying %s", n, owed.ID)
@@ -340,10 +342,14 @@ func TestHumanCarryingTurnSettled(t *testing.T) {
 			if !alive {
 				parent = nil
 			}
+			var listed []string
+			if tc.listed {
+				listed = []string{running.ID}
+			}
 			if tc.want.Owed() {
-				e.afterHold(id, parent, owed.ID)
+				e.afterHoldListing(id, parent, listed, owed.ID)
 			} else {
-				e.afterHold(id, parent)
+				e.afterHoldListing(id, parent, listed)
 			}
 		})
 	}
@@ -415,7 +421,7 @@ func TestRefusedHumanSendThatCarries(t *testing.T) {
 	// has: busy, with no note. What then ends the turn is no second failed attempt.
 	t.Run("no turn end", func(t *testing.T) {
 		e := newEnv(t)
-		id, parent, owed, _, _ := e.heldResult(model.Claude)
+		id, parent, owed, running, _ := e.heldResult(model.Claude)
 		parent.failSends(errors.New("stdin closed"))
 		refuse(t, e, id, parent, owed, "stdin closed")
 		if st := e.status(id); st != model.StatusThinking || !e.meta(id).TurnActive || len(notes(e.items(id), "error")) != 1 {
@@ -426,7 +432,8 @@ func TestRefusedHumanSendThatCarries(t *testing.T) {
 		if errs := notes(e.items(id), "error"); len(errs) != 2 || errs[1] != "The agent stopped: process ended" {
 			t.Fatalf("error notes %q", errs)
 		}
-		e.afterHold(id, nil, owed.ID)
+		// The exit stopped the subagent that ran on: the human's message lists it (D14).
+		e.afterHoldListing(id, nil, []string{running.ID}, owed.ID)
 	})
 
 	// The agent answered a message whose hand-over then failed (pi can run a prompt whose ack timed
@@ -513,16 +520,19 @@ func TestOwedResultAcrossRestart(t *testing.T) {
 	if e.claude.count() != 1 || !next.opts.Resume {
 		t.Fatalf("%d processes, options %+v", e.claude.count(), next.opts)
 	}
-	if got := deliveredSids(next.sent()[0]); len(next.sent()) != 1 || !reflect.DeepEqual(got, []string{owed.ID}) {
+	// The two the closing app stopped are listed (D14), after the results and ahead of the text.
+	first := wantPausedList(t, next.sent()[0], stopped.ID, crashed.ID)
+	if got := deliveredSids(first); len(next.sent()) != 1 || !reflect.DeepEqual(got, []string{owed.ID}) {
 		t.Fatalf("%d sends, the human's message carries %v, want %s", len(next.sent()), got, owed.ID)
 	}
-	if block := next.sent()[0][0].Text; !strings.Contains(block, "<report>report</report>") || !strings.Contains(block, "still running: 0.") {
+	if block := first[0].Text; !strings.Contains(block, "<report>report</report>") || !strings.Contains(block, "still running: 0.") {
 		t.Fatalf("block:\n%s", block)
 	}
 	next.emit(t, agent.Event{Kind: agent.EvText, Text: "ok"}, agent.Event{Kind: agent.EvTurnEnd})
 	e.m.handoffs.Wait()
 	e.send(id, "again", "")
-	if got := texts(next.sent()[1]); len(next.sent()) != 2 || !reflect.DeepEqual(got, []string{"again"}) {
+	// They stay listed until the agent stops them or resumes them, so the next message lists them again.
+	if got := texts(wantPausedList(t, next.sent()[1], stopped.ID, crashed.ID)); len(next.sent()) != 2 || !reflect.DeepEqual(got, []string{"again"}) {
 		t.Fatalf("%d sends, the second message %q", len(next.sent()), got)
 	}
 	next.emit(t, agent.Event{Kind: agent.EvText, Text: "ok"}, agent.Event{Kind: agent.EvTurnEnd})
@@ -541,7 +551,7 @@ func TestOwedResultAcrossRestart(t *testing.T) {
 func TestShutdownStartsNoDelivery(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)
-	id, parent, owed, _, _ := e.pendingParent()
+	id, parent, owed, running, _ := e.pendingParent()
 	e.m.Shutdown()
 	parent.emit(t, agent.Event{Kind: agent.EvText, Text: "done"}, agent.Event{Kind: agent.EvTurnEnd})
 	e.m.handoffs.Wait()
@@ -553,14 +563,15 @@ func TestShutdownStartsNoDelivery(t *testing.T) {
 	}
 	e.boot()
 	e.delivery("after boot", id, owed.ID, model.SubOwed)
-	e.afterHold(id, nil, owed.ID)
+	// The subagent Shutdown stopped is listed with the human's message (D14).
+	e.afterHoldListing(id, nil, []string{running.ID}, owed.ID)
 }
 
 // A crash while a carrying turn runs leaves its results as sent: nothing is delivered twice.
 func TestCrashDuringCarryingTurn(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)
-	id, _, carried, _, _ := e.delivering(model.Claude)
+	id, _, carried, running, _ := e.delivering(model.Claude)
 	e.boot() // no Shutdown: the records and the thread are as the running app last wrote them
 	e.delivery("after boot", id, carried.ID, model.SubSent)
 	items := e.items(id)
@@ -569,7 +580,8 @@ func TestCrashDuringCarryingTurn(t *testing.T) {
 	}
 	e.send(id, "back", "")
 	next := e.claude.last(t)
-	if got := texts(next.sent()[0]); !reflect.DeepEqual(got, []string{"back"}) {
+	// The subagent the crash left running is stopped on loading and listed (D14).
+	if got := texts(wantPausedList(t, next.sent()[0], running.ID)); !reflect.DeepEqual(got, []string{"back"}) {
 		t.Fatalf("the message after the crash %q", got)
 	}
 }
@@ -579,7 +591,7 @@ func TestCrashDuringCarryingTurn(t *testing.T) {
 func TestArchivedChatKeepsOwedResults(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)
-	id, parent, owed, _, _ := e.pendingParent()
+	id, parent, owed, running, _ := e.pendingParent()
 	e.m.Stop(id)
 	if err := e.m.SetArchive(id, model.Archive{Archived: true}); err != nil {
 		t.Fatal(err)
@@ -592,5 +604,6 @@ func TestArchivedChatKeepsOwedResults(t *testing.T) {
 	if err := e.m.SetArchive(id, model.Archive{}); err != nil {
 		t.Fatal(err)
 	}
-	e.afterHold(id, nil, owed.ID)
+	// The subagent Stop stopped is listed with the human's message (D14).
+	e.afterHoldListing(id, nil, []string{running.ID}, owed.ID)
 }

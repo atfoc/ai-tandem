@@ -1,11 +1,13 @@
 // L19 (package S7): the subagents of a chat on the new build, at the three viewports — what no old check proved (B-SA-01 to B-SA-19,
-// B-SM-10, B-US-12, C-SS-07, C-SS-11; the old S1.1, ported as S1.1-subagents.mjs here, proves the Subagents chip's list). Four parts:
+// B-SM-10, B-US-12, C-SS-07, C-SS-11; the old S1.1, ported as S1.1-subagents.mjs here, proves the Subagents chip's list). Six parts:
 //   rows     c_nested of the mock (subagents three levels deep): a row for each, nested ones under the one that started them, the mark of its
 //            state (a ring that stands still for one that waits), the name with its glyph, the "background" tag, the line (the waiting one
 //            says what it waits on, alone or with its background work, a finished one "Done · …"), the stats (model, tool calls, run time, the ring with its percentage), the row
 //            of a result in the thread; a press opens the subagent, the open row is marked, a second press on it closes the drawer, Enter
 //            does the same on a focused row (desktop, tablet); the row of a call not linked yet opens nothing, and the line of one not
 //            carried over, of one that failed, one that stopped and one with a status this client does not know
+//   retry    a subagent that is retried ("Retrying in 40 s · 2 of 4", counting down, muted), one that is paused ("Paused · login failed", the error tone, no
+//            pulsing dot) and one with a status no client knows (its word): each says so in its row, and the other rows of the list still draw
 //   drawer   its place (beside the page at most 700 points and 58 % of the window; on the phone the pushed screen, whose back closes it),
 //            the crumb of a nested subagent and the way back through it, "‹ n/N ›" through the tree in order and wrapping, ×, Esc (the composer's
 //            Esc does not stop the chat; with the composer's @ list open the list takes the first Esc and the drawer the next, B-SA-16;
@@ -228,7 +230,7 @@ await check("L19 subagents: the rows in the thread, the drawer, its thread and r
       sub("s3", "c3", "Copied while running", { status: "running", notCarried: true, started: 3000 }),
       sub("s4", "c4", "A failing one", { status: "failed", error: "The build failed.\nSecond line.", started: 4000 }),
       sub("s5", "c5", "A stopped one", { status: "stopped", started: 5000 }),
-      sub("s6", "c6", "A newer status", { status: "paused", started: 6000 }),
+      sub("s6", "c6", "A newer status", { status: "frozen", started: 6000 }),
     ];
     const list = [{ kind: "user", text: "Go." }, call("c1", "s1", "Review the sum"), call("c2", "s2", "Wait for it", { result: undefined }), call("c3", "s3", "Copied while running"), call("c4", "s4", "A failing one"),
       call("c5", "s5", "A stopped one"), call("c6", "s6", "A newer status"), call("c7", "", "Not linked yet", { result: undefined }), say("Done."), { kind: "end" }];
@@ -242,7 +244,7 @@ await check("L19 subagents: the rows in the thread, the drawer, its thread and r
       if (by.s3?.line !== "Not carried over: it was running in the chat this was copied from" || by.s3.status !== "stopped" || by.s3.tone !== "muted") fail(`${viewport}: the subagent not carried over is ${J(by.s3)}`);
       if (by.s4?.line !== "The build failed." || by.s4.tone !== "error" || by.s4.mark !== "!") fail(`${viewport}: the failed subagent is ${J(by.s4)}`);
       if (by.s5?.line !== "Stopped" || by.s5.mark !== "■") fail(`${viewport}: the stopped subagent is ${J(by.s5)}`);
-      if (by.s6?.line !== "paused") fail(`${viewport}: a status this client does not know shows "${by.s6?.line}", not as it is`);
+      if (by.s6?.line !== "frozen") fail(`${viewport}: a status this client does not know shows "${by.s6?.line}", not as it is`);
       // the call not linked yet: it ends with its result in the thread, built from the call, and it opens nothing
       const unlinked = (await rowsOf(page)).find((r) => r.sub === "");
       if (!unlinked || unlinked.desc !== "Not linked yet" || unlinked.status !== "stopped") fail(`${viewport}: the call not linked yet is ${J(unlinked)}: stopped, since no turn is running`);
@@ -311,6 +313,35 @@ await check("L19 subagents: the rows in the thread, the drawer, its thread and r
       else if ((await drawerOf(page)).loading) fail(`${viewport}: ${name}: the drawer of a server that is away still says "Loading…"`);
     } catch (e) { fail(`${viewport}: ${name}: ${e.message.split("\n")[0]}`); }
     await ctx.close();
+  }
+
+  // ---- a subagent that is retried after a temporary error, one that is paused, and one with a status this client has never heard of (goal 5.4,
+  //      scenario 12): each says so in its row, and the other rows of the list still draw
+  {
+    const { page, ctx } = await open({ sel: { chat: "c_nested" }, wait: tidSel("sub-row") });
+    const was = await mockEval("return JSON.parse(JSON.stringify(subs.c_nested));", url);
+    const put = (id, o) => `{ const x = subs.c_nested.find((s) => s.id === ${J(id)}); Object.assign(x, ${J(o)}); send({ type: "sub", chat: "c_nested", branch: "main", subagent: x }); }`;
+    const name = "a subagent that is retried, one that is paused, one with a status no client knows";
+    try {
+      await until(async () => (await rowsOf(page)).length === 6, WAIT);
+      // sa1a1 runs (its line is its activity): it is retried, the second attempt in 40 s. sa1b has finished: it is paused, its login failed. sa2: a status of the future.
+      await mockEval(`${put("sa1a1", { retry: { attempt: 2, of: 4, at: Date.now() + 40000, kind: "login" } })} ${put("sa1b", { status: "paused", errorKind: "login", error: "Failed to authenticate", delivery: undefined })} ${put("sa2", { status: "frozen" })}`, url);
+      const lines = async () => Object.fromEntries((await rowsOf(page)).map((r) => [r.sub, r]));
+      // (the page counts the wait down from the clock: 40 s when the row was drawn at once, less when the machine was slow to draw it)
+      if (!await until(async () => /^Retrying in (3[6-9]|40) s · 2 of 4$/.test((await lines()).sa1a1?.line ?? ""), WAIT)) fail(`${viewport}: ${name}: the subagent that is retried says "${(await lines()).sa1a1?.line}", not "Retrying in 40 s · 2 of 4"`);
+      const by = await lines();
+      if (by.sa1a1.status !== "running" || by.sa1a1.tone !== "muted" || !by.sa1a1.dot) fail(`${viewport}: ${name}: the subagent that is retried is ${J(by.sa1a1)}: running, in the muted tone`);
+      if (by.sa1b?.line !== "Paused · login failed" || by.sa1b.tone !== "error" || by.sa1b.status !== "paused" || by.sa1b.dot) fail(`${viewport}: ${name}: the paused subagent is ${J(by.sa1b)}: "Paused · login failed", in the error tone, with no pulsing dot`);
+      if (by.sa2?.line !== "frozen" || by.sa2.tone !== "muted") fail(`${viewport}: ${name}: a status this client does not know shows ${J(by.sa2)}, not its word in the muted tone`);
+      if (Object.keys(by).length !== 6 || by.sa1a2?.line !== "Done · Seven callers, two of them in tests.") fail(`${viewport}: ${name}: the other rows are ${J(Object.keys(by))}, sa1a2 says "${by.sa1a2?.line}"`);
+      // the time counts down: the row is drawn again once a second
+      const first = (await lines()).sa1a1.line;
+      if (!await until(async () => (await lines()).sa1a1?.line !== first, WAIT)) fail(`${viewport}: ${name}: the line of the subagent that is retried stayed "${first}"`);
+    } catch (e) { fail(`${viewport}: ${name}: ${e.message.split("\n")[0]}`); }
+    // (put back: other parts of this check count the subagents of the seed)
+    await mockEval(`subs.c_nested.splice(0, subs.c_nested.length, ...${J(was)}); for (const x of subs.c_nested) send({ type: "sub", chat: "c_nested", branch: "main", subagent: x });`, url);
+    await ctx.close();
+    note("a subagent that is retried says when the next attempt is, a paused one why, one with a status no client knows its word, and the other rows draw");
   }
 
   // ---- the drawer follows its thread only while the subagent runs

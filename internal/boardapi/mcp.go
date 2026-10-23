@@ -606,7 +606,7 @@ func (r *Relay) callSpawnFamily(caller chats.Caller, name string, args json.RawM
 		}
 		return fmt.Sprintf("spawned subagent %s (%s)", sa.ID, sa.Status), false
 	case "stop_subagent":
-		sid, err := parseStopArgs(args)
+		sid, err := parseSIDArgs(name, args)
 		if err != nil {
 			return err.Error(), true
 		}
@@ -614,6 +614,16 @@ func (r *Relay) callSpawnFamily(caller chats.Caller, name string, args json.RawM
 			return err.Error(), true
 		}
 		return "stopped subagent " + sid, false
+	case "resume_subagent":
+		sid, err := parseSIDArgs(name, args)
+		if err != nil {
+			return err.Error(), true
+		}
+		sa, err := r.Chats.ResumeSubagentBy(caller.Meta.ID, caller.SID, sid)
+		if err != nil {
+			return err.Error(), true
+		}
+		return fmt.Sprintf("resumed subagent %s (%s)", sa.ID, sa.Status), false
 	case "list_subagent_models":
 		return r.listSubagentModels(caller, args)
 	default:
@@ -661,13 +671,13 @@ func parseSpawnArgs(args json.RawMessage) (chats.SpawnSubRequest, error) {
 	}, nil
 }
 
-func parseStopArgs(args json.RawMessage) (string, error) {
+func parseSIDArgs(tool string, args json.RawMessage) (string, error) {
 	var p struct {
 		SID string `json:"sid"`
 	}
 	if len(args) > 0 && string(args) != "null" {
 		if err := json.Unmarshal(args, &p); err != nil {
-			return "", errors.New("invalid stop_subagent arguments")
+			return "", fmt.Errorf("invalid %s arguments", tool)
 		}
 	}
 	if strings.TrimSpace(p.SID) == "" {

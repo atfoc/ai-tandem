@@ -83,7 +83,7 @@ func (m *Manager) putHere(c *Chat) error {
 	group := m.GroupOf(c.meta)
 	a := m.startAgent(group)
 	cwd, mc := m.startChoice(group, a)
-	sub := m.startSub(group)
+	sub := m.subStartLimits(group)
 	c.meta.Agent, c.meta.Model, c.meta.Effort, c.meta.SessionID = a, mc.Model, mc.Effort, sessionFor(a)
 	c.meta.Cwd, c.meta.Subagents = cwd, &sub
 	if c.errText != "" || c.folderMissing {

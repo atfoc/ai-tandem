@@ -108,10 +108,25 @@ test("subLine: completed, failed, stopped", () => {
   assert.deepEqual(subLine(call(), sub({ status: "stopped" })), { text: "Stopped", tone: "muted" });
 });
 
+test("subLine: a retried subagent says when the next attempt is; a paused one why; an unknown status shows its word", () => {
+  const now = 5_000_000;
+  const retrying = (extra: object) => sub({ retry: { attempt: 2, of: 4, kind: "login", ...extra }, progress: "Reading files" });
+  assert.deepEqual(subLine(call(), retrying({ at: now + 41_000 }), undefined, undefined, undefined, now), { text: "Retrying in 41 s · 2 of 4", tone: "muted" });
+  assert.deepEqual(subLine(call(), retrying({ at: now + 40_000 }), undefined, undefined, undefined, now), { text: "Retrying in 40 s · 2 of 4", tone: "muted" });
+  assert.deepEqual(subLine(call(), retrying({ at: now - 1 }), undefined, undefined, undefined, now), { text: "Retrying · 2 of 4", tone: "muted" });
+  assert.deepEqual(subLine(call(), retrying({ at: now + 180_000 }), undefined, undefined, undefined, now), { text: "Retrying in 3 min · 2 of 4", tone: "muted" });
+  // a record that kept its retry after it stopped being retried is not a retry line
+  assert.deepEqual(subLine(call(), sub({ status: "stopped", retry: { attempt: 2, of: 4, kind: "login" } })), { text: "Stopped", tone: "muted" });
+  assert.deepEqual(subLine(call(), sub({ status: "paused", errorKind: "login", error: "Failed to authenticate" })), { text: "Paused · login failed", tone: "error" });
+  assert.deepEqual(subLine(call(), sub({ status: "paused" })), { text: "Paused · temporary error", tone: "error" });
+  assert.deepEqual(subLine(call(), sub({ status: "frozen" as Subagent["status"] })), { text: "frozen", tone: "muted" });
+});
+
 test("subResultLine: the subagent's name, final status and delivery state", () => {
   const done = sub({ status: "completed", description: "Count files" });
   assert.deepEqual(subResultLine({ ...done, delivery: "sent" }), { name: "Count files", text: "Done · sent to the agent", tone: "muted" });
   assert.deepEqual(subResultLine({ ...done, delivery: "owed" }), { name: "Count files", text: "Done · not sent yet", tone: "muted" });
+  assert.equal(subResultLine(sub({ status: "paused", description: "Lead" })).text, "Paused");
   // No delivery on the record: the line says nothing about delivery.
   assert.deepEqual(subResultLine(done), { name: "Count files", text: "Done", tone: "muted" });
   assert.deepEqual(subResultLine(sub({ status: "stopped", delivery: "sent" })), { name: "Subagent", text: "Stopped · sent to the agent", tone: "muted" });
@@ -255,10 +270,10 @@ test("subList: sorted by started, then id; nested included", () => {
 });
 
 test("a status the client does not know is shown as it is, not a crash", () => {
-  const odd = sub({ status: "paused" as any, description: "Scout" });
-  assert.deepEqual(subLine(call(), odd), { text: "paused", tone: "muted" });
+  const odd = sub({ status: "frozen" as any, description: "Scout" });
+  assert.deepEqual(subLine(call(), odd), { text: "frozen", tone: "muted" });
   assert.deepEqual(subLine(call(), sub({ status: undefined as any })), { text: "", tone: "muted" });
-  assert.deepEqual(subResultLine(odd), { name: "Scout", text: "paused", tone: "muted" });
+  assert.deepEqual(subResultLine(odd), { name: "Scout", text: "frozen", tone: "muted" });
   assert.deepEqual(subResultLine(sub({ status: "toString" as any, description: "Scout", delivery: "sent" })), { name: "Scout", text: "toString · sent to the agent", tone: "muted" });
   assert.deepEqual(subResultLine(sub({ status: undefined as any, description: "Scout", delivery: "sent" })), { name: "Scout", text: "sent to the agent", tone: "muted" });
 });

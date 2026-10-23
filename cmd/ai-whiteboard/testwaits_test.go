@@ -52,6 +52,8 @@ var lowered = map[string]time.Duration{
 	"handover": 10 * time.Second,
 	// How long an agent's board call waits for a client's answer (boardapi.SetCallTimeout).
 	"calls": 30 * time.Second,
+	// The first pause of the retry of an agent after a temporary error (chats.Deps.RetryFirst).
+	"retry": 20 * time.Second,
 }
 
 // env is the AIWB_TEST_WAITS of a server whose named waits run on this clock, for instance.setenv.
@@ -103,6 +105,13 @@ func TestTestWaits(t *testing.T) {
 	}
 	if w, err := parseTestWaits(strings.TrimPrefix(fast.env(t, "calls"), "AIWB_TEST_WAITS=")); err != nil || !realWaits() && w != (testWaits{calls: 3 * time.Second}) {
 		t.Fatalf("the calls wait of the fast clock: %+v, %v", w, err)
+	}
+	// The first pause of the retry is a name of the list too.
+	if w, err := parseTestWaits("retry=2s"); err != nil || w != (testWaits{retry: 2 * time.Second}) {
+		t.Fatalf("the retry wait alone: %+v, %v", w, err)
+	}
+	if w, err := parseTestWaits(strings.TrimPrefix(fast.env(t, "retry"), "AIWB_TEST_WAITS=")); err != nil || !realWaits() && w != (testWaits{retry: 2 * time.Second}) {
+		t.Fatalf("the retry wait of the fast clock: %+v, %v", w, err)
 	}
 	// The waits of the relay are no names of the list any more.
 	for _, gone := range []string{"silence=3s", "backoff=3s", "start=4s", "tooold=30s", "imagecall=6s"} {

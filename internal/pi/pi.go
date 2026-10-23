@@ -119,6 +119,7 @@ type proc struct {
 	// translate state (only touched by the read loop)
 	msgSeq      int
 	turnErr     string         // pi's error text while the turn's last assistant message is an errored one
+	retryGaveUp bool           // pi's own retry ran out in this turn (auto_retry_end success false): the error that ends the turn is one pi judged it could retry
 	toolByIndex map[int]string // content index → tool call id
 	toolEmit    map[string]*toolEmit
 	extErrOnce  sync.Once

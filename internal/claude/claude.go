@@ -131,6 +131,11 @@ type proc struct {
 	bgKnown  map[string]bool   // every task id announced as other than local_agent: background work, never a subagent or a lost task
 	bgUnread bool              // a known background task's notice came after the last request to the model
 	bgSent   agent.Background  // the state last emitted as EvBackground
+
+	// The turn's api-error class (D2): the error of its api-error assistant line, and whether and with
+	// what the CLI retried it itself; cleared at each result.
+	apiErr, apiRetryErr string
+	apiRetried          bool
 }
 
 // Args are the command-line arguments for one chat process.

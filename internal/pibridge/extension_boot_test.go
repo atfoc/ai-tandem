@@ -612,6 +612,7 @@ func spawnFamilyToolDefs() []map[string]any {
 		{"name": "spawn_subagent", "description": "Spawn a subagent", "inputSchema": map[string]any{"type": "object"}},
 		{"name": "stop_subagent", "description": "Stop a subagent", "inputSchema": map[string]any{"type": "object"}},
 		{"name": "list_subagent_models", "description": "List subagent models", "inputSchema": map[string]any{"type": "object"}},
+		{"name": "resume_subagent", "description": "Resume a subagent", "inputSchema": map[string]any{"type": "object"}},
 	}
 }
 
@@ -620,17 +621,19 @@ func spawnFamilyRegisteredNames() []string {
 		"mcp__board__spawn_subagent",
 		"mcp__board__stop_subagent",
 		"mcp__board__list_subagent_models",
+		"mcp__board__resume_subagent",
 	}
 }
 
 func isSpawnFamilyName(name string) bool {
 	switch name {
-	case "spawn_subagent", "stop_subagent", "list_subagent_models":
+	case "spawn_subagent", "stop_subagent", "list_subagent_models", "resume_subagent":
 		return true
 	}
 	return strings.HasSuffix(name, "__spawn_subagent") ||
 		strings.HasSuffix(name, "__stop_subagent") ||
-		strings.HasSuffix(name, "__list_subagent_models")
+		strings.HasSuffix(name, "__list_subagent_models") ||
+		strings.HasSuffix(name, "__resume_subagent")
 }
 
 func checkNoNativeSubagent(t *testing.T, captured []bootCaptured, allTools []string) {
@@ -922,6 +925,7 @@ func TestMCPRealPiAppEnvBoot(t *testing.T) {
 		"mcp__board__spawn_subagent":       true,
 		"mcp__board__stop_subagent":        true,
 		"mcp__board__list_subagent_models": true,
+		"mcp__board__resume_subagent":      true,
 	}
 	got := map[string]bool{}
 	for _, tool := range report.Captured {
@@ -1029,7 +1033,7 @@ func TestMCPRealPiAppEnvFileBoot(t *testing.T) {
 	for _, tool := range report.Captured {
 		got[tool.Name] = true
 	}
-	for _, name := range []string{"mcp__board__echo", "mcp__board__spawn_subagent", "mcp__board__stop_subagent"} {
+	for _, name := range []string{"mcp__board__echo", "mcp__board__spawn_subagent", "mcp__board__stop_subagent", "mcp__board__resume_subagent"} {
 		if !got[name] {
 			t.Fatalf("tool %q missing from the registered set: %+v", name, report.Captured)
 		}

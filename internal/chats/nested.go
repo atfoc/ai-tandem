@@ -27,6 +27,10 @@
 // A subagent that ends, in whatever way, takes every subagent below it with it (stopBelow):
 // nobody is left to receive their results. A result that was owed to it, or that it was being
 // handed and is not known to have received, is given up (model.SubGivenUp).
+//
+// A subagent whose retries ran out is paused, not ended (retrysub.go). It keeps what is owed to
+// it, and what it started runs on. A parent that waits only on paused children is told of them,
+// in a message of its own that lists them, and decides: it resumes them or it does not.
 package chats
 
 import (
@@ -77,13 +81,14 @@ func below(c *Chat, sid string) []*sub {
 	return under
 }
 
-// stopBelow stops every subagent below s that still runs, and gives up the results nobody is
-// left to receive. It is called for a subagent that has just reached a final status. The
+// stopBelow stops every subagent below s that still runs or is paused, and gives up the results
+// nobody is left to receive. A paused one is stopped too: nobody is left to resume it. It is
+// called for a subagent that has just reached a final status. The
 // processes it detached are added to aft, for the caller to Close after unlock. It reports
 // whether closing permission cards took the chat out of approval. c.mu held.
 func (m *Manager) stopBelow(c *Chat, s *sub, out *outbox, aft *after) (leftApproval bool) {
 	for _, k := range below(c, s.meta.ID) {
-		if k.meta.Status != model.SubRunning {
+		if k.meta.Status != model.SubRunning && k.meta.Status != model.SubPaused {
 			continue
 		}
 		ag, left := m.stopSub(c, k, endParent, out)
@@ -95,14 +100,15 @@ func (m *Manager) stopBelow(c *Chat, s *sub, out *outbox, aft *after) (leftAppro
 }
 
 // giveUpOrphans gives up every result that is owed to a subagent that no longer runs: a
-// subagent gets results only while it lives, and nobody else is owed them. c.mu held.
+// subagent gets results only while it lives, and nobody else is owed them. A paused parent is
+// not given up on: it gets what it is owed when it is resumed (goal 3.3). c.mu held.
 func (m *Manager) giveUpOrphans(c *Chat, out *outbox) {
 	var sids []string
 	for sid, k := range c.subs {
 		if k.meta.Parent == "" || !k.meta.Delivery.Owed() {
 			continue
 		}
-		if p := c.subs[k.meta.Parent]; p != nil && p.meta.Status == model.SubRunning {
+		if p := c.subs[k.meta.Parent]; p != nil && (p.meta.Status == model.SubRunning || p.meta.Status == model.SubPaused) {
 			continue
 		}
 		sids = append(sids, sid)
@@ -124,13 +130,41 @@ func (m *Manager) giveUp(c *Chat, sids []string, out *outbox) {
 	}
 }
 
+// unlisted returns the children of p that are paused and that no message to p has listed yet
+// (sub.listed): what p must be told before it may finish. A child is counted only when the list
+// would hold it (pausedOrStopped), or p would be handed an empty list for ever. c.mu held.
+func unlisted(c *Chat, p *sub) []*sub {
+	var kids []*sub
+	for _, sa := range pausedOrStopped(c, p.meta.ID) {
+		if sa.Status == model.SubPaused && !p.listed[sa.ID] {
+			kids = append(kids, c.subs[sa.ID])
+		}
+	}
+	return kids
+}
+
+// tellPaused tells the parent of k, which has just paused, when it waits with nothing else to come:
+// no child of it runs and nothing is owed to it (design D10). It is handed the news at once, in a
+// message of its own (deliverSub); otherwise its next message carries it. The chat's agent is never
+// told so. c.mu held.
+func (m *Manager) tellPaused(c *Chat, k *sub, out *outbox, aft *after) {
+	p := c.subs[k.meta.Parent]
+	if p == nil || !p.app || p.meta.Status != model.SubRunning || !p.meta.Waiting || p.carry != nil || p.ag == nil {
+		return
+	}
+	if runningKids(c, p.meta.ID) > 0 || len(owedTo(c, p.meta.ID)) > 0 {
+		return
+	}
+	aft.add(m.deliverSub(c, p, out))
+}
+
 // subWaits is the clean end of a turn of s, a running app-spawned subagent. It reports whether
 // that leaves s waiting and not finished: subagents it started still run, a result is owed to
 // it, or its own background work holds it. Then s is marked as waiting, and the results it is owed
 // go to it at once, in a turn that takes it out of waiting again (the delivery is added to aft).
 // When only background work that has ended holds it, the quiet wait is armed (armBgQuiet). c.mu held.
 func (m *Manager) subWaits(c *Chat, s *sub, out *outbox, aft *after) bool {
-	if runningKids(c, s.meta.ID) == 0 && len(owedTo(c, s.meta.ID)) == 0 && !s.bg.holds() {
+	if runningKids(c, s.meta.ID) == 0 && len(owedTo(c, s.meta.ID)) == 0 && len(unlisted(c, s)) == 0 && !s.bg.holds() {
 		return false
 	}
 	if tr, err := m.subTr(c, s); err == nil {
@@ -161,6 +195,11 @@ func (m *Manager) waitOver(c *Chat, p *sub, out *outbox, aft *after) {
 	if runningKids(c, p.meta.ID) > 0 || len(owedTo(c, p.meta.ID)) > 0 {
 		return
 	}
+	if len(unlisted(c, p)) > 0 {
+		// Its children that paused are all that is left: it is told of them and decides.
+		aft.add(m.deliverSub(c, p, out))
+		return
+	}
 	if p.bg.holds() {
 		// Its own background work is all that is left. When that has ended too, a turn for its
 		// notice is still to come, and the quiet wait bounds it.
@@ -172,8 +211,10 @@ func (m *Manager) waitOver(c *Chat, p *sub, out *outbox, aft *after) {
 	m.finalizeAppSub(c, p, model.SubCompleted, "", endTurn, out, aft)
 }
 
-// deliverSub starts a turn of the subagent s that hands it every result it is owed, when it can
-// take one: it waits, with a live process. It is deliver for a subagent. The results are marked
+// deliverSub starts a turn of the subagent s that hands it every result it is owed, and the list
+// of its children that are paused or were stopped (pausedListBlock), when it can take one: it
+// waits, with a live process. It starts a turn when a result is owed or a paused child has not
+// been listed to s yet (unlisted); a turn with no result carries no sids and adds no result rows. It is deliver for a subagent. The results are marked
 // as sent and get their rows in the thread of s, as a chat's get theirs in the chat's; s leaves
 // waiting. Nothing of a chat's turn is involved: no slot of the cap on running turns, no hold,
 // and no context block, since a subagent's messages have none. The caller passes the result to
@@ -190,8 +231,7 @@ func (m *Manager) deliverSub(c *Chat, s *sub, out *outbox) *carry {
 	if c.deleted || c.tr == nil || !s.app || s.meta.Status != model.SubRunning || !s.meta.Waiting || s.ag == nil || s.carry != nil {
 		return nil
 	}
-	owed := owedTo(c, s.meta.ID)
-	if len(owed) == 0 {
+	if len(owedTo(c, s.meta.ID)) == 0 && len(unlisted(c, s)) == 0 {
 		return nil
 	}
 	tr, err := m.subTr(c, s)
@@ -199,10 +239,43 @@ func (m *Manager) deliverSub(c *Chat, s *sub, out *outbox) *carry {
 		log.Printf("chats: subagent %s/%s: %v", c.meta.ID, s.meta.ID, err)
 		return nil
 	}
+	d, taken, ups := m.takeSubOwed(c, s, tr, out)
+	if d == nil {
+		d = &carry{sub: s.meta.ID, ag: s.ag}
+	} else {
+		d.blocks = []agent.ContentBlock{{Text: resultsBlock(taken, runningKids(c, s.meta.ID), false, true)}}
+	}
+	if list := pausedOrStopped(c, s.meta.ID); len(list) > 0 {
+		d.blocks = append(d.blocks, agent.ContentBlock{Text: pausedListBlock(list, false)})
+		for _, k := range list {
+			if k.Status == model.SubPaused {
+				if s.listed == nil {
+					s.listed = map[string]bool{}
+				}
+				s.listed[k.ID] = true
+			}
+		}
+	}
+	s.meta.Waiting, s.meta.BgWaiting = false, false
+	s.carry = d
+	m.flushSub(c, s, false)
+	out.emitSubItems(c, s.meta.ID, tr.Version(), ups)
+	out.emitSub(c, s.meta)
+	return d
+}
+
+// takeSubOwed takes the results owed to s for a turn that is starting: each is marked sent, with
+// the thread's item count as it is before this turn adds anything (Carried), and gets its row in
+// s's thread tr. It returns the turn as a carry of s's (for the caller to make s.carry), the
+// taken records in completion order and the thread's changes; nil d when nothing is owed. The
+// caller composes the message and emits the changes. c.mu held.
+func (m *Manager) takeSubOwed(c *Chat, s *sub, tr *transcript.Transcript, out *outbox) (d *carry, taken []model.Subagent, ups []transcript.Update) {
+	owed := owedTo(c, s.meta.ID)
+	if len(owed) == 0 {
+		return nil, nil, nil
+	}
 	_, items := tr.Snapshot()
-	d := &carry{sub: s.meta.ID, ag: s.ag}
-	var taken []model.Subagent
-	var ups []transcript.Update
+	d = &carry{sub: s.meta.ID, ag: s.ag}
 	for _, k := range owed {
 		k.meta.Delivery, k.meta.Carried = model.SubSent, len(items)
 		m.saveSub(c, k)
@@ -211,13 +284,7 @@ func (m *Manager) deliverSub(c *Chat, s *sub, out *outbox) *carry {
 		ups = append(ups, tr.AddSubResult(k.meta.ID)...)
 		out.emitSub(c, k.meta)
 	}
-	d.blocks = []agent.ContentBlock{{Text: resultsBlock(taken, runningKids(c, s.meta.ID), false, true)}}
-	s.meta.Waiting, s.meta.BgWaiting = false, false
-	s.carry = d
-	m.flushSub(c, s, false)
-	out.emitSubItems(c, s.meta.ID, tr.Version(), ups)
-	out.emitSub(c, s.meta)
-	return d
+	return d, taken, ups
 }
 
 // subTurnOver is the clean end of a turn of s that leaves nothing of a delivery open: what the

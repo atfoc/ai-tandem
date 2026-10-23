@@ -190,6 +190,23 @@ func TestFakeFailExitHangInterrupt(t *testing.T) {
 	}
 }
 
+// FailTemp is Fail with the class of a temporary error; the process stays and takes a next turn.
+func TestFakeFailTemp(t *testing.T) {
+	f := New(model.Claude)
+	ag, _ := f.Spawn(agent.SpawnOptions{SessionID: "s", Cwd: t.TempDir()})
+	f.Script(func(tn *Turn) { tn.Say("a"); tn.FailTemp(agent.TempLogin, "x"); tn.Say("never") })
+	send(t, ag, "one")
+	end, evs := next(t, ag, agent.EvTurnEnd)
+	if end.Error != "x" || end.Temporary != agent.TempLogin || end.Aborted || len(evs) != 2 {
+		t.Fatalf("FailTemp: %+v after %d events", end, len(evs))
+	}
+	f.Script(func(tn *Turn) { tn.Say("b") })
+	send(t, ag, "two")
+	if end, _ = next(t, ag, agent.EvTurnEnd); end.Error != "" || end.Temporary != "" {
+		t.Fatalf("the next turn: %+v", end)
+	}
+}
+
 // Close in a turn: the process ends with no turn end, and a hanging script returns.
 func TestFakeCloseInTurn(t *testing.T) {
 	f := New(model.Cursor)

@@ -552,7 +552,8 @@ func (m *Manager) stopLocked(c *Chat, out *outbox) (toClose []agent.Agent) {
 	if err != nil {
 		return nil
 	}
-	wasBusy := busy(c)
+	wasBusy := busy(c) || c.retry != nil // a retry between its attempts is a turn that goes on
+	m.cancelChatRetry(c, "stopped")
 	var ups []transcript.Update
 	_, items := tr.Snapshot()
 	for _, it := range items {
@@ -584,7 +585,7 @@ func (m *Manager) stopLocked(c *Chat, out *outbox) (toClose []agent.Agent) {
 			stopped++
 		}
 	}
-	toClose = append(toClose, m.stopSubs(c, out)...)
+	toClose = append(toClose, m.stopSubs(c, endPerson, out)...)
 	m.revokeChatExtras(c.meta.ID)
 	if wasBusy || stopped > 0 {
 		ups = append(ups, tr.AddNote("muted", "Stopped.")...)

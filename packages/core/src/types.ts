@@ -166,8 +166,19 @@ export type ChatMeta = Archive & {
 };
 
 /** "waiting": the agent's turn has ended but its background work (a shell, a Monitor) still runs; the chat takes no
- *  message until that is done or the user stops it. */
-export type Status = "ready" | "thinking" | "writing" | "tool" | "approval" | "waiting" | "stopped" | "error";
+ *  message until that is done or the user stops it.
+ *  "retrying": the agent's turn failed with a temporary error and it waits to be started again on its session, or is
+ *  being started (ChatView.retry); the chat shows as working, takes a message, and Stop cancels the retry. */
+export type Status = "ready" | "thinking" | "writing" | "tool" | "approval" | "waiting" | "retrying" | "stopped" | "error";
+
+/** model.Retry: an agent that is being retried after a temporary error. */
+export type Retry = {
+  attempt: number; // the attempt waited for or running, 1 to of
+  of: number;      // how many attempts there are (4)
+  at?: number;     // unix ms the attempt is due; in the past once it waits for the limiter or runs
+  kind: string;    // the agent.Temporary of the failed turn: "login", "rate_limit", "overloaded", "server_error", "retried"
+  error?: string;  // the failed turn's error text
+};
 
 /** What clients see: ChatMeta without token, sessionId, turnActive (and mcpInstructionsSent), plus live state.
  *  instructionsSent is the curl-era disable marker. */
@@ -191,6 +202,7 @@ export type ChatView = Archive & {
   status: Status;
   statusTool?: string;
   error?: string;
+  retry?: Retry; // the chat's agent is being retried after a temporary error (status "retrying"); absent otherwise
   folderMissing?: boolean;
   // A fork to a new chat with no message of its own yet: its model and effort are still open, its
   // folder is fixed. Absent otherwise; a branch is never fresh.
@@ -322,7 +334,9 @@ export type Held = { text: string; mentions: { name: string; id: string }[]; ref
  *  source's. */
 export type PendingMove = Target & { from: string; held: Held; put: Held | null; typed?: Held; hid?: Reference[]; model?: string; effort?: string };
 
-export type SubStatus = "running" | "completed" | "failed" | "stopped";
+/** "paused": its retries after a temporary error ran out; it has no process and keeps its session, and is neither
+ *  live nor final (its parent can resume it). */
+export type SubStatus = "running" | "completed" | "failed" | "stopped" | "paused";
 
 /** model.SubDelivery: what the app owes the agent for an app-spawned subagent's result. Absent:
  *  nothing owed. "retry" is owed after one failed attempt; "given-up" is not owed: two failed. */
@@ -355,6 +369,10 @@ export type Subagent = {
   notCarried?: boolean; // a copy's record of one still running in the source when the copy was made: stopped, nothing owed
   waiting?: boolean; // running, its own turn ended: subagents it started still run, or their results have not reached it yet
   bgWaiting?: boolean; // with waiting: its own background work is part of what it waits on
+  session?: string; // the session its process runs on, recorded when it is started; absent for a record from before, which cannot be resumed
+  retry?: Retry; // set while it is being retried after a temporary error (status running); absent otherwise
+  errorKind?: string; // paused: the agent.Temporary of its last failed turn
+  cause?: string; // why it is in its status when that is not running (model.SubCause); absent in a record from before
 };
 
 /** A server's tree: its groups in its order, with its boards, chats, branch records and defaults. What the

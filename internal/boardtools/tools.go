@@ -177,10 +177,11 @@ var SpawnFamily = []Tool{
 		Summary: `{"prompt": "...", "description"?: "...", "agent"?: "claude|cursor|pi", "model"?: "...", "effort"?: "..."}`,
 	},
 	{
-		Name:        "stop_subagent",
-		Description: "Cancel one running subagent that you started, by sid. Every subagent it has started is cancelled with it.",
-		Schema:      obj(props{"sid": str("subagent id from your own spawn_subagent call")}, "sid"),
-		Summary:     `{"sid": "<sid>"}`,
+		Name: "stop_subagent",
+		Description: "Cancel one running or paused subagent that you started, by sid. Every subagent it has started is cancelled with it. " +
+			"A subagent listed as stopped can be stopped again so that it is no longer listed.",
+		Schema:  obj(props{"sid": str("subagent id from your own spawn_subagent call")}, "sid"),
+		Summary: `{"sid": "<sid>"}`,
 	},
 	{
 		Name: "list_subagent_models",
@@ -198,6 +199,17 @@ var SpawnFamily = []Tool{
 			"filter": str("words to narrow the list, for example \"opus\" or \"openrouter/openai\": a model is listed when every word occurs in its id or its label, in any letter case and any order; omit to list all"),
 		}),
 		Summary: `{"agent"?: "claude|cursor|pi", "filter"?: "..."}`,
+	},
+	{
+		Name: "resume_subagent",
+		Description: "Start again one subagent that you started and that is paused (a temporary error outlasted the app's retries) " +
+			"or stopped, by sid, in its own session where it stopped. It returns at once with a receipt and the subagent runs " +
+			"in the background: it is sent a message to carry on, together with the results it is owed, and its result " +
+			"comes to you as a message when it finishes, as for spawn_subagent. Subagents it had started that were " +
+			"stopped with it are not started again: it is told of them and resumes the ones it needs. " +
+			"The app lists the subagents you may resume in a <subagents-paused-or-stopped> block on your messages.",
+		Schema:  obj(props{"sid": str("subagent id from your own spawn_subagent call")}, "sid"),
+		Summary: `{"sid": "<sid>"}`,
 	},
 }
 

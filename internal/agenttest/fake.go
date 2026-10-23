@@ -466,6 +466,14 @@ func (t *Turn) Fail(text string) {
 	t.end(agent.Event{Kind: agent.EvTurnEnd, Error: text})
 }
 
+// FailTemp ends the turn with an error the CLI reported as temporary (design D1). The process stays.
+func (t *Turn) FailTemp(kind agent.Temporary, text string) {
+	if !t.live() {
+		return
+	}
+	t.end(agent.Event{Kind: agent.EvTurnEnd, Error: text, Temporary: kind})
+}
+
 // Exit ends the process in the turn: no turn end, EvExit with text.
 func (t *Turn) Exit(text string) {
 	t.mu.Lock()

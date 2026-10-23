@@ -155,6 +155,18 @@ type Background struct {
 	Unread  bool // a background task ended after the process's last request to the model: a turn that reads its notice may be to come
 }
 
+// Temporary is the class of an error that can pass, as the agent's CLI reports it on a failed turn
+// (goal 1.1). "" is an error that is not temporary, or one the adapter cannot tell.
+type Temporary string
+
+const (
+	TempLogin      Temporary = "login"        // the login failed (Claude authentication_failed, cloud_credential_error)
+	TempRate       Temporary = "rate_limit"   // rate or usage limited (Claude rate_limit)
+	TempOverloaded Temporary = "overloaded"   // the provider is overloaded (Claude overloaded)
+	TempServer     Temporary = "server_error" // the provider or the connection failed (Claude server_error)
+	TempRetried    Temporary = "retried"      // no class, but the CLI retried it itself before it gave up (Claude api_retry, pi auto_retry_end)
+)
+
 type Event struct {
 	Kind                     EventKind
 	SessionID                string
@@ -171,7 +183,10 @@ type Event struct {
 	CtxError                 string // EvUsage: context usage could not be read (the numbers are then all 0)
 	Aborted                  bool
 	Error                    string
-	Point                    string // EvTurnEnd: the provider's fork-point id for the end of this turn; "" = none
+	// Temporary, EvTurnEnd with Error: the error can pass (see Temporary); "" = not temporary, or
+	// not known. Never set with Aborted.
+	Temporary Temporary
+	Point     string // EvTurnEnd: the provider's fork-point id for the end of this turn; "" = none
 	// SelfBegun, EvTurnEnd: the agent began this turn itself, not with a message it was sent
 	// (Claude, when a background command or task of its own ended). A message sent meanwhile is
 	// not known to have been read in it. Only Claude reports it; pi and Cursor begin no turn

@@ -195,7 +195,7 @@ test("emptyReason: what an empty thread says of a chat that takes no message, by
   assert.ok(!chatView.includes("noAgentReason(usable)"));
   // the header says no "Ready" for it, and the toolbar offers no model and no effort
   assert.ok(header.includes("const frozen = sendOff(where) || gone;"));
-  assert.ok(header.includes("const status = headStatus(c, isLegacy(c), statusText(c, boardNames(chatId)), frozen);"));
+  assert.ok(header.includes("const status = headStatus(c, isLegacy(c), statusText(c, boardNames(chatId), now), frozen);"));
   assert.ok(toolbar.includes(") : !c.agent ? null : !cat ? ("));
 });
 
@@ -572,7 +572,7 @@ test("the question before a removal asks the server for nothing: the entry is re
 test("the chat's header takes its status from headStatus, and draws no separator for none", () => {
   const header = file("screens/chat/Header.tsx");
   assert.ok(header.includes("const frozen = sendOff(where) || gone;"));
-  assert.ok(header.includes("const status = headStatus(c, isLegacy(c), statusText(c, boardNames(chatId)), frozen);"));
+  assert.ok(header.includes("const status = headStatus(c, isLegacy(c), statusText(c, boardNames(chatId), now), frozen);"));
   assert.ok(header.includes('{status ? <>{" · "}{status}</> : null}'));
 });
 

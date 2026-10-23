@@ -50,11 +50,17 @@ func (e *SubDepthError) Error() string { return noSpawnText("spawn_subagent", e.
 // SubCapError is a spawn that would take the chat over its cap on running subagents. Nothing was
 // started and nothing is queued: the text says what the calling agent can do.
 type SubCapError struct {
-	Cap     int // the chat's cap
-	Running int // its subagents running now, at every level, waiting ones included
+	Cap     int  // the chat's cap
+	Running int  // its subagents running now, at every level, waiting ones included
+	Resume  bool // the refused call was resume_subagent
 }
 
 func (e *SubCapError) Error() string {
+	if e.Resume {
+		return fmt.Sprintf("this chat's cap on running subagents is %d and %d are running, at every level: "+
+			"the subagent was not resumed and the resume is not queued. End your turn to wait for a result of a "+
+			"subagent you started, stop one of yours with stop_subagent, or resume it later.", e.Cap, e.Running)
+	}
 	return fmt.Sprintf("this chat's cap on running subagents is %d and %d are running, at every level: "+
 		"nothing was started and the spawn is not queued. End your turn to wait for a result of a subagent "+
 		"you started, stop one of yours with stop_subagent, or do the work yourself.", e.Cap, e.Running)

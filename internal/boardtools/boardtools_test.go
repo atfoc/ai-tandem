@@ -2,6 +2,7 @@ package boardtools
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -34,7 +35,7 @@ func TestTools(t *testing.T) {
 	if IsTool("rm_rf") {
 		t.Error("IsTool accepted an unknown tool")
 	}
-	for _, tname := range []string{"spawn_subagent", "stop_subagent", "list_subagent_models"} {
+	for _, tname := range []string{"spawn_subagent", "stop_subagent", "list_subagent_models", "resume_subagent"} {
 		if IsTool(tname) {
 			t.Errorf("IsTool(%q) = true, spawn-family names are not board tools", tname)
 		}
@@ -42,7 +43,7 @@ func TestTools(t *testing.T) {
 }
 
 func TestSpawnFamily(t *testing.T) {
-	want := []string{"spawn_subagent", "stop_subagent", "list_subagent_models"}
+	want := []string{"spawn_subagent", "stop_subagent", "list_subagent_models", "resume_subagent"}
 	if len(SpawnFamily) != len(want) {
 		t.Fatalf("len(SpawnFamily) = %d, want %d", len(SpawnFamily), len(want))
 	}
@@ -257,5 +258,29 @@ func TestGetImageSchema(t *testing.T) {
 		if !strings.Contains(tool.Summary, want) {
 			t.Errorf("Summary %q lost %q", tool.Summary, want)
 		}
+	}
+}
+
+// resume_subagent is in the spawn family, takes a sid alone, and reads the same to a subagent.
+func TestSpawnFamilyHasResume(t *testing.T) {
+	var names []string
+	for _, tool := range SpawnFamily {
+		names = append(names, tool.Name)
+	}
+	if want := []string{"spawn_subagent", "stop_subagent", "list_subagent_models", "resume_subagent"}; !reflect.DeepEqual(names, want) {
+		t.Fatalf("SpawnFamily names %v, want %v", names, want)
+	}
+	tool := SpawnFamily[3]
+	if req, _ := tool.Schema["required"].([]string); !reflect.DeepEqual(req, []string{"sid"}) {
+		t.Errorf("resume_subagent requires %v", tool.Schema["required"])
+	}
+	if props := tool.Schema["properties"].(map[string]any); len(props) != 1 || props["sid"] == nil {
+		t.Errorf("resume_subagent parameters %v", props)
+	}
+	if !IsSpawnFamily("resume_subagent") || IsTool("resume_subagent") {
+		t.Error("resume_subagent is not a spawn-family tool alone")
+	}
+	if sub := SpawnFamilyForSub([]string{"claude"})[3]; sub.Name != "resume_subagent" || sub.Description != tool.Description {
+		t.Errorf("resume_subagent for a subagent: %q", sub.Description)
 	}
 }

@@ -22,6 +22,7 @@ test("board tools: running labels", () => {
     ["show_board", { board: "b_unknown" }, "Showing b_unknown"],
     ["wait_subagents", {}, "Waiting for subagents"],
     ["stop_subagent", {}, "Stopping subagent"],
+    ["resume_subagent", {}, "Resuming subagent"],
     ["list_subagent_models", {}, "Listing subagent models"],
   ];
   for (const [tool, input, want] of cases) {
@@ -44,6 +45,7 @@ test("board tools: done labels", () => {
     ["show_board", {}, "showing arch", "Showed this board"],
     ["wait_subagents", {}, undefined, "Waited for subagents"],
     ["stop_subagent", {}, undefined, "Stopped subagent"],
+    ["resume_subagent", {}, undefined, "Resumed subagent"],
     ["list_subagent_models", {}, undefined, "Listed subagent models"],
   ];
   for (const [tool, input, result, want] of cases) {
@@ -124,6 +126,19 @@ test("statusText", () => {
   assert.equal(statusText({ status: "approval", usage }), "Needs your approval");
   assert.equal(statusText({ status: "stopped", usage }), "Stopped");
   assert.equal(statusText({ status: "error", usage }), "Can't start");
+});
+
+test("statusText, rowLine and dotState: a chat whose agent is retried", () => {
+  const now = 9_000_000;
+  const retry = { attempt: 1, of: 4, kind: "login", at: now + 40_000 };
+  const c = { status: "retrying" as const, usage, retry };
+  assert.equal(statusText(c, undefined, now), "Retrying in 40 s · 1 of 4");
+  assert.equal(statusText({ ...c, retry: { ...retry, at: now - 1 } }, undefined, now), "Retrying · 1 of 4");
+  assert.equal(statusText({ status: "retrying", usage }), "Retrying", "no retry on the view");
+  assert.equal(rowLine(c, "settings", undefined, now), "Retrying in 40 s · 1 of 4");
+  assert.equal(rowLine({ ...c, working: 1 }, "settings", undefined, now), "Retrying in 40 s · 1 of 4", "before the count of other branches");
+  assert.equal(rowLine({ ...c, approvals: 1 }, "settings", undefined, now), "Needs your approval");
+  assert.equal(dotState(c), "thinking");
 });
 
 const usage = { ctxIn: 0, ctxOut: 0, ctxWindow: 0, turns: 3 };

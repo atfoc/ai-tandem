@@ -57,6 +57,9 @@ func TestArgsPlainChat(t *testing.T) {
 	}
 	noToken(t, args, "tok")
 	checkAllowed(t, args, boardtools.SpawnFamily, boardtools.Tools)
+	if v, _ := flag(args, "--allowedTools"); !slices.Contains(strings.Split(v, ","), "mcp__board__resume_subagent") {
+		t.Errorf("--allowedTools misses resume_subagent: %q", v)
+	}
 	if v, _ := flag(args, "--session-id"); v != "s1" {
 		t.Errorf("--session-id = %q", v)
 	}
@@ -116,6 +119,9 @@ func TestArgsChatWithSubagentsOff(t *testing.T) {
 	mcp := &agent.BoardAccess{MCPURL: "http://localhost:6006/mcp", Token: "tok"}
 	args := testSpawner.Args(agent.SpawnOptions{SessionID: "s6", Cwd: "/tmp", MCP: mcp, BoardID: "b", NoSpawn: true})
 	checkAllowed(t, args, boardtools.Tools, boardtools.SpawnFamily)
+	if v, _ := flag(args, "--allowedTools"); strings.Contains(v, "resume_subagent") {
+		t.Errorf("--allowedTools of a chat with subagents off has resume_subagent: %q", v)
+	}
 	if v, _ := flag(args, "--disallowedTools"); !strings.Contains(v, ",Task,Agent") {
 		t.Errorf("--disallowedTools of a chat with subagents off: %q", v)
 	}

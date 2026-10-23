@@ -21,6 +21,12 @@
 //                                    <subagent-results> block is answered with TEXT alone
 //   [[fail some text]]            -> ends the turn as an error with that text
 //   [[exit 3]]                    -> the process exits with that status mid-turn
+//   [[apierror CLASS N]]          -> this turn and the next N-1 turns of this session end as the CLI ends a turn the
+//                                    API refused with error class CLASS: status requesting, one system/api_retry,
+//                                    the api-error assistant line, an errored result with terminal_reason
+//                                    api_error. With FAKE_CLAUDE_STATE=<dir> the count is kept in
+//                                    <dir>/<session>.apierror, so the turns of a later process on the same
+//                                    session (--resume) fail too, whatever their message. N defaults to 1
 //   [[cost 0.01]]                 -> the turn costs that many dollars: the result line's total_cost_usd
 //                                    (cumulative for the process, as claude's is) rises by it, its
 //                                    usage.output_tokens is 100,000 tokens per dollar for this turn,
@@ -142,6 +148,45 @@ async function bgStart(seconds, late = false) {
   while (gate && !fs.existsSync(gate)) await new Promise((r) => setTimeout(r, 20));
   onExit(spawn());
 }
+// What the CLI says of a turn the API refused, by error class: [status, text].
+const API_ERRORS = {
+  authentication_failed: [401, "Failed to authenticate. API Error: 401 OAuth token has expired."],
+  overloaded: [529, "API Error: 529 Overloaded."],
+  rate_limit: [429, "API Error: 429 Rate limited."],
+  server_error: [500, "API Error: 500 Internal server error."],
+  billing_error: [400, "Credit balance is too low"],
+};
+// apiErrorLeft is the count of turns still to fail with an api error, in this process when
+// FAKE_CLAUDE_STATE is not set.
+let apiErrorLeft = { cls: "", n: 0 };
+const apiErrorFile = () => process.env.FAKE_CLAUDE_STATE ? require("node:path").join(process.env.FAKE_CLAUDE_STATE, session + ".apierror") : "";
+function readApiError() {
+  const f = apiErrorFile();
+  if (!f) return apiErrorLeft;
+  try { const [cls, n] = fs.readFileSync(f, "utf8").trim().split(" "); return { cls, n: Number(n) || 0 }; } catch { return { cls: "", n: 0 }; }
+}
+function writeApiError(st) {
+  const f = apiErrorFile();
+  if (!f) { apiErrorLeft = st; return; }
+  fs.mkdirSync(require("node:path").dirname(f), { recursive: true });
+  fs.writeFileSync(f, `${st.cls} ${st.n}\n`);
+}
+// takeApiError returns the class this turn fails with, or "" when it does not fail. A count that is left
+// is taken first, whatever the message says; else the message's own [[apierror CLASS N]] sets it.
+function takeApiError(text) {
+  let st = readApiError();
+  if (st.n <= 0) {
+    for (const [, a, b, c, d] of text.matchAll(DIRECTIVE)) {
+      if ((a ?? c) !== "apierror") continue;
+      const [cls, n] = (b ?? d).trim().split(/\s+/);
+      st = { cls: cls || "unknown", n: Number(n) || 1 };
+      break;
+    }
+  }
+  if (st.n <= 0) return "";
+  writeApiError({ cls: st.cls, n: st.n - 1 });
+  return st.cls;
+}
 let costTotal = 0, outTotal = 0;         // cumulative for the process, as claude reports them
 
 // done is the id of the background command that ended when this turn began by itself, else "".
@@ -151,6 +196,20 @@ async function turn(text, done = "") {
   current = { cancel: () => { aborted = true; wake?.(); } };
   if (!done) out({ type: "system", subtype: "init", cwd: process.cwd(), session_id: session, model, tools: [], mcp_servers: [] });
   out({ type: "system", subtype: "status", status: "requesting", session_id: session });
+  const apiCls = takeApiError(text);
+  if (apiCls) {
+    current = null;
+    turns++;
+    const [status, msg] = API_ERRORS[apiCls] || [400, `API Error: ${apiCls}`];
+    out({ type: "system", subtype: "api_retry", attempt: 1, max_retries: 10, retry_delay_ms: 10, error_status: status, error: apiCls, session_id: session, uuid: uuid() });
+    out({ type: "assistant", uuid: uuid(), session_id: session, parent_tool_use_id: null, error: apiCls, is_api_error_message: true,
+      message: { id: uuid(), role: "assistant", model: "<synthetic>", stop_reason: "stop_sequence", content: [{ type: "text", text: msg }],
+        usage: { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } } });
+    return out({ type: "result", subtype: "success", is_error: true, terminal_reason: "api_error", api_error_status: status, result: msg,
+      num_turns: turns, session_id: session, uuid: uuid(), total_cost_usd: Number(costTotal.toFixed(6)),
+      usage: { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 }, modelUsage: {},
+      ...(done ? { origin: { kind: "task-notification" } } : {}) });
+  }
   const plain = text.replace(DIRECTIVE, "").trim();
   let reply = done ? `${done} done` : `FAKE(${model}): ${plain}`, error = "", cost = 0, on = true, started = false;
   if (finalText !== null && text.trimStart().startsWith("<subagent-results>")) {

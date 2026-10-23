@@ -50,16 +50,16 @@ function SubBranch({ it, sa, chat, level = 0 }: { it: Item; sa: Subagent; chat: 
   );
 }
 
-/** One subagent's row. One at work loads its thread for the live line; a waiting or a finished one needs only its state. */
+/** One subagent's row. One at work loads its thread for the live line; a waiting, a retried or a finished one needs only its state. */
 function SubRow({ it, sa, chat }: { it: Item; sa: Subagent; chat: ChatView }) {
   const t = useTokens();
   const subs = useStore((s) => subsOf(s, chat.id));
   const { on, toggle } = useSubNav(chat.id, sa.id);
   const waiting = subWaiting(sa);
-  const items = useSubThread(chat.id, sa.id, sa.status === "running" && !waiting);
-  const now = useNow(sa.status === "running");
+  const items = useSubThread(chat.id, sa.id, sa.status === "running" && !waiting && !sa.retry?.attempt);
+  const now = useNow(sa.status === "running"); // a retried subagent runs: its time to the next attempt counts down
   const server = serverOf(chat);
-  const line = subLine(it, sa, items, boardNames(chat.id), subs);
+  const line = subLine(it, sa, items, boardNames(chat.id), subs, now);
   const [narrow, setNarrow] = useState(false);
   const open = () => { if (sa.id) toggle(); }; // not linked yet: nothing to open
   const measure = (e: LayoutChangeEvent) => { const n = e.nativeEvent.layout.width < NARROW; setNarrow((was) => (was === n ? was : n)); };

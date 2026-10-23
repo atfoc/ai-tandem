@@ -26,6 +26,9 @@ type sub struct {
 	app   bool                   // started by SpawnSubagent (has its own process)
 	carry *carry                 // the turn carrying it results of subagents it started; nil once that turn ended
 	bg    bgWork                 // its process's background work (Claude)
+	retry *retryWait             // being retried (retrysub.go); nil otherwise
+	// listed holds the paused children a message to it has listed (nested.go).
+	listed map[string]bool
 }
 
 var ErrNoSubagent = errors.New("no such subagent")
@@ -64,7 +67,14 @@ func (m *Manager) loadSubs(c *Chat) (cut []*sub) {
 		if sa.Tool != "" {
 			c.subByTool[sa.Tool] = sa.ID
 		}
-		if sa.Status == model.SubRunning {
+		if sa.Status == model.SubRunning && sa.Retry != (model.Retry{}) {
+			// It waited between attempts, or was in one, when the server stopped: it was doing no work
+			// that a stop loses, and its session is kept. Paused, it is for its parent to resume.
+			s.meta.Status, s.meta.Ended, s.meta.Waiting, s.meta.BgWaiting = model.SubPaused, m.nowMs(), false, false
+			s.meta.Error, s.meta.ErrorKind, s.meta.Cause = sa.Retry.Error, sa.Retry.Kind, model.CauseRetryingAtStop
+			s.meta.Retry = model.Retry{}
+			m.saveSub(c, s)
+		} else if sa.Status == model.SubRunning {
 			s.meta.Status, s.meta.Ended, s.meta.Waiting, s.meta.BgWaiting = model.SubStopped, m.nowMs(), false, false
 			ended(s, endRestart)
 			m.saveSub(c, s)
@@ -245,20 +255,20 @@ func (m *Manager) subErrorNote(c *Chat, s *sub, text string, out *outbox) {
 	out.emitSubItems(c, s.meta.ID, tr.Version(), ups)
 }
 
-// stopSubs marks every subagent still running as stopped (nested ones included: they are all in
-// c.subs). App-spawned processes are detached and returned so the caller can Close them after
+// stopSubs marks every subagent still running as stopped, for why (nested ones included: they
+// are all in c.subs). App-spawned processes are detached and returned so the caller can Close them after
 // unlock. Stopping them is never a reason to start a turn. c.mu held.
-func (m *Manager) stopSubs(c *Chat, out *outbox) []agent.Agent {
-	return m.stopRunningSubs(c, out, false)
+func (m *Manager) stopSubs(c *Chat, why subEnding, out *outbox) []agent.Agent {
+	return m.stopRunningSubs(c, out, false, why)
 }
 
 // stopAppSubs is Shutdown/Interrupt: only app-spawned running subs, so native rows stay as they are.
 // c.mu held.
-func (m *Manager) stopAppSubs(c *Chat, out *outbox) []agent.Agent {
-	return m.stopRunningSubs(c, out, true)
+func (m *Manager) stopAppSubs(c *Chat, why subEnding, out *outbox) []agent.Agent {
+	return m.stopRunningSubs(c, out, true, why)
 }
 
-func (m *Manager) stopRunningSubs(c *Chat, out *outbox, appOnly bool) []agent.Agent {
+func (m *Manager) stopRunningSubs(c *Chat, out *outbox, appOnly bool, why subEnding) []agent.Agent {
 	var ags []agent.Agent
 	for _, s := range c.subs {
 		if s.meta.Status != model.SubRunning {
@@ -267,7 +277,7 @@ func (m *Manager) stopRunningSubs(c *Chat, out *outbox, appOnly bool) []agent.Ag
 		if appOnly && !s.app {
 			continue
 		}
-		if ag, _ := m.stopSub(c, s, endParent, out); ag != nil {
+		if ag, _ := m.stopSub(c, s, why, out); ag != nil {
 			ags = append(ags, ag)
 		}
 	}
@@ -276,12 +286,14 @@ func (m *Manager) stopRunningSubs(c *Chat, out *outbox, appOnly bool) []agent.Ag
 }
 
 // stopSub stops s, which is running, from outside: why is endStopTool (whoever started it asked)
-// or endParent. Its process is told no for the permission requests it has open and is detached
-// and returned, for the caller to Close after unlock (nil for a native subagent, and for one
-// whose process has not started); a turn it was in reports no cost any more. It reports whether
-// closing its permission cards took the chat out of approval. The subagents below s are the
+// or an ending nobody asked for (endParent, endPerson, endShutdown). Its process is told no for
+// the permission requests it has open and is detached and returned, for the caller to Close after
+// unlock (nil for a native subagent, and for one whose process has not started); a turn it was in
+// reports no cost any more. It reports whether closing its permission cards took the chat out of
+// approval. The subagents below s are the
 // caller's to stop (stopBelow, or a loop over all of them). c.mu held.
 func (m *Manager) stopSub(c *Chat, s *sub, why subEnding, out *outbox) (ag agent.Agent, leftApproval bool) {
+	m.cancelSubRetry(c, s, "stopped")
 	if s.ag != nil {
 		m.denySubPerms(c, s)
 		ag = s.ag

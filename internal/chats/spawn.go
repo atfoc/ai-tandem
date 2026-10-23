@@ -128,6 +128,12 @@ func (m *Manager) SpawnSubagent(chatID string, req SpawnSubRequest) (model.Subag
 	}
 
 	sid := randHex(6)
+	// The session is made here, before the record is first written, so that the record and the
+	// process hold the same one (design D4). Cursor's is reported by the process (EvSession).
+	session := ""
+	if kind == model.Claude || kind == model.Pi {
+		session = uuid()
+	}
 	s := &sub{
 		meta: model.Subagent{
 			ID:          sid,
@@ -140,6 +146,7 @@ func (m *Manager) SpawnSubagent(chatID string, req SpawnSubRequest) (model.Subag
 			Background:  true,
 			Status:      model.SubRunning,
 			Started:     m.nowMs(),
+			Session:     session,
 		},
 		tr:   transcript.New(filepath.Join(m.subDir(c.meta.ID, sid), "items.jsonl")),
 		stop: make(chan struct{}),
@@ -153,7 +160,7 @@ func (m *Manager) SpawnSubagent(chatID string, req SpawnSubRequest) (model.Subag
 	}
 	out.emitCounts(c)
 	sa := s.meta
-	opts := m.subSpawnOptions(c, sid, level >= depth, kind, modelID, effort)
+	opts := m.subSpawnOptions(c, sid, level >= depth, kind, modelID, effort, session, false)
 	prompt := req.Prompt
 	unlock() // the claim retry and Spawn run unlocked; the receipt is returned after both
 
@@ -166,12 +173,11 @@ func (m *Manager) SpawnSubagent(chatID string, req SpawnSubRequest) (model.Subag
 		sa.Tool = tool
 	}
 
-	sp := m.Spawners[kind]
-	if sp == nil {
-		failed := m.finishAppSub(chatID, sid, model.SubFailed, fmt.Sprintf("no spawner for agent %q", kind), endSpawnFailed)
-		return failed, fmt.Errorf("no spawner for agent %q", kind)
-	}
-	ag, err := sp.Spawn(opts)
+	wanted := false
+	err = m.startSub(chatID, sid, kind, opts, func(c *Chat, s *sub, out *outbox) ([]agent.ContentBlock, bool) {
+		wanted = true
+		return []agent.ContentBlock{{Text: prompt}}, true
+	})
 	if err != nil {
 		if errors.Is(err, ErrFolderMissing) {
 			err = &folderMissingError{text: folderMissingText(opts.Cwd)}
@@ -179,27 +185,67 @@ func (m *Manager) SpawnSubagent(chatID string, req SpawnSubRequest) (model.Subag
 		failed := m.finishAppSub(chatID, sid, model.SubFailed, err.Error(), endSpawnFailed)
 		return failed, err
 	}
+	if !wanted {
+		// The subagent was ended, or its chat deleted, while its process started: the receipt says
+		// what it is now.
+		if c, err := m.lock(chatID); err == nil {
+			if s := c.subs[sid]; s != nil {
+				sa = s.meta
+			}
+			c.mu.Unlock()
+		}
+	}
+	return sa, nil
+}
 
-	c, err = m.lock(chatID)
+// startSub is the one start of a subagent's process (design D4): a new one (SpawnSubagent), or one
+// again on its recorded session (a retry, retrysub.go; a resume, resume.go). It starts the process
+// with opts, unlocked; then, with the chat locked, prepare says whether s still wants it and
+// returns the first message (prepare may set s.carry and emit). The process is attached and runSub
+// hands it the message. It returns the error of the start (no process then); a start that is no
+// longer wanted closes the process and returns nil.
+func (m *Manager) startSub(chatID, sid string, kind model.AgentKind, opts agent.SpawnOptions,
+	prepare func(c *Chat, s *sub, out *outbox) ([]agent.ContentBlock, bool)) error {
+	sp := m.Spawners[kind]
+	if sp == nil {
+		return fmt.Errorf("no spawner for agent %q", kind)
+	}
+	ag, err := sp.Spawn(opts)
+	if err != nil {
+		return err
+	}
+
+	var out outbox
+	c, err := m.lock(chatID)
 	if err != nil {
 		go ag.Close()
-		return sa, err
+		return nil
 	}
-	s = c.subs[sid]
+	s := c.subs[sid]
 	if s == nil || s.meta.Status != model.SubRunning {
-		cur := sa
-		if s != nil {
-			cur = s.meta
-		}
 		c.mu.Unlock()
 		go ag.Close()
-		return cur, nil
+		return nil
+	}
+	blocks, ok := prepare(c, s, &out)
+	if !ok {
+		c.mu.Unlock()
+		m.send(out)
+		go ag.Close()
+		return nil
 	}
 	s.ag = ag
+	if s.carry != nil {
+		s.carry.ag = ag
+	}
+	if s.stop == nil {
+		s.stop = make(chan struct{})
+	}
 	stop := s.stop
 	c.mu.Unlock()
-	go m.runSub(c, sid, prompt, ag, stop)
-	return sa, nil
+	m.send(out)
+	go m.runSub(c, sid, blocks, ag, stop)
+	return nil
 }
 
 // ErrNotStarter is what stop_subagent answers a caller that names a subagent it did not start.
@@ -235,7 +281,16 @@ func (m *Manager) StopSubagentBy(chatID, by, sid string) error {
 		m.send(out)
 		return ErrNotStarter
 	}
-	if s.meta.Status != model.SubRunning {
+	switch {
+	case s.meta.Status == model.SubStopped && listedCauses[s.meta.Cause]:
+		// Stopped by nobody's request and so on the parent's list: stopping it again takes it off.
+		s.meta.Cause = model.CauseStopTool
+		m.saveSub(c, s)
+		out.emitSub(c, s.meta)
+		c.mu.Unlock()
+		m.send(out)
+		return nil
+	case s.meta.Status != model.SubRunning && s.meta.Status != model.SubPaused:
 		c.mu.Unlock()
 		m.send(out)
 		return fmt.Errorf("subagent %s is %s", sid, s.meta.Status)
@@ -370,13 +425,14 @@ func notUsableError(kind model.AgentKind, can []model.AgentKind) error {
 	return fmt.Errorf("agent %q cannot be used on this server: its program was not found. Usable: %s", kind, list)
 }
 
-// subSpawnOptions are the options the process of c's subagent sid starts with; leaf says that
-// it is at the chat's deepest level and so has no spawn family. c.mu held.
-func (m *Manager) subSpawnOptions(c *Chat, sid string, leaf bool, kind model.AgentKind, modelID, effort string) agent.SpawnOptions {
+// subSpawnOptions are the options the process of c's subagent sid starts with, on session (resume:
+// a session that exists); leaf says that it is at the chat's deepest level and so has no spawn
+// family. It always issues a new MCP token. c.mu held.
+func (m *Manager) subSpawnOptions(c *Chat, sid string, leaf bool, kind model.AgentKind, modelID, effort, session string, resume bool) agent.SpawnOptions {
 	m.ensureToken(c)
 	opts := agent.SpawnOptions{
 		ChatID:   c.meta.ID + "/subagents/" + sid,
-		Resume:   false,
+		Resume:   resume,
 		Cwd:      c.meta.Cwd,
 		Model:    modelID,
 		Effort:   m.effortFor(kind, modelID, effort),
@@ -385,9 +441,7 @@ func (m *Manager) subSpawnOptions(c *Chat, sid string, leaf bool, kind model.Age
 		Subagent: true,
 		NoSpawn:  leaf,
 	}
-	if kind == model.Claude || kind == model.Pi {
-		opts.SessionID = uuid()
-	}
+	opts.SessionID = session
 	opts.Dir = m.chatDir(opts.ChatID)
 	return opts
 }
@@ -426,6 +480,7 @@ func (m *Manager) finalizeAppSub(c *Chat, s *sub, status model.SubStatus, errTex
 	if s.meta.Status != model.SubRunning {
 		return
 	}
+	m.cancelSubRetry(c, s, "the process ended") // an exit during an attempt, a refused message and a failed start end the retry
 	s.meta.Status, s.meta.Ended, s.meta.Waiting, s.meta.BgWaiting = status, m.nowMs(), false, false
 	if errText != "" {
 		s.meta.Error = errText
@@ -472,8 +527,8 @@ func (m *Manager) subBgQuiet(c *Chat, sid string) func(out *outbox, aft *after) 
 	}
 }
 
-func (m *Manager) runSub(c *Chat, sid, prompt string, ag agent.Agent, stop <-chan struct{}) {
-	if err := ag.Send([]agent.ContentBlock{{Text: prompt}}); err != nil {
+func (m *Manager) runSub(c *Chat, sid string, blocks []agent.ContentBlock, ag agent.Agent, stop <-chan struct{}) {
+	if err := ag.Send(blocks); err != nil {
 		m.finishAppSub(c.meta.ID, sid, model.SubFailed, err.Error(), endFailed)
 		return
 	}
@@ -483,6 +538,13 @@ func (m *Manager) runSub(c *Chat, sid, prompt string, ag agent.Agent, stop <-cha
 		case <-stop:
 			return
 		case ev, ok := <-ch:
+			select {
+			case <-stop:
+				// The process was let go (a stop, a retry's close) while this event or the close of
+				// its channel was ready too: it is no longer s's, and must not end the subagent.
+				return
+			default:
+			}
 			if !ok {
 				m.finishAppSub(c.meta.ID, sid, model.SubStopped, "process ended", endGone)
 				return
@@ -523,6 +585,9 @@ func (m *Manager) handleSubEv(c *Chat, sid string, ev agent.Event) {
 		return
 	}
 	before := s.meta
+	if s.retry != nil && s.retry.started && (modelOutput(ev) || (ev.Kind == agent.EvTurnEnd && !ev.Aborted && ev.Error == "")) {
+		m.subRetryOK(c, s) // the attempt got a reply: the next temporary error counts from the first
+	}
 	if s.carry != nil && (modelOutput(ev) || ev.Kind == agent.EvThinking) {
 		s.carry.quiet++ // its process is in a turn: not silent (subUnread)
 	}
@@ -560,6 +625,7 @@ func (m *Manager) handleSubEv(c *Chat, sid string, ev agent.Event) {
 		}
 		if ev.SessionID != "" {
 			s.meta.AgentID = ev.SessionID
+			s.meta.Session = ev.SessionID
 		}
 	case agent.EvUsage:
 		if s.meta.Status != model.SubRunning {
@@ -593,10 +659,15 @@ func (m *Manager) handleSubEv(c *Chat, sid string, ev agent.Event) {
 		switch {
 		case ev.Aborted:
 			st, why = model.SubStopped, endAborted
+		case ev.Error != "" && ev.Temporary != "" && s.meta.Session != "":
+			// It can pass, and the session is there to start again on: the subagent stays running
+			// and is tried again, or paused (retrysub.go). Its parent is handed nothing.
+			m.subTempFail(c, s, ev, &out, &aft)
+			return
 		case ev.Error != "":
 			why = endTurnError
 			m.subErrorNote(c, s, ev.Error, &out)
-		case s.carry != nil && !s.carry.settled && s.meta.Kind == model.Pi:
+		case s.carry != nil && !s.carry.settled && s.meta.Kind == model.Pi && len(s.carry.sids) > 0:
 			// A turn that carried results and ended with no reply: on pi a failed turn can look
 			// like it (see endCarry), and a subagent's results are not tried again.
 			st, why, errText = model.SubFailed, endFailed, "its turn ended with no reply: the subagent results were not received"

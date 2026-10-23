@@ -156,6 +156,14 @@ func returns(t *testing.T, what string, f func() error) {
 // is returned.
 func (e *env) afterHold(id string, parent *fakeAgent, held ...string) *fakeAgent {
 	e.t.Helper()
+	return e.afterHoldListing(id, parent, nil, held...)
+}
+
+// afterHoldListing is afterHold for a chat that has subagents stopped by the person or by a server
+// restart (D14, goal 5.1): the human's message also carries the list of listed, between the results
+// and the text. With none listed, the message must have no list block.
+func (e *env) afterHoldListing(id string, parent *fakeAgent, listed []string, held ...string) *fakeAgent {
+	e.t.Helper()
 	var fresh, failed []string
 	for _, sid := range held {
 		switch d := e.subFile(id, sid).Delivery; d {
@@ -182,7 +190,7 @@ func (e *env) afterHold(id string, parent *fakeAgent, held ...string) *fakeAgent
 	if n != before+1 {
 		e.t.Fatalf("%d sends after the human's message, want %d", n, before+1)
 	}
-	msg := parent.sent()[n-1]
+	msg := wantPausedList(e.t, parent.sent()[n-1], listed...)
 	if got := deliveredSids(msg); !reflect.DeepEqual(got, fresh) {
 		e.t.Fatalf("the human's message carries %v, want %v", got, fresh)
 	}

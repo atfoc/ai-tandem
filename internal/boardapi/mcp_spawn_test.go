@@ -153,8 +153,8 @@ func namesOf(tools []boardtools.Tool) []string {
 
 func TestToolsListMatrix(t *testing.T) {
 	e := newEnv(t)
-	if got := namesOf(boardtools.SpawnFamily); !joinEq(got, []string{"spawn_subagent", "stop_subagent", "list_subagent_models"}) {
-		t.Fatalf("spawn family %v, want spawn_subagent, stop_subagent and list_subagent_models alone", got)
+	if got := namesOf(boardtools.SpawnFamily); !joinEq(got, []string{"spawn_subagent", "stop_subagent", "list_subagent_models", "resume_subagent"}) {
+		t.Fatalf("spawn family %v, want spawn_subagent, stop_subagent, list_subagent_models and resume_subagent alone", got)
 	}
 	boardSpawn := append(namesOf(boardtools.Tools), namesOf(boardtools.SpawnFamily)...)
 
@@ -385,10 +385,10 @@ func TestSubagentSpawnFamilyRejected(t *testing.T) {
 	waitFor(t, "child", func() bool { return e.claude.count() >= 1 })
 	extra := e.claude.last(t).opts.MCP.Token
 	before := e.claude.count()
-	for _, name := range []string{"spawn_subagent", "stop_subagent", "list_subagent_models"} {
+	for _, name := range []string{"spawn_subagent", "stop_subagent", "list_subagent_models", "resume_subagent"} {
 		args := `{"prompt":"nope"}`
 		switch name {
-		case "stop_subagent":
+		case "stop_subagent", "resume_subagent":
 			args = `{"sid":"x"}`
 		case "list_subagent_models":
 			args = `{}`

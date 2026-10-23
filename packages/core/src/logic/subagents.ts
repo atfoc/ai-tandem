@@ -3,6 +3,7 @@
 import type { AgentKind, Catalog, Item, Subagent } from "../types.ts";
 import { effortLabel, toolVerb, type BoardNames } from "./labels.ts";
 import type { BranchKey } from "./branches.ts";
+import { pausedLine, retryLine } from "./retry.ts";
 
 const DEFAULT_TYPES = new Set(["", "general-purpose", "generalPurpose", "general_purpose", "unspecified"]);
 
@@ -92,9 +93,12 @@ export function showReport(it: Item, sa: Subagent, items?: Item[]): boolean {
 }
 
 /** The row's summary line and its tone. One that was not carried over says so in place of its
- *  activity or result, and one that waits says what it waits on (subs: the chat's subagents). */
-export function subLine(it: Item, sa: Subagent, items?: Item[], nameOf?: BoardNames, subs?: Record<string, Subagent>): { text: string; tone: "live" | "muted" | "error" } {
+ *  activity or result, one that is paused or retried says so, and one that waits says what it waits on
+ *  (subs: the chat's subagents; now: unix ms, for the time to the next attempt). */
+export function subLine(it: Item, sa: Subagent, items?: Item[], nameOf?: BoardNames, subs?: Record<string, Subagent>, now = Date.now()): { text: string; tone: "live" | "muted" | "error" } {
   if (sa.notCarried) return { text: NOT_CARRIED, tone: "muted" };
+  if (sa.status === "paused") return { text: pausedLine(sa), tone: "error" };
+  if (sa.status === "running" && sa.retry?.attempt) return { text: retryLine(sa.retry, now), tone: "muted" };
   if (subWaiting(sa)) return { text: subWaitingText(sa, subs), tone: "muted" };
   switch (sa.status) {
     case "running": return { text: subActivity(sa, items, nameOf), tone: "live" };
@@ -105,7 +109,7 @@ export function subLine(it: Item, sa: Subagent, items?: Item[], nameOf?: BoardNa
   }
 }
 
-const RESULT_STATUS: Record<Subagent["status"], string> = { running: "Running", completed: "Done", failed: "Failed", stopped: "Stopped" };
+const RESULT_STATUS: Record<Subagent["status"], string> = { running: "Running", completed: "Done", failed: "Failed", stopped: "Stopped", paused: "Paused" };
 const RESULT_DELIVERY: Record<NonNullable<Subagent["delivery"]>, string> = {
   owed: "not sent yet", retry: "not sent yet", sent: "sent to the agent", "given-up": "could not be delivered",
 };

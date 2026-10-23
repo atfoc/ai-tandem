@@ -21,6 +21,7 @@ import { AgentGlyph, BoardIcon, ChatIcon, GroupIcon, agentClass } from "../../ui
 import { MenuItem } from "../../ui/Menu.tsx";
 import { useTokens } from "../../ui/theme.tsx";
 import { tid, type DataSet } from "../../ui/tid.ts";
+import { useNow } from "../subagents/hooks.ts";
 import { boardApp } from "../shell/boardside.ts";
 import { attempt, newChat, openBoard, openChat } from "../shell/nav.ts";
 import { archiveBoard, archiveGroup, deleteBoard, deleteChat, deleteGroup, isCollapsed, renameChat, renameGroup, setCollapsed } from "./actions.ts";
@@ -233,7 +234,8 @@ export const ChatRow = memo(function ChatRow({ c, editing, setEditing, nested }:
   const inArchived = useContext(InArchived);
   const key = "chat:" + c.id;
   // (the row is the same for a chat of this computer and of a section, which names no server: the section does)
-  const sub = rowLine(c, subline(c, cat), boardNames(c.id)), st = dotState(c);
+  const now = useNow(c.status === "retrying"); // the time to the next attempt counts down
+  const sub = rowLine(c, subline(c, cat), boardNames(c.id), now), st = dotState(c);
   const legacy = isLegacy(c);
   const title = chatTitle(c, items);
   const menu: RowItem[] = c.archived

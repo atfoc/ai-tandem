@@ -28,6 +28,7 @@ import { webStyle } from "../../ui/webstyle.ts";
 import { BackButton } from "../shell/BackButton.tsx";
 import { reportError } from "../shell/nav.ts";
 import { agentColours } from "./colour.ts";
+import { useNow } from "../subagents/hooks.ts";
 import { tildify, useWhere } from "./hooks.ts";
 import { useChatParts } from "./parts.tsx";
 
@@ -79,10 +80,11 @@ export function ChatHeader({ chatId }: { chatId: string }) {
   const where = useWhere(c);
   const gone = useStore((s) => !!s.gone[chatId]); // it is no longer on its server
   const [editing, setEditing] = useState(false);
+  const now = useNow(c?.status === "retrying"); // the time to the next attempt counts down
   if (!c) return null;
   // (a chat whose server is not connected, or no longer has it, is shown as it was: it has no status now, and is not renamed)
   const frozen = sendOff(where) || gone;
-  const status = headStatus(c, isLegacy(c), statusText(c, boardNames(chatId)), frozen);
+  const status = headStatus(c, isLegacy(c), statusText(c, boardNames(chatId), now), frozen);
   const named = !c.archived && !isLegacy(c) && !frozen;
   const a = agentColours(t, c.agent);
   return (

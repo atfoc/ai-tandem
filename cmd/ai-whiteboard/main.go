@@ -199,7 +199,7 @@ func serve(o options) {
 	piSpawner := &pi.Spawner{Bin: o.piBin, AppRoot: p.Root, Home: home, Prompt: prompts.Pi()}
 	turnCaps()
 	cm = chats.New(chats.Deps{Store: st, Bridge: br, Boards: bs, DefaultCwd: o.cwd, Agents: agents,
-		MCPURL: boardapi.Endpoint(mcpBoundPort), ImageWait: waits.images,
+		MCPURL: boardapi.Endpoint(mcpBoundPort), ImageWait: waits.images, RetryFirst: waits.retry,
 		Namers: map[model.AgentKind]chats.Namer{
 			model.Claude: chats.ClaudeNamer{Bin: o.claudeBin},
 			model.Cursor: chats.ClaudeNamer{Bin: o.claudeBin},
