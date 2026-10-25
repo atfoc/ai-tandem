@@ -12,9 +12,14 @@
 //   - the phone's chat screen is as wide as the window, so the wide page of the old check (900 px) is held by the desktop and the tablet only;
 //   - new, no old check proved them: a press outside closes the list, the focus is on the current depth as the list opens, the arrows go
 //     through the rows that take a pick, and the focus returns to the chip as the list closes (C-SS-03, C-SS-06, C-CH-20).
-import { check, mockEval, seed, until } from "../shot.mjs";
-import { MORE, POP, chip, closeChoice, frame, openAt, openChoice, phoneChip, pickCapPhone, pickDepthPhone, playable } from "./composer.mjs";
+//   - "Running at once" is a slider since small-improvements (goal 3.3), no longer rows or segments: the pick is a tap on its track (slider.mjs),
+//     the marks read the depth rows' ✓ and the slider's data-value, ↑/↓ go from the last depth row to the slider's track and back (a slider with
+//     verticalKeys off leaves them to the menu), ←/→ on the track change the cap by one with one PATCH each, and depth Off greys the slider
+//     (data-disabled, aria-disabled; no key and no −/+ moves it, no call). SI.3 proves the slider itself.
+import { callsOf, check, mockEval, seed, until } from "../shot.mjs";
+import { MORE, POP, chip, closeChoice, frame, openAt, openChoice, phoneChip, pickDepthPhone, playable, setCapPhone } from "./composer.mjs";
 import { byTid, press, tidSel } from "./sel.mjs";
+import { sliderOf, tapSlider, trackOf } from "./slider.mjs";
 
 export const viewports = ["desktop", "tablet", "phone"];
 
@@ -34,12 +39,12 @@ await check("S1.1 the Subagents chip in the toolbar's row and in the \"more\" po
   const state = (id) => states.find((s) => s.id === id) ?? (() => { throw new Error(`the seed has no state ${id}`); })();
   const close = async ({ ctx }) => { await ctx.close(); };
   /** In the page: where the chip is, what it says, and whether its list is open and inside the window. */
-  const at = (page) => page.evaluate(({ chipSel, popSel, moreSel, optSel }) => {
+  const at = (page) => page.evaluate(({ chipSel, popSel, moreSel, optSel, capSel }) => {
     const c = document.querySelector(chipSel), p = document.querySelector(popSel), r = p?.getBoundingClientRect();
     return { where: !c ? "" : c.closest(moreSel) ? "popup" : "row", says: c?.textContent.replace(/▾/g, "").trim() ?? "", fixed: c?.dataset.fixed === "true",
       open: !!p, inside: !!r && r.left >= 0 && r.top >= 0 && r.right <= innerWidth + 0.5 && r.bottom <= innerHeight + 0.5,
-      marked: [...(p?.querySelectorAll(`${optSel}[aria-checked="true"]`) ?? [])].map((e) => e.textContent.replace("✓", "").trim()).join(","), more: !!document.querySelector(moreSel) };
-  }, { chipSel: tidSel("tchip", { kind: "subagents" }), popSel: tidSel("sub-pop"), moreSel: tidSel("more-pop"), optSel: tidSel("sub-opt") });
+      marked: [...(p?.querySelectorAll(`${optSel}[aria-checked="true"]`) ?? [])].map((e) => e.textContent.replace("✓", "").trim()).concat(p?.querySelector(capSel)?.dataset.value ?? "").join(","), more: !!document.querySelector(moreSel) };
+  }, { chipSel: tidSel("tchip", { kind: "subagents" }), popSel: tidSel("sub-pop"), moreSel: tidSel("more-pop"), optSel: tidSel("sub-opt"), capSel: tidSel("sub-cap") });
   /** The list has come to rest (a sheet rises into the window), then whether it is inside. */
   const settled = async (page) => {
     let last = "";
@@ -51,6 +56,7 @@ await check("S1.1 the Subagents chip in the toolbar's row and in the \"more\" po
 
   if (layout !== "phone") { // in the row of a wide page
     const p = await openAt(open, state("plain-new"), layout, WIDE[layout]), name = `a new chat in a ${WIDE[layout]} px ${layout === "desktop" ? "page" : "window"}`;
+    const calls = callsOf(p.page), capCalls = () => calls.filter((c) => c.method === "PATCH" && c.body && "subCap" in c.body).map((c) => c.body.subCap);
     let now = await at(p.page);
     if (now.where !== "row" || now.fixed || now.says !== "Subagents1 level") fail(`${name}: the chip is ${JSON.stringify(now)}`);
     await press(p.page, CHIP(p.page));
@@ -62,25 +68,54 @@ await check("S1.1 the Subagents chip in the toolbar's row and in the \"more\" po
     if (!await until(async () => { const f = await focused(p.page); return f.id === "sub-opt" && f.section === "depth" && f.checked === "true"; }, 3000)) fail(`${name}: the focus is not on the current depth as the list opens: ${JSON.stringify(await focused(p.page))}`);
     await pick(p.page, "depth", 3, fail, name);
     if (!await saved('return chats.c_A2_new.subDepth === 3;')) fail(`${name}: the depth was not saved`);
-    await pick(p.page, "cap", 25, fail, name);
+    await tapSlider(p.page, "sub-cap", 25); // (the cap is a slider: a tap on its track at the place of 25)
     if (!await saved('return chats.c_A2_new.subCap === 25;')) fail(`${name}: the cap was not saved`);
+    if (capCalls().join() !== "25") fail(`${name}: a tap on the slider made the cap calls [${capCalls()}], not one with 25`);
     if (!await until(async () => (await at(p.page)).says === "Subagents3 levels · 25 at once", 5000)) fail(`${name}: the chip says "${(await at(p.page)).says}"`);
     await frame(p.page);
     now = await at(p.page);
     if (!now.open || now.marked !== "3 levels,25") fail(`${name}: after two picks the list is ${now.open ? "open" : "closed"} and marks ${now.marked}`);
     if (now.where !== "row") fail(`${name}: the chip left the row with its list open`);
-    // the arrows go through the rows that take a pick, of both sections, and wrap (C-SS-06)
-    const arrow = async (from, key) => { await opt(p.page, ...from).focus(); await p.page.keyboard.press(key); const f = await focused(p.page); return `${f.section}:${f.value}`; };
-    for (const [from, key, to] of [[["cap", 25], "ArrowUp", "cap:10"], [["cap", 25], "ArrowDown", "cap:50"], [["cap", 100], "ArrowDown", "depth:0"], [["depth", 0], "ArrowUp", "cap:100"]]) {
+    // the arrows go through the rows that take a pick and the slider, and wrap (C-SS-06): from the last depth row ↓ goes to the slider's track, from
+    // the track ↓ to the first depth row (a slider leaves ↑/↓ to the menu), and ↑ the other way round
+    const SLIDER = "slider";
+    const arrow = async (from, key) => {
+      if (from === SLIDER) await trackOf(p.page, "sub-cap").focus(); else await opt(p.page, ...from).focus();
+      await p.page.keyboard.press(key);
+      const f = await focused(p.page);
+      return f.id === "sub-cap-track" ? SLIDER : `${f.section}:${f.value}`;
+    };
+    for (const [from, key, to] of [[["depth", 2], "ArrowUp", "depth:1"], [["depth", 1], "ArrowDown", "depth:2"], [["depth", 3], "ArrowDown", SLIDER], [SLIDER, "ArrowDown", "depth:0"], [SLIDER, "ArrowUp", "depth:3"], [["depth", 0], "ArrowUp", SLIDER]]) {
       const got = await arrow(from, key);
-      if (got !== to) fail(`${name}: ${key} from ${from.join(" ")} went to ${got}, not to ${to}`);
+      if (got !== to) fail(`${name}: ${key} from ${Array.isArray(from) ? from.join(" ") : from} went to ${got}, not to ${to}`);
     }
+    if (capCalls().join() !== "25") fail(`${name}: the arrows ↑/↓ through the list made cap calls: [${capCalls()}]`);
+    // ← and → on the track change the cap by one, one call each (the slider keeps them; the menu's own keys are ↑/↓)
+    await trackOf(p.page, "sub-cap").focus();
+    await p.page.keyboard.press("ArrowRight");
+    if (!await saved('return chats.c_A2_new.subCap === 26;')) fail(`${name}: → on the slider did not save 26`);
+    await p.page.keyboard.press("ArrowLeft");
+    if (!await saved('return chats.c_A2_new.subCap === 25;')) fail(`${name}: ← on the slider did not save 25`);
+    if (!await until(async () => capCalls().join() === "25,26,25" && (await sliderOf(p.page, "sub-cap")).value === 25, 5000)) fail(`${name}: → and ← made the cap calls [${capCalls()}] and the slider says ${(await sliderOf(p.page, "sub-cap")).value}, not 25,26,25 and 25`);
     await pick(p.page, "depth", 0, fail, name);
     if (!await saved('return chats.c_A2_new.subOff === true;')) fail(`${name}: Off was not saved`);
     if (!await until(() => byTid(p.page, "sub-pop-cap", { off: true }).count(), 5000)) fail(`${name}: with depth Off the "Running at once" section is not greyed`);
+    {
+      // with depth Off the slider is greyed, out of the tab order, and nothing moves it: keys and − / + do nothing and make no call
+      if (!await until(async () => (await sliderOf(p.page, "sub-cap")).disabled === "true", 5000)) fail(`${name}: with depth Off the slider's data-disabled is "${(await sliderOf(p.page, "sub-cap")).disabled}", not "true"`);
+      const off = await sliderOf(p.page, "sub-cap"), before = capCalls().length;
+      if (off.ariaDisabled !== "true") fail(`${name}: with depth Off the track's aria-disabled is ${off.ariaDisabled}, not "true"`);
+      await trackOf(p.page, "sub-cap").focus().catch(() => {});
+      for (const k of ["ArrowRight", "ArrowLeft", "End", "Home", "PageUp"]) await p.page.keyboard.press(k);
+      await byTid(p.page, "sub-cap-plus").click({ force: true, timeout: 3000 }).catch(() => {});
+      await byTid(p.page, "sub-cap-minus").click({ force: true, timeout: 3000 }).catch(() => {});
+      await frame(p.page); await p.page.waitForTimeout(300);
+      const after = await sliderOf(p.page, "sub-cap");
+      if (after.value !== 25 || capCalls().length !== before) fail(`${name}: with depth Off the keys and −/+ moved the slider to ${after.value} / made ${capCalls().length - before} calls`);
+    }
     // with depth Off the cap's rows take no pick and the arrows pass them over
     const wrap = await arrow(["depth", 0], "ArrowUp");
-    if (wrap !== "depth:3") fail(`${name}: with depth Off ArrowUp from Off went to ${wrap}, not to the last row that takes a pick (depth:3)`);
+    if (wrap !== "depth:3") fail(`${name}: with depth Off ArrowUp from Off went to ${wrap}, not to the last row that takes a pick (depth:3: the greyed slider is passed over)`);
     await p.page.keyboard.press("Escape");
     if (!await until(async () => !(await at(p.page)).open, 5000)) fail(`${name}: Esc did not close the list`);
     if (await byTid(p.page, "stop").count()) fail(`${name}: Esc reached the composer`);
@@ -93,7 +128,7 @@ await check("S1.1 the Subagents chip in the toolbar's row and in the \"more\" po
     await press(p.page, byTid(p.page, "overlay-backdrop").first(), { position: { x: 3, y: 3 } });
     if (!await until(async () => !(await at(p.page)).open, 5000)) fail(`${name}: a press outside did not close the list`);
     await close(p);
-    note("in the row: two picks saved with the list open, the focus on the current depth, the wider chip still in the row, the arrows, Off greys the cap, Esc and a press outside close the list and the focus returns to the chip");
+    note("in the row: a depth row and a tap on the slider saved with the list open (one call), the focus on the current depth, the wider chip still in the row, ↑/↓ between the depth rows and the slider, ←/→ one call each, Off greys the slider and nothing moves it, Esc and a press outside close the list and the focus returns to the chip");
   }
   await seed(url, "A2");
   // (a page under 700 px is the phone layout at every viewport, and the phone's chips are in its chip row with no "more" popup (package C2): the
@@ -108,26 +143,33 @@ await check("S1.1 the Subagents chip in the toolbar's row and in the \"more\" po
       await openChoice(p.page, "subagents");
       const sheet = byTid(p.page, "sub-sheet");
       if (await byTid(p.page, "sub-pop").count()) fail(`${name}: the popover form of the list is drawn at the phone layout`);
-      const marked = async () => (await sheet.locator(`${tidSel("sub-opt")}[data-on="true"]`).evaluateAll((es) => es.map((e) => `${e.dataset.section}:${e.dataset.value}`))).join(",");
+      const marked = async () => (await sheet.locator(`${tidSel("sub-opt")}[data-on="true"]`).evaluateAll((es) => es.map((e) => `${e.dataset.section}:${e.dataset.value}`))).concat(`cap:${(await sliderOf(p.page, "sub-cap")).value}`).join(",");
       if (await marked() !== "depth:1,cap:100") fail(`${name}: the sheet marks ${await marked()}, not depth:1,cap:100`);
       await pickDepthPhone(p.page, 2);
       if (!await saved('return chats.c_A2_new.subDepth === 2;')) fail(`${name}: the depth was not saved`);
-      await pickCapPhone(p.page, 25);
+      await setCapPhone(p.page, 25);
       if (!await saved('return chats.c_A2_new.subCap === 25;')) fail(`${name}: the cap was not saved`);
       if (!await until(async () => (await chipSays()) === "Subagents · 2 levels · 25 at once", 5000)) fail(`${name}: the chip says "${await chipSays()}", not "Subagents · 2 levels · 25 at once"`);
       await frame(p.page);
       if (!await byTid(p.page, "sub-sheet").count() || await marked() !== "depth:2,cap:25") fail(`${name}: after two picks the sheet is ${await byTid(p.page, "sub-sheet").count() ? "open" : "closed"} and marks ${await marked()}`);
-      // Off greys the cap (its rows take no pick)
+      // Off greys the cap (the slider takes no move: no key, no −/+, no call)
       await pickDepthPhone(p.page, 0);
       if (!await saved('return chats.c_A2_new.subOff === true;')) fail(`${name}: Off was not saved`);
       if (!await until(() => byTid(p.page, "sub-cap", { disabled: "true" }).count(), 5000)) fail(`${name}: with depth Off the "Running at once" control is not greyed`);
+      if ((await sliderOf(p.page, "sub-cap")).ariaDisabled !== "true") fail(`${name}: with depth Off the slider's track is not aria-disabled`);
+      const calls = callsOf(p.page);
+      await trackOf(p.page, "sub-cap").focus().catch(() => {});
+      for (const k of ["ArrowRight", "End"]) await p.page.keyboard.press(k);
+      await byTid(p.page, "sub-cap-plus").click({ force: true, timeout: 3000 }).catch(() => {});
+      await frame(p.page); await p.page.waitForTimeout(300);
+      if ((await sliderOf(p.page, "sub-cap")).value !== 25 || calls.some((c) => c.method === "PATCH")) fail(`${name}: with depth Off the keys and + moved the slider or made a call`);
       // Done closes the sheet, and the chip stays in the row with the saved words
       await closeChoice(p.page);
       if (await byTid(p.page, "sub-sheet").count()) fail(`${name}: Done did not close the sheet`);
       if (!await until(async () => /^Subagents · Off/.test(await chipSays()), 5000)) fail(`${name}: after Done the chip says "${await chipSays()}"`);
     }
     await close(p);
-    note("at the phone layout: the Subagents chip is in the chip row (no \"more\" popup), its sheet opens inside the window, two picks saved with the sheet open and the chip following, Off greys the cap, Done closes it");
+    note("at the phone layout: the Subagents chip is in the chip row (no \"more\" popup), its sheet opens inside the window, a depth pick and a tap on the cap slider saved with the sheet open and the chip following, Off greys the slider (nothing moves it), Done closes it");
   }
   if (layout === "desktop") { // the popover form of the list, from the popup of a panel beside a board
     await seed(url, "A2");

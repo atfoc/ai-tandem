@@ -63,6 +63,22 @@ test("the countdown's clock is the share of the pause that has run and the secon
   assert.deepEqual(countdownAt(c, 500), { frac: 0, left: 1.2 });
 });
 
+test("the countdown's clock counts the delay at both ends of the slider: 0.1 s and 10 s, never negative or NaN", () => {
+  const short = { startedAt: 1000, ms: 100 };
+  assert.deepEqual(countdownAt(short, 1000), { frac: 0, left: 0.1 });
+  assert.deepEqual(countdownAt(short, 1050), { frac: 0.5, left: 0.05 });
+  assert.deepEqual(countdownAt(short, 1100), { frac: 1, left: 0 });
+  assert.deepEqual(countdownAt(short, 1500), { frac: 1, left: 0 });
+  const long = { startedAt: 1000, ms: 10000 };
+  assert.deepEqual(countdownAt(long, 1000), { frac: 0, left: 10 });
+  assert.deepEqual(countdownAt(long, 6000), { frac: 0.5, left: 5 });
+  assert.deepEqual(countdownAt(long, 11000), { frac: 1, left: 0 });
+  for (const now of [0, 1000, 1049, 1100, 5000, 11000, 99999]) for (const c of [short, long]) {
+    const r = countdownAt(c, now);
+    assert.ok(Number.isFinite(r.frac) && Number.isFinite(r.left) && r.frac >= 0 && r.frac <= 1 && r.left >= 0);
+  }
+});
+
 test("the captions say the words of the turn once the bar no longer does, hold them while the turn is on its way, and speak the sentence", () => {
   const w = { committed: "draw a red", partial: "box", spoken: "" };
   // (the listening bar shows the words itself)

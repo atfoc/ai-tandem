@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { DEFAULTS } from "../src/voice/logic/settings.ts";
 import { S3_TID } from "../src/screens/voice/ids.ts";
 import { LANGUAGE_AUTO, advancedRows, canShowAll, chosenVoiceRow, deviceRows, keyResultLine, keyState, markedVoice, pickPatch, voiceList } from "../src/screens/voice/voicerows.ts";
-import { PROBLEM_WORDS, VS_FIRST_VOICE, VS_PLAYING } from "../src/voice/words.ts";
+import { ADVANCED_PAUSE_VALUE, PROBLEM_WORDS, VS_FIRST_VOICE, VS_PLAYING } from "../src/voice/words.ts";
 
 test("the screen's state follows the keystore, and is unknown until it answers", () => {
   assert.equal(keyState(null), "unknown");
@@ -18,29 +18,32 @@ test("the Advanced rows say the saved values in the dialog's words", () => {
   const rows = advancedRows(DEFAULTS);
   assert.deepEqual(rows.map((r) => [r.which, r.label, r.value]), [
     ["tts", "Speech model", "Flash v2.5"], ["stt", "Transcription", "Scribe v2 Realtime"], ["language", "Language", "Auto-detect"],
-    ["pause", "Pause before auto-send", "1.2 s"], ["speed", "Playback speed", "1.0×"],
+    ["speed", "Playback speed", "1×"],
   ]);
   assert.equal(rows[2]!.current, LANGUAGE_AUTO);
-  assert.equal(rows[3]!.current, "1200");
-  assert.equal(rows[4]!.current, "1");
+  assert.equal(rows[3]!.current, "1");
 });
 
-test("the options are the dialog's: three models, one transcriber, auto and 31 languages, pauses from 0.6 to 3.0 s, five speeds", () => {
-  const [tts, stt, language, pause, speed] = advancedRows(DEFAULTS);
+test("the options are the dialog's: three models, one transcriber, auto and 31 languages, four speeds", () => {
+  const [tts, stt, language, speed] = advancedRows(DEFAULTS);
   assert.equal(tts!.options.length, 3);
   assert.equal(stt!.options.length, 1);
   assert.equal(language!.options.length, 32);
-  assert.deepEqual([pause!.options[0], pause!.options.at(-1)], [{ value: "600", label: "0.6 s" }, { value: "3000", label: "3.0 s" }]);
-  assert.deepEqual(speed!.options.map((o) => o.label), ["0.8×", "0.9×", "1.0×", "1.1×", "1.2×"]);
+  assert.deepEqual(speed!.options.map((o) => o.label), ["0.5×", "1×", "1.5×", "2×"]);
 });
 
-test("a language, a pause and a speed show their own label", () => {
-  const rows = advancedRows({ ...DEFAULTS, language: "de", pauseMs: 2000, speed: 1.2, ttsModel: "eleven_multilingual_v2" });
-  assert.deepEqual(rows.map((r) => r.value), ["Multilingual v2", "Scribe v2 Realtime", "German", "2.0 s", "1.2×"]);
+test("a language and a speed show their own label", () => {
+  const rows = advancedRows({ ...DEFAULTS, language: "de", speed: 1.5, ttsModel: "eleven_multilingual_v2" });
+  assert.deepEqual(rows.map((r) => r.value), ["Multilingual v2", "Scribe v2 Realtime", "German", "1.5×"]);
 });
 
-test("a stored value outside the options is still shown", () => {
-  assert.equal(advancedRows({ ...DEFAULTS, pauseMs: 1250 })[3]!.value, "1.3 s");
+test("the pause is no picker row: a slider draws it, between Language and Speed, and its testID is the screen's", () => {
+  assert.deepEqual(advancedRows(DEFAULTS).map((r) => r.which), ["tts", "stt", "language", "speed"]);
+  assert.equal(S3_TID.advPause, "vs-adv-pause");
+});
+
+test("the slider's values read in the dialog's words: one decimal and a unit, at the ends and between", () => {
+  assert.deepEqual([100, 1200, 4700, 10000].map(ADVANCED_PAUSE_VALUE), ["0.1 s", "1.2 s", "4.7 s", "10.0 s"]);
 });
 
 test("a pick maps its string back to the setting", () => {
@@ -48,8 +51,7 @@ test("a pick maps its string back to the setting", () => {
   assert.deepEqual(pickPatch("stt", "scribe_v2_realtime"), { sttModel: "scribe_v2_realtime" });
   assert.deepEqual(pickPatch("language", "fr"), { language: "fr" });
   assert.deepEqual(pickPatch("language", LANGUAGE_AUTO), { language: null });
-  assert.deepEqual(pickPatch("pause", "1800"), { pauseMs: 1800 });
-  assert.deepEqual(pickPatch("speed", "0.9"), { speed: 0.9 });
+  assert.deepEqual(pickPatch("speed", "1.5"), { speed: 1.5 });
 });
 
 test("the chosen voice row: the name, what is known of it, the sample line while it plays", () => {

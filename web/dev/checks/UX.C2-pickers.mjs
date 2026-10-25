@@ -21,9 +21,10 @@
 //                   each ≥ 44 px; the path's text ends with the folder's name; `dir-item` rows ≥ 52 px; a tap goes in (`dir-use` says "Use <name>");
 //                   `dir-up` goes back; a tap on `dir-path` shows `dir-input` (a path + Enter lists it); an empty folder shows `dir-empty` with
 //                   "No subfolders" and "Use this folder, or go up."; `dir-use` sends configure {cwd} and closes; Cancel closes and sends nothing.
-//   5 Subagents     `sub-sheet` titled "Subagents", Done; `sub-depth` / `sub-cap` segments (`sub-opt`, dataSet section/value/on) each ≥ 44 px high; a depth
-//                   pick sends configure and the sheet stays; depth Off greys `sub-cap` (data-disabled true) and its line says "With depth Off no
-//                   subagent runs."; the chip's label follows.
+//   5 Subagents     `sub-sheet` titled "Subagents", Done; `sub-depth` segments (`sub-opt`, dataSet section/value/on) each ≥ 44 px high; `sub-cap` is a
+//                   slider (small-improvements goal 3.3, 3.4: a touch target ≥ 44 px high, `sub-cap-track`, and `sub-cap-minus` / `-plus` ≥ 44 × 44,
+//                   what the segments' ≥ 44 stood for); a depth pick sends configure and the sheet stays; depth Off greys `sub-cap` (data-disabled true)
+//                   and its line says "With depth Off no subagent runs."; the chip's label follows. (SI.3 proves the slider itself.)
 //   6 Empty chat    in `new`: `empty-thread` with a 56 px tile, `empty-title` 22 px, the line 16 px, `config-hint` "Choose the agent, folder and model
 //                   above the box. They lock when you send."; `starters` with "TRY ASKING" and two `suggestion` rows ≥ 48 px, full width less the
 //                   16 px margins, their bottom within 40 px above the chip row; a tap on one sends it (the message reaches the mock).
@@ -342,13 +343,21 @@ await check("UX.C2-pickers the phone's chip row, its four pickers and the empty 
     if (sub !== "New chat") fail(`the Subagents sheet's sub is ${J(sub)}, not "New chat"`);
     if ((await text(tid(sheet, "sheet-right"))) !== "Done") fail(`the Subagents sheet's right is ${J(await text(tid(sheet, "sheet-right")))}, not "Done"`);
     const segs = (section) => tid(sheet, "sub-opt", { section }).evaluateAll((els) => els.map((e) => ({ v: e.dataset.value, on: e.dataset.on, h: e.getBoundingClientRect().height })));
-    for (const section of ["depth", "cap"]) {
-      const s = await segs(section);
-      if (s.length < 3) fail(`${section}: ${s.length} segments`);
-      for (const x of s) if (x.h < SEG_MIN) fail(`the ${section} segment ${x.v} is ${Math.round(x.h)} px high, under ${SEG_MIN}`);
-      const track = await box(tid(sheet, section === "depth" ? "sub-depth" : "sub-cap").first());
-      if (!track || track.height < 43.5) fail(`the ${section} track is ${track && Math.round(track.height)} px high, under 44`);
+    { // depth: segments
+      const s = await segs("depth");
+      if (s.length < 3) fail(`depth: ${s.length} segments`);
+      for (const x of s) if (x.h < SEG_MIN) fail(`the depth segment ${x.v} is ${Math.round(x.h)} px high, under ${SEG_MIN}`);
+      const track = await box(tid(sheet, "sub-depth").first());
+      if (!track || track.height < 43.5) fail(`the depth track is ${track && Math.round(track.height)} px high, under 44`);
     }
+    // the cap: a slider (no segments), its touch area and − / + at least 44 px (goal 3.4)
+    if (await tid(sheet, "sub-opt", { section: "cap" }).count()) fail("the cap still has segments (sub-opt section cap): it is a slider");
+    for (const part of ["sub-cap-track", "sub-cap-minus", "sub-cap-plus"]) {
+      const b = await box(tid(sheet, part).first());
+      if (!b) fail(`the sheet draws no ${part}`);
+      else if (b.height < 43.5 || (part !== "sub-cap-track" && b.width < 43.5)) fail(`${part} is ${Math.round(b.width)} × ${Math.round(b.height)} px, under 44 high${part === "sub-cap-track" ? "" : " and wide"}`);
+    }
+    if ((await tid(sheet, "sub-cap-track").first().getAttribute("role")) !== "slider") fail("the cap's track is not role slider");
     if (!(await tid(sheet, "sub-depth").count()) || !(await tid(sheet, "sub-cap").count())) return fail("the sheet has no sub-depth or no sub-cap");
     await sweep(page, "sub-sheet", "the Subagents sheet");
     const had = await chip(page, "subagents").getAttribute("aria-label");
@@ -368,7 +377,7 @@ await check("UX.C2-pickers the phone's chip row, its four pickers and the empty 
     await closed(page, "Done", "sub-sheet");
     const now = await chip(page, "subagents").getAttribute("aria-label");
     if (now === had || !/Off/i.test(now ?? "")) fail(`the chip's label is ${J(now)} after depth Off (it was ${J(had)}), not one that says Off`);
-    note(`Subagents: "${title}" / "${sub}", Done; depth and cap segments ≥ 44 px; depth 2 sent and the sheet stayed; Off greys sub-cap with its line; the chip went from ${J(had)} to ${J(now)}`);
+    note(`Subagents: "${title}" / "${sub}", Done; depth segments and the cap slider's track and −/+ ≥ 44 px; depth 2 sent and the sheet stayed; Off greys sub-cap with its line; the chip went from ${J(had)} to ${J(now)}`);
   });
 
   // ================= 6: the empty chat

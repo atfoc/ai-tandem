@@ -81,8 +81,8 @@ Fixed testIDs, paths and signatures are in arch §3, §7, §9–§13; a package 
 
 - **Build.** Pure modules of arch §3 `logic/`:
   - `protocol.ts`: the constants of arch §2 (paths, query keys, `TTS_MODELS`, `STT_MODELS`, `CHUNK_MS = 100`,
-    `VAD_SILENCE_S = 0.6`); `sttQuery(settings)`, `ttsPath(voiceId)`, `ttsQuery()`, `ttsBody(text, settings)` (speed only when ≠
-    1.0), `audioFrame(b64, commit)`, `parseSttEvent(text): SttEvent` (`session_started` | `partial` | `committed` | `error {type}`
+    `VAD_SILENCE_S = 0.6`); `sttQuery(settings)`, `ttsPath(voiceId)`, `ttsQuery()`, `ttsBody(text, settings)` (no
+    speed: the app stretches the audio, small-improvements goal), `audioFrame(b64, commit)`, `parseSttEvent(text): SttEvent` (`session_started` | `partial` | `committed` | `error {type}`
     | `ignored`), `voicesQuery(o)`, `parseVoices(json): VoiceList`.
   - `problems.ts`: `problemOfStatus(status, bodyText)`, `problemOfSttError(type)`, `problemOfException(e)` — the table of
     arch §2.6, never reading a URL or header.

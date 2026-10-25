@@ -5,13 +5,19 @@
 // sentences are written in their order whatever order their requests finish in. `stopAll` is the barge-in: it stops the sound, clears
 // what was queued and aborts every request still open.
 //
+// The playback speed is made here, before the player: each sentence has its own time-stretch (`logic/stretch.ts`), made when its first audio
+// is drained at the speed the settings have then and flushed at its end, and its mark is written just before its first stretched audio, so
+// the marks, the level and the end of playback follow the stretched sound. At 1× the bytes go through as they came.
+//
 // A second utterance never overlaps the first: `begin` stops it. A problem in any request stops the utterance, shows the popover
 // (`state.ts` `showProblem`) and ends `done` with the problem; what was already played is not taken back.
 import { chimePcm } from "../logic/chime.ts";
 import { noticeText } from "../logic/devices.ts";
 import { createSplitter } from "../logic/sentences.ts";
+import { createStretch } from "../logic/stretch.ts";
+import type { Stretch } from "../logic/stretch.ts";
 import { problemOfException, problemOfStatus } from "../logic/problems.ts";
-import { firstVoiceQuery, parseVoices, ttsBody, ttsPath, ttsQuery, VOICES_PATH } from "../logic/protocol.ts";
+import { firstVoiceQuery, parseVoices, ttsBody, ttsPath, ttsQuery, TTS_SAMPLE_RATE, VOICES_PATH } from "../logic/protocol.ts";
 import { VoiceNetError, VoiceProblemError, voicePorts } from "../ports.ts";
 import type { NetRequest, Opened } from "../ports.ts";
 import type { VoiceSettings } from "../logic/settings.ts";
@@ -67,6 +73,8 @@ type Sentence = {
   markWritten: boolean;
   /** An odd last byte of a chunk, joined to the next one: the player takes whole samples. */
   carry: Uint8Array | null;
+  /** The time-stretch of this sentence: made with its first audio, at the speed then in the settings; null until then. */
+  stretch: Stretch | null;
 };
 
 type Run = {
@@ -198,6 +206,18 @@ function whole(s: Sentence, chunk: Uint8Array): Uint8Array {
   return data;
 }
 
+/** Writes stretched audio of the head sentence, with its mark before the first of it: an empty output writes nothing (a mark written
+ *  early would fire when the audio before it drains). */
+function writeOut(r: Run, s: Sentence, out: Uint8Array): void {
+  if (out.length === 0) return;
+  if (!s.markWritten) {
+    s.markWritten = true;
+    r.texts.set(s.id, s.text);
+    player.mark(s.id);
+  }
+  player.write(out);
+}
+
 /** Writes to the player what can be written, in the order of the sentences: the head sentence's chunks as they come, and when it is
  *  read to its end the next one's, which may have been fetched meanwhile. */
 function drain(r: Run): void {
@@ -206,14 +226,11 @@ function drain(r: Run): void {
     for (const chunk of head.chunks.splice(0)) {
       const data = whole(head, chunk);
       if (data.length === 0) continue;
-      if (!head.markWritten) {
-        head.markWritten = true;
-        r.texts.set(head.id, head.text);
-        player.mark(head.id);
-      }
-      player.write(data);
+      head.stretch ??= createStretch(getSettings().speed, TTS_SAMPLE_RATE);
+      writeOut(r, head, head.stretch.push(data));
     }
     if (!head.fetched) break;
+    if (head.stretch) writeOut(r, head, head.stretch.flush());
     r.queue.shift();
   }
   pump(r);
@@ -307,7 +324,7 @@ function begin(u: Utterance): SpeakHandle {
     say(sentence) {
       const text = sentence.trim();
       if (r.finished || r.ended || !text) return;
-      r.queue.push({ id: nextId++, text, ctl: new AbortController(), started: false, fetched: false, chunks: [], markWritten: false, carry: null });
+      r.queue.push({ id: nextId++, text, ctl: new AbortController(), started: false, fetched: false, chunks: [], markWritten: false, carry: null, stretch: null });
       pump(r);
     },
     end() {

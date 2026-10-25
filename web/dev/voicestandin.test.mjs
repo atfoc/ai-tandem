@@ -204,7 +204,7 @@ describe("the text to speech", () => {
     assert.equal(lastOf(c, "tts").chunks, was, "nothing is written after the cancel");
   });
 
-  test("it checks what voice must send: the format, the model, the voice, the text, the speed; and notes what it must not", async () => {
+  test("it checks what voice must send: the format, the model, the voice, the text; and notes what it must not (a speed)", async () => {
     const { base, c } = await serve();
     let r = await speak(base, SENTENCE, { query: "output_format=mp3_44100" });
     assert.equal(r.status, 400);
@@ -217,18 +217,19 @@ describe("the text to speech", () => {
     assert.deepEqual([lastOf(c, "tts").model, lastOf(c, "tts").problems], ["eleven_v4_turbo", []]);
     assert.equal((await speak(base, { ...SENTENCE, text: " " })).status, 400);
     assert.equal((await speak(base, SENTENCE, { voice: "vs_nobody" })).status, 404);
-    assert.equal((await speak(base, { ...SENTENCE, voice_settings: { speed: 2 } })).status, 400);
     assert.equal((await speak(base, SENTENCE, { key: "sk_live_x" })).status, 401);
     c.pace({ chunkMs: 0, chunks: 2 });
-    r = await speak(base, { ...SENTENCE, voice_settings: { speed: 1.0 } });
-    assert.equal(r.status, 200);
-    await r.arrayBuffer();
-    assert.match(lastOf(c, "tts").problems[0], /speed of 1\.0/);
-    const fast = Buffer.from(await (await speak(base, { ...SENTENCE, voice_settings: { speed: 1.2 }, language_code: "en" })).arrayBuffer());
-    const slow = Buffer.from(await (await speak(base, { ...SENTENCE, voice_settings: { speed: 0.7 } })).arrayBuffer());
-    assert.ok(fast.length < slow.length);
+    const plain = Buffer.from(await (await speak(base, SENTENCE)).arrayBuffer());
     assert.deepEqual(lastOf(c, "tts").problems, []);
-    assert.equal(lastOf(c, "tts").speed, 0.7);
+    assert.equal("speed" in lastOf(c, "tts"), false);
+    for (const speed of [1.0, 1.2, 2]) {
+      r = await speak(base, { ...SENTENCE, voice_settings: { speed }, language_code: "en" });
+      assert.equal(r.status, 200, "a body with voice_settings is noted, not refused");
+      const withSpeed = Buffer.from(await r.arrayBuffer());
+      assert.equal(withSpeed.length, plain.length, "the audio is at 1x whatever the body asks");
+      assert.equal(lastOf(c, "tts").problems.length, 1);
+      assert.match(lastOf(c, "tts").problems[0], /voice_settings: voice sends no speed/);
+    }
   });
 });
 

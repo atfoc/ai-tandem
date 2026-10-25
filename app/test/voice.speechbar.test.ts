@@ -13,6 +13,10 @@ test("the state word is Listening, Sending in N s, Thinking…, Speaking or Mute
   assert.equal(stateWord(at("waiting")), "Listening");
   assert.equal(stateWord(at("countdown", { left: 1.4 })), "Sending in 2 s");
   assert.equal(stateWord(at("countdown", { left: 0.2 })), "Sending in 1 s");
+  assert.equal(stateWord(at("countdown", { left: 10 })), "Sending in 10 s");
+  assert.equal(stateWord(at("countdown", { left: 9.01 })), "Sending in 10 s");
+  assert.equal(stateWord(at("countdown", { left: 0.1 })), "Sending in 1 s");
+  assert.equal(stateWord(at("countdown", { left: 0 })), "Sending in 1 s");
   assert.equal(stateWord(at("sending")), "Thinking…");
   assert.equal(stateWord(at("thinking")), "Thinking…");
   assert.equal(stateWord(at("speaking")), "Speaking");

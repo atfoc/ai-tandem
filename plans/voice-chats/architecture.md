@@ -95,15 +95,14 @@ Source: <https://elevenlabs.io/docs/api-reference/text-to-speech/stream>
 
 - `POST https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream?output_format=pcm_24000`
 - Headers `xi-api-key`, `Content-Type: application/json`.
-- Body: `{"text": "<one sentence>", "model_id": "eleven_flash_v2_5", "language_code"?: "<iso>",
-  "voice_settings"?: {"speed": <0.7–1.2>}}`. Other fields (`previous_text`, `next_text`, `previous_request_ids`,
+- Body: `{"text": "<one sentence>", "model_id": "eleven_flash_v2_5", "language_code"?: "<iso>"}`. Other fields (`previous_text`, `next_text`, `previous_request_ids`,
   `apply_text_normalization`) are **not sent** (goal 4.8: only the sentence).
 - Answer 200: a chunked body of raw PCM, signed 16-bit little-endian, mono, 24 000 Hz, no header, no JSON wrapper. A chunk may
   end in the middle of a sample: the player keeps the odd byte for the next chunk.
 - `output_format` values include `pcm_8000 … pcm_48000`, `mp3_*`, `opus_*`, `ulaw_8000`, `alaw_8000`; `pcm_44100` needs a
   Pro tier, `pcm_24000` does not.
-- `voice_settings` "overrides stored voice settings for this request only" `[not verified]` whether the others fall to
-  their defaults when only `speed` is sent: **voice sends `voice_settings` only when the speed is not 1.0.**
+- `voice_settings` (with its `speed`, 0.7–1.2) is **not sent**: the app makes the playback speed itself (small-improvements
+  goal 4.2; `docs/architecture.md`, "The playback speed"), so a request is the same at every speed.
 
 ### 2.4 Voices (Test key, the list, preview clips)
 
@@ -605,15 +604,16 @@ A second request never overlaps the first: `begin` stops the first. A tap on the
 control, or speaking (VC-9), calls `stopAll` (barge-in). A preview clip is played by `playClip` after `stopAll`.
 
 **VC-12. TTS per sentence (`engine/speaker.ts`).** For each sentence: `POST /v1/text-to-speech/{voice}/stream
-?output_format=pcm_24000` with `{text, model_id, language_code?, voice_settings?: {speed}}` (§2.3). At most **2 requests
+?output_format=pcm_24000` with `{text, model_id, language_code?}` (§2.3). At most **2 requests
 in flight** (the free plan's concurrency is 2; one streams into the player while the next is fetched); each has its own
 `AbortController`; `stopAll` aborts them (goal 4.9: a cancelled turn stops its requests at once). Chunks are written to the
 player as they arrive, with `mark(n)` before sentence n's first chunk: **playback starts before the service has finished the
 sentence** (goal 6.2). The voice is `settings.voiceId`; with none chosen yet, the first speak takes the first voice of
 `GET /v2/voices?page_size=1&sort=name` and stores it.
 
-**Playback speed (3.5)** is sent as `voice_settings.speed` (0.7–1.2, the service's range), not done by the player:
-the settings offer 0.8×, 0.9×, 1.0×, 1.1×, 1.2× `[proposed]`.
+**Playback speed (3.5)** is made by the app (small-improvements goal 3.1, 4.2): the settings offer 0.5×, 1×, 1.5×, 2×, and
+the speaker stretches each sentence's PCM (`logic/stretch.ts`, a pitch-synchronous overlap-add) before it writes it to the
+player; the request carries no speed. This replaces the earlier `voice_settings.speed` (0.8×–1.2×, the service's range).
 
 ---
 
@@ -639,7 +639,7 @@ page with the goal's sections in order, testIDs `vs-*`:
 4. **Speech mode sends my turn** (`vs-autosend`): Auto-send / Tap to send.
 5. **Advanced options** (`vs-advanced`, collapsed): speech model (Flash v2.5 / v4 Turbo / Multilingual v2), transcription model
    (Scribe v2 Realtime — one choice, shown), language (Auto-detect / a list of ISO 639-1 codes the models share), pause before
-   auto-send (0.6–3.0 s, step 0.2), playback speed (0.8×–1.2×), skip code blocks when reading (switch).
+   auto-send (a slider, 0.1–10.0 s, step 0.1; small-improvements goal 3.2), playback speed (0.5×, 1×, 1.5×, 2×), skip code blocks when reading (switch).
 
 **VC-14. The voice settings are one stored value, `aiwb.voice.settings` in the kv port** (JSON), read and written only through
 `engine/state.ts`'s settings store (`useVoiceSettings`, `setVoiceSettings`): Settings, the speech bar and the pill read and write
@@ -653,8 +653,8 @@ export type VoiceSettings = {
   ttsModel: "eleven_flash_v2_5" | "eleven_v4_turbo" | "eleven_multilingual_v2";   // default flash
   sttModel: "scribe_v2_realtime";
   language: string | null;      // null = auto-detect
-  pauseMs: number;              // default 1200, clamp 600..3000
-  speed: number;                // default 1.0, one of 0.8..1.2
+  pauseMs: number;              // default 1200, clamp 100..10000
+  speed: number;                // default 1, one of 0.5, 1, 1.5, 2
   skipCode: boolean;            // default true
 };
 ```
@@ -1030,6 +1030,6 @@ internal` is empty); the existing checks of the composer (`A2.2-fits`, `A2.3-pla
    usage text). Earlier work kept the app free of any microphone permission on purpose (S12, K4); their plugins stay without
    one.
 10. **"No plain HTTP" (AD-36) gets a second, named way out** for the voice service (VC-7).
-11. **Playback speed is the service's `speed`** (0.8×–1.2×), not a local time-stretch (VC-12).
+11. **Playback speed is a local time-stretch** (0.5×, 1×, 1.5×, 2×; small-improvements goal), no longer the service's `speed` (VC-12).
 12. **A new runtime dependency: none.** `expo/fetch` is part of `expo`. The native module and the stand-in are the app's own
     code.

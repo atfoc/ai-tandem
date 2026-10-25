@@ -415,7 +415,8 @@ is no user-facing MCP port option (see [Troubleshooting the board MCP](troublesh
 **Subagent settings.** A chat has two: its *depth*, the deepest level a subagent of the chat may
 be at (0 = no subagents, 1 = the chat's agent starts subagents, 2 or 3 = those may start their
 own), and its *cap*, the most subagents of the chat that run at the same time (1 to 100). Both are
-chosen before the first message, with the **Subagents** chip of the composer's toolbar, and fixed by it; a branch and a fork have their source's, and a
+chosen before the first message, with the **Subagents** chip of the composer's toolbar, and fixed by it (in its popover, a sheet on the phone, depth is a list and
+the cap a slider from 1 to 100 that saves once per drag, tap, key or −/+ press: [the sliders](../plans/small-improvements/sliders.md)); a branch and a fork have their source's, and a
 chat made before the settings has depth 1 and cap 100. They are kept in the chat's `chat.json`
 (`subagents`), and the last choice is remembered for the next new chat per group, for all
 agents, in `state.json` (`defaults.groups.<group>.servers.local.subagents`); a group with none
@@ -587,8 +588,24 @@ never used voice opens no socket, asks for no microphone, makes no audio context
   stops what plays and aborts its text-to-speech requests that are still open, so two things never speak at once. A reply is
   cut into sentences as it is written (`logic/sentences.ts`, after `logic/speech.ts` has taken out markdown, URLs, images and,
   by default, code), and each sentence is its own text-to-speech request, at most two at a time. Playback of a sentence starts
-  with its first chunk, before the service has finished it. The speed in Settings is sent as `voice_settings.speed`; the
-  player does not stretch the sound.
+  with its first chunk, before the service has finished it.
+- **The playback speed** (0.5×, 1×, 1.5×, 2×; small-improvements goal 3.1) is made by the app, not asked of the service: the
+  service takes only 0.7 to 1.2, so every request is at its normal speed and carries no `voice_settings`. The speaker
+  (`engine/speaker.ts`) passes each sentence's PCM through a time-stretch (`logic/stretch.ts`) before it writes it to the
+  player, so it is done once, in code shared by every platform, and the platform players play the bytes they get at their
+  own rate (none of them is asked to play faster). The method is a pitch-synchronous overlap-add in the manner of Sonic,
+  the library Android's ExoPlayer uses for the playback speed of speech: it finds the pitch period (AMDF, 65 to 400 Hz,
+  coarse on a signal taken down to about 4 kHz and refined at 24 kHz) and drops or repeats whole periods with a cross-fade.
+  It keeps the pitch (a faster sample rate would not), is made for speech and is cheap enough for a phone's JS thread, where
+  a phase vocoder or a WSOLA with a wide search costs more and smears speech more at 2×. It holds back at most two of the
+  longest periods (about 31 ms of audio), so the first sound is not noticeably later; it processes greedily, so its output
+  does not depend on how the service cut the stream into chunks and the joins cannot click. Each sentence has its own
+  stretch, made when the sentence's first audio reaches the player and flushed at its end, at the speed the settings have
+  then: a change in Settings applies from the next sentence to reach the player, and what is queued plays on at the old one.
+  A sentence's mark is written just before its first stretched audio, so the marks, the level and the end of playback
+  follow the stretched sound by themselves. At 1× there is no stretch at all: the bytes are the service's. A voice's preview
+  is the service's own MP3 clip, played by the platform as it is, so it plays at 1× (stretching it would need an MP3 decoder
+  on every platform); Test speaker's chime is not speech and is not stretched either.
 - **Interrupting.** A tap interrupts everywhere: a tap on the speech bar's waveform or on the pill's orb while a reply is
   spoken, and the **End reading** control of a message, each stop the sound and the open requests at once (and in a session
   the microphone goes on listening at once). Speaking does not interrupt, on any platform. From the moment a spoken turn is
@@ -602,7 +619,7 @@ never used voice opens no socket, asks for no microphone, makes no audio context
   person's words.
 - **A turn.** Listening opens one socket to the speech-to-text service (`commit_strategy=vad`, 100 ms chunks of 16 kHz
   PCM) and keeps it between the turns of a session; there is one session at a time (starting another ends the one
-  running). With **Auto-send** on, a pause (1.2 s by default) after the words starts a countdown that sends the turn,
+  running). With **Auto-send** on, a pause (1.2 s by default, set from 0.1 s to 10 s in steps of 0.1 s with a slider) after the words starts a countdown that sends the turn,
   talking on cancels it, and **Cancel** keeps the words without sending; with Auto-send off the words wait for **Send**.
   **Mute** sends no audio and keeps the socket, **End** closes the microphone and the socket. Dictation never sends: it
   only fills the composer's box (the guess shows as ordinary text, and typing in the box ends dictation). The reply of a

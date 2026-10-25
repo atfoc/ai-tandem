@@ -29,7 +29,7 @@
 //   pace({ chunkMs, chunks })   TTS: how many chunks a sentence's answer is cut into (6) and the time between them (100 ms). Cuts fall
 //                   on odd bytes at every second boundary, as a network's may: the player keeps the odd byte
 //   log()           every request, a copy: { at, kind: "token"|"voices"|"preview"|"tts"|"stt", path, query, keyHeader, token, status,
-//                   problems: [what the client did against the protocol], … }; tts: text, voice, model, speed, chunks, bytes,
+//                   problems: [what the client did against the protocol], … }; tts: text, voice, model, chunks, bytes,
 //                   sampleRates [24000], chunkMsMin/Max (the time between two writes), startedAt, finishedAt, cancelled (the request was
 //                   closed before its end; cancelledAt); stt: chunks (of audio), commits, bytes, sampleRates, chunkMsMin/Max (the length
 //                   of a chunk's audio), sent (message types), startedAt, finishedAt, closeCode, toneHz (the frequency of the audio it received, in
@@ -293,19 +293,12 @@ export function createVoiceStandin({ prefix = "/voice", keys = (k) => /^sk_test_
     if (typeof b.text !== "string" || !b.text.trim()) e.problems.push("text is missing or empty");
     if (!TTS_MODELS.includes(b.model_id)) e.problems.push(`model_id ${JSON.stringify(b.model_id)} is not one of ${TTS_MODELS.join(", ")}`);
     if ("language_code" in b && typeof b.language_code !== "string") e.problems.push("language_code is not a string");
-    let speed = 1;
-    if ("voice_settings" in b) {
-      const s = b.voice_settings?.speed;
-      if (typeof s !== "number" || !(s >= 0.7 && s <= 1.2)) e.problems.push("voice_settings.speed is not a number from 0.7 to 1.2");
-      else speed = s;
-    }
-    e.speed = speed;
     if (e.problems.length) return refuse(res, 400, "invalid_request", e);
     // (what the service takes but voice must not send: noted, not refused)
-    if (speed === 1 && "voice_settings" in b) e.problems.push("voice_settings is sent with a speed of 1.0: it is sent only when the speed is not 1.0");
+    if ("voice_settings" in b) e.problems.push("the body has voice_settings: voice sends no speed, the app changes the speed itself (small-improvements 4.2)");
     for (const k of Object.keys(b)) if (!["text", "model_id", "language_code", "voice_settings"].includes(k)) e.problems.push(`the body has ${k}, which voice does not send`);
 
-    const seconds = Math.min(30, Math.max(0.3, b.text.length * 0.05)) / speed;
+    const seconds = Math.min(30, Math.max(0.3, b.text.length * 0.05));
     const pcm = sine(seconds, 220 + voice.index * 30, 24000), at = cuts(pcm.length, pace.chunks), ms = pace.chunkMs;
     e.status = 200;
     res.writeHead(200, { "Content-Type": "audio/pcm", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" });

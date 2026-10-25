@@ -41,6 +41,7 @@ import { atRest, check, contrastAudit, mockEval, until } from "../shot.mjs";
 import { installDevices } from "./devices.mjs";
 import { byTid, press } from "./sel.mjs";
 import { atRest as atRestId } from "./settings.mjs";
+import { pauseOf, setPause } from "./slider.mjs";
 import { closeSheet, deviceCalls, leaks, openAddKey, openChooseVoice, openVoice, pickIn, sheetGone, sheetShown, stackNames, typeKey, voiceKeyState, voiceSettings, voicesLoaded } from "./voicephone.mjs";
 
 export const viewports = ["desktop", "tablet", "phone"];
@@ -83,7 +84,7 @@ await check("VC.1 Settings > Voice: the foot's button, the key, the voices, the 
     const STORED = "Stored on this device only. Sent only to elevenlabs.io.";
     const pshot = async (name, rest = "vs-screen", p = page) => { if (OUT) { fs.mkdirSync(OUT, { recursive: true }); await atRestId(p, rest, 6000).catch(() => {}); await p.screenshot({ path: path.join(OUT, `VC.1-${viewport}-${name}.png`) }); } };
     const dev = (fn, ...args) => page.evaluate(([f, a]) => window.__aiwbDevices[f](...a), [fn, args]);
-    const cellValue = (id) => textOf(byTid(page, id).last().locator('[data-testid="cell-value"]'));
+    const cellValue = (id) => (id === "vs-adv-pause" ? textOf(byTid(page, "vs-adv-pause-value").last()) : textOf(byTid(page, id).last().locator('[data-testid="cell-value"]'))); // (the pause is a slider: its value is `vs-adv-pause-value`)
     const resultText = () => textOf(byTid(page, "vs-key-result").last());
     const sheetRows = (id) => page.evaluate((id) => {
       const all = document.querySelectorAll(`[data-testid="${id}"]`), s = all[all.length - 1];
@@ -353,7 +354,7 @@ await check("VC.1 Settings > Voice: the foot's button, the key, the voices, the 
     {
       const shownDefaults = {};
       for (const id of ["vs-adv-tts", "vs-adv-stt", "vs-adv-language", "vs-adv-pause", "vs-adv-speed"]) shownDefaults[id] = await cellValue(id);
-      if (J(shownDefaults) !== J({ "vs-adv-tts": "Flash v2.5", "vs-adv-stt": "Scribe v2 Realtime", "vs-adv-language": "Auto-detect", "vs-adv-pause": "1.2 s", "vs-adv-speed": "1.0×" })) fail(`Advanced shows ${J(shownDefaults)}`);
+      if (J(shownDefaults) !== J({ "vs-adv-tts": "Flash v2.5", "vs-adv-stt": "Scribe v2 Realtime", "vs-adv-language": "Auto-detect", "vs-adv-pause": "1.2 s", "vs-adv-speed": "1×" })) fail(`Advanced shows ${J(shownDefaults)}`);
       if ((await switchOf("vs-adv-skipcode").getAttribute("aria-checked")) !== "true") fail("Skip code blocks is not on by default");
     }
     await pshot("5-advanced");
@@ -361,16 +362,18 @@ await check("VC.1 Settings > Voice: the foot's button, the key, the voices, the 
     await until(async () => (await voiceSettings(page)).ttsModel === "eleven_v4_turbo");
     await pickIn(page, "vs-adv-tts", "vs-picker", { label: "Multilingual v2" });
     await pickIn(page, "vs-adv-language", "vs-picker", { search: "croat", label: "Croatian" });
-    await pickIn(page, "vs-adv-pause", "vs-picker", { label: "2.0 s" });
-    await pickIn(page, "vs-adv-speed", "vs-picker", { label: "1.2×" });
+    await setPause(page, 2000); // (a slider: the keys, 0.1 s a press)
+    await until(async () => (await voiceSettings(page)).pauseMs === 2000);
+    if ((await pauseOf(page)) !== 2000) fail(`the slider holds ${await pauseOf(page)} after 2.0 s was set`);
+    await pickIn(page, "vs-adv-speed", "vs-picker", { label: "1.5×" });
     await press(page, switchOf("vs-adv-skipcode"));
     await until(async () => (await voiceSettings(page)).skipCode === false);
     const s2 = await voiceSettings(page);
-    if (s2.ttsModel !== "eleven_multilingual_v2" || s2.language !== "hr" || s2.pauseMs !== 2000 || s2.speed !== 1.2 || s2.skipCode !== false || s2.autoSend !== false) fail(`the settings are ${J(s2)}`);
+    if (s2.ttsModel !== "eleven_multilingual_v2" || s2.language !== "hr" || s2.pauseMs !== 2000 || s2.speed !== 1.5 || s2.skipCode !== false || s2.autoSend !== false) fail(`the settings are ${J(s2)}`);
     {
       const rowsShown = {};
       for (const id of ["vs-adv-tts", "vs-adv-language", "vs-adv-pause", "vs-adv-speed"]) rowsShown[id] = await cellValue(id);
-      if (J(rowsShown) !== J({ "vs-adv-tts": "Multilingual v2", "vs-adv-language": "Croatian", "vs-adv-pause": "2.0 s", "vs-adv-speed": "1.2×" })) fail(`the rows after the picks are ${J(rowsShown)}`);
+      if (J(rowsShown) !== J({ "vs-adv-tts": "Multilingual v2", "vs-adv-language": "Croatian", "vs-adv-pause": "2.0 s", "vs-adv-speed": "1.5×" })) fail(`the rows after the picks are ${J(rowsShown)}`);
     }
     const stored = await page.evaluate(() => JSON.parse(localStorage.getItem("aiwb.voice.settings") ?? "null"));
     if (J(stored) !== J(s2)) fail(`the stored settings are ${J(stored)}, not what the page holds`);
@@ -683,20 +686,22 @@ await check("VC.1 Settings > Voice: the foot's button, the key, the voices, the 
   if (!await shown(byTid(page, "vs-advanced-body"))) fail("Advanced options did not open");
   const defaults = await settings(page);
   if (defaults.ttsModel !== "eleven_flash_v2_5" || defaults.language !== null || defaults.pauseMs !== 1200 || defaults.speed !== 1 || defaults.skipCode !== true) fail(`the defaults are ${JSON.stringify(defaults)}`);
-  const shownDefaults = await page.evaluate(() => Object.fromEntries(["vs-adv-tts", "vs-adv-stt", "vs-adv-language", "vs-adv-pause", "vs-adv-speed"].map((id) => [id, document.querySelector(`[data-testid="${id}"]`)?.innerText.replace(/[▾\s]+$/, "").trim()])));
-  if (JSON.stringify(shownDefaults) !== JSON.stringify({ "vs-adv-tts": "Flash v2.5", "vs-adv-stt": "Scribe v2 Realtime", "vs-adv-language": "Auto-detect", "vs-adv-pause": "1.2 s", "vs-adv-speed": "1.0×" })) fail(`Advanced options show ${JSON.stringify(shownDefaults)}`);
+  const shownDefaults = await page.evaluate(() => Object.fromEntries(["vs-adv-tts", "vs-adv-stt", "vs-adv-language", "vs-adv-pause", "vs-adv-speed"].map((id) => [id, document.querySelector(`[data-testid="${id === "vs-adv-pause" ? "vs-adv-pause-value" : id}"]`)?.innerText.replace(/[▾\s]+$/, "").trim()])));
+  if (JSON.stringify(shownDefaults) !== JSON.stringify({ "vs-adv-tts": "Flash v2.5", "vs-adv-stt": "Scribe v2 Realtime", "vs-adv-language": "Auto-detect", "vs-adv-pause": "1.2 s", "vs-adv-speed": "1×" })) fail(`Advanced options show ${JSON.stringify(shownDefaults)}`);
   if (await byTid(page, "vs-adv-skipcode").getAttribute("aria-checked") !== "true") fail("Skip code blocks is not on by default");
   await shot(page, "5-advanced");
   await pick(page, "vs-adv-tts", "v4 Turbo");
   await until(async () => (await settings(page)).ttsModel === "eleven_v4_turbo");
   await pick(page, "vs-adv-tts", "Multilingual v2");
   await pick(page, "vs-adv-language", "Croatian");
-  await pick(page, "vs-adv-pause", "2.0 s");
-  await pick(page, "vs-adv-speed", "1.2×");
+  await setPause(page, 2000); // (a slider: the keys, 0.1 s a press)
+  await until(async () => (await settings(page)).pauseMs === 2000);
+  if ((await pauseOf(page)) !== 2000) fail(`the slider holds ${await pauseOf(page)} after 2.0 s was set`);
+  await pick(page, "vs-adv-speed", "1.5×");
   await press(page, byTid(page, "vs-adv-skipcode"));
   await until(async () => (await settings(page)).skipCode === false);
   const s2 = await settings(page);
-  if (s2.ttsModel !== "eleven_multilingual_v2" || s2.language !== "hr" || s2.pauseMs !== 2000 || s2.speed !== 1.2 || s2.skipCode !== false || s2.autoSend !== false) fail(`the settings are ${JSON.stringify(s2)}`);
+  if (s2.ttsModel !== "eleven_multilingual_v2" || s2.language !== "hr" || s2.pauseMs !== 2000 || s2.speed !== 1.5 || s2.skipCode !== false || s2.autoSend !== false) fail(`the settings are ${JSON.stringify(s2)}`);
   const stored = await page.evaluate(() => JSON.parse(localStorage.getItem("aiwb.voice.settings") ?? "null"));
   if (JSON.stringify(stored) !== JSON.stringify(s2)) fail(`the stored settings are ${JSON.stringify(stored)}, not what the page holds`);
   if (await page.evaluate((k) => Object.keys(localStorage).some((n) => n.includes(k) || (localStorage.getItem(n) ?? "").includes(k)), KEY)) fail("the key is in localStorage");

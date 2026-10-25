@@ -91,7 +91,8 @@ arrives. `[user]`
   and starts playing a sentence before the voice service has finished producing it. `[user]`
 - **Barge-in:** tapping the orb, the waveform or a Read aloud control, or speaking, stops what is playing, clears
   what was queued and cancels the requests still running. `[user]`
-- Playback speed is a setting (Advanced options), 1.0x by default. `[user]`
+- Playback speed is a setting (Advanced options), 1.0x by default. `[user]` (Since the small-improvements goal: 0.5×, 1×,
+  1.5× or 2×, made by the app with the pitch kept; 1× by default.)
 
 ### 3.6 The board pill
 
@@ -136,7 +137,7 @@ arrives. `[user]`
   - Transcription model for speech to text. Default: Scribe v2 Realtime.
   - Language. Default: auto-detect.
   - Pause before auto-send. Default: 1.2 s.
-  - Playback speed. Default: 1.0x.
+  - Playback speed. Default: 1.0x (0.5×, 1×, 1.5×, 2× since the small-improvements goal).
   - Skip code blocks when reading. Default: on.
 - The voice, the models and the speeds are plain settings kept like the app's other settings. The key is not one of
   them (4.2).

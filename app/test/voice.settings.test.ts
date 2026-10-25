@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { DEFAULTS, PAUSE_MAX_MS, PAUSE_MIN_MS, SPEEDS, clampSettings, parseSettings, sameSettings, stringifySettings } from "../src/voice/logic/settings.ts";
+import { DEFAULTS, PAUSE_MAX_MS, PAUSE_MIN_MS, PAUSE_STEP_MS, SPEEDS, clampSettings, parseSettings, sameSettings, stringifySettings } from "../src/voice/logic/settings.ts";
 import type { VoiceSettings } from "../src/voice/logic/settings.ts";
 import type { VoiceSettings as ShownSettings } from "../src/voice/index.ts";
 
@@ -30,13 +30,13 @@ describe("parseSettings", () => {
   it("returns a copy, not the defaults themselves", () => {
     const s = parseSettings(null);
     assert.notEqual(s, DEFAULTS);
-    s.speed = 1.2;
+    s.speed = 1.5;
     assert.equal(DEFAULTS.speed, 1);
   });
   it("reads a stored value back", () => {
     const s: VoiceSettings = {
       autoSend: false, voiceId: "Abc123", voiceName: "Alice", ttsModel: "eleven_multilingual_v2", sttModel: "scribe_v2_realtime",
-      language: "sr", pauseMs: 2000, speed: 1.1, skipCode: false, mic: null, speaker: null,
+      language: "sr", pauseMs: 2000, speed: 1.5, skipCode: false, mic: null, speaker: null,
     };
     assert.deepEqual(parseSettings(JSON.stringify(s)), s);
     assert.deepEqual(parseSettings(stringifySettings(s)), s);
@@ -49,21 +49,43 @@ describe("parseSettings", () => {
 });
 
 describe("clampSettings", () => {
-  it("brings the pause into 0.6 to 3.0 s", () => {
-    assert.equal(clampSettings({ pauseMs: 100 }).pauseMs, PAUSE_MIN_MS);
+  it("brings the pause into 0.1 to 10.0 s, in whole milliseconds, not snapped to the slider's steps", () => {
+    assert.deepEqual([PAUSE_MIN_MS, PAUSE_MAX_MS, PAUSE_STEP_MS], [100, 10000, 100]);
+    assert.equal(clampSettings({ pauseMs: 50 }).pauseMs, PAUSE_MIN_MS);
+    assert.equal(clampSettings({ pauseMs: 0 }).pauseMs, PAUSE_MIN_MS);
+    assert.equal(clampSettings({ pauseMs: -5 }).pauseMs, PAUSE_MIN_MS);
     assert.equal(clampSettings({ pauseMs: 99999 }).pauseMs, PAUSE_MAX_MS);
+    assert.equal(clampSettings({ pauseMs: 4700 }).pauseMs, 4700);
     assert.equal(clampSettings({ pauseMs: 1500.4 }).pauseMs, 1500);
+    assert.equal(clampSettings({ pauseMs: 1250 }).pauseMs, 1250);
+    assert.equal(clampSettings({ pauseMs: "4700" }).pauseMs, 1200);
     assert.equal(clampSettings({ pauseMs: NaN }).pauseMs, 1200);
     assert.equal(clampSettings({ pauseMs: Infinity }).pauseMs, 1200);
   });
-  it("snaps the speed to one of 0.8 to 1.2", () => {
-    assert.deepEqual([...SPEEDS], [0.8, 0.9, 1, 1.1, 1.2]);
-    assert.equal(clampSettings({ speed: 0.1 }).speed, 0.8);
-    assert.equal(clampSettings({ speed: 5 }).speed, 1.2);
-    assert.equal(clampSettings({ speed: 1.04 }).speed, 1);
-    assert.equal(clampSettings({ speed: 1.06 }).speed, 1.1);
-    assert.equal(clampSettings({ speed: NaN }).speed, 1);
+  it("reads every pause saved before the slider (0.6 to 3.0 s in steps of 0.2 s) unchanged", () => {
+    for (let ms = 600; ms <= 3000; ms += 200) assert.equal(parseSettings(JSON.stringify({ pauseMs: ms })).pauseMs, ms);
+    for (const ms of [600, 1200, 2000, 3000]) assert.equal(clampSettings({ pauseMs: ms }).pauseMs, ms);
   });
+  it("snaps the speed to one of 0.5, 1, 1.5, 2", () => {
+    assert.deepEqual([...SPEEDS], [0.5, 1, 1.5, 2]);
+    assert.equal(clampSettings({ speed: 0.1 }).speed, 0.5);
+    assert.equal(clampSettings({ speed: 5 }).speed, 2);
+    assert.equal(clampSettings({ speed: 1.2 }).speed, 1);
+    assert.equal(clampSettings({ speed: 1.3 }).speed, 1.5);
+    assert.equal(clampSettings({ speed: 1.8 }).speed, 2);
+    assert.equal(clampSettings({ speed: NaN }).speed, 1);
+    for (const x of SPEEDS) assert.equal(clampSettings({ speed: x }).speed, x);
+  });
+  it("snaps a speed exactly between two to the one nearer to 1", () => {
+    assert.equal(clampSettings({ speed: 0.75 }).speed, 1);
+    assert.equal(clampSettings({ speed: 1.25 }).speed, 1);
+    assert.equal(clampSettings({ speed: 1.75 }).speed, 1.5);
+  });
+  for (const old of [0.8, 0.9, 1, 1.1, 1.2]) {
+    it(`reads a speed saved as ${old} before the speeds changed as 1`, () => {
+      assert.equal(parseSettings(JSON.stringify({ speed: old })).speed, 1);
+    });
+  }
   it("accepts only the models the app offers", () => {
     assert.equal(clampSettings({ ttsModel: "eleven_turbo_v2_5" }).ttsModel, "eleven_flash_v2_5");
     assert.equal(clampSettings({ ttsModel: "eleven_multilingual_v2" }).ttsModel, "eleven_multilingual_v2");
@@ -97,7 +119,7 @@ describe("the saved microphone and speaker (voice-devices VD-3)", () => {
   it("are System default (null) when nothing is stored, and a stored value without the fields reads as null: no migration", () => {
     assert.equal(DEFAULTS.mic, null);
     assert.equal(DEFAULTS.speaker, null);
-    const old = parseSettings(JSON.stringify({ autoSend: false, speed: 1.1 }));
+    const old = parseSettings(JSON.stringify({ autoSend: false, speed: 1.5 }));
     assert.equal(old.mic, null);
     assert.equal(old.speaker, null);
     assert.equal(old.autoSend, false);
@@ -132,6 +154,6 @@ describe("the saved microphone and speaker (voice-devices VD-3)", () => {
     assert.equal(sameSettings(a, { ...b, mic: { id: "a", name: "other" } }), false);
     assert.equal(sameSettings(a, { ...b, mic: null }), false);
     assert.equal(sameSettings(DEFAULTS, { ...DEFAULTS }), true);
-    assert.equal(sameSettings(a, { ...b, speed: 1.2 }), false);
+    assert.equal(sameSettings(a, { ...b, speed: 1.5 }), false);
   });
 });

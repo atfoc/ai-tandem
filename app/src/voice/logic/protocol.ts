@@ -45,11 +45,10 @@ export const ttsPath = (voiceId: string): string => `/v1/text-to-speech/${voiceI
 export const ttsQuery = (): Query => ({ output_format: TTS_OUTPUT_FORMAT });
 
 /** The body for one sentence (§2.3): only the sentence and the model, the language when set (to every model but the multilingual one,
- *  which ignores it), and the speed only when it is not 1.0. */
-export function ttsBody(text: string, s: Pick<VoiceSettings, "ttsModel" | "language" | "speed">): Record<string, unknown> {
+ *  which ignores it). The speed is not in it: the app changes the speed of the audio itself (small-improvements 4.2). */
+export function ttsBody(text: string, s: Pick<VoiceSettings, "ttsModel" | "language">): Record<string, unknown> {
   const body: Record<string, unknown> = { text, model_id: s.ttsModel };
   if (s.language && s.ttsModel !== "eleven_multilingual_v2") body.language_code = s.language;
-  if (s.speed !== 1) body.voice_settings = { speed: s.speed };
   return body;
 }
 

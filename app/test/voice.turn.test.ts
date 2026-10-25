@@ -97,6 +97,27 @@ describe("Auto-send on: the countdown of 1.2 s", () => {
     r.advance(1600 + COMMIT_WAIT_MS);
     assert.deepEqual(r.sent().map((l) => l.effect), [{ kind: "send", text: "turn the lights" }]);
   });
+  it("at the ends of the slider the countdown is 0.1 s and 10 s long, from the last words", () => {
+    const short = rig({ pauseMs: 100 });
+    short.at(0, { type: "partial", text: "stop" });
+    short.at(200, { type: "committed", text: "Stop." });
+    assert.deepEqual(short.state.countdown, { startedAt: 200, ms: 100 });
+    assert.equal(deadline(short.state), 300);
+    short.advance(299);
+    assert.equal(short.sent().length, 0);
+    short.advance(300);
+    assert.deepEqual(short.sent().map((l) => [l.at, l.effect]), [[300, { kind: "send", text: "Stop." }]]);
+    const long = rig({ pauseMs: 10000 });
+    long.at(0, { type: "partial", text: "wait" });
+    long.at(200, { type: "committed", text: "Wait." });
+    assert.deepEqual(long.state.countdown, { startedAt: 200, ms: 10000 });
+    assert.equal(deadline(long.state), 10200);
+    long.advance(10199);
+    assert.equal(long.sent().length, 0);
+    assert.equal(long.state.phase, "countdown");
+    long.advance(10200);
+    assert.deepEqual(long.sent().map((l) => [l.at, l.effect]), [[10200, { kind: "send", text: "Wait." }]]);
+  });
   it("the pause is the setting's, and a change of it is for the next countdown", () => {
     const r = rig({ pauseMs: 2000 });
     r.at(0, { type: "committed", text: "One." });

@@ -4,10 +4,10 @@
 import { choicesFor, cutName } from "../../voice/logic/devices.ts";
 import type { DeviceAbility, SavedDevice } from "../../voice/ports.ts";
 import type { VoiceInfo } from "../../voice/index.ts";
-import { PAUSE_MAX_MS, PAUSE_MIN_MS, SPEEDS } from "../../voice/logic/settings.ts";
+import { SPEEDS } from "../../voice/logic/settings.ts";
 import type { VoiceSettings } from "../../voice/logic/settings.ts";
 import {
-  ADVANCED_LANGUAGE, ADVANCED_LANGUAGE_AUTO, ADVANCED_PAUSE, ADVANCED_PAUSE_VALUE, ADVANCED_SPEED, ADVANCED_SPEED_VALUE, ADVANCED_STT_SCRIBE,
+  ADVANCED_LANGUAGE, ADVANCED_LANGUAGE_AUTO, ADVANCED_SPEED, ADVANCED_SPEED_VALUE, ADVANCED_STT_SCRIBE,
   ADVANCED_TTS_FLASH, ADVANCED_TTS_MODEL, ADVANCED_TTS_MULTILINGUAL, ADVANCED_TTS_V4_TURBO, DEVICE_SYSTEM, DEVICE_UNNAMED, LANGUAGES, PROBLEM_WORDS,
   VS_DEVICE_SYSTEM_VALUE, VS_FIRST_VOICE, VS_KEY_PROBLEM, VS_KEY_WORKS, VS_PLAYING, VS_STT_MODEL,
 } from "../../voice/words.ts";
@@ -18,7 +18,7 @@ export type KeyState = "unknown" | "none" | "saved";
 /** The screen's state from what the keystore answered: null until it has. */
 export const keyState = (hasKey: boolean | null): KeyState => (hasKey === null ? "unknown" : hasKey ? "saved" : "none");
 
-export type AdvancedWhich = "tts" | "stt" | "language" | "pause" | "speed";
+export type AdvancedWhich = "tts" | "stt" | "language" | "speed";
 export type AdvancedOption = { value: string; label: string };
 export type AdvancedRow = {
   which: AdvancedWhich;
@@ -40,21 +40,18 @@ const TTS: AdvancedOption[] = [
 ];
 const STT: AdvancedOption[] = [{ value: "scribe_v2_realtime", label: ADVANCED_STT_SCRIBE }];
 const LANGUAGE: AdvancedOption[] = [{ value: LANGUAGE_AUTO, label: ADVANCED_LANGUAGE_AUTO }, ...LANGUAGES.map(([code, name]) => ({ value: code, label: name }))];
-const PAUSE: AdvancedOption[] = Array.from({ length: (PAUSE_MAX_MS - PAUSE_MIN_MS) / 200 + 1 }, (_, i) => PAUSE_MIN_MS + i * 200)
-  .map((ms) => ({ value: String(ms), label: ADVANCED_PAUSE_VALUE(ms) }));
 const SPEED: AdvancedOption[] = SPEEDS.map((x) => ({ value: String(x), label: ADVANCED_SPEED_VALUE(x) }));
 
 const row = (which: AdvancedWhich, label: string, options: AdvancedOption[], current: string, other: string): AdvancedRow =>
   ({ which, label, options, current, value: options.find((o) => o.value === current)?.label ?? other });
 
-/** The five rows of Advanced, in the order of the screen, for the saved settings. */
-export function advancedRows(s: Pick<VoiceSettings, "ttsModel" | "sttModel" | "language" | "pauseMs" | "speed">): AdvancedRow[] {
+/** The four picker rows of Advanced (the pause is a slider, drawn between Language and Speed), in the order of the screen, for the saved settings. */
+export function advancedRows(s: Pick<VoiceSettings, "ttsModel" | "sttModel" | "language" | "speed">): AdvancedRow[] {
   const language = s.language ?? LANGUAGE_AUTO;
   return [
     row("tts", ADVANCED_TTS_MODEL, TTS, s.ttsModel, s.ttsModel),
     row("stt", VS_STT_MODEL, STT, s.sttModel, s.sttModel),
     row("language", ADVANCED_LANGUAGE, LANGUAGE, language, language),
-    row("pause", ADVANCED_PAUSE, PAUSE, String(s.pauseMs), ADVANCED_PAUSE_VALUE(s.pauseMs)),
     row("speed", ADVANCED_SPEED, SPEED, String(s.speed), ADVANCED_SPEED_VALUE(s.speed)),
   ];
 }
@@ -65,7 +62,6 @@ export function pickPatch(which: AdvancedWhich, value: string): Partial<VoiceSet
     case "tts": return { ttsModel: value as VoiceSettings["ttsModel"] };
     case "stt": return { sttModel: value as VoiceSettings["sttModel"] };
     case "language": return { language: value === LANGUAGE_AUTO ? null : value };
-    case "pause": return { pauseMs: Number(value) };
     case "speed": return { speed: Number(value) };
   }
 }

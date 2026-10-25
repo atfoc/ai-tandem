@@ -79,11 +79,25 @@ export function Cell({ label, sub, subTone, value, leading, trailing, onPress, c
   );
 }
 
+/** A cell whose control is wider than a trailing one (a slider): the label on the first line, the control under it at the full width of the
+ *  cell. The paddings, the minimum height and the separator are `Cell`'s; the cell itself is not pressable (its control is). */
+export function ControlCell({ label, children, testID = TID.cell }: { label: string; children: ReactNode; testID?: string }) {
+  const followed = useContext(Followed), t = useTokens();
+  return (
+    <View {...tid(testID)} style={styles.controlCell}>
+      <Text size={TYPE.control} numberOfLines={2}>{label}</Text>
+      {children}
+      {followed ? <View {...tid(TID.cellSeparator)} pointerEvents="none" style={[styles.separator, { left: PHONE.margin, backgroundColor: t.line }]} /> : null}
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   group: { gap: 6, marginHorizontal: PHONE.margin, marginBottom: 20 },
   caps: { textTransform: "uppercase", letterSpacing: 0.4 },
   card: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 10, overflow: "hidden" },
   cell: { minHeight: PHONE.cell, flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: PHONE.margin, paddingVertical: 6 },
+  controlCell: { minHeight: PHONE.cell, gap: 2, paddingHorizontal: PHONE.margin, paddingTop: 10, paddingBottom: 6 },
   words: { flex: 1, minWidth: 0 },
   value: { flexShrink: 1, maxWidth: "50%" },
   separator: { position: "absolute", right: 0, bottom: 0, height: StyleSheet.hairlineWidth },

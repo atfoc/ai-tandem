@@ -23,7 +23,8 @@
 //   2 Settings > Voice with a canary key (sk_test_CANARY_<random>): Test key finds the stand-in's six voices, Save keeps the key in memory
 //   3 speech mode: the scripted words become a message on the server by the calls a typed message makes (compared with a typed one), the
 //     stored message has the words and no audio, it carries the mic mark in this window, and the model's reply is spoken sentence by sentence
-//   4 Dictate puts words in the box and sends nothing; Read aloud speaks a message
+//   4 Dictate puts words in the box and sends nothing; Read aloud speaks a message, no request of it asks for a speed (no `voice_settings`, no problem
+//     the stand-in logs), and, with the seam, a Read aloud at speed 2 writes half of the bytes the stand-in sent (the app changes the speed itself)
 //   5 a rejected key and an empty plan: each shows its sentence, none of them holds the key
 //   6 the search for the canary (where it must not be): the page's storage (localStorage, sessionStorage, IndexedDB, cookies, caches), every
 //     request the page made and every answer to a call, the voice service's socket, the console, the page's text, the server's data folder
@@ -414,6 +415,21 @@ async function step4() {
   await waitFor("reading ends", async () => (await p.locator(q.voiceReading).count()) === 0, { timeout: 40000 }).catch(() => {});
   const tts = voiceLog().filter((e) => e.kind === "tts");
   await check("4 Read aloud speaks the reply by the key's header, sentence by sentence", read === true && tts.every((e) => e.keyHeader && !e.token) && !tts.some((e) => /[*_`#<>]|:\/\//.test(e.text)), `${tts.length} requests: ${JSON.stringify(tts.map((e) => e.text))}`);
+  await check("4 no request of Read aloud has voice_settings or breaks the protocol", tts.length > 0 && tts.every((e) => !e.problems?.length), JSON.stringify(tts.flatMap((e) => e.problems ?? [])));
+
+  // the speed is the app's: at 2 the player is given half of the bytes the voice service sent, and the service is asked as at 1
+  if (seam) {
+    voiceReset();
+    await p.evaluate(() => window.__aiwbVoice.setSettings({ speed: 2 }));
+    const before = await p.evaluate(() => window.__aiwbVoice.player().bytes);
+    await pressAct(p, reply, "read");
+    const fast = await waitFor("the reply is read at speed 2", async () => { const t = voiceLog().filter((e) => e.kind === "tts"); return t.length >= 4 && t.every((e) => e.finishedAt) && (await p.locator(q.voiceReading).count()) === 0 ? t : null; }, { timeout: 40000 }).then((x) => x, (e) => e.message);
+    const sent = Array.isArray(fast) ? fast.reduce((n, e) => n + e.bytes, 0) : 0;
+    const played = (await p.evaluate(() => window.__aiwbVoice.player().bytes)) - before;
+    await p.evaluate(() => window.__aiwbVoice.setSettings({ speed: 1 }));
+    await check("4 Read aloud at speed 2 plays half of the bytes the voice service sent, asked for as at 1", Array.isArray(fast) && sent > 0 && Math.abs(played / (sent / 2) - 1) <= 0.01 && fast.every((e) => !e.problems?.length),
+      Array.isArray(fast) ? `played ${played} bytes for ${sent} sent (expected ${sent / 2}); problems ${JSON.stringify(fast.flatMap((e) => e.problems ?? []))}` : fast);
+  } else skipped("4 Read aloud at speed 2 plays half of the bytes the voice service sent", "the page has no seam (a build that is not the checks')");
 }
 
 /** The text of the popover that is on the page (waited for), its kind and its buttons; null when none comes. */

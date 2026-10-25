@@ -8,18 +8,20 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Svg, { Circle, Path, Rect } from "react-native-svg";
 
 import { openLink } from "../../platform/openlink";
+import { DEFAULTS, PAUSE_MAX_MS, PAUSE_MIN_MS, PAUSE_STEP_MS } from "../../voice/logic/settings.ts";
 import { closeVoiceSettings, openVoiceSettings, setVoiceSettings, useVoiceNotice, useVoiceProblem, useVoiceSettings, voice } from "../../voice/index.ts";
 import {
-  CV_STOP_SAMPLE, KEY_REMOVE_BODY, KEY_REMOVE_DO, KEY_REMOVE_TITLE, KEY_STORED_NOTE, KEY_TITLE, PROBLEM_WORDS, VOICES_NO_KEY, VOICES_PLAY, VOICES_TITLE, VS_ADD_KEY,
+  ADVANCED_PAUSE, ADVANCED_PAUSE_VALUE, CV_STOP_SAMPLE, KEY_REMOVE_BODY, KEY_REMOVE_DO, KEY_REMOVE_TITLE, KEY_STORED_NOTE, KEY_TITLE, PROBLEM_WORDS, VOICES_NO_KEY, VOICES_PLAY, VOICES_TITLE, VS_ADD_KEY,
   VS_ADVANCED_TITLE, VS_AUTOSEND, VS_AUTOSEND_FOOTER, VS_CHOOSE_VOICE, VS_GET_KEY, VS_GET_KEY_URL, VS_KEY_SAVED, VS_NO_KEY_FOOTER, VS_PROMO_BODY,
   VS_PROMO_TITLE, VS_REMOVE_KEY, VS_SENDING_TITLE, VS_SKIP_CODE,
 } from "../../voice/words.ts";
 import { Button } from "../../ui/Button.tsx";
-import { Cell, CellGroup } from "../../ui/Cells.tsx";
+import { Cell, CellGroup, ControlCell } from "../../ui/Cells.tsx";
 import { ConfirmSheet } from "../../ui/ConfirmSheet.tsx";
 import { MicIcon } from "../../ui/icons.tsx";
 import { PHONE, TYPE } from "../../ui/metrics.ts";
 import { PickerSheet } from "../../ui/PickerSheet.tsx";
+import { Slider } from "../../ui/Slider.tsx";
 import { Switch } from "../../ui/Switch.tsx";
 import { Text } from "../../ui/Text.tsx";
 import { useTokens } from "../../ui/theme.tsx";
@@ -109,7 +111,13 @@ function Saved({ onAdd, onRemoved }: { onAdd(): void; onRemoved(): void }) {
   const [removing, setRemoving] = useState(false);
   const rows = advancedRows(s);
   const row = rows.find((r) => r.which === which)!;
-  const ids: Record<AdvancedWhich, string> = { tts: S3_TID.advTts, stt: S3_TID.advStt, language: S3_TID.advLanguage, pause: S3_TID.advPause, speed: S3_TID.advSpeed };
+  const ids: Record<AdvancedWhich, string> = { tts: S3_TID.advTts, stt: S3_TID.advStt, language: S3_TID.advLanguage, speed: S3_TID.advSpeed };
+  const pauseCell = (
+    <ControlCell key="pause" label={ADVANCED_PAUSE}>
+      <Slider size="touch" testID={S3_TID.advPause} label={ADVANCED_PAUSE} value={s.pauseMs} min={PAUSE_MIN_MS} max={PAUSE_MAX_MS} step={PAUSE_STEP_MS}
+        format={ADVANCED_PAUSE_VALUE} mark={DEFAULTS.pauseMs} onCommit={(v) => setVoiceSettings({ pauseMs: v })} />
+    </ControlCell>
+  );
   return (
     <>
       <CellGroup footer={KEY_STORED_NOTE}>
@@ -125,9 +133,10 @@ function Saved({ onAdd, onRemoved }: { onAdd(): void; onRemoved(): void }) {
       </CellGroup>
       {notice ? <Text {...tid("vs-devices-notice")} size={TYPE.secondary} tone="warn" accessibilityLiveRegion="polite" style={styles.line}>{notice}</Text> : null}
       <CellGroup title={VS_ADVANCED_TITLE}>
-        {rows.map((r) => (
-          <Cell key={r.which} testID={ids[r.which]} data={{ value: r.current }} label={r.label} value={r.value} onPress={() => { setWhich(r.which); setPicking(true); }} />
-        ))}
+        {rows.flatMap((r) => [
+          <Cell key={r.which} testID={ids[r.which]} data={{ value: r.current }} label={r.label} value={r.value} onPress={() => { setWhich(r.which); setPicking(true); }} />,
+          ...(r.which === "language" ? [pauseCell] : []),
+        ])}
         <DeviceRows />
         <Cell label={VS_SKIP_CODE} trailing={<Switch size="touch" on={s.skipCode} onChange={(v) => setVoiceSettings({ skipCode: v })} label={VS_SKIP_CODE} testID={S3_TID.advSkipCode} />} />
       </CellGroup>

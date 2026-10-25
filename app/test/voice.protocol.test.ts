@@ -31,12 +31,15 @@ describe("the STT query and the TTS request", () => {
     assert.equal(ttsPath("abc123"), "/v1/text-to-speech/abc123/stream");
     assert.deepEqual(ttsQuery(), { output_format: "pcm_24000" });
   });
-  it("ttsBody sends the speed only when it is not 1.0", () => {
-    assert.deepEqual(ttsBody("Hello.", DEFAULTS), { text: "Hello.", model_id: "eleven_flash_v2_5" });
-    assert.deepEqual(ttsBody("Hello.", { ...DEFAULTS, speed: 1.2 }), {
-      text: "Hello.", model_id: "eleven_flash_v2_5", voice_settings: { speed: 1.2 },
-    });
-    assert.deepEqual(ttsBody("Hello.", { ...DEFAULTS, speed: 0.8 }).voice_settings, { speed: 0.8 });
+  it("ttsBody never sends a speed: the body is the same at every speed", () => {
+    const plain = { text: "Hello.", model_id: "eleven_flash_v2_5" };
+    assert.deepEqual(ttsBody("Hello.", DEFAULTS), plain);
+    for (const speed of [0.5, 1, 1.5, 2]) {
+      const settings = { ...DEFAULTS, speed };   // a variable: the full settings go in, as the speaker passes them
+      const body = ttsBody("Hello.", settings);
+      assert.deepEqual(body, plain);
+      assert.equal("voice_settings" in body, false);
+    }
   });
   it("ttsBody sends the language to the flash and v4 Turbo models and not to the multilingual one, which ignores it", () => {
     assert.equal(ttsBody("Hi.", { ...DEFAULTS, language: "de" }).language_code, "de");

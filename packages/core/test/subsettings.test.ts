@@ -3,8 +3,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  DEFAULT_SUB_CAP, DEFAULT_SUB_DEPTH, SUB_CAPS, SUB_DEPTHS, SUB_FIXED,
-  capOff, capOptions, depthLabel, depthNote, depthOptions, pickSubs, subChange, subChip, subChipLabel, subChipTitle, subSettings, subSummary,
+  DEFAULT_SUB_CAP, DEFAULT_SUB_DEPTH, SUB_CAP_MAX, SUB_CAP_MIN, SUB_DEPTHS, SUB_FIXED,
+  capOff, clampCap, depthLabel, depthNote, depthOptions, pickSubs, subChange, subChip, subChipLabel, subChipTitle, subSettings, subSummary,
   type SubChange,
 } from "../src/logic/subsettings.ts";
 import { viewOf } from "../src/logic/branches.ts";
@@ -73,19 +73,16 @@ test("depthOptions: Off and the three levels, the current one marked", () => {
   assert.deepEqual(depthOptions({ depth: 4, cap: 100 }).map((o) => [o.label, o.on]), [["Off", false], ["1 level", false], ["2 levels", false], ["3 levels", false], ["4 levels", true]]);
 });
 
-test("capOptions: the five values, the current one marked", () => {
-  assert.deepEqual(SUB_CAPS, [5, 10, 25, 50, 100]);
-  assert.deepEqual(capOptions({ depth: 1, cap: 100 }).map((o) => o.label), ["5", "10", "25", "50", "100"]);
-  for (const cap of SUB_CAPS) assert.deepEqual(capOptions({ depth: 1, cap }).filter((o) => o.on).map((o) => o.value), [cap]);
+test("the cap's range is 1 to 100 and the default is its right end; a cap set by an API client reads as it is", () => {
+  assert.equal(SUB_CAP_MIN, 1);
+  assert.equal(SUB_CAP_MAX, 100);
+  assert.equal(DEFAULT_SUB_CAP, SUB_CAP_MAX);
+  for (const cap of [1, 3, 37, 99, 100]) assert.deepEqual(subSettings({ subCap: cap }), { depth: 1, cap });
+  assert.equal(subChipLabel(subSettings({ subCap: 3 })), "1 level · 3 at once");
 });
 
-test("capOptions: a cap that is none of the five is listed in its place and marked", () => {
-  assert.deepEqual(capOptions({ depth: 1, cap: 7 }).map((o) => [o.value, o.on]), [[5, false], [7, true], [10, false], [25, false], [50, false], [100, false]]);
-  assert.deepEqual(capOptions({ depth: 1, cap: 1 }).map((o) => o.value), [1, 5, 10, 25, 50, 100]);
-  assert.deepEqual(capOptions({ depth: 1, cap: 99 }).map((o) => o.value), [5, 10, 25, 50, 99, 100]);
-  assert.equal(capOptions({ depth: 1, cap: 99 }).filter((o) => o.on).length, 1);
-  // also while the section is greyed out
-  assert.deepEqual(capOptions({ depth: 0, cap: 7 }).filter((o) => o.on).map((o) => o.label), ["7"]);
+test("clampCap: a whole number from 1 to 100", () => {
+  assert.deepEqual([1, 37, 100, 0, -5, 101, 250, 36.6, 36.4].map(clampCap), [1, 37, 100, 1, 1, 100, 100, 37, 36]);
 });
 
 test("capOff: the Running at once section takes no pick with depth Off", () => {
@@ -101,7 +98,23 @@ test("subChange: what a pick sends; nothing for the current value, or for a cap 
   assert.deepEqual(subChange(s, "cap", 25), { subCap: 25 });
   assert.equal(subChange(s, "cap", 100), null);
   assert.equal(subChange({ depth: 0, cap: 100 }, "cap", 25), null);
+  assert.equal(subChange({ depth: 0, cap: 25 }, "cap", 3), null, "with depth Off a cap saves nothing");
   assert.deepEqual(subChange({ depth: 0, cap: 25 }, "depth", 1), { subDepth: 1 });
+});
+
+test("subChange: the cap is any whole number from 1 to 100, rounded and held to the ends; the current cap saves nothing", () => {
+  const s = { depth: 2, cap: 100 };
+  for (const cap of [1, 37, 99]) assert.deepEqual(subChange(s, "cap", cap), { subCap: cap });
+  assert.equal(subChange(s, "cap", 100), null);
+  assert.deepEqual(subChange(s, "cap", 0), { subCap: 1 });
+  assert.deepEqual(subChange(s, "cap", 101), null, "101 is held to 100, the current cap");
+  assert.deepEqual(subChange({ depth: 2, cap: 50 }, "cap", 101), { subCap: 100 });
+  assert.deepEqual(subChange(s, "cap", 36.6), { subCap: 37 });
+  assert.equal(subChange({ depth: 2, cap: 37 }, "cap", 36.6), null, "36.6 is 37");
+  assert.equal(subChange({ depth: 2, cap: 1 }, "cap", 0), null, "0 is 1");
+  assert.equal(subChange(s, "cap", Number.NaN), null);
+  assert.equal(subChange({ depth: 0, cap: 100 }, "cap", 37), null);
+  assert.deepEqual(subChange({ depth: 0, cap: 100 }, "depth", 2), { subDepth: 2 });
 });
 
 test("subChip: open on a new chat alone", () => {

@@ -23,7 +23,7 @@ this file as packages are merged.
   The engine must note the text exactly as `sendMessage` stores it (e.g. with a prepended selection tag), or the mark
   will not match. A noted turn that never arrives is dropped after 20 newer ones.
 - Unknown STT socket error types map to `offline`.
-- Settings clamp: speed snaps to 0.8/0.9/1.0/1.1/1.2; language a 2–3 letter code; voice id `^[A-Za-z0-9]{1,64}$`.
+- Settings clamp: speed snaps to 0.5/1/1.5/2 (was 0.8 to 1.2 before the small-improvements goal; old values read as 1); language a 2–3 letter code; voice id `^[A-Za-z0-9]{1,64}$`.
 
 ## From P1 (speech text)
 
@@ -65,7 +65,7 @@ this file as packages are merged.
 - `fail` takes `key_rejected`, `no_credits`, `no_credits_legacy`, `rate_limited`, `offline`, and
   `{ socket, after: n, once: true }` (a socket failing after n chunks, or once).
 - Each log entry has `problems`: what the client sent against the protocol (wrong sample rate, bad base64, wrong
-  `output_format`, `voice_settings` at speed 1.0). Tests can assert it is empty. Keys never reach the log
+  `output_format`, any `voice_settings`: voice sends no speed). Tests can assert it is empty. Keys never reach the log
   (`keyHeader: true`).
 - TTS chunks are cut on odd bytes at every second boundary (exercises the player's odd-byte carry).
 - `web/dev/electron/index.mjs` ignores launch arguments and `permissions`: `uicheck:electron` gets neither the

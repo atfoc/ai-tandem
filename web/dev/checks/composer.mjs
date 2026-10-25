@@ -23,13 +23,14 @@
 // alone and chip-note. Each chip opens a sheet: agent-sheet (kit PickerSheet: picker-row [value], picker-check, picker-foot; a tap picks and closes) ·
 // model-sheet (picker-row [value = the model's id], effort-seg with segment [value, on], Done = sheet-right; a model or effort pick keeps it open) ·
 // folder-sheet (dir-up, dir-path (a tap shows dir-input), dir-item [aria-label = the name], dir-use "Use <name>", dir-err, dir-empty, dir-browser;
-// Cancel = sheet-left; a pick closes it) · sub-sheet (sub-depth and sub-cap with sub-opt [section, value, on]; Done = sheet-right). The helpers of the
+// Cancel = sheet-left; a pick closes it) · sub-sheet (sub-depth with sub-opt [section, value, on], the cap's slider sub-cap (slider.mjs), sub-cap-line; Done = sheet-right). The helpers of the
 // phone, all taking the page: `phoneChip(page, kind)` the chip's locator in the row; `openChoice(page, kind)` presses it and answers the sheet's locator
 // once it is open; `pickModelPhone(page, id)`, `pickEffortPhone(page, effort)`, `pickAgentPhone(page, agent)`, `pickFolderPhone(page, name)`,
-// `pickDepthPhone(page, n)`, `pickCapPhone(page, n)` open the sheet when it is not open, make the pick and leave the sheet as the app does (the model,
+// `pickDepthPhone(page, n)`, `setCapPhone(page, n)` (a tap on the cap slider's track at the place of n, 1 to 100) open the sheet when it is not open, make the pick and leave the sheet as the app does (the model,
 // effort, depth and cap picks keep it open; an agent or a folder pick closes it); `closeChoice(page)` closes the open sheet (Done, else Cancel, else a
 // press on the backdrop) and waits until none is open; `openSheetKind(page)` says which is open.
 import { byTid, tidSel } from "./sel.mjs";
+import { tapSlider } from "./slider.mjs";
 
 /** In the page: the first composer's box and toolbar for a frame. null while none is drawn; else how many controls of the row end past the
  *  box, by how much, whether Send is the element at its own centre, and whether the document scrolls sideways. bad: any of them. (The
@@ -241,8 +242,12 @@ export async function pickFolderPhone(page, name) {
 
 /** Taps the depth `n` in the subagents sheet (section "depth"; 0 is Off); the sheet stays open. */
 export async function pickDepthPhone(page, n) { return pickSubOpt(page, "depth", n); }
-/** Taps the cap `n` in the subagents sheet (section "cap", running at once); the sheet stays open. */
-export async function pickCapPhone(page, n) { return pickSubOpt(page, "cap", n); }
+/** Sets the cap `n` (1 to 100, "Running at once") on the subagents sheet's slider with a tap on its track at the place of n; the sheet stays open. */
+export async function setCapPhone(page, n) {
+  const sheet = await sheetOf(page, "subagents");
+  await tapSlider(page, "sub-cap", n);
+  await byTid(sheet, "sub-cap", { value: n }).waitFor({ state: "attached", timeout: SETTLE_MS });
+}
 async function pickSubOpt(page, section, n) {
   const sheet = await sheetOf(page, "subagents");
   await press(page, byTid(sheet, "sub-opt", { section, value: n }));

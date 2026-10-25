@@ -10,8 +10,8 @@ export type VoiceSettings = {
   ttsModel: (typeof TTS_MODELS)[number];   // default flash
   sttModel: (typeof STT_MODELS)[number];
   language: string | null;      // null = auto-detect
-  pauseMs: number;              // default 1200, clamp 600..3000
-  speed: number;                // default 1.0, one of 0.8..1.2
+  pauseMs: number;              // default 1200, clamp 100..10000
+  speed: number;                // default 1, one of 0.5, 1, 1.5, 2
   skipCode: boolean;            // default true
   mic: SavedDevice | null;      // default null = System default (voice-devices VD-3); only the person's pick in Settings changes it
   speaker: SavedDevice | null;  // default null = System default
@@ -33,10 +33,12 @@ export const DEFAULTS: VoiceSettings = {
   speaker: null,
 };
 
-export const PAUSE_MIN_MS = 600;
-export const PAUSE_MAX_MS = 3000;
-/** The speeds Settings offers (0.8× to 1.2×); the service takes 0.7 to 1.2. */
-export const SPEEDS: readonly number[] = [0.8, 0.9, 1, 1.1, 1.2];
+export const PAUSE_MIN_MS = 100;
+export const PAUSE_MAX_MS = 10000;
+/** The slider's step; a saved value is clamped and rounded to whole ms, not snapped to it, so a value saved before reads unchanged. */
+export const PAUSE_STEP_MS = 100;
+/** The speeds Settings offers. The app stretches the audio itself (small-improvements 4.2): the service is asked at its own speed. */
+export const SPEEDS: readonly number[] = [0.5, 1, 1.5, 2];
 
 const VOICE_ID = /^[A-Za-z0-9]{1,64}$/;
 const LANGUAGE = /^[a-z]{2,3}$/;
@@ -45,7 +47,12 @@ const DEVICE_ID_MAX = 512;
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
-const nearest = (n: number, of: readonly number[]): number => of.reduce((best, x) => (Math.abs(x - n) < Math.abs(best - n) ? x : best));
+/** The one of `of` nearest to `n`; of two equally near, the one nearer to 1 (0.75 is 1, 1.75 is 1.5). */
+const nearest = (n: number, of: readonly number[]): number =>
+  of.reduce((best, x) => {
+    const dx = Math.abs(x - n), db = Math.abs(best - n);
+    return dx < db || (dx === db && Math.abs(x - 1) < Math.abs(best - 1)) ? x : best;
+  });
 
 /** A saved device from anything: `{id: 1..512 characters, name: 0..200}` (both trimmed), else null. */
 function clampDevice(v: unknown): SavedDevice | null {

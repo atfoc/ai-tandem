@@ -1,7 +1,8 @@
 // A chat's two subagent settings: depth (the deepest level a subagent of the chat may be at; a
 // subagent the chat's agent started is at level 1) and cap (the most subagents of the chat running
 // at the same time). What the composer's Subagents chip and its popover show, and when they can be
-// changed. DOM-free.
+// changed. DOM-free. Depth is picked from a list of rows; the cap is any whole number from SUB_CAP_MIN to
+// SUB_CAP_MAX, picked with a slider.
 import type { ChatView } from "../types.ts";
 import { agentOpen } from "./agentlist.ts";
 
@@ -11,9 +12,12 @@ export type SubSettings = { depth: number; cap: number };
 export const DEFAULT_SUB_DEPTH = 1;
 export const DEFAULT_SUB_CAP = 100;
 
-/** What the popover offers. Depth 0 is Off. */
+/** The ends of the cap's slider (the server takes 1 to 100). */
+export const SUB_CAP_MIN = 1;
+export const SUB_CAP_MAX = 100;
+
+/** What the popover offers for depth. Depth 0 is Off. */
 export const SUB_DEPTHS: readonly number[] = [0, 1, 2, 3];
-export const SUB_CAPS: readonly number[] = [5, 10, 25, 50, 100];
 
 /** A chat's settings from its view. Off is a field of its own there (subOff), so that a view with
  *  none of the three reads as the defaults. */
@@ -42,27 +46,29 @@ export const subChipLabel = (s: SubSettings): string =>
 export const subSummary = (s: SubSettings): string =>
   s.depth <= 0 ? "Off: the agent gets no subagent tools" : `${depthLabel(s.depth)}, at most ${s.cap} running at once`;
 
-/** One row of a section of the popover; on: it is the chat's current value. */
+/** One row of the depth section of the popover; on: it is the chat's current value. */
 export type SubOption = { value: number; label: string; on: boolean };
 
-/** The values offered with the current one among them, in rising order: a chat can have a value
- *  the popover does not offer (an API client may set any cap from 1 to 100). */
+/** The depths offered with the current one among them, in rising order: a chat can have a depth
+ *  the popover does not offer (a newer server may allow more). */
 const withCurrent = (offered: readonly number[], current: number): number[] =>
   offered.includes(current) ? [...offered] : [...offered, current].sort((a, b) => a - b);
 
 export const depthOptions = (s: SubSettings): SubOption[] =>
   withCurrent(SUB_DEPTHS, s.depth).map((value) => ({ value, label: depthLabel(value), on: value === s.depth }));
 
-export const capOptions = (s: SubSettings): SubOption[] =>
-  withCurrent(SUB_CAPS, s.cap).map((value) => ({ value, label: String(value), on: value === s.cap }));
-
 /** Whether the "Running at once" section takes no pick: with depth Off nothing runs. */
 export const capOff = (s: SubSettings): boolean => s.depth <= 0;
 
-/** The change a pick of a row makes; null for the current value, which saves nothing. */
+/** A cap as the server takes it: a whole number from SUB_CAP_MIN to SUB_CAP_MAX. */
+export const clampCap = (value: number): number => Math.min(SUB_CAP_MAX, Math.max(SUB_CAP_MIN, Math.round(value)));
+
+/** The change a pick makes: a depth row, or a cap from the slider (any whole number: rounded and held to 1 to 100); null for the
+ *  current value, which saves nothing, and for a cap with depth Off. */
 export function subChange(s: SubSettings, section: "depth" | "cap", value: number): SubChange | null {
   if (section === "depth") return value === s.depth ? null : { subDepth: value };
-  return value === s.cap || capOff(s) ? null : { subCap: value };
+  const cap = clampCap(value);
+  return cap === s.cap || capOff(s) || Number.isNaN(cap) ? null : { subCap: cap };
 }
 
 /** Why a chat's settings cannot be changed, as the fixed chip's title says it. */
@@ -87,7 +93,7 @@ export function subChip(c: Parameters<typeof agentOpen>[0], move: boolean): SubC
 /** The chip's title: the settings in words, then when they can be changed or why they cannot. */
 export const subChipTitle = (s: SubSettings, hint: string): string => `Subagents — ${subSummary(s)} — ${hint}`;
 
-/** A pick of the popover: configure sends the change, and the chat it answers with goes to take
+/** A pick of the popover or the sheet: configure sends the change, and the chat it answers with goes to take
  *  (the store), so the popover marks the new value at once. */
 export async function pickSubs(configure: (p: SubChange) => Promise<{ chat?: ChatView }>, change: SubChange, take: (c: ChatView) => void): Promise<void> {
   const r = await configure(change);

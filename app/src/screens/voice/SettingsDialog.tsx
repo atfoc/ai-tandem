@@ -6,7 +6,7 @@
 import { useEffect, useState } from "react";
 import { Pressable, StyleSheet, TextInput, View } from "react-native";
 
-import { PAUSE_MAX_MS, PAUSE_MIN_MS, SPEEDS } from "../../voice/logic/settings.ts";
+import { DEFAULTS, PAUSE_MAX_MS, PAUSE_MIN_MS, PAUSE_STEP_MS, SPEEDS } from "../../voice/logic/settings.ts";
 import { closeVoiceSettings, setVoiceSettings, useVoiceSettings, useVoiceSettingsOpen, voice } from "../../voice/index.ts";
 import type { VoiceSettings } from "../../voice/index.ts";
 import {
@@ -21,6 +21,7 @@ import { DialogActions, DialogTitle } from "../../ui/Dialog.tsx";
 import { MicIcon } from "../../ui/icons.tsx";
 import { Overlay } from "../../ui/Overlay.tsx";
 import { SecretInput } from "../../ui/SecretInput.tsx";
+import { Slider } from "../../ui/Slider.tsx";
 import { Text } from "../../ui/Text.tsx";
 import { usePhone } from "../../ui/useLayout.ts";
 import { useTheme } from "../../ui/theme.tsx";
@@ -156,7 +157,6 @@ const TTS_OPTIONS: Option<VoiceSettings["ttsModel"]>[] = [
 ];
 const STT_OPTIONS: Option<VoiceSettings["sttModel"]>[] = [{ value: "scribe_v2_realtime", label: ADVANCED_STT_SCRIBE }];
 const LANGUAGE_OPTIONS: Option<string | null>[] = [{ value: null, label: ADVANCED_LANGUAGE_AUTO }, ...LANGUAGES.map(([code, name]) => ({ value: code, label: name }))];
-const PAUSE_OPTIONS: Option<number>[] = Array.from({ length: (PAUSE_MAX_MS - PAUSE_MIN_MS) / 200 + 1 }, (_, i) => PAUSE_MIN_MS + i * 200).map((ms) => ({ value: ms, label: ADVANCED_PAUSE_VALUE(ms) }));
 const SPEED_OPTIONS: Option<number>[] = SPEEDS.map((x) => ({ value: x, label: ADVANCED_SPEED_VALUE(x) }));
 
 /** Advanced options, collapsed until opened. */
@@ -183,8 +183,9 @@ function AdvancedSection() {
           <Row label={ADVANCED_LANGUAGE}>
             <Picker label={ADVANCED_LANGUAGE} value={s.language} options={LANGUAGE_OPTIONS} shown={labelOf(LANGUAGE_OPTIONS, s.language, s.language ?? ADVANCED_LANGUAGE_AUTO)} onChange={(v) => setVoiceSettings({ language: v })} testID="vs-adv-language" />
           </Row>
-          <Row label={ADVANCED_PAUSE}>
-            <Picker label={ADVANCED_PAUSE} value={s.pauseMs} options={PAUSE_OPTIONS} shown={ADVANCED_PAUSE_VALUE(s.pauseMs)} onChange={(v) => setVoiceSettings({ pauseMs: v })} testID="vs-adv-pause" />
+          <Row label={ADVANCED_PAUSE} wide>
+            <Slider testID="vs-adv-pause" label={ADVANCED_PAUSE} value={s.pauseMs} min={PAUSE_MIN_MS} max={PAUSE_MAX_MS} step={PAUSE_STEP_MS}
+              format={ADVANCED_PAUSE_VALUE} mark={DEFAULTS.pauseMs} onCommit={(v) => setVoiceSettings({ pauseMs: v })} />
           </Row>
           <Row label={ADVANCED_SPEED}>
             <Picker label={ADVANCED_SPEED} value={s.speed} options={SPEED_OPTIONS} shown={ADVANCED_SPEED_VALUE(s.speed)} onChange={(v) => setVoiceSettings({ speed: v })} testID="vs-adv-speed" />

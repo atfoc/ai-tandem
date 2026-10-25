@@ -148,7 +148,7 @@ export const VOICES_COUNT = (shown: number, total: number): string => `${shown} 
 export const AUTOSEND_NOTE = "What a spoken turn does after you stop talking. The speech bar and the board's pill change the same setting.";
 
 export const ADVANCED_PAUSE_VALUE = (ms: number): string => `${(ms / 1000).toFixed(1)} s`;
-export const ADVANCED_SPEED_VALUE = (speed: number): string => `${speed.toFixed(1)}×`;
+export const ADVANCED_SPEED_VALUE = (speed: number): string => `${Number(speed.toFixed(2))}×`;
 
 /** The languages Settings offers: the two-letter codes (ISO 639-1) that both of the service's models take, with their names in English. */
 export const LANGUAGES: readonly (readonly [code: string, name: string])[] = [

@@ -1,9 +1,10 @@
 // ArrowDown and ArrowUp move the focus to the next and the previous item of the menu (they wrap), Home and End to the
 // first and the last; an item that is disabled is passed over. The menu's items are the elements with a role that starts
-// with "menuitem".
+// with "menuitem" and the sliders (role "slider": the Subagents popover's "Running at once"), so the arrows reach them from the rows and
+// leave them again; a slider keeps ←, →, Home, End, Page Up and Page Down for itself and, with verticalKeys off, leaves ↑ and ↓ to the menu.
 import { useCallback, useRef, type RefCallback } from "react";
 
-const ITEMS = '[role^="menuitem"]:not([aria-disabled="true"])';
+const ITEMS = '[role^="menuitem"]:not([aria-disabled="true"]), [role="slider"]:not([aria-disabled="true"])';
 
 export function useMenuKeys(): RefCallback<any> | undefined {
   const off = useRef<(() => void) | null>(null);

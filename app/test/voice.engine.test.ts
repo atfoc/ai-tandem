@@ -14,7 +14,10 @@ import {
   closeVoiceSettings, openVoiceSettings, setVoiceSettings, useReading, useVoiceProblem, useVoiceSettings, useVoiceSettingsOpen, voice,
 } from "../src/voice/index.ts";
 import { hasKey, playPreview, removeKey, setKey, testKey, voices } from "../src/voice/engine/keycheck.ts";
-import { MAX_IN_FLIGHT, readAloud, speaker, stopReading } from "../src/voice/engine/speaker.ts";
+import { MAX_IN_FLIGHT, readAloud, speaker, stopReading, testSpeaker } from "../src/voice/engine/speaker.ts";
+import { chimePcm } from "../src/voice/logic/chime.ts";
+import { stretchLatencySamples } from "../src/voice/logic/stretch.ts";
+import { assertStretched, chunked, fromBytes, speechLike, toBytes, tone, runStretch } from "./helpers/audiotest.ts";
 import { player } from "../src/voice/engine/player.ts";
 import {
   dismissProblem, flags, getSettings, problemStore, readingStore, resetEngine, settingsOpenStore, settingsStore, waits,
@@ -24,7 +27,7 @@ import type { VoiceSeam } from "../src/voice/engine/testseam.ts";
 import {
   createFakePorts, deferred, ERR, pcm, serveVoice, settle, voicesJson, waitFor,
 } from "./fixtures/voice/fakeports.ts";
-import type { FakePorts } from "./fixtures/voice/fakeports.ts";
+import type { FakePorts, FakeRequest } from "./fixtures/voice/fakeports.ts";
 
 const KEY = "sk_test_RECOGNISABLE_KEY_0123456789";
 const TTS = "/v1/text-to-speech/";
@@ -81,21 +84,21 @@ describe("settings (one value for every place)", () => {
   test("a change is seen by every subscriber, kept in the kv port, clamped", () => {
     const seen: number[][] = [[], []];
     const offs = [0, 1].map((i) => settingsStore.subscribe(() => seen[i].push(getSettings().pauseMs)));
-    setVoiceSettings({ pauseMs: 100 }); // clamped up to 600
+    setVoiceSettings({ pauseMs: 50 }); // clamped up to 100
     setVoiceSettings({ pauseMs: 2000, autoSend: false });
     setVoiceSettings({ pauseMs: 2000 }); // nothing changed: nobody is told
-    assert.deepEqual(seen, [[600, 2000], [600, 2000]]);
+    assert.deepEqual(seen, [[100, 2000], [100, 2000]]);
     assert.equal(getSettings().autoSend, false);
     assert.deepEqual(JSON.parse(kvMap.get(SETTINGS_KEY)!), getSettings());
     offs.forEach((off) => off());
     setVoiceSettings({ pauseMs: 1000 });
-    assert.deepEqual(seen, [[600, 2000], [600, 2000]]);
+    assert.deepEqual(seen, [[100, 2000], [100, 2000]]);
   });
 
   test("a fresh engine reads the stored value; text that does not parse is the defaults", () => {
-    kvMap.set(SETTINGS_KEY, JSON.stringify({ speed: 1.2, autoSend: false, skipCode: false }));
+    kvMap.set(SETTINGS_KEY, JSON.stringify({ speed: 1.5, autoSend: false, skipCode: false }));
     resetEngine();
-    assert.equal(getSettings().speed, 1.2);
+    assert.equal(getSettings().speed, 1.5);
     assert.equal(getSettings().autoSend, false);
     assert.equal(getSettings().skipCode, false);
     kvMap.set(SETTINGS_KEY, "{not json");
@@ -105,12 +108,12 @@ describe("settings (one value for every place)", () => {
   });
 
   test("the hooks show the stored value (the app's React reads the same store)", () => {
-    setVoiceSettings({ speed: 0.8 });
+    setVoiceSettings({ speed: 0.5 });
     const C = () => createElement("span", null, String(useVoiceSettings((s) => s.speed)), "|", String(useReading().key), "|", String(useVoiceProblem()?.kind ?? "none"), "|", String(useVoiceSettingsOpen()));
-    assert.match(renderToString(createElement(C)), /0\.8.*null.*none.*false/);
+    assert.match(renderToString(createElement(C)), /0\.5.*null.*none.*false/);
     problemStore.set({ kind: "offline", anchor: "x" });
     openVoiceSettings();
-    assert.match(renderToString(createElement(C)), /0\.8.*null.*offline.*true/);
+    assert.match(renderToString(createElement(C)), /0\.5.*null.*offline.*true/);
     closeVoiceSettings();
     assert.equal(settingsOpenStore.get(), false);
   });
@@ -304,13 +307,19 @@ describe("Read aloud", () => {
     assert.ok(ttsTexts().join(" ").includes("npm test"));
   });
 
-  test("the speed goes to the service only when it is not 1.0, and the model and language with it", async () => {
+  test("the model and language go to the service, and no speed at any speed", async () => {
     await readAloud(msg("A plain message with one sentence in it."));
-    assert.equal((f.net.requests.at(-1)!.req.json as Record<string, unknown>).voice_settings, undefined);
-    setVoiceSettings({ speed: 1.2, ttsModel: "eleven_multilingual_v2", language: "de" });
+    const body = f.net.requests.at(-1)!.req.json as Record<string, unknown>;
+    assert.equal(body.voice_settings, undefined);
+    for (const speed of [0.5, 1, 1.5, 2]) {
+      setVoiceSettings({ speed });
+      await readAloud(msg("A plain message with one sentence in it."));
+      assert.deepEqual(f.net.requests.at(-1)!.req.json, body, `the body at ${speed}× is the body at 1×`);
+    }
+    setVoiceSettings({ speed: 1.5, ttsModel: "eleven_multilingual_v2", language: "de" });
     await readAloud(msg("A plain message with one sentence in it."));
     assert.deepEqual(f.net.requests.at(-1)!.req.json, {
-      text: "A plain message with one sentence in it.", model_id: "eleven_multilingual_v2", voice_settings: { speed: 1.2 },
+      text: "A plain message with one sentence in it.", model_id: "eleven_multilingual_v2",
     });
     setVoiceSettings({ ttsModel: "eleven_flash_v2_5" });
     await readAloud(msg("A plain message with one sentence in it."));
@@ -397,6 +406,348 @@ describe("Read aloud", () => {
       await readAloud(msg(md));
       assert.deepEqual(ttsTexts(), want.sentences, name);
     }
+  });
+});
+
+// The playback speed (small-improvements 3.1, 4.3 to 4.5, 6.1): the speaker stretches each sentence before the player gets it.
+describe("the playback speed", () => {
+  const RATE = 24000;
+  const HZ = 220;
+  const S1 = "The first sentence is here.";
+  const S2 = "The second sentence is here.";
+  const S3 = "The third sentence is here.";
+
+  /** `bytes` cut at the given sizes (odd ones too), repeated as needed. */
+  const cutAt = (bytes: Uint8Array, sizes: readonly number[]): Uint8Array[] => {
+    const out: Uint8Array[] = [];
+    for (let at = 0, k = 0; at < bytes.length; k++) {
+      const piece = bytes.subarray(at, Math.min(bytes.length, at + sizes[k % sizes.length]!));
+      out.push(piece.slice());
+      at += piece.length;
+    }
+    return out;
+  };
+  const ODD = [4801, 997, 9999, 333, 4800, 7, 12001, 3];
+
+  type Served = { samples: Int16Array; bytes: Uint8Array; chunks: Uint8Array[] };
+  const serve = (samples: Int16Array, sizes: readonly number[] = ODD): Served => {
+    const bytes = toBytes(samples);
+    return { samples, bytes, chunks: cutAt(bytes, sizes) };
+  };
+  /** The service answers each sentence's text with its audio; `manual`: the test releases the chunks. */
+  const serveText = (by: Record<string, Served>, manual = false): void => {
+    f.net.on((r) => r.path.startsWith(TTS), (r) => ({ chunks: by[(r.json as { text: string }).text]!.chunks, manual }));
+  };
+  /** What a stretch at `speed` gives for audio served in whole-sample chunks: the engine must write exactly this, whatever the cutting. */
+  const expected = (speed: number, served: Served): Uint8Array => runStretch(speed, RATE, chunked(served.bytes, 7));
+  const join = (parts: Uint8Array[]): Uint8Array => {
+    const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+    let at = 0;
+    for (const p of parts) { out.set(p, at); at += p.length; }
+    return out;
+  };
+  /** What the player got, by sentence: the mark ids in order, and for each the bytes written after its mark. */
+  const heard = (): { marks: number[]; bytes: Uint8Array[]; writes: Uint8Array[][] } => {
+    const marks: number[] = [];
+    const writes: Uint8Array[][] = [];
+    let w = 0;
+    for (const e of f.audio.playerLog) {
+      if (e.startsWith("mark:")) { marks.push(Number(e.slice(5))); writes.push([]); }
+      else if (e === "write") writes[writes.length - 1]!.push(f.audio.writes[w++]!.data);
+    }
+    return { marks, bytes: writes.map(join), writes };
+  };
+  const equalBytes = (a: Uint8Array, b: Uint8Array, label: string): void => {
+    assert.equal(a.length, b.length, `${label}: length`);
+    assert.ok(Buffer.compare(a, b) === 0, `${label}: bytes differ`);
+  };
+  /** Releases the chunks of a manual answer, never more than it has (`release` counts from the first chunk); `rest` releases what is left and ends the body. */
+  const feeder = (q: FakeRequest, served: Served) => {
+    let n = 0;
+    return {
+      next(k = 1): void { const m = Math.min(k, served.chunks.length - n); n += m; q.release(m); },
+      rest(): void { q.release(served.chunks.length - n); n = served.chunks.length; q.end(); },
+    };
+  };
+  const speak = async (...texts: string[]): Promise<"played" | "stopped" | VoiceProblem> => {
+    const h = speaker.begin({ key: "k", owner: "speech", anchor: "a" });
+    for (const t of texts) h.say(t);
+    h.end();
+    return h.done;
+  };
+  const sentences = (): Record<string, Served> => ({
+    [S1]: serve(tone(HZ, 1.5, RATE)),
+    [S2]: serve(tone(HZ, 1.4, RATE), [3001, 4800, 555]),
+    [S3]: serve(tone(HZ, 1.3, RATE), [1, 9601, 4799]),
+  });
+
+  test("at 1× the player gets the served bytes: the same chunks, the same objects, the same writes", async () => {
+    const by = sentences();
+    f.net.on((r) => r.path.startsWith(TTS), { chunks: by[S1]!.chunks });
+    assert.equal(await speak(S1), "played");
+    const h = heard();
+    equalBytes(h.bytes[0]!, by[S1]!.bytes, "1×");
+    // the odd bytes are carried to the next write, so the writes are whole samples; with no odd byte they would be the very chunks
+    assert.ok(f.audio.writes.every((w) => w.bytes % 2 === 0));
+    const even = chunked(by[S1]!.bytes, [4800, 960, 2]);
+    f.net.requests.length = 0;
+    f.audio.writes.length = 0;
+    f.audio.playerLog.length = 0;
+    f.net.on((r) => r.path.startsWith(TTS), { chunks: even });
+    assert.equal(await speak(S1), "played");
+    assert.equal(f.audio.writes.length, even.length, "one write for each chunk");
+    f.audio.writes.forEach((w, i) => assert.strictEqual(w.data, even[i], `write ${i} is the chunk itself`));
+  });
+
+  for (const speed of [0.5, 1.5, 2]) {
+    test(`at ${speed}× each sentence reaches the player as the stretch of its audio, whatever the chunks`, async () => {
+      const by = sentences();
+      serveText(by);
+      setVoiceSettings({ speed });
+      assert.equal(await speak(S1, S2, S3), "played");
+      const h = heard();
+      assert.equal(h.marks.length, 3);
+      [S1, S2, S3].forEach((t, i) => equalBytes(h.bytes[i]!, expected(speed, by[t]!), `sentence ${i + 1}`));
+      assertStretched(fromBytes(join(h.bytes)), { speed, inputSamples: [S1, S2, S3].map((t) => by[t]!.samples.length), hz: HZ, label: `engine ${speed}×` });
+    });
+  }
+
+  for (const speed of [0.5, 2]) {
+    test(`a speech-like sentence at ${speed}× is within 1 sample of its length over ${speed}`, async () => {
+      const speech = serve(speechLike(2.5, RATE, 7));
+      f.net.on((r) => r.path.startsWith(TTS), { chunks: speech.chunks });
+      setVoiceSettings({ speed });
+      assert.equal(await speak(S1), "played");
+      const got = fromBytes(heard().bytes[0]!);
+      assert.ok(Math.abs(got.length - Math.round(speech.samples.length / speed)) <= 1, `${got.length} samples for ${speech.samples.length} at ${speed}×`);
+      equalBytes(toBytes(got), expected(speed, speech), "the stretch of the speech");
+    });
+  }
+
+  for (const speed of [0.5, 2]) {
+    test(`at ${speed}× a mark comes just before its sentence's first sound, and is told when reached; done waits for the drain`, async () => {
+      const by = sentences();
+      serveText(by);
+      setVoiceSettings({ speed });
+      f.audio.auto = false;
+      const said: string[] = [];
+      const h = speaker.begin({ key: "k", owner: "speech", anchor: "a", onSentence: (t) => said.push(t) });
+      for (const t of [S1, S2, S3]) h.say(t);
+      h.end();
+      let result: unknown = null;
+      void h.done.then((r) => { result = r; });
+      await waitFor(() => f.net.to(TTS).length === 3 && f.net.to(TTS).every((q) => q.finished), "all three answers");
+      await settle();
+      const [a, b, c] = f.audio.marks;
+      assert.equal(f.audio.marks.length, 3);
+      const log = f.audio.playerLog;
+      const at = (id: number) => log.indexOf(`mark:${id}`);
+      assert.ok(at(a) === 0 && at(a) < at(b) && at(b) < at(c), "marks in order, the first one first");
+      assert.equal(log[at(b) - 1], "write", "a write before the second mark: the first sentence's");
+      assert.equal(log[at(b) + 1], "write", "and one after it: the mark is never at the end of the sound");
+      assert.equal(log[at(c) + 1], "write");
+      assert.equal(log.filter((e) => e === "stop").length, 0);
+      const heardNow = heard();
+      assert.deepEqual(heardNow.marks, [a, b, c]);
+      assert.ok(heardNow.writes.every((w) => w.length > 0 && w.every((x) => x.length > 0)), "every mark has sound after it and no write is empty");
+      assert.deepEqual(said, []);
+      f.audio.reach(a);
+      assert.deepEqual(said, [S1]);
+      f.audio.reach(b);
+      f.audio.reach(c);
+      assert.deepEqual(said, [S1, S2, S3], "each sentence once, in order");
+      await settle();
+      assert.equal(result, null, "not over while the player has not drained");
+      f.audio.drain();
+      assert.equal(await h.done, "played");
+    });
+  }
+
+  test("a change of speed in Settings applies from the next sentence to reach the player; the one begun keeps its speed", async () => {
+    const by = sentences();
+    serveText(by, true);
+    const h = speaker.begin({ key: "k", owner: "speech", anchor: "a" });
+    for (const t of [S1, S2, S3]) h.say(t);
+    h.end();
+    await waitFor(() => f.net.to(TTS).length === 2, "two requests");
+    const [r1, r2] = f.net.to(TTS);
+    const f1 = feeder(r1, by[S1]!);
+    f1.next();
+    await waitFor(() => f.audio.writes.length === 1, "the first write");
+    setVoiceSettings({ speed: 2 });
+    f1.rest();
+    feeder(r2, by[S2]!).rest();
+    await waitFor(() => f.net.to(TTS).length === 3, "the third request");
+    feeder(f.net.to(TTS)[2], by[S3]!).rest();
+    assert.equal(await h.done, "played");
+    assert.deepEqual(ttsTexts(), [S1, S2, S3], "each sentence asked once, in order");
+    const got = heard();
+    assert.equal(got.marks.length, 3);
+    equalBytes(got.bytes[0]!, by[S1]!.bytes, "sentence 1 at 1×");
+    equalBytes(got.bytes[1]!, expected(2, by[S2]!), "sentence 2 at 2×");
+    equalBytes(got.bytes[2]!, expected(2, by[S3]!), "sentence 3 at 2×");
+    assert.equal(f.audio.stops, 0);
+  });
+
+  test("and the other way: begun at 2×, changed to 1× in the first sentence, the first stays at 2× and the rest are at 1×", async () => {
+    const by = sentences();
+    serveText(by, true);
+    setVoiceSettings({ speed: 2 });
+    const h = speaker.begin({ key: "k", owner: "speech", anchor: "a" });
+    for (const t of [S1, S2, S3]) h.say(t);
+    h.end();
+    await waitFor(() => f.net.to(TTS).length === 2, "two requests");
+    const [r1, r2] = f.net.to(TTS);
+    const f1 = feeder(r1, by[S1]!);
+    f1.next(3);
+    await waitFor(() => f.audio.writes.length >= 1, "the first write");
+    setVoiceSettings({ speed: 1 });
+    f1.rest();
+    feeder(r2, by[S2]!).rest();
+    await waitFor(() => f.net.to(TTS).length === 3, "the third request");
+    feeder(f.net.to(TTS)[2], by[S3]!).rest();
+    assert.equal(await h.done, "played");
+    assert.deepEqual(ttsTexts(), [S1, S2, S3]);
+    const got = heard();
+    equalBytes(got.bytes[0]!, expected(2, by[S1]!), "sentence 1 at 2×");
+    equalBytes(got.bytes[1]!, by[S2]!.bytes, "sentence 2 at 1×");
+    equalBytes(got.bytes[2]!, by[S3]!.bytes, "sentence 3 at 1×");
+    assert.equal(f.audio.stops, 0);
+  });
+
+  test("the first write is on the first served chunk at every speed (100 ms chunks): no later at 0.5×, 1.5× and 2× than at 1×", async () => {
+    const hundred = serve(tone(HZ, 1.5, RATE), [4800]);
+    const firsts: { chunk: number; at: number | null }[] = [];
+    for (const speed of [1, 0.5, 1.5, 2]) {
+      f.net.requests.length = 0;
+      f.audio.writes.length = 0;
+      f.audio.playerLog.length = 0;
+      speaker.stopAll();
+      resetEngine();
+      setVoiceSettings({ voiceId: "vsv1", voiceName: "Voice 1", speed });
+      f.net.on((r) => r.path.startsWith(TTS), { chunks: hundred.chunks, manual: true });
+      const h = speaker.begin({ key: "k", owner: "speech", anchor: "a" });
+      h.say(S1);
+      await waitFor(() => f.net.to(TTS).length === 1, "the request");
+      const feed = feeder(f.net.to(TTS)[0], hundred);
+      const t0 = f.ports.now();
+      let first = -1;
+      for (let i = 0; i < hundred.chunks.length && first < 0; i++) {
+        feed.next();
+        await settle();
+        f.advance(100);
+        if (f.audio.writes.length > 0) first = i;
+      }
+      firsts.push({ chunk: first, at: (player.stats().firstWriteAt ?? NaN) - t0 });
+      feed.rest();
+      h.end();
+      assert.equal(await h.done, "played");
+    }
+    assert.deepEqual(firsts.map((x) => x.chunk), [0, 0, 0, 0], "the first write is on the first chunk");
+    assert.ok(firsts.every((x) => x.at === firsts[0]!.at), "at the same fake time");
+  });
+
+  test("with 10 ms chunks the first write at 0.5×, 1.5× and 2× comes at most 31 ms of service audio later than at 1×", async () => {
+    const small = serve(tone(HZ, 1.5, RATE), [480]);
+    const heardAfter: number[] = [];
+    for (const speed of [1, 0.5, 1.5, 2]) {
+      f.net.requests.length = 0;
+      f.audio.writes.length = 0;
+      f.audio.playerLog.length = 0;
+      speaker.stopAll();
+      resetEngine();
+      setVoiceSettings({ voiceId: "vsv1", voiceName: "Voice 1", speed });
+      f.net.on((r) => r.path.startsWith(TTS), { chunks: small.chunks, manual: true });
+      const h = speaker.begin({ key: "k", owner: "speech", anchor: "a" });
+      h.say(S1);
+      await waitFor(() => f.net.to(TTS).length === 1, "the request");
+      const feed = feeder(f.net.to(TTS)[0], small);
+      let samples = 0;
+      for (let i = 0; i < small.chunks.length && f.audio.writes.length === 0; i++) {
+        feed.next();
+        samples += small.chunks[i]!.length / 2;
+        await settle();
+      }
+      heardAfter.push(samples);
+      feed.rest();
+      h.end();
+      assert.equal(await h.done, "played");
+    }
+    assert.equal(heardAfter[0], 240, "at 1× on the first chunk");
+    for (const n of heardAfter.slice(1)) assert.ok(n <= stretchLatencySamples(RATE) + 240, `${n} samples of input before the first sound`);
+    assert.ok(stretchLatencySamples(RATE) / RATE < 0.031);
+  });
+
+  test("a stop in the middle of a sentence at 2× stops the player at once; late chunks write nothing; the next reading has a fresh stretch", async () => {
+    const first = serve(tone(HZ, 2, RATE), [4800]);
+    const second = serve(tone(330, 1.2, RATE), [2401, 4799, 600]);
+    f.net.on((r) => r.path.startsWith(TTS), { chunks: first.chunks, manual: true });
+    setVoiceSettings({ speed: 2 });
+    f.audio.auto = false;   // the sound is still playing: there is something to stop
+    const h = speaker.begin({ key: "k", owner: "speech", anchor: "a" });
+    h.say(S1);
+    await waitFor(() => f.net.to(TTS).length === 1, "the request");
+    const q = f.net.to(TTS)[0];
+    q.release(3);
+    await waitFor(() => f.audio.writes.length >= 1, "sound");
+    const written = f.audio.writes.length;
+    speaker.stopAll();
+    assert.equal(f.audio.playerLog.at(-1), "stop", "the player is stopped at once");
+    assert.equal(f.audio.stops, 1);
+    assert.equal(await h.done, "stopped");
+    q.release(5);
+    q.end();
+    await settle();
+    assert.equal(f.audio.writes.length, written, "nothing written after the stop");
+    f.audio.auto = true;
+    // a new reading right after: fresh stretches
+    f.net.requests.length = 0;
+    f.audio.writes.length = 0;
+    f.audio.playerLog.length = 0;
+    f.net.on((r) => r.path.startsWith(TTS), { chunks: second.chunks });
+    await readAloud(msg("A new message right after the stop."));
+    const got = heard();
+    assert.equal(got.marks.length, 1);
+    equalBytes(got.bytes[0]!, expected(2, second), "a fresh stretch of its own audio");
+    assertStretched(fromBytes(got.bytes[0]!), { speed: 2, inputSamples: second.samples.length, hz: 330, label: "after a stop" });
+  });
+
+  test("a hold and a resume at 2×: nothing is written twice, and the total is the stretched length", async () => {
+    const one = serve(tone(HZ, 2, RATE), [4800]);
+    f.net.on((r) => r.path.startsWith(TTS), { chunks: one.chunks, manual: true });
+    setVoiceSettings({ speed: 2 });
+    const h = speaker.begin({ key: "k", owner: "speech", anchor: "a" });
+    h.say(S1);
+    await waitFor(() => f.net.to(TTS).length === 1, "the request");
+    const feed = feeder(f.net.to(TTS)[0], one);
+    feed.next(4);
+    await waitFor(() => f.audio.writes.length >= 1, "sound");
+    player.hold();
+    feed.next(4);
+    await settle();
+    const heldWrites = f.audio.writes.filter((w) => w.held).length;
+    player.resume();
+    feed.rest();
+    h.end();
+    assert.equal(await h.done, "played");
+    assert.ok(heldWrites > 0, "chunks that came during the hold were written (and kept by the player)");
+    const got = heard();
+    equalBytes(got.bytes[0]!, expected(2, one), "the whole sentence, once");
+    assertStretched(fromBytes(got.bytes[0]!), { speed: 2, inputSamples: one.samples.length, hz: HZ, label: "hold and resume" });
+  });
+
+  test("Test speaker and a voice's preview are not stretched, at 2×", async () => {
+    setVoiceSettings({ speed: 2 });
+    await testSpeaker();
+    assert.equal(f.audio.writes.length, 1);
+    equalBytes(f.audio.writes[0]!.data, chimePcm(), "the chime");
+    const clip = pcm(100, 9);
+    f.net.previewBytes.set("https://previews.example/v2.mp3", clip);
+    f.audio.clipMs = 1;
+    await voices();
+    await playPreview("vsv2");
+    assert.equal(f.audio.clips.length, 1);
+    equalBytes(f.audio.clips[0]!, clip, "the clip");
   });
 });
 
@@ -656,6 +1007,12 @@ describe("the test seam", () => {
     assert.equal(s.state().session.phase, "idle");
     assert.equal(s.state().reading.key, null);
     assert.equal(s.settings().voiceId, "vsv1");
+    assert.equal(s.settings().speed, 1);
+    s.setSettings({ speed: 2 });
+    assert.equal(s.settings().speed, 2);
+    assert.equal(getSettings().speed, 2);
+    s.setSettings({ speed: 1.2 });
+    assert.equal(s.settings().speed, 1, "a speed that is not one of the four is brought to the nearest");
     s.denyMic(true);
     assert.equal(flags.denyMic, true);
     await s.setKey("sk_test_other");

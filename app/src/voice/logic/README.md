@@ -12,3 +12,4 @@ Pure TypeScript: no React, no `react-native`, no `expo-*`, no ports. Its tests r
 | `settings.ts` | `VoiceSettings`: type, defaults, parse, clamp (VC-14) |
 | `marks.ts` | the device-local mic marks: model and pruning (VC-23) |
 | `pcm.ts` | Float32 → Int16 16 kHz, base64, RMS level, odd-byte carry (the web build's audio) |
+| `stretch.ts` | the playback speed: pitch-synchronous overlap-add on the TTS PCM (small-improvements 3.1) |

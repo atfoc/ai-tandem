@@ -296,9 +296,9 @@ await check("UX.S3 Settings > Voice on the phone: the screen, Add key, Choose vo
       const row = byTid(page, "vs-adv-language").last();
       if ((await textOf(row.locator('[data-testid="cell-value"]'))) !== "Croatian" || (await row.getAttribute("data-value")) !== "hr") fail(`the Language row says ${J(await textOf(row))} after Croatian`);
     }
-    await pickIn(page, "vs-adv-speed", "vs-picker", { value: "1.2" });
-    await until(async () => (await voiceSettings(page)).speed === 1.2);
-    if ((await textOf(byTid(page, "vs-adv-speed").last().locator('[data-testid="cell-value"]'))) !== "1.2×") fail("the Playback speed row does not say 1.2×");
+    await pickIn(page, "vs-adv-speed", "vs-picker", { value: "1.5" });
+    await until(async () => (await voiceSettings(page)).speed === 1.5);
+    if ((await textOf(byTid(page, "vs-adv-speed").last().locator('[data-testid="cell-value"]'))) !== "1.5×") fail("the Playback speed row does not say 1.5×");
     await pickIn(page, "vs-adv-language", "vs-picker", { value: "auto" });
     await until(async () => (await voiceSettings(page)).language === null);
     if ((await textOf(byTid(page, "vs-adv-language").last().locator('[data-testid="cell-value"]'))) !== "Auto-detect") fail("the Language row does not say Auto-detect after Auto-detect");

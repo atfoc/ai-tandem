@@ -25,12 +25,13 @@ export function Section({ title, note, testID, children }: { title: string; note
   );
 }
 
-/** A label on the left and its control on the right; they stack when the row is narrow. */
-export function Row({ label, children }: { label: string; children: ReactNode }) {
+/** A label on the left and its control on the right; they stack when the row is narrow. `wide`: the control (a slider) always takes the row's
+ *  whole width, under the label. */
+export function Row({ label, wide, children }: { label: string; wide?: boolean; children: ReactNode }) {
   return (
     <View style={styles.row}>
       <Text size={12.5} style={styles.rowLabel}>{label}</Text>
-      <View style={styles.rowControl}>{children}</View>
+      <View style={wide ? styles.rowWide : styles.rowControl}>{children}</View>
     </View>
   );
 }
@@ -111,6 +112,7 @@ const styles = StyleSheet.create({
   row: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", columnGap: 12, rowGap: 6, minHeight: 28 },
   rowLabel: { flexShrink: 1 },
   rowControl: { flexShrink: 0, maxWidth: "100%" },
+  rowWide: { flexBasis: "100%" },
   choice: { flexDirection: "row", borderWidth: 1, borderRadius: 8, padding: 2, alignSelf: "flex-start", maxWidth: "100%" },
   choiceItem: { flexShrink: 1, paddingVertical: 4, paddingHorizontal: 12, borderRadius: 6 },
   picker: { alignSelf: "flex-start" },
