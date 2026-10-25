@@ -2,13 +2,14 @@
 // branch marker, drawn inside the message after its text (the chat view's `MessageExtras` part).
 //
 // The actions are a bar over the message's top right corner that shows while a mouse is over the message; with a finger there is no hover, so
-// the message has a "⋯" button (`fk-more`) that opens the same actions as a menu (a popover on the tablet, a sheet on the phone: Overlay), each
-// disabled one with its reason under it. Every control of the extras has a testID that starts with `fk-` (a reader of the message's words leaves
-// those out: the actions' words are no part of what the message says, nor of what a quote takes).
+// the message has a "⋯" button (`fk-more`) that opens the same actions as a popover menu, each disabled one with its reason under it. On the phone
+// neither is drawn: a long press on the message opens the message sheet (MessageSheet.tsx), which has these actions among its rows. Every control
+// of the extras has a testID that starts with `fk-` (a reader of the message's words leaves those out: the actions' words are no part of what the
+// message says, nor of what a quote takes).
 //
 // Read aloud (voice, VC-24) is one more action of the bar and the menu, last, on a user message and on a reply that is written: the chat view's
 // `useReadAloud` part gives it (or null), so this file does not know voice's engine. Reading needs no server, so it is offered also where no
-// fork action is (a chat shown as it was, an archived one, a read-only one). While the message is read its control says "Stop reading" and a
+// fork action is (a chat shown as it was, an archived one, a read-only one). While the message is read its control says "End reading" and a
 // chip (`voice-reading`, under the message's words, at the right) stays on the message, hovered or not, until the reading ends; while the reading is
 // paused (the headphones went away, voice devices VD-12) a second chip, Continue reading (`voice-reading-continue`), stands beside it; a failure hangs the
 // problem popover from the message's top right corner (the bar is gone when the pointer leaves it).
@@ -16,7 +17,7 @@
 // What does nothing now is disabled and says why (logic/waits.ts heldReason): the two that branch while a message that starts a new branch is on its
 // way, the two that fork while a fork of the chat is being made, Branch and edit while the chat's composer uploads an image. Label is never held. A
 // chat shown as it was (useOffWhy) offers none of them, Label neither; its marker, which opens the tree, and its label stay.
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useRef, useState, useSyncExternalStore } from "react";
 import { Pressable, StyleSheet, View, type ViewStyle } from "react-native";
 
 import { messageActions } from "@aiwb/core/logic/forkpoints.ts";
@@ -36,17 +37,20 @@ import { Overlay } from "../../ui/Overlay.tsx";
 import { Text } from "../../ui/Text.tsx";
 import { useTokens } from "../../ui/theme.tsx";
 import { tid } from "../../ui/tid.ts";
+import { usePhone } from "../../ui/useLayout.ts";
 import { usePointer } from "../../ui/usePointer";
 import { webStyle } from "../../ui/webstyle.ts";
 import { READ_CONTINUE } from "../../voice/words.ts";
 import { useChatParts, useOffWhy } from "../chat/index.ts";
 import { ReadAloudProblem } from "../voice/index.ts";
+import { BranchPill } from "./BranchPill.tsx";
 import { LabelInput } from "./LabelInput.tsx";
+import { isLabeling, startLabel, stopLabel, subscribeLabel } from "./msgsheet.ts";
 
 const EMPTY: Item[] = [];
 
-export function MessageExtras({ chat, index, item, hovered }: { chat: ChatView; index: number; item: Item; hovered: boolean }) {
-  const t = useTokens(), pointer = usePointer();
+/** What forking offers on a message and what a press on one does: shared by the mouse's bar and the tablet's menu (below) and the phone's message sheet. */
+export function useMessageForks(chat: ChatView, index: number, item: Item) {
   // The shown branch's full list, even while the thread is shown cut for a pending move.
   const items = useStore((s) => threadOf(s, chat.id)?.items) ?? EMPTY;
   const shown = useStore((s) => shownBranch(s, chat.id));
@@ -55,7 +59,35 @@ export function MessageExtras({ chat, index, item, hovered }: { chat: ChatView; 
   // where the chat's composer is: an upload of it holds Branch and edit
   const on = { branch: useStore((s) => viewedBranch(s, chat.id)), move: useStore((s) => !!s.moves[chat.id]) };
   const off = !!useOffWhy(chat.id);
-  const [labeling, setLabeling] = useState(false);
+  // chat is the view of the branch shown (shownView): its status is that branch's, not the chat's.
+  // (a chat with no agent has no message: the kind given for it is never read)
+  const acts = messageActions({ agent: chat.agent || "claude", items, index, busy: isBusy(chat.status), readOnly: !!chat.archived || isLegacy(chat) });
+  const label = labelAt(view, shown, index);
+  const tree = view && chat.agent ? threadTree(view, shown, chat.agent, items) : null;
+  const marker = tree ? markerAt(tree, shown, index) : null;
+  const buttons = off ? [] : messageButtons(acts, items, !!label);
+  const held = (b: MessageButton) => heldReason(waits, b.id, on);
+  const run = (b: MessageButton) => {
+    if (b.id === "label") return startLabel(chat.id, index);
+    if (b.at === undefined || held(b)) return;
+    switch (b.id) {
+      case "branchEdit": return void startMove(chat.id, { branch: shown, at: b.at, new: true }, index);
+      case "branch": return void startMove(chat.id, { branch: shown, at: b.at, new: true });
+      case "forkEdit": return void forkChat(chat.id, shown, b.at, index);
+      case "fork": return void forkChat(chat.id, shown, b.at);
+    }
+  };
+  return { shown, off, label, marker, tree, buttons, held, run, user: item.kind === "user" };
+}
+
+/** Whether the label field is open on the message (the sheet's Label… row opens it too). */
+export const useLabeling = (chat: string, index: number): boolean =>
+  useSyncExternalStore(subscribeLabel, () => isLabeling(chat, index));
+
+export function MessageExtras({ chat, index, item, hovered }: { chat: ChatView; index: number; item: Item; hovered: boolean }) {
+  const t = useTokens(), pointer = usePointer(), phone = usePhone();
+  const { shown, off, label, marker, tree, buttons, held, run: runFork, user } = useMessageForks(chat, index, item);
+  const labeling = useLabeling(chat.id, index);
   const [menu, setMenu] = useState(false);
   const [compact, setCompact] = useState(false); // the mouse's bar with icons alone: its words do not fit the thread
   const more = useRef<View>(null);
@@ -70,37 +102,20 @@ export function MessageExtras({ chat, index, item, hovered }: { chat: ChatView; 
     setCompact(bar.getBoundingClientRect().width > msg.getBoundingClientRect().right - 2 - row.getBoundingClientRect().left);
   }, []);
 
-  // chat is the view of the branch shown (shownView): its status is that branch's, not the chat's.
-  // (a chat with no agent has no message: the kind given for it is never read)
-  const acts = messageActions({ agent: chat.agent || "claude", items, index, busy: isBusy(chat.status), readOnly: !!chat.archived || isLegacy(chat) });
-  const label = labelAt(view, shown, index);
-  const marker = view && chat.agent ? markerAt(threadTree(view, shown, chat.agent, items), shown, index) : null;
-  const buttons = off ? [] : messageButtons(acts, items, !!label);
   const typing = labeling && !off; // a label being typed as the server dropped goes: it could not be set
   if (!marker && !label && !buttons.length && !typing && !read) return null;
   const actions = buttons.length > 0 || !!read;
 
-  const user = item.kind === "user";
-  const held = (b: MessageButton) => heldReason(waits, b.id, on);
-  const run = (b: MessageButton) => {
-    setMenu(false);
-    if (b.id === "label") return setLabeling(true);
-    if (b.at === undefined || held(b)) return;
-    switch (b.id) {
-      case "branchEdit": return void startMove(chat.id, { branch: shown, at: b.at, new: true }, index);
-      case "branch": return void startMove(chat.id, { branch: shown, at: b.at, new: true });
-      case "forkEdit": return void forkChat(chat.id, shown, b.at, index);
-      case "fork": return void forkChat(chat.id, shown, b.at);
-    }
-  };
+  const run = (b: MessageButton) => { setMenu(false); runFork(b); };
   const tone = user ? t.userText : t.accent;
   const readTitle = read?.title ?? "";
   const readIcon = read?.reading ? <StopIcon size={11} color={t.muted} /> : <SpeakerIcon size={12} color={t.muted} />;
   // The finger's "⋯" is where the popover hangs from; a mouse has the corner, which stays when the bar goes.
-  const setMore = (el: View | null) => { more.current = el; if (read && pointer === "touch") read.anchor.current = el; };
+  const setMore = (el: View | null) => { more.current = el; if (read && pointer === "touch" && !phone) read.anchor.current = el; };
   return (
     <>
-      {marker && (
+      {marker && tree && phone && !user && <BranchPill chat={chat.id} shown={shown} index={index} tree={tree} n={marker.n} m={marker.m} />}
+      {marker && !(tree && phone) && (
         <Pressable {...tid("fk-marker", { n: marker.n, m: marker.m })} role="button" accessibilityLabel={`Branch ${marker.n} of ${marker.m}`}
           onPress={() => openTree(chat.id, { branch: shown, item: index })} style={styles.marker}>
           {({ hovered: h }: { hovered?: boolean; pressed: boolean }) => (
@@ -117,15 +132,15 @@ export function MessageExtras({ chat, index, item, hovered }: { chat: ChatView; 
       )}
       {label && !typing && (
         <View {...tid("fk-label-tag")} style={[styles.tag, { backgroundColor: user ? t.bg : t.accentSoft }, user && styles.tagUser]}>
-          <Text size={10.5} weight="600" numberOfLines={1} style={{ color: tone }}>{`⚑ ${label}`}</Text>
+          <Text size={phone ? 13 : 10.5} weight="600" numberOfLines={1} style={{ color: tone }}>{`⚑ ${label}`}</Text>
         </View>
       )}
       {typing && (
         <View {...tid("fk-label-field")} style={[styles.field, { borderColor: t.line, backgroundColor: t.bg }]}>
-          <LabelInput initial={label ?? ""} onDone={(v) => { if (v !== null && v !== (label ?? "")) void labelMessage(chat.id, shown, index, v); setLabeling(false); }} />
+          <LabelInput initial={label ?? ""} onDone={(v) => { if (v !== null && v !== (label ?? "")) void labelMessage(chat.id, shown, index, v); stopLabel(chat.id, index); }} />
         </View>
       )}
-      {read && pointer !== "touch" && <View ref={read.anchor} pointerEvents="none" collapsable={false} style={styles.corner} />}
+      {read && (pointer !== "touch" || phone) && <View ref={read.anchor} pointerEvents="none" collapsable={false} style={styles.corner} />}
       {read?.reading && !typing && (
         <View style={styles.readings}>
           {read.paused && (
@@ -160,7 +175,7 @@ export function MessageExtras({ chat, index, item, hovered }: { chat: ChatView; 
           )}
         </View>
       )}
-      {actions && !typing && pointer === "touch" && (
+      {actions && !typing && pointer === "touch" && !phone && ( // (a finger on the phone has the message sheet)
         <>
           <View ref={setMore} style={styles.more} collapsable={false}>
             <IconButton {...tid("fk-more")} size="sm" title="Message actions" onPress={() => setMenu(true)}>{(c) => <MoreIcon size={12} color={c} />}</IconButton>
@@ -197,3 +212,11 @@ const styles = StyleSheet.create({
   tagUser: { alignSelf: "flex-end" },
   field: { flexDirection: "row", marginTop: 4, padding: 4, borderWidth: 1, borderRadius: 8, minWidth: 220 },
 });
+
+/** Under a user's bubble on the phone (the chat view's `MessageBelow` part): the "‹ Branch 1 of 2 ›" pill of a message that branched, outside the bubble
+ *  as the mockup draws it. A reply has no bubble: its pill stays in MessageExtras. */
+export function MessageBelow({ chat, index, item }: { chat: ChatView; index: number; item: Item }) {
+  const { shown, marker, tree } = useMessageForks(chat, index, item);
+  if (!marker || !tree) return null;
+  return <BranchPill chat={chat.id} shown={shown} index={index} tree={tree} n={marker.n} m={marker.m} />;
+}

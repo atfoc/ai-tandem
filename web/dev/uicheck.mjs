@@ -11,7 +11,8 @@
 //                                        reach nothing but the files it came from, not the mock)
 //   LIMIT=120 npm run uicheck            the seconds one check may take (default 600, six times what the longest
 //                                        takes on a free machine): one that has not ended by then is ended, and
-//                                        has failed
+//                                        has failed; a check that names its own (a line `export const limit = <seconds>;`,
+//                                        UX.R1 walks every phone screen) gets the larger of the two
 // One check alone, with its own output: PORT=4900 node dev/checks/P0.1-overflow.mjs (DIST as above; MOCK=http://… for
 // a mock that runs already; VIEWPORT=phone for one viewport). No check calls a paid model, and none is run by `npm test` or
 // `npm run check`.
@@ -58,7 +59,8 @@ onEnd(async () => { if (running) await end(running); if (built) fs.rmSync(built,
 const run = (f) => new Promise((ok) => {
   const p = (running = spawn(process.execPath, [path.join(DIR, f)], { env, stdio: "inherit", detached: true }));
   let late = false;
-  const limit = setTimeout(() => { late = true; console.log(`FAIL ${f}: it had not ended after ${LIMIT} s`); end(p); }, LIMIT * 1000);
+  const own = Number(/^export const limit = (\d+);/m.exec(fs.readFileSync(path.join(DIR, f), "utf8"))?.[1] ?? 0), secs = Math.max(LIMIT, own);
+  const limit = setTimeout(() => { late = true; console.log(`FAIL ${f}: it had not ended after ${secs} s`); end(p); }, secs * 1000);
   p.gone = new Promise((gone) => p.on("exit", (code) => { clearTimeout(limit); running = null; gone(); ok(code === 0 && !late); }));
 });
 

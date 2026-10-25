@@ -13,12 +13,13 @@ export function registerBox(chat: string, box: Box): () => void {
 }
 
 /** Gives the focus to the text box of the chat on screen, a moment later. Not under a popup of the prompt library opened by then: what is
- *  typed there is its search's, and the box has the focus again when the popup closes. */
-export function focusSelectedBox(delay = 30): void {
+ *  typed there is its search's, and the box has the focus again when the popup closes. Nor for a chat `keepOff` names (the shell's focus on
+ *  the phone, for a chat with a chip row: composer/index.ts). */
+export function focusSelectedBox(delay = 30, keepOff?: (chat: string) => boolean): void {
   setTimeout(() => {
     const s = getState();
     if (s.insertPopup || s.libraryDialog) return;
     const chat = s.sel.chat;
-    if (chat) boxes.get(chat)?.focus();
+    if (chat && !keepOff?.(chat)) boxes.get(chat)?.focus();
   }, delay);
 }

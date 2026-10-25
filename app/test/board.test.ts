@@ -11,7 +11,8 @@ import { navigation, schemeOf } from "../src/platform/boardnav.ts";
 import { createHostChannel, drained, tracked } from "../src/platform/boardchannel.ts";
 import type { KeyLike } from "../src/platform/keys.types.ts";
 import { boardKeyHandler, pickEscape, pickableChat } from "../src/screens/board/boardkeys.ts";
-import { awayNow, composerGone, finishPick, holdRef, insertRef, pickPoint, registerInserter, resetPick, setPickGo, startPick, takeHeld, type Place } from "../src/screens/board/refs.ts";
+import { awayNow, composerGone, finishPick, finishSelect, holdRef, insertRef, pickPoint, pickingFor, registerInserter, resetPick, setPickGo, startPick, startSelect, takeHeld, type Place } from "../src/screens/board/refs.ts";
+import { boardApp } from "../src/screens/shell/boardside.ts";
 import { tapWatch } from "../src/screens/board/taps.ts";
 import type { Ref } from "@aiwb/core/logic/refs.ts";
 import { createEngine } from "../src/screens/board/engine.ts";
@@ -398,4 +399,54 @@ test("a tap is one pointer down and up in its place: a pan, a pinch and a second
   assert.equal(w.up(1, { x: 5, y: 5 }), null, "a pointer taken away makes none");
   w.down(3, { x: 5, y: 5 });
   assert.deepEqual(w.up(3, { x: 5, y: 5 }), { x: 5, y: 5 });
+});
+
+// ---- the phone's Add selection (ux-improvements B2)
+
+test("Add selection takes the user to the board with the caret kept; Add puts the selection where the caret was and opens the chat again", () => {
+  const went = phone();
+  const SEL: Ref = { kind: "selection", ids: ["a1", "b2"], label: "2 rectangles", detail: "" };
+  const was = boardApp.selectionRefOn;
+  let sel: Ref | null = null;
+  boardApp.selectionRefOn = () => sel;
+  try {
+    const put: [Ref, Place | null | undefined][] = [];
+    const off = registerInserter("c1", (r, at) => put.push([r, at]), () => ({ start: 5, end: 5 }));
+    startSelect("c1");
+    assert.equal(getState().picking, "c1");
+    assert.equal(pickingFor(getState()), "select");
+    assert.deepEqual(went, [{ board: "b1", chat: null }], "the board is on screen");
+    off(); // the chat screen went
+    finishSelect("c1");
+    assert.equal(getState().picking, "c1", "nothing selected: Add does nothing, the wait goes on");
+    sel = SEL;
+    finishSelect("c1");
+    assert.equal(getState().picking, null);
+    assert.equal(getState().pickFor, "point", "every end goes back to a point");
+    assert.deepEqual(getState().sel, { board: "b1", chat: "c1" }, "the chat is open again");
+    assert.deepEqual(takeHeld("c1"), [{ ref: SEL, at: { start: 5, end: 5 } }], "held for the box, at its caret");
+    assert.deepEqual(put, []);
+  } finally { boardApp.selectionRefOn = was; }
+});
+
+test("every way out of a wait ends Add selection too, with nothing added: the back (pickPoint null), Esc, the key, and a second Add selection", () => {
+  const went = phone();
+  registerInserter("c1", () => assert.fail("nothing is put in"));
+  for (const end of [() => pickPoint(null), () => pickEscape(key("Escape", { key: "Escape" })), () => boardKeyHandler(() => true)(key("KeyL", { metaKey: true, shiftKey: true })), () => startSelect("c1")]) {
+    went.length = 0;
+    setState({ sel: { board: "b1", chat: "c1" } });
+    startSelect("c1");
+    assert.equal(pickingFor(getState()), "select");
+    end();
+    assert.equal(pickingFor(getState()), null);
+    assert.equal(getState().pickFor, "point");
+    assert.deepEqual(getState().sel, { board: "b1", chat: "c1" });
+    assert.equal(awayNow(), null);
+    assert.deepEqual(takeHeld("c1"), []);
+  }
+  startSelect("c1");
+  pickPoint(null);
+  startPick("c1", true);
+  assert.equal(pickingFor(getState()), "point", "Point at after Add selection waits for a point");
+  pickPoint(null);
 });

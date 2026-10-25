@@ -16,12 +16,24 @@
 //   SpeechBar       voice (VC-17): the speech bar that takes the place of the box and the toolbar while speech mode is on. null: none.
 //   VoiceNotice     voice devices (VD-14): the one-sentence line above the box, the speech bar or the archived bar, where ModelNotice stands: a device
 //                   that was missing or went away, or Read aloud's pause. Nothing at rest. null: none.
+//
+// The phone's composer (ux-improvements package C1, goal 3.6) adds:
+//   VoiceControl    voice: one of the two voice controls alone, for the phone's toolbar: `which` "dictate" (the mic) or "talk" (speech mode, the
+//                   primary button while the box is empty). It holds the logic and the problem popover's anchor; the composer draws the look
+//                   through `children`. null: none (the phone draws no mic, and Send in Talk's place).
+//   takePhoto       the camera (Take photo in the "+" sheet), as `pickImages` answers. null: no camera here (the row is not shown).
+//   pickFiles       the files of the device (Files in the "+" sheet), as `pickImages` answers. null: no such picker here (the row is not shown).
+//   useBlock        package V1 (Blocked.tsx, registered by this folder's index.ts): what blocks sending on the phone (goal 3.7.1, the V1 design §1): `box`
+//                   replaces the box and the chip row (archived, old board connection, no agent), `toolbar` stands in the toolbar's place inside the
+//                   read-only box (offline, gone), `above` right above the box (a model too small, a refused send), `sendOff` greys Send with its
+//                   reason. null: nothing blocks it. A hook, called on every render of the phone's composer (PhoneComposer.tsx).
 import { useSyncExternalStore, type ComponentType, type Dispatch, type ReactNode, type SetStateAction } from "react";
 
 import type { Refused } from "@aiwb/core/logic/chatimage.ts";
+import type { Where } from "@aiwb/core/logic/chatserver.ts";
 import { subChipLabel, subChipTitle, subSettings } from "@aiwb/core/logic/subsettings.ts";
 import type { Picked, Slot } from "@aiwb/core/state/uploads.ts";
-import type { ChatImage, ChatView, Reference } from "@aiwb/core/types.ts";
+import type { AgentKind, ChatImage, ChatView, Reference } from "@aiwb/core/types.ts";
 
 import { Text } from "../../ui/Text.tsx";
 import { ChipName, TChip, UNTIL_FIRST_MESSAGE } from "./Chip.tsx";
@@ -57,6 +69,32 @@ export type ComposerQuotes = {
 export type QuotesHook = (o: { chat: string; quotes: Reference[]; setQuotes: Dispatch<SetStateAction<Reference[]>>; readOnly: boolean; width?: number }) => ComposerQuotes;
 export type QuoteSelection = { ref: Reference; at?: unknown } | { error: string } | null;
 
+/** What the phone's composer tells `useBlock` (the V1 design §1). */
+export type BlockInput = {
+  chatId: string;
+  branch: string;
+  /** The chat's server (logic/chatserver.ts). */
+  where: Where;
+  /** The server no longer has the chat. */
+  gone: boolean;
+  /** The agents the chat's server offers. */
+  usable: AgentKind[];
+  /** The last refused send's sentence ("" none): the composer's `under`. */
+  refused: string;
+  onDismissRefused(): void;
+};
+/** What a block draws; every field is optional. */
+export type BlockOut = {
+  /** Drawn instead of the box and the chip row. */
+  box?: ReactNode;
+  /** Drawn in the toolbar's place inside the box, which is read-only and greyed with the draft visible. */
+  toolbar?: ReactNode;
+  /** Drawn right above the box. */
+  above?: ReactNode;
+  /** Send is greyed, with this reason. */
+  sendOff?: string;
+};
+
 export type ComposerParts = {
   ImageStrip: ComponentType<ImageStripProps> | null;
   AttachButton: ComponentType<AttachButtonProps> | null;
@@ -68,6 +106,22 @@ export type ComposerParts = {
   VoiceButtons: ComponentType<{ chatId: string; branch: string; place: "row" | "more"; disabled: string }> | null;
   SpeechBar: ComponentType<{ chatId: string; branch: string }> | null;
   VoiceNotice: ComponentType<{ chatId: string }> | null;
+  VoiceControl: ComponentType<VoiceControlProps> | null;
+  takePhoto: (() => Promise<{ files: Picked[]; skipped: Refused[] }>) | null;
+  pickFiles: (() => Promise<{ files: Picked[]; skipped: Refused[] }>) | null;
+  useBlock: (o: BlockInput) => BlockOut | null;
+};
+
+/** What a voice control gives the look the phone's composer draws: whether it is on (listening into the box / speech mode), the press, and its
+ *  label in the goal's words (Dictate, End dictation, Talk, End) — the control's accessibility label. */
+export type VoiceControlState = { on: boolean; onPress(): void; label: string; disabled: boolean };
+export type VoiceControlProps = {
+  chatId: string;
+  branch: string;
+  which: "dictate" | "talk";
+  /** Why the composer cannot send now ("" while it can): the control starts nothing. */
+  disabled: string;
+  children(s: VoiceControlState): ReactNode;
 };
 
 /** The Subagents chip until S7 draws it: the settings in words, fixed (no list). */
@@ -87,6 +141,8 @@ let parts: ComposerParts = {
   SubagentsChip: SubagentsStandIn,
   BranchBanner: null,
   VoiceButtons: null, SpeechBar: null, VoiceNotice: null,
+  VoiceControl: null, takePhoto: null, pickFiles: null,
+  useBlock: () => null,
 };
 const listeners = new Set<() => void>();
 

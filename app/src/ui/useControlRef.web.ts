@@ -1,7 +1,10 @@
 // The `title` attribute of the element a control draws, its focus on appearing, and (keepFocus) that a press on it leaves the focus
 // where it is, and `aria-disabled` (ariaDisabled: for a control that stays focusable): react-native-web forwards none of them, so the element it gives as a ref is marked here. Returns the ref to put on
-// the control.
+// the control. At the phone layout there is no `title`: a phone has no hover, and what a hover title said is the control's label (ux-improvements
+// goal 3.1.3); the wide layouts keep theirs.
 import { useCallback, useEffect, useLayoutEffect, useRef, type RefCallback } from "react";
+
+import { usePhone } from "./useLayout.ts";
 
 function mark(el: HTMLElement | null, text: string | undefined) {
   if (!el?.setAttribute) return;
@@ -17,7 +20,8 @@ function markDisabled(el: HTMLElement | null, on: boolean | undefined) {
 
 const keep = (e: Event) => e.preventDefault();
 
-export function useControlRef(title: string | undefined, autoFocus?: boolean, keepFocus?: boolean, ariaDisabled?: boolean): RefCallback<any> | undefined {
+export function useControlRef(tooltip: string | undefined, autoFocus?: boolean, keepFocus?: boolean, ariaDisabled?: boolean): RefCallback<any> | undefined {
+  const title = usePhone() ? undefined : tooltip;
   const node = useRef<HTMLElement | null>(null);
   const at = useRef({ title, autoFocus, ariaDisabled });
   at.current = { title, autoFocus, ariaDisabled };

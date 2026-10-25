@@ -33,6 +33,13 @@ const make = (id, o, list) => `chats.${id} = chat(${J(id)}, ${J({ name: id, grou
 const status = (id, st, tool) => `chats.${id}.status = ${J(st)}; ${tool ? `chats.${id}.statusTool = ${J(tool)};` : ""} send({ type: "chat", chat: chats.${id} });`;
 
 await check("L10 the chat view: header, empty thread, notes, quotes, status lines, a fork", async ({ url, viewport, layout, open, fail }) => {
+  /** Starts the name's field: a press on the title on the wide layouts; on the phone the title opens Chat info (T3) and its Rename opens H2's one Rename sheet. */
+  const startRename = async (page) => {
+    await press(page, byTid(page, "chat-head-name").first());
+    if (layout !== "phone") return;
+    await byTid(page, "chat-info-rename").first().waitFor({ state: "visible", timeout: WAIT });
+    await press(page, byTid(page, "chat-info-rename").first());
+  };
   void CHAT;
   await seed(url, "A1", "A4", "SEC");
   const say = (line) => fail(`${viewport}: ${line}`);
@@ -88,6 +95,13 @@ await check("L10 the chat view: header, empty thread, notes, quotes, status line
     await byTid(page, "chat-head-name").first().click({ force: true }).catch(() => {});
     await page.waitForTimeout(300);
     if (await byTid(page, "chat-name-input").count()) say("an archived chat can be renamed");
+    if (layout === "phone") {
+      // the title opens Chat info, where Rename is faded and says what to do
+      const rename = byTid(page, "chat-info-rename").first();
+      await rename.waitFor({ state: "visible", timeout: WAIT }).catch(() => {});
+      if (await rename.count() && (await rename.getAttribute("aria-disabled")) !== "true" && (await rename.getAttribute("disabled")) === null) say("Chat info of an archived chat has a live Rename");
+      if (!(await textOf(page, "chat-info")).includes("Unarchive the chat to rename it.")) say("Chat info of an archived chat does not say to unarchive it to rename it");
+    }
     await ctx.close();
   }
 
@@ -97,6 +111,12 @@ await check("L10 the chat view: header, empty thread, notes, quotes, status line
     await mockEval(`onServer("s_studio", () => { for (const id of ["c_blank", "c_blank2"]) { chats[id] = chat(id, { name: id, group: "g_shop", fresh: true }); items[id] = []; } });`, url);
     const reasonOf = async (page) => (await byTid(page, "empty-reason").count() ? await textOf(page, "empty-reason") : "");
     const wait = async (page, want, what) => { if (!await until(async () => (await reasonOf(page)) === want, WAIT)) say(`${what}: the empty thread says "${await reasonOf(page)}", not "${want}"`); };
+    // (the phone says it once, in the composer's place: the block in the toolbar's place, of kind gone or off, and the empty thread does not repeat it as empty-reason)
+    const blockOf = async (page) => (await byTid(page, "composer-block", { place: "toolbar" }).count() ? await textOf(page, "composer-block", { place: "toolbar" }) : "");
+    const waitBlock = async (page, kind, want, what) => {
+      const ok = async () => (await byTid(page, "composer-block", { kind, place: "toolbar" }).count()) === 1 && (await blockOf(page)).includes(want) && !await byTid(page, "empty-reason").count();
+      if (!await until(ok, WAIT)) say(`${what}: the phone's composer block is ${J(await blockOf(page))} (${await byTid(page, "composer-block", { kind, place: "toolbar" }).count()} of kind ${kind} in the toolbar's place) and the empty thread says ${J(await reasonOf(page))}, not the block alone saying ${J(want)}`);
+    };
     for (const [id, what, change, want, back] of [
       ["c_blank", "a chat that its server no longer has", 'elsewhere("s_studio", "DELETE", "/chats/c_blank");', "This chat is no longer on Studio Mac.", ""],
       ["c_blank2", "a chat whose server dropped", 'setServerState("s_studio", "unreachable", { detail: "connection refused" });', "Studio Mac is not connected: nothing can be sent or changed until it is back.", 'setServerState("s_studio", "connected");'],
@@ -106,7 +126,8 @@ await check("L10 the chat view: header, empty thread, notes, quotes, status line
       if (await reasonOf(page)) say(`${what}, before it changed: the empty thread of a chat that takes a message says "${await reasonOf(page)}"`);
       if (await byTid(page, "suggestion").count() !== 2) say(`${what}, before it changed: the empty thread offers ${await byTid(page, "suggestion").count()} suggestions, not 2`);
       await mockEval(change, url);
-      await wait(page, want, what);
+      if (layout === "phone") await waitBlock(page, id === "c_blank" ? "gone" : "offline", id === "c_blank" ? want : "Studio Mac is offline", what);
+      else await wait(page, want, what);
       if (await byTid(page, "suggestion").count()) say(`${what}: the empty thread still offers suggestions`);
       if (back) await mockEval(back, url);
       await ctx.close();
@@ -169,11 +190,20 @@ await check("L10 the chat view: header, empty thread, notes, quotes, status line
         continue;
       }
       if (!await until(async () => await typing().count() > 0, WAIT)) { say(`${st}: the thread's foot says nothing of what goes on`); continue; }
-      const said = ((await typing().first().textContent()) ?? "").trim();
+      // (the phone's busy line, T2 / goal 3.5, is a spinner, the words and, from the second second, " · 12 s" in its own span: the words are read without it)
+      const said = layout === "phone"
+        ? ((await typing().first().evaluate((e) => [...e.querySelectorAll('[data-testid="busy-seconds"]')].reduce((t, s) => t.replace(s.textContent ?? "", ""), e.textContent ?? ""))) ?? "").trim()
+        : ((await typing().first().textContent()) ?? "").trim();
       if (line && said !== line) say(`${st}: the line says "${said}", not "${line}"`);
       if (!said.endsWith("…")) say(`${st}: the line says "${said}": a status that goes on ends in three dots`);
-      if (!await byTid(page, "dots").count()) say(`${st}: the line has no dots`);
-      if (!(await header()).includes(said)) say(`${st}: the header says "${await header()}", not the line "${said}"`);
+      if (layout === "phone") {
+        // (changed with T2: the phone draws a spinner in place of the three dots)
+        if (await byTid(page, "dots").count()) say(`${st}: the phone's busy line has the dots: it is a spinner and the words`);
+        if (!await typing().first().locator('[role="progressbar"]').count()) say(`${st}: the phone's busy line has no spinner`);
+      } else if (!await byTid(page, "dots").count()) say(`${st}: the line has no dots`);
+      // (the phone's header says the one list's state word, "Writing…", for every state that goes on; the thread's foot keeps the finer line)
+      if (layout === "phone") { if ((await header()).trim() !== "Writing…") say(`${st}: the header says "${await header()}", not the state word "Writing…"`); }
+      else if (!(await header()).includes(said)) say(`${st}: the header says "${await header()}", not the line "${said}"`);
     }
     await ctx.close();
   }
@@ -197,7 +227,17 @@ await check("L10 the chat view: header, empty thread, notes, quotes, status line
       if (await byTid(page, "dots").count()) say("a chat that waits for background work has the dots of a typing line: it is the still waiting row");
       const send = byTid(page, "send").first(), stop = byTid(page, "stop").first();
       if (!await stop.count()) say("a chat that waits for background work has no Stop");
-      if (!await send.isDisabled()) say("Send of a chat that waits for background work is on");
+      if (layout === "phone") {
+        // (changed with C1, goal 3.6: while the agent works the phone's empty box shows Stop alone -- Talk and Send are not drawn -- and Send comes back,
+        // off with the same reason, beside Stop once something is typed)
+        if (await send.count()) say("the empty box of a chat that waits for background work, on the phone, draws Send: Stop is its one primary button");
+        await byTid(page, "composer-input").first().fill("hello");
+        await send.waitFor({ state: "attached", timeout: WAIT }).catch(() => {});
+        if (!await send.count()) say("the phone's box with a word in it, in a chat that waits for background work, draws no Send");
+        else if (!await send.isDisabled()) say("Send of a chat that waits for background work is on");
+        else if (await send.getAttribute("aria-label") !== "The agent is working") say(`Send of a chat that waits for background work says "${await send.getAttribute("aria-label")}"`); // (the phone's Send has its words as its aria-label, as R3.12 reads it)
+        await byTid(page, "composer-input").first().fill("");
+      } else if (!await send.isDisabled()) say("Send of a chat that waits for background work is on");
       else if (await send.getAttribute("title") !== "The agent is working") say(`Send of a chat that waits for background work says "${await send.getAttribute("title")}"`);
       const from = calls.length;
       await press(page, stop);
@@ -304,14 +344,39 @@ await check("L10 the chat view: header, empty thread, notes, quotes, status line
   {
     const { page, ctx } = await open({ sel: { chat: "c_plain" }, wait: '[data-testid="chat-head"]' });
     const calls = callsOf(page), patches = () => calls.filter((c) => c.method === "PATCH" && /\/chats\/c_plain$/.test(c.path));
-    const input = byTid(page, "chat-name-input"), name = byTid(page, "chat-head-name").first();
+    // (the phone: H2's Rename sheet, `rename-sheet`, a form with Cancel · Rename chat · Save; its field is `rename-input`, Enter saves a changed name. What the in-place field
+    // did on leaving it (a blur saves) or on Esc has no counterpart there: Cancel on a changed name asks "Discard changes" first, a blur does nothing. The wide layouts keep the field.)
+    const phone = layout === "phone";
+    const input = byTid(page, phone ? "rename-input" : "chat-name-input");
     const title = await mockEval("return chats.c_plain.name;", url);
-    const openField = async () => { await press(page, name); await input.waitFor({ state: "visible", timeout: WAIT }); };
+    const openField = async () => { await startRename(page); await input.waitFor({ state: "visible", timeout: WAIT }); };
+    const sheet = byTid(page, "rename-sheet");
+    const saveOn = async () => (await byTid(page, "sheet-right").first().getAttribute("aria-disabled")) !== "true" && !(await byTid(page, "sheet-right").first().isDisabled());
     const sub = await textOf(page, "chat-head-sub");
-    if (!sub.includes("Claude Code") || !sub.includes("~/projects/shop")) say(`the header's line says "${sub}": the agent and the folder, with ~`);
+    // (the phone's line is the agent and the last segment of the folder: goal 3.5)
+    if (layout === "phone") { if (sub.trim() !== "Claude Code · shop") say(`the header's line says "${sub}", not "Claude Code · shop": the agent and the folder`); }
+    else if (!sub.includes("Claude Code") || !sub.includes("~/projects/shop")) say(`the header's line says "${sub}": the agent and the folder, with ~`);
     await openField();
     if (await input.inputValue() !== title) say(`the field has "${await input.inputValue()}", not the chat's name "${title}"`);
-    if (!await input.evaluate((el) => el.selectionStart === 0 && el.selectionEnd === el.value.length)) say("the name is not selected when the field opens");
+    const allSelected = () => input.evaluate((el) => el.selectionStart === 0 && el.selectionEnd === el.value.length);
+    if (!(phone ? await until(allSelected, 3000) : await allSelected())) say("the name is not selected when the field opens"); // (the sheet selects it a few frames after it rises)
+    if (phone) {
+      // the same name: Save is off, Enter asks nothing, Cancel closes at once (nothing changed)
+      if (await saveOn()) say("the Rename sheet's Save is on while the name is the chat's own");
+      await page.keyboard.press("Enter");
+      await page.waitForTimeout(400);
+      if (patches().length) say(`Enter on the same name made a call: ${J(patches().map((c) => c.body))}`);
+      await press(page, byTid(page, "sheet-left").first());
+      if (!await until(async () => !await sheet.count(), WAIT) || patches().length) say(`Cancel on the same name left the sheet open or made a call: ${J(patches().map((c) => c.body))}`);
+      // a changed name: Cancel asks, Discard keeps the old name
+      await openField();
+      await page.keyboard.type("x");
+      if (!await saveOn()) say("the Rename sheet's Save is off while the name changed");
+      await press(page, byTid(page, "sheet-left").first());
+      await byTid(page, "confirm-sheet").first().waitFor({ state: "visible", timeout: WAIT }).catch(() => say("Cancel on a changed name did not ask to discard"));
+      await press(page, byTid(page, "confirm-go").first());
+      if (!await until(async () => !await sheet.count(), WAIT) || patches().length) say(`Discard left the sheet open or made a call: ${J(patches().map((c) => c.body))}`);
+    } else {
     await page.keyboard.press("Enter"); // the same name: nothing is asked
     await page.waitForTimeout(400);
     if (await input.count() || patches().length) say(`Enter on the same name left the field open or made a call: ${J(patches().map((c) => c.body))}`);
@@ -320,6 +385,7 @@ await check("L10 the chat view: header, empty thread, notes, quotes, status line
     await page.keyboard.press("Escape");
     await page.waitForTimeout(400);
     if (await input.count() || patches().length) say(`Esc left the field open or made a call: ${J(patches().map((c) => c.body))}`);
+    }
     await openField();
     await input.fill("A new name");
     await page.keyboard.press("Enter");
@@ -327,7 +393,8 @@ await check("L10 the chat view: header, empty thread, notes, quotes, status line
     if (!await until(async () => (await textOf(page, "chat-head-name")).trim() === "A new name" && !await input.count(), WAIT)) say(`after the rename the header says "${await textOf(page, "chat-head-name")}"`);
     await openField();
     await input.fill("Left behind");
-    await page.evaluate(() => document.activeElement?.blur()); // (leaving the field: a tap elsewhere, or the keyboard's Done)
+    if (phone) await press(page, byTid(page, "sheet-right").first()); // (Save: a blur does not save in the sheet)
+    else await page.evaluate(() => document.activeElement?.blur()); // (leaving the field: a tap elsewhere, or the keyboard's Done)
     if (!await until(() => patches().length === 2 && patches()[1].body?.name === "Left behind", WAIT)) say(`leaving the field did not rename the chat: ${J(patches().map((c) => c.body))}`);
     await ctx.close();
   }
@@ -338,11 +405,14 @@ await check("L10 the chat view: header, empty thread, notes, quotes, status line
     await byTid(page, "msg").first().waitFor({ state: "visible", timeout: WAIT });
     const refuse = callMatcher(/^PATCH \/api\/chats\/c_plain/, "s_studio");
     await page.route((u) => refuse(u), (route) => route.fulfill({ status: 409, contentType: "application/json", body: J({ error: "The server refused.", code: "refused" }) }));
-    await press(page, byTid(page, "chat-head-name").first());
-    const input = byTid(page, "chat-name-input");
+    await startRename(page);
+    const input = byTid(page, layout === "phone" ? "rename-input" : "chat-name-input");
     await input.waitFor({ state: "visible", timeout: WAIT });
     await input.fill("Refused");
     await page.keyboard.press("Enter");
+    if (layout === "phone") { // (H2's sheet says the refusal in itself, `form-error`, and stays open)
+      if (!await until(async () => ((await textOf(page, "form-error")) ?? "").includes("The server refused."), WAIT)) say(`a rename that the server refused shows "${await textOf(page, "form-error")}" in the Rename sheet, not "The server refused."`);
+    } else
     if (!await until(async () => ((await textOf(page, "confirm-dialog")) ?? "").includes("Couldn't rename the chat"), WAIT)) say(`a rename that the server refused shows "${await textOf(page, "confirm-dialog")}", not "Couldn't rename the chat"`);
     await ctx.close();
   }

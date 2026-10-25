@@ -4,23 +4,36 @@
 //
 // testIDs: `composer-images` (the strip), `composer-images-note` (the sentence that holds Send, under the thumbnails); the thumbnails are S10's
 // `image-thumb` (dataSet `state`: loaded | broken | busy) with `image-thumb-remove`.
+//
+// On the phone (ux-improvements goal 3.6, "Images in the box", mockup co-04b) the strip is PhoneImageStrip: thumbnails of 72 px with a × of 24 px in a
+// 44 pt target, a ring over an upload, a file that was not added kept as a marked tile (`image-refused`, `image-refused-remove`) and the lines under
+// the tiles (`composer-images-line`, dataSet `refused` for a refused tile's line, else `kind`): the reason of each refused file, the limit that was hit
+// and what it left out, and what the slot says besides. It says them, so the phone's error line under the box does not (Composer.tsx).
 import { StyleSheet, View } from "react-native";
 import { useSyncExternalStore } from "react";
 
 import { splitKey } from "@aiwb/core/logic/keys.ts";
-import { cancelUpload, previewOf, previewsAt, subscribe } from "@aiwb/core/state/uploads.ts";
+import { cancelUpload, dismissRefused, previewOf, previewsAt, slotOf, subscribe } from "@aiwb/core/state/uploads.ts";
 
+import { TYPE } from "../../ui/metrics.ts";
 import { Text } from "../../ui/Text.tsx";
+import { useTheme } from "../../ui/theme.tsx";
 import { tid } from "../../ui/tid.ts";
+import { usePhone } from "../../ui/useLayout.ts";
 import { ImageThumb } from "../images";
 import type { ImageStripProps } from "../composer/parts.tsx";
+import { isTile, stripLines, tileWord } from "./phonelines.ts";
 
 /** The images the message will carry, then the ones being uploaded, each with its remove control (of an upload: it is cut). An image uploaded from
  *  this page shows the file it came from until its own address has loaded (uploads.ts previewOf). note: why Send is off for the images, under them.
  *  Nothing for a message with no image. While the chat's server is not connected a draft keeps its images: one fetched before still shows, another is
  *  the plain tile with the image's name. The composer is read-only then, and no image has a remove control (onRemove is none); an upload that runs
  *  can still be ended. again: when it changes (that server is connected again), the images that could not be fetched are tried once more. */
-export function ImageStrip({ chat, branch, images, uploads, note, again, onRemove }: ImageStripProps) {
+export function ImageStrip(p: ImageStripProps) {
+  return usePhone() ? <PhoneImageStrip {...p} /> : <WideImageStrip {...p} />;
+}
+
+function WideImageStrip({ chat, branch, images, uploads, note, again, onRemove }: ImageStripProps) {
   useSyncExternalStore(subscribe, previewsAt); // a thumbnail goes from its file to the image's address when that has loaded
   if (!images.length && !uploads.length) return null;
   const at = splitKey(chat);
@@ -40,7 +53,42 @@ export function ImageStrip({ chat, branch, images, uploads, note, again, onRemov
   );
 }
 
+/** The phone's strip: see the header. The refused files of the last add are the slot's (uploads.ts); a tile's × takes it and its line away. */
+function PhoneImageStrip({ chat, branch, images, uploads, note, again, onRemove }: ImageStripProps) {
+  const { tokens: t } = useTheme();
+  useSyncExternalStore(subscribe, previewsAt);
+  const slot = useSyncExternalStore(subscribe, () => slotOf(chat, branch));
+  const tiles = slot.refused.filter(isTile);
+  const lines = stripLines(slot.refused, slot.said);
+  if (!images.length && !uploads.length && !lines.length && !note) return null;
+  const at = splitKey(chat);
+  return (
+    <View {...tid("composer-images")} style={styles.strip}>
+      <View style={[styles.row, styles.phoneRow]}>
+        {images.map((x) => (
+          <ImageThumb key={x.id} touch size={72} server={at.server} chat={at.id} image={x.id} name={x.name} uri={previewOf(chat, x.id)} again={again}
+            onRemove={onRemove ? () => onRemove(x.id) : undefined} />
+        ))}
+        {uploads.map((u) => (
+          <ImageThumb key={`up:${u.key}`} touch size={72} server={at.server} chat={at.id} image="" name={u.name} uri={u.src} busy onRemove={() => cancelUpload(chat, branch, u.key)} />
+        ))}
+        {tiles.map((r) => (
+          <ImageThumb key={`no:${r.key}`} touch size={72} server={at.server} chat={at.id} image="" name={r.name || "file"} uri={r.uri} refused={tileWord(r.name)}
+            onRemove={() => dismissRefused(chat, branch, r.key)} />
+        ))}
+      </View>
+      {lines.map((l) => (
+        <Text key={l.key} {...tid("composer-images-line", l.refused !== undefined ? { refused: l.key } : { kind: l.key })} size={TYPE.secondary} tone="danger" style={styles.line}>{l.text}</Text>
+      ))}
+      {note ? <Text {...tid("composer-images-note")} size={TYPE.secondary} style={[styles.line, { color: t.warnText }]}>{note}</Text> : null}
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
+  // (the phone's remove control stands 8 px out of its corner)
+  phoneRow: { paddingTop: 8, paddingRight: 8 },
+  line: { paddingTop: 6 },
   strip: { paddingTop: 4, paddingBottom: 6 },
   // (a thumbnail's remove control stands 6 px out of its corner)
   row: { flexDirection: "row", flexWrap: "wrap", gap: 10, paddingTop: 6, paddingRight: 6 },

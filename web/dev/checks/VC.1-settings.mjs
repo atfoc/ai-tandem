@@ -1,7 +1,19 @@
 // VC.1 (new, voice-chats P12): Settings > Voice, on the mock with the stand-in voice service mounted at /voice (dev/voicestandin.mjs), at the
-// desktop, the tablet and the phone: a centred dialog on the first two, a bottom sheet on the phone. Goal 3.7, 4.2, 4.9, 4.10, 6.3; architecture
-// VC-13 and VC-30. The key lives in the web build's memory (VC-2), so a reload drops it.
-//   the foot         the gear button (`settings-btn`, "Settings") is between the library's button and the theme picker, and opens the page
+// desktop, the tablet and the phone: a centred dialog on the first two, the pushed Voice screen on the phone (ux-improvements S3: `vs-screen`, with
+// Add key a sheet, Choose voice a pushed screen and the devices in sheets that list only while open; plans/ux-improvements/s3-design.md). Goal 3.7,
+// 4.2, 4.9, 4.10, 6.3; architecture VC-13 and VC-30. The key lives in the web build's memory (VC-2), so a reload drops it.
+// The text below describes the dialog (desktop, tablet). The phone half proves the same things on the new screens, with the helpers of
+// voicephone.mjs: Home's gear pushes Settings and its Voice row pushes the Voice screen (home, settings, voice-settings; the phone has no sidebar foot); with no key it is the card, the privacy line and the dimmed voice row,
+// nothing can be removed, no device is listed and no request is made; the key typed in Add key (hidden, the eye shows it), Test key (no key, rejected,
+// working), Save; the voices of Choose voice (the first four, a few words each, the first marked when none is chosen, a pick is the setting and the
+// ✓ moves, the sample plays the voice's own clip with no `tts`, a sample that cannot be fetched says why on its row and not in a popover, Show all
+// voices, the search, the chosen voice first the next time); the devices in their sheets (listed only while open, the permission by Test microphone,
+// the meter, picks, plug and unplug, "(not connected)", Test speaker with no request); Auto-send and every Advanced row are the voice settings and
+// are kept over a reload; Remove key asks first; the key is in no text, label, attribute, storage or line of the stand-in's log; the contrast floor in
+// the light theme and in Mocha. Dropped on the phone, because the design removed them: the Advanced options' fold (the rows are always there once a key
+// is saved), the "Microphone and speaker" card with its own no-key line (the devices are two Advanced rows, and with no key the screen has none), the
+// settings page's Close and Esc (the stack's Back), the voices' radios in the screen itself (Choose voice) and the "Show all" way back.
+//   the foot         (the wide layouts') the gear button (`settings-btn`, "Settings") is between the library's button and the theme picker, and opens the page
 //   the page         the sections in the goal's order (key, voice, microphone and speaker, how a spoken turn is sent, Advanced options), Advanced options
 //                    collapsed, the page rounded; no key: the voice list asks for one, nothing can be removed, and Test key says the key is missing
 //   the key          typed in a hidden box, Show shows it; Test key with a rejected key says the 401 sentence, with a working one the number of
@@ -28,6 +40,8 @@ import path from "node:path";
 import { atRest, check, contrastAudit, mockEval, until } from "../shot.mjs";
 import { installDevices } from "./devices.mjs";
 import { byTid, press } from "./sel.mjs";
+import { atRest as atRestId } from "./settings.mjs";
+import { closeSheet, deviceCalls, leaks, openAddKey, openChooseVoice, openVoice, pickIn, sheetGone, sheetShown, stackNames, typeKey, voiceKeyState, voiceSettings, voicesLoaded } from "./voicephone.mjs";
 
 export const viewports = ["desktop", "tablet", "phone"];
 
@@ -63,9 +77,396 @@ await check("VC.1 Settings > Voice: the foot's button, the key, the voices, the 
     await gone(byTid(p, "menu"));
   };
 
+  // ---- the phone: the pushed Voice screen, Add key, Choose voice and the device sheets (voicephone.mjs). The dialog's code below is for the wide layouts.
+  const phoneHalf = async () => {
+    const J = JSON.stringify;
+    const STORED = "Stored on this device only. Sent only to elevenlabs.io.";
+    const pshot = async (name, rest = "vs-screen", p = page) => { if (OUT) { fs.mkdirSync(OUT, { recursive: true }); await atRestId(p, rest, 6000).catch(() => {}); await p.screenshot({ path: path.join(OUT, `VC.1-${viewport}-${name}.png`) }); } };
+    const dev = (fn, ...args) => page.evaluate(([f, a]) => window.__aiwbDevices[f](...a), [fn, args]);
+    const cellValue = (id) => textOf(byTid(page, id).last().locator('[data-testid="cell-value"]'));
+    const resultText = () => textOf(byTid(page, "vs-key-result").last());
+    const sheetRows = (id) => page.evaluate((id) => {
+      const all = document.querySelectorAll(`[data-testid="${id}"]`), s = all[all.length - 1];
+      return s ? [...s.querySelectorAll('[data-testid="picker-row"]')].map((e) => e.innerText.replace(/\s+/g, " ").trim().replace(/\s*✓$/, "")) : [];
+    }, id);
+    const sheetPick = (id, label) => press(page, byTid(page, id).last().locator('[data-testid="picker-row"]').filter({ hasText: label }).first());
+    // (the disclosure chevron of the kit's cells, `button > svg`, is the "faint" token: decorative, #a0a0ab on white, 2.58:1 on every kit screen, S1's too; left out)
+    const floor = async (what, only, p = page) => {
+      for (const r of (await contrastAudit(p, { only: [only], skip: ["button > svg"] })).filter((r) => r.ratio < FLOOR)) fail(`${what}: "${r.what}" (${r.where}) is ${r.fg} on ${r.bg}, ${r.ratio}:1, under ${FLOOR}:1`);
+    };
+    const backTo = async (p, name) => { for (let i = 0; i < 4 && (await stackNames(p)).at(-1) !== name; i++) await press(p, byTid(p, "nav-back").last()); };
+    /** Out of the Voice screen and back in, so that it reads the keystore again (a key set from outside, as a saved one is). */
+    const reopen = async (setup) => {
+      await backTo(page, "settings");
+      await setup();
+      await openVoice(page);
+    };
+    const noCanary = async (step, k = KEY) => {
+      const l = await leaks(page, k, { fields: true });
+      const where = Object.entries(l).filter(([, v]) => v).map(([w]) => w);
+      if (where.length) fail(`${step}: the key is in the page's ${where.join(", ")}`);
+    };
+    const switchOf = (id) => page.locator('[role="switch"]').filter({ has: byTid(page, id) }).last();
+
+    // ---- with no key: the card, nothing offered, nothing asked
+    await openVoice(page);
+    if ((await stackNames(page)).join() !== "home,settings,voice-settings") fail(`the gear pushed [${(await stackNames(page)).join(", ")}], not home, settings, voice-settings`);
+    if ((await voiceKeyState(page)) !== "none") fail(`the screen's key state is ${J(await voiceKeyState(page))}, not "none"`);
+    {
+      const text = await textOf(byTid(page, "vs-screen"));
+      for (const s of ["Talk to your agents", "Add ElevenLabs key", STORED, "Add your key to choose a voice."]) if (!text.includes(s)) fail(`the Voice screen with no key lacks ${J(s)}`);
+      for (const id of ["vs-key-remove", "vs-key-row", "vs-autosend", "vs-adv-tts", "vs-mic", "vs-speaker", "vs-mic-test", "vs-speaker-test", "vs-choose-voice"]) if (await byTid(page, id).count()) fail(`${id} is offered with no key saved`);
+      if ((await textOf(byTid(page, "vs-voice-nokey"))) !== "Add your key to choose a voice.") fail(`with no key the voices say ${J(await textOf(byTid(page, "vs-voice-nokey")))}`);
+      const radius = await byTid(page, "vs-nokey-card").last().evaluate((e) => parseFloat(getComputedStyle(e).borderTopLeftRadius));
+      if (!(radius >= 8)) fail(`the no-key card is rounded ${radius}px`);
+    }
+    await sleep(1000);
+    if ((await log()).length) fail(`the Voice screen with no key made requests of the voice service: ${J(await log())}`);
+    if (J(await deviceCalls(page)) !== J({ enumerateDevices: 0, getUserMedia: 0, setSinkId: 0 })) fail(`the Voice screen with no key made device calls: ${J(await deviceCalls(page))}`);
+    await pshot("1-nokey");
+    await floor("the Voice screen with no key (light)", '[data-testid="vs-screen"]');
+    // Test key with no key says the key is missing; the sheet holds a hidden box and the line on where the key goes
+    await openAddKey(page);
+    {
+      const sheet = byTid(page, "vs-key-sheet").last();
+      if ((await byTid(page, "vs-key").last().getAttribute("type")) !== "password") fail("the key box is not hidden");
+      if (!(await textOf(sheet)).includes(STORED)) fail("the Add key sheet lacks the line on where the key goes");
+      await press(page, byTid(page, "vs-key-test").last());
+      if (!await until(async () => /key/.test(await resultText()), 15000)) fail("Test key with no key said nothing");
+      else if (!(await resultText()).includes("Voice needs your ElevenLabs key. It stays on this device.")) fail(`Test key with no key says ${J(await resultText())}`);
+      await pshot("1-addkey-nokey", "vs-key-sheet");
+      await floor("Add key (light)", '[data-testid="vs-key-sheet"]');
+      await closeSheet(page, "vs-key-sheet");
+    }
+
+    // ---- the devices (voice-devices D8): the key set from outside; they list only in their sheets
+    await reopen(() => page.evaluate((k) => window.__aiwbVoice.setKey(k), KEY));
+    if ((await voiceKeyState(page)) !== "saved") fail("the Voice screen is not in the key state after the key was set");
+    for (const id of ["vs-mic", "vs-speaker"]) if ((await cellValue(id)) !== "System default") fail(`before anything is chosen ${id} shows ${J(await cellValue(id))}`);
+    await sleep(800);
+    if (J(await deviceCalls(page)) !== J({ enumerateDevices: 0, getUserMedia: 0, setSinkId: 0 })) fail(`the Voice screen with a key made device calls: ${J(await deviceCalls(page))}`);
+    if ((await log()).length) fail(`the Voice screen with a key made requests of the voice service: ${J(await log())}`);
+    await press(page, byTid(page, "vs-mic").last());
+    await sheetShown(page, "vs-device-sheet-mic");
+    if (!await until(async () => (await deviceCalls(page)).enumerateDevices > 0, 15000)) fail("the Microphone sheet listed no device");
+    // before the microphone is allowed: System default alone, the note says why, no meter, no microphone opened
+    {
+      const rows = await sheetRows("vs-device-sheet-mic");
+      if (rows.length !== 1 || !/^System default/.test(rows[0])) fail(`before the permission the Microphone sheet lists ${J(rows)}`);
+      if ((await textOf(byTid(page, "vs-devices-note"))) !== "Allow the microphone to see your other devices.") fail(`the note before the permission says ${J(await textOf(byTid(page, "vs-devices-note")))}`);
+      if (await byTid(page, "vs-mic-level").count()) fail("the meter is drawn before the tap");
+      if ((await deviceCalls(page)).getUserMedia !== 0) fail("opening the Microphone sheet asked for the microphone");
+      await pshot("1a-devices-before", "vs-device-sheet-mic");
+    }
+    // Test microphone: the permission is the person's tap; the list fills; the meter moves
+    await press(page, byTid(page, "vs-mic-test").last());
+    if (!await until(() => byTid(page, "vs-mic-level").count(), 15000)) fail("Test microphone drew no meter");
+    if ((await byTid(page, "vs-mic-test").last().getAttribute("aria-pressed")) !== "true" || (await textOf(byTid(page, "vs-mic-test"))) !== "End test") fail(`the test button says ${J(await textOf(byTid(page, "vs-mic-test")))} while it runs`);
+    await until(async () => (await sheetRows("vs-device-sheet-mic")).length === 3, 15000);
+    {
+      const rows = await sheetRows("vs-device-sheet-mic");
+      if (!/^System default/.test(rows[0] ?? "") || rows.slice(1).join() !== "Desk Mic,Stand-in Headset") fail(`the microphones listed are ${J(rows)}`);
+      if (await byTid(page, "vs-devices-note").count()) fail("the note stays after the microphone was allowed");
+      if (!await until(async () => Number(await byTid(page, "vs-mic-level").last().getAttribute("data-peak")) > 0, 15000)) fail("the meter never moved while the test ran");
+      await pshot("1b-devices-testing", "vs-device-sheet-mic");
+      await floor("the Microphone sheet (light)", '[data-testid="vs-device-sheet-mic"]');
+    }
+    // a different microphone: the test goes on with it
+    await sheetPick("vs-device-sheet-mic", "Stand-in Headset");
+    await until(async () => (await voiceSettings(page)).mic?.id === "mic-headset");
+    if ((await voiceSettings(page)).mic?.name !== "Stand-in Headset") fail(`the pick is kept as ${J((await voiceSettings(page)).mic)}`);
+    if (!await until(async () => (await dev("opened")).at(-1)?.deviceId === "mic-headset" && (await dev("opened")).at(-1)?.live, 15000)) fail(`the test did not go on with the microphone picked (opened: ${J(await dev("opened"))})`);
+    // a second tap stops it, with the microphone released
+    await press(page, byTid(page, "vs-mic-test").last());
+    if (!await until(async () => (await byTid(page, "vs-mic-level").count()) === 0, 10000)) fail("the meter stays after End test");
+    if ((await dev("opened")).some((o) => o.live)) fail("a microphone stays open after End test");
+    if ((await textOf(byTid(page, "vs-mic-test"))) !== "Test microphone") fail("the test button does not go back to \"Test microphone\"");
+    // plugged in while the sheet is open: listed; a saved one unplugged: "(not connected)", still saved; plugged in again: back
+    await dev("plug", { kind: "input", id: "mic-usb", label: "USB Mic", hz: 500 });
+    if (!await until(async () => (await sheetRows("vs-device-sheet-mic")).includes("USB Mic"), 15000)) fail("a microphone plugged in while the sheet is open is not listed");
+    await dev("unplug", "mic-usb");
+    await dev("unplug", "mic-headset");
+    if (!await until(async () => (await sheetRows("vs-device-sheet-mic")).includes("Stand-in Headset (not connected)"), 15000)) fail(`the unplugged microphone is listed as ${J(await sheetRows("vs-device-sheet-mic"))}`);
+    if ((await sheetRows("vs-device-sheet-mic")).includes("USB Mic")) fail("a microphone unplugged while the sheet is open is still listed");
+    if ((await voiceSettings(page)).mic?.id !== "mic-headset") fail("unplugging the saved microphone changed the saved choice");
+    await dev("plug", { kind: "input", id: "mic-headset", label: "Stand-in Headset", hz: 700 });
+    if (!await until(async () => (await sheetRows("vs-device-sheet-mic")).includes("Stand-in Headset"), 15000)) fail("the microphone does not come back to the list when it is plugged in again");
+    await pshot("1c-devices", "vs-device-sheet-mic");
+    await closeSheet(page, "vs-device-sheet-mic");
+    if ((await cellValue("vs-mic")) !== "Stand-in Headset") fail(`the Microphone row says ${J(await cellValue("vs-mic"))} after the pick`);
+    // the Speaker sheet: Test speaker plays on the chosen sink and makes no request of the voice service
+    await press(page, byTid(page, "vs-speaker").last());
+    await sheetShown(page, "vs-device-sheet-speaker");
+    await until(async () => (await sheetRows("vs-device-sheet-speaker")).length === 3, 15000);
+    {
+      const rows = await sheetRows("vs-device-sheet-speaker");
+      if (!/^System default/.test(rows[0] ?? "") || rows.slice(1).join() !== "Desk Speakers,Stand-in Headphones") fail(`the speakers listed are ${J(rows)}`);
+    }
+    await sheetPick("vs-device-sheet-speaker", "Stand-in Headphones");
+    await until(async () => (await voiceSettings(page)).speaker?.id === "out-headphones");
+    await mockEval("voice.reset();", url);
+    await press(page, byTid(page, "vs-speaker-test").last());
+    if (!await until(async () => (await dev("sinks")).some((x) => x.sinkId === "out-headphones"), 15000)) fail(`Test speaker did not play on the speaker picked (sinks: ${J(await dev("sinks"))})`);
+    await until(async () => (await byTid(page, "vs-speaker-test").last().getAttribute("data-playing")) === "false", 15000);
+    if ((await log()).length) fail(`Test speaker made a request of the voice service: ${J(await log())}`);
+    await sheetPick("vs-device-sheet-speaker", "System default");
+    await until(async () => (await voiceSettings(page)).speaker === null);
+    await closeSheet(page, "vs-device-sheet-speaker");
+    // System default again for the microphone; a test running when the sheet closes ends with it
+    await press(page, byTid(page, "vs-mic").last());
+    await sheetShown(page, "vs-device-sheet-mic");
+    await sheetPick("vs-device-sheet-mic", "System default");
+    await until(async () => (await voiceSettings(page)).mic === null);
+    await press(page, byTid(page, "vs-mic-test").last());
+    await until(() => byTid(page, "vs-mic-level").count(), 15000);
+    await closeSheet(page, "vs-device-sheet-mic");
+    if (!await until(async () => !(await dev("opened")).some((o) => o.live), 15000)) fail("the microphone test goes on after its sheet was closed");
+    await press(page, byTid(page, "vs-mic").last());
+    await sheetShown(page, "vs-device-sheet-mic");
+    if (await byTid(page, "vs-mic-level").count()) fail("the meter is drawn when the sheet opens again");
+    await closeSheet(page, "vs-device-sheet-mic");
+
+    // ---- the key (the part below starts with none)
+    await reopen(() => page.evaluate(() => window.__aiwbVoice.clearKey()));
+    if ((await voiceKeyState(page)) !== "none") fail("the Voice screen still says a key is saved after it was cleared");
+    await openAddKey(page);
+    await typeKey(page, BAD);
+    const eye = byTid(page, "vs-key-eye").last();
+    await press(page, eye);
+    if ((await byTid(page, "vs-key").last().getAttribute("type")) === "password" || (await byTid(page, "vs-key").last().inputValue()) !== BAD) fail("the eye does not show what is typed");
+    await press(page, eye);
+    if ((await byTid(page, "vs-key").last().getAttribute("type")) !== "password") fail("the eye does not hide the key again");
+    await press(page, byTid(page, "vs-key-test").last());
+    if (!await until(async () => /accept/.test(await resultText()), 15000)) fail("Test key with a rejected key said nothing");
+    else if ((await resultText()) !== "! ElevenLabs did not accept this key.") fail(`a rejected key says ${J(await resultText())}`);
+    await typeKey(page, KEY);
+    if (await byTid(page, "vs-key-result").count()) fail("the result of the last test stays when the key changes");
+    await press(page, byTid(page, "vs-key-test").last());
+    if (!await until(async () => /Works/.test(await resultText()), 15000)) fail("Test key with a working key said nothing");
+    else if ((await resultText()) !== "✓ Works: 6 voices found.") fail(`a working key says ${J(await resultText())}`);
+    if ((await byTid(page, "vs-key-result").last().getAttribute("data-tone")) !== "ok") fail("the result of a working key is not drawn as ok");
+    if ((await voiceKeyState(page)) !== "none" || !(await byTid(page, "vs-voice-nokey").count())) fail("the voices came before the key was saved");
+    await pshot("2-tested", "vs-key-sheet");
+    {
+      const l = await leaks(page, KEY);
+      const where = Object.entries(l).filter(([, v]) => v).map(([w]) => w);
+      if (where.length) fail(`the key typed is in the page's ${where.join(", ")} (its box excepted)`);
+    }
+    await press(page, byTid(page, "sheet-right").last());
+    await sheetGone(page, "vs-key-sheet");
+    await until(async () => (await voiceKeyState(page)) === "saved", 15000);
+    await atRestId(page, "vs-screen");
+    if (!(await textOf(byTid(page, "vs-key-row"))).includes("Saved on this device ✓")) fail(`the key row says ${J(await textOf(byTid(page, "vs-key-row")))} after Save`);
+    if (!await byTid(page, "vs-key-remove").count()) fail("Remove key is not offered with a key saved");
+    await openAddKey(page);
+    if ((await byTid(page, "vs-key").last().inputValue()) !== "") fail("Add key opens with the saved key in its box");
+    await noCanary("a key saved, Add key open again");
+    await closeSheet(page, "vs-key-sheet");
+    await noCanary("a key saved");
+
+    // ---- the voices (Choose voice)
+    await openChooseVoice(page);
+    await voicesLoaded(page);
+    const rowsNow = () => page.evaluate(() => [...document.querySelectorAll('[data-testid="cv-row"]')].map((r) => ({ id: r.dataset.voice, selected: r.dataset.selected, text: r.innerText.replace(/\s+/g, " ").trim(), play: !!r.querySelector('[data-testid="cv-play"]') })));
+    let rows = await rowsNow();
+    if (rows.map((r) => r.id).join() !== "vsAlice,vsBob,vsCarol,vsDave") fail(`the short list is ${rows.map((r) => r.id).join()}, not the first four by name`);
+    if (rows[0] && !/Alice.*Warm and clear/.test(rows[0].text)) fail(`a voice's row does not carry its name and a few words: ${J(rows[0]?.text)}`);
+    if (rows.some((r) => !r.play)) fail("a voice has no play button");
+    if (rows.filter((r) => r.selected === "true").map((r) => r.id).join() !== "vsAlice") fail("with none chosen the first voice is not the one marked");
+    if ((await voiceSettings(page)).voiceId !== null) fail("the first voice was stored as the choice before anyone chose");
+    await floor("Choose voice (light)", '[data-testid="cv-screen"]');
+    await press(page, byTid(page, "cv-row", { voice: "vsCarol" }).last().locator('[role="radio"]'));
+    await until(async () => (await voiceSettings(page)).voiceId === "vsCarol");
+    {
+      const s1 = await voiceSettings(page);
+      if (s1.voiceId !== "vsCarol" || s1.voiceName !== "Carol") fail(`a pick is kept as ${J([s1.voiceId, s1.voiceName])}`);
+      rows = await rowsNow();
+      if (rows.filter((r) => r.selected === "true").map((r) => r.id).join() !== "vsCarol") fail(`the ✓ does not follow the pick: ${J(rows.map((r) => [r.id, r.selected]))}`);
+    }
+    // the sample is the voice's own clip: no TTS request, no key
+    await mockEval("voice.reset();", url);
+    await press(page, byTid(page, "cv-play", { voice: "vsBob" }).last());
+    const played = await until(async () => (await log()).some((e) => e.kind === "preview"), 15000);
+    {
+      const entries = await log();
+      if (!played) fail("the play button asked for no preview clip");
+      if (entries.some((e) => e.kind === "tts")) fail("a preview was made with a TTS request (it would cost credits)");
+      if (entries.filter((e) => e.kind === "preview").some((e) => !/vsBob\.wav$/.test(e.path) || e.keyHeader)) fail(`the preview request is ${J(entries.filter((e) => e.kind === "preview"))}`);
+    }
+    await until(async () => (await byTid(page, "cv-play", { voice: "vsBob" }).last().getAttribute("data-playing")) === "false", 15000);
+    // a sample that cannot be fetched says so on its row, and hangs no popover (no sheet over the screen's rows)
+    await mockEval("voice.fail('offline');", url);
+    await press(page, byTid(page, "cv-play", { voice: "vsAlice" }).last());
+    if (!await until(() => byTid(page, "cv-problem").count(), 15000)) fail("a preview that cannot be fetched says nothing on its row");
+    else {
+      if ((await byTid(page, "cv-problem").first().getAttribute("data-kind")) !== "offline") fail("the row's problem is not the offline one");
+      if ((await textOf(byTid(page, "cv-problem"))).replace(/Try again$/, "").trim() !== "Can't reach ElevenLabs.") fail(`the row says ${J(await textOf(byTid(page, "cv-problem")))}`);
+      if (await byTid(page, "voice-problem").count()) fail("a failed sample hangs a popover over Choose voice");
+      await pshot("3-problem", "cv-screen");
+      await mockEval("voice.fail(null); voice.reset();", url);
+      const again = byTid(page, "cv-problem").first().getByRole("button", { name: "Try again" });
+      await press(page, (await again.count()) ? again.first() : byTid(page, "cv-play", { voice: "vsAlice" }).last());
+      if (!await until(async () => (await log()).some((e) => e.kind === "preview" && e.status === 200), 15000)) fail("trying again fetched no preview");
+      await until(async () => (await byTid(page, "cv-play", { voice: "vsAlice" }).last().getAttribute("data-playing")) === "false", 15000);
+    }
+    // the whole list, with a search
+    await press(page, byTid(page, "cv-all").last());
+    await until(async () => (await rowsNow()).length === 6, 15000);
+    if ((await rowsNow()).length !== 6) fail(`Show all voices lists ${(await rowsNow()).length} voices, not 6`);
+    await byTid(page, "cv-search").last().fill("fran");
+    await until(async () => (await rowsNow()).length === 1, 15000);
+    if ((await rowsNow()).map((r) => r.id).join() !== "vsFrank") fail("the search does not narrow the list to Frank");
+    if (await byTid(page, "cv-search").last().evaluate((e) => !e.contains(document.activeElement) && !e.matches(":focus-within"))) fail("the search lost the focus while the list changed");
+    await byTid(page, "cv-search").last().fill("");
+    await until(async () => (await rowsNow()).length === 6, 15000);
+    await pshot("4-all", "cv-screen");
+    // back on the Voice screen: the chosen voice, its sample (no TTS), and a sample that fails says so there too
+    await press(page, byTid(page, "nav-back").last());
+    await atRestId(page, "vs-screen");
+    {
+      const chosen = byTid(page, "vs-chosen-voice").last();
+      if ((await chosen.getAttribute("data-voice")) !== "vsCarol" || !(await textOf(chosen)).includes("Carol")) fail(`the chosen voice row says ${J(await textOf(chosen))}, not Carol`);
+      await mockEval("voice.reset();", url);
+      await press(page, byTid(page, "vs-voice-play").last());
+      if (!await until(async () => (await log()).some((e) => e.kind === "preview"), 15000)) fail("the chosen voice's play asked for no preview clip");
+      if ((await log()).some((e) => e.kind === "tts")) fail("the chosen voice's sample was made with a TTS request");
+      await until(async () => (await byTid(page, "vs-voice-play").last().getAttribute("data-playing")) === "false", 15000);
+      await mockEval("voice.fail('offline');", url);
+      await press(page, byTid(page, "vs-voice-play").last());
+      if (!await until(async () => (await textOf(chosen)).includes("Can't reach ElevenLabs."), 15000)) fail(`the chosen voice row does not say the sample failed: ${J(await textOf(chosen))}`);
+      await mockEval("voice.fail(null);", url);
+    }
+    await openChooseVoice(page);
+    await voicesLoaded(page);
+    rows = await rowsNow();
+    if (rows.length !== 4 || rows[0].id !== "vsCarol" || rows[0].selected !== "true") fail(`the chosen voice is not first in the short list: ${J(rows.map((r) => [r.id, r.selected]))}`);
+    await press(page, byTid(page, "nav-back").last());
+    await atRestId(page, "vs-screen");
+
+    // ---- the settings
+    const sw = switchOf("vs-autosend");
+    await press(page, sw);
+    await until(async () => (await voiceSettings(page)).autoSend === false);
+    if ((await sw.getAttribute("aria-checked")) !== "false" || (await byTid(page, "vs-autosend").last().getAttribute("data-on")) !== "false") fail("the switch does not show Tap to send");
+    const defaults = await voiceSettings(page);
+    if (defaults.ttsModel !== "eleven_flash_v2_5" || defaults.language !== null || defaults.pauseMs !== 1200 || defaults.speed !== 1 || defaults.skipCode !== true) fail(`the defaults are ${J(defaults)}`);
+    {
+      const shownDefaults = {};
+      for (const id of ["vs-adv-tts", "vs-adv-stt", "vs-adv-language", "vs-adv-pause", "vs-adv-speed"]) shownDefaults[id] = await cellValue(id);
+      if (J(shownDefaults) !== J({ "vs-adv-tts": "Flash v2.5", "vs-adv-stt": "Scribe v2 Realtime", "vs-adv-language": "Auto-detect", "vs-adv-pause": "1.2 s", "vs-adv-speed": "1.0×" })) fail(`Advanced shows ${J(shownDefaults)}`);
+      if ((await switchOf("vs-adv-skipcode").getAttribute("aria-checked")) !== "true") fail("Skip code blocks is not on by default");
+    }
+    await pshot("5-advanced");
+    await pickIn(page, "vs-adv-tts", "vs-picker", { label: "v4 Turbo" });
+    await until(async () => (await voiceSettings(page)).ttsModel === "eleven_v4_turbo");
+    await pickIn(page, "vs-adv-tts", "vs-picker", { label: "Multilingual v2" });
+    await pickIn(page, "vs-adv-language", "vs-picker", { search: "croat", label: "Croatian" });
+    await pickIn(page, "vs-adv-pause", "vs-picker", { label: "2.0 s" });
+    await pickIn(page, "vs-adv-speed", "vs-picker", { label: "1.2×" });
+    await press(page, switchOf("vs-adv-skipcode"));
+    await until(async () => (await voiceSettings(page)).skipCode === false);
+    const s2 = await voiceSettings(page);
+    if (s2.ttsModel !== "eleven_multilingual_v2" || s2.language !== "hr" || s2.pauseMs !== 2000 || s2.speed !== 1.2 || s2.skipCode !== false || s2.autoSend !== false) fail(`the settings are ${J(s2)}`);
+    {
+      const rowsShown = {};
+      for (const id of ["vs-adv-tts", "vs-adv-language", "vs-adv-pause", "vs-adv-speed"]) rowsShown[id] = await cellValue(id);
+      if (J(rowsShown) !== J({ "vs-adv-tts": "Multilingual v2", "vs-adv-language": "Croatian", "vs-adv-pause": "2.0 s", "vs-adv-speed": "1.2×" })) fail(`the rows after the picks are ${J(rowsShown)}`);
+    }
+    const stored = await page.evaluate(() => JSON.parse(localStorage.getItem("aiwb.voice.settings") ?? "null"));
+    if (J(stored) !== J(s2)) fail(`the stored settings are ${J(stored)}, not what the page holds`);
+    if (await page.evaluate((k) => Object.keys(localStorage).some((n) => n.includes(k) || (localStorage.getItem(n) ?? "").includes(k)), KEY)) fail("the key is in localStorage");
+    await pshot("6-changed");
+
+    // ---- readable (light)
+    await floor("the Voice screen with a key (light)", '[data-testid="vs-screen"]');
+    await press(page, byTid(page, "vs-adv-language").last());
+    await sheetShown(page, "vs-picker");
+    await floor("the Language sheet (light)", '[data-testid="vs-picker"]');
+    await sheetPick("vs-picker", "Croatian");
+    await sheetGone(page, "vs-picker");
+
+    // ---- remove
+    await press(page, byTid(page, "vs-key-remove").last());
+    await sheetShown(page, "vs-remove-confirm");
+    await pshot("7a-remove-ask", "vs-remove-confirm");
+    await press(page, byTid(page, "confirm-cancel").last());
+    await sheetGone(page, "vs-remove-confirm");
+    if (!(await byTid(page, "vs-key-remove").count()) || (await voiceKeyState(page)) !== "saved") fail("Cancel removed the key");
+    await press(page, byTid(page, "vs-key-remove").last());
+    await sheetShown(page, "vs-remove-confirm");
+    await press(page, byTid(page, "confirm-go").last());
+    await sheetGone(page, "vs-remove-confirm");
+    await until(async () => (await voiceKeyState(page)) === "none", 15000);
+    if (await byTid(page, "vs-key-remove").count()) fail("Remove key is still offered after the key was removed");
+    if (!(await byTid(page, "vs-voice-nokey").count()) || !(await byTid(page, "vs-nokey-card").count())) fail("the voices stay after the key was removed");
+    await openAddKey(page);
+    await press(page, byTid(page, "vs-key-test").last());
+    if (!await until(async () => /key/.test(await resultText()), 15000) || !(await resultText()).includes("Voice needs your ElevenLabs key. It stays on this device.")) fail(`Test key finds a key after it was removed: ${J(await resultText())}`);
+    await closeSheet(page, "vs-key-sheet");
+    await pshot("7-removed");
+
+    // ---- the stand-in saw the key as a header only; nothing else of the log carries it
+    if (J(await log()).includes("CANARY")) fail("a key reached the stand-in's log in a place other than its header (the log holds `keyHeader` only)");
+
+    // ---- a reload: the key is gone (web), the settings stay
+    await page.reload();
+    await page.waitForSelector('[data-testid="home"]', { timeout: 30000 });
+    await openVoice(page);
+    if ((await voiceKeyState(page)) !== "none") fail("the key survived a reload (the web build keeps it in memory only)");
+    {
+      const s3 = await voiceSettings(page);
+      if (J(s3) !== J(s2)) fail(`the settings after a reload are ${J(s3)}, not ${J(s2)}`);
+    }
+    await reopen(() => page.evaluate((k) => window.__aiwbVoice.setKey(k), KEY));
+    if ((await switchOf("vs-autosend").getAttribute("aria-checked")) !== "false") fail("the Auto-send switch does not show what was kept");
+    if ((await cellValue("vs-adv-language")) !== "Croatian") fail(`the language kept over a reload shows ${J(await cellValue("vs-adv-language"))}`);
+    // Back leaves it (the stack's way, in place of Esc)
+    await press(page, byTid(page, "nav-back").last());
+    await atRestId(page, "settings-screen");
+    if ((await stackNames(page)).join() !== "home,settings") fail(`Back from the Voice screen left [${(await stackNames(page)).join(", ")}]`);
+
+    // ---- a rejected key that is stored: Choose voice says so, with a way to try again
+    await page.evaluate((k) => window.__aiwbVoice.setKey(k), BAD);
+    await openVoice(page);
+    await openChooseVoice(page);
+    if (!await until(() => byTid(page, "cv-failed").count(), 15000)) fail("a stored key the service rejects shows no failure in the voices");
+    else {
+      if ((await textOf(byTid(page, "cv-failed"))) !== "ElevenLabs did not accept this key.Try again") fail(`the failed list says ${J(await textOf(byTid(page, "cv-failed")))}`);
+      await page.evaluate((k) => window.__aiwbVoice.setKey(k), KEY);
+      await press(page, byTid(page, "cv-retry").last());
+      if (!await until(() => byTid(page, "cv-row").count(), 15000)) fail("Try again did not bring the voices once the key worked");
+    }
+    await pshot("8-retried", "cv-screen");
+    await context.close();
+
+    // ---- a dark flavour keeps the floor too
+    const dark = await open({ ls: { "aiwb.theme": "mocha" } });
+    const dp = dark.page;
+    await dp.evaluate((k) => window.__aiwbVoice.setKey(k), KEY);
+    await openVoice(dp);
+    await floor("the Voice screen in Mocha", '[data-testid="vs-screen"]', dp);
+    await openAddKey(dp);
+    await floor("Add key in Mocha", '[data-testid="vs-key-sheet"]', dp);
+    await closeSheet(dp, "vs-key-sheet");
+    await openChooseVoice(dp);
+    await voicesLoaded(dp);
+    await floor("Choose voice in Mocha", '[data-testid="cv-screen"]', dp);
+    await pshot("9-mocha", "cv-screen", dp);
+
+    note("the gear pushing the Voice screen, the no-key card (nothing offered, no request, no device call), Add key (hidden box, the eye, Test key with no key, rejected and working, Save), Choose voice (the first four with a few words, the mark, a pick, the sample with no TTS, the problem on the row, Show all, the search), the devices in their sheets (listed only while open: the permission by Test microphone, the meter, picks, plug and unplug, \"(not connected)\", Test speaker with no request), Auto-send and the Advanced rows kept over a reload, Remove, the stored rejected key, the contrast floor in the light theme and in Mocha");
+  };
+
   // ---- the stand-in devices of the card (devices.mjs): in the page from its next load on
   await installDevices(context);
   await page.reload();
+  // (the phone has Home, with no sidebar and no foot: its half starts from Home; the foot and its order are the wide layouts')
+  if (!wide) {
+    await page.waitForSelector('[data-testid="home"]', { timeout: 30000 });
+    if (await byTid(page, "settings-btn").count() || await byTid(page, "side-foot").count()) fail("the phone's Home draws the sidebar's foot");
+    if (!await byTid(page, "home-gear").first().isVisible()) fail("Home's gear is not shown");
+    await phoneHalf();
+    return;
+  }
   await page.waitForSelector('[data-testid="settings-btn"]', { timeout: 30000 });
 
   // ---- the foot
@@ -132,7 +533,7 @@ await check("VC.1 Settings > Voice: the foot's button, the key, the voices, the 
   // Test microphone: the permission is the person's tap; the lists fill; the meter moves
   await press(page, byTid(page, "vs-mic-test"));
   if (!await shown(byTid(page, "vs-mic-level"))) fail("Test microphone drew no meter");
-  if (await byTid(page, "vs-mic-test").getAttribute("aria-pressed") !== "true" || (await textOf(byTid(page, "vs-mic-test"))) !== "Stop test") fail(`the test button says "${await textOf(byTid(page, "vs-mic-test"))}" while it runs`);
+  if (await byTid(page, "vs-mic-test").getAttribute("aria-pressed") !== "true" || (await textOf(byTid(page, "vs-mic-test"))) !== "End test") fail(`the test button says "${await textOf(byTid(page, "vs-mic-test"))}" while it runs`);
   await until(async () => (await menuTexts(page, "vs-mic")).length === 3, 15000);
   const micItems = await menuTexts(page, "vs-mic");
   if (!/^System default/.test(micItems[0] ?? "") || !micItems.includes("Desk Mic") || !micItems.includes("Stand-in Headset")) fail(`the microphones listed are ${JSON.stringify(micItems)}`);
@@ -149,8 +550,8 @@ await check("VC.1 Settings > Voice: the foot's button, the key, the voices, the 
   if (!await until(async () => (await dev("opened")).at(-1)?.deviceId === "mic-headset" && (await dev("opened")).at(-1)?.live, 15000)) fail(`the test did not go on with the microphone picked (opened: ${JSON.stringify(await dev("opened"))})`);
   // a second tap stops it, with the microphone released
   await press(page, byTid(page, "vs-mic-test"));
-  if (!await gone(byTid(page, "vs-mic-level"))) fail("the meter stays after Stop test");
-  if ((await dev("opened")).some((o) => o.live)) fail("a microphone stays open after Stop test");
+  if (!await gone(byTid(page, "vs-mic-level"))) fail("the meter stays after End test");
+  if ((await dev("opened")).some((o) => o.live)) fail("a microphone stays open after End test");
   if ((await textOf(byTid(page, "vs-mic-test"))) !== "Test microphone") fail("the test button does not go back to \"Test microphone\"");
   // Test speaker: no key, no request of the voice service, played on the chosen sink
   await pick(page, "vs-speaker", "Stand-in Headphones");

@@ -24,6 +24,6 @@ export function MarkdownEnvProvider({ env, children }: { env: MarkdownEnv; child
 
 export const useMarkdownEnv = () => useContext(EnvContext);
 
-/** Where a message's chips and mentions point: the chat's board, drawn in its agent's colour, and the server the text is of. */
-export type Where = { board?: string; agent?: AgentKind | ""; server?: string };
+/** Where a message's chips and mentions point: the chat's board, drawn in its agent's colour, the server the text is of, and the chat's key (the table viewer names it). */
+export type Where = { board?: string; agent?: AgentKind | ""; server?: string; chat?: string };
 export const WhereContext = createContext<Where>({});

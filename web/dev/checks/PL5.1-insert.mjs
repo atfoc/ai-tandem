@@ -19,14 +19,17 @@
 //   is still completed. What the box tells its composer (the value that is saved as the draft and sent) has the text.
 //   Closed with nothing inserted, the box has the focus and the caret or the selection it had. A box filled anew
 //   while the popup is open gets the text at its end; a selection that ends inside a chip, and a browser that does
-//   not do the insertion, leave the box as test/insert.test.ts says all the same.
+//   not do the insertion, leave the box as test/insert.test.ts says all the same.// At the phone (ux-improvements C1) the composer is the phone's (a window under 700 px, also in the desktop and tablet runs' narrow windows): the Insert button is
+// "+" (Add to message) and its "Insert a prompt" row (`action-row`, action `prompt`): the sheet closes, then the popup opens, with the same box afterwards; there is no "more"
+// chip and no toolbar row to measure, so the fit is the phone's row (`composer-phone-tools`: nothing past the window, the primary not covered, no sideways scroll).
+//
 // Ports dev/checks/PL5.1-insert.mjs (S11) to the new build, at the three viewports (C-PL-20, 22 to 24, 30; the box alone is the chip input of the gallery, `?gallery`, with the stand-in for the popup
 // that takes the focus as the popup's search does: it hands the checks its targets in `window.__aiwbInsert` and its handle in `window.__aiwbChip`). What changed: the selectors, the presses,
 // and the toolbar's button, which a row too narrow for it does not draw (the phone's): there the "more" popup's entry opens the popup, with the same keys and the same box afterwards; the widths
 // of a pane (a panel of 430 px beside a board, a page of 300 px) are the desktop's, and at the touch viewports a window of that width (the phone layout), where only the fit and ⌘P are held.
 
 import { check, seed, until } from "../shot.mjs";
-import { byTid, press, tidSel } from "./sel.mjs";
+import { byTid, layoutNow, press, tidSel } from "./sel.mjs";
 import { frame, measureComposer, openAt } from "./composer.mjs";
 
 export const viewports = ["desktop", "tablet", "phone"];
@@ -44,6 +47,20 @@ function watchKeys() {
 /** In the page: where the focus is, and the selection's text. */
 const focusOf = () => ({ box: !!document.activeElement?.matches('[data-testid="composer-input"]'), el: document.activeElement?.dataset?.testid || document.activeElement?.tagName, selected: String(getSelection()) });
 const BOX = tidSel("composer-input");
+
+/** The fit of the page's composer: the wide toolbar's measure (measureComposer) or, in a window of the phone layout, the phone row's. */
+async function fitOf(page) {
+  if (layoutNow(page) !== "phone") return (await measureComposer(page)).find((c) => !c.none);
+  return page.evaluate(() => {
+    const comp = document.querySelector('[data-testid="composer"]'), tools = comp?.querySelector('[data-testid="composer-phone-tools"]');
+    if (!tools) return null;
+    const over = [...tools.children].filter((e) => e.getBoundingClientRect().right > innerWidth + 0.5 || e.getBoundingClientRect().left < -0.5);
+    const p = comp.querySelector('[data-testid="send"], [data-testid="composer-talk"], [data-testid="stop"]');
+    let send = "none";
+    if (p) { const q = p.getBoundingClientRect(), h = document.elementFromPoint(q.left + q.width / 2, q.top + q.height / 2); send = h === p || p.contains(h) ? "ok" : h ? "covered" : "outside the window"; }
+    return { past: over.length, over: over.map((e) => e.dataset.testid), send, docScroll: document.documentElement.scrollWidth - innerWidth };
+  });
+}
 
 await check("PL5.1 a text put into a composer's text box, and ⌘P in it and elsewhere", async ({ url, open, fail, note, layout }) => {
   // ---- the app
@@ -83,7 +100,12 @@ await check("PL5.1 a text put into a composer's text box, and ⌘P in it and els
       const button = byTid(page, "insert-btn");
       // (a row with neither the button nor the chip, as a phone's with voice's pair beside the controls, has the key alone: the button gives way to the pair)
       const hasMore = await byTid(page, "more-chip").count();
-      const viaMore = async () => { if (!hasMore) { await page.keyboard.press(KEY); return; } await press(page, byTid(page, "more-chip")); await press(page, byTid(page, "more-insert")); };
+      const atPhone = layoutNow(page) === "phone"; // ("+" and its "Insert a prompt" row: the sheet closes, the popup opens)
+      const viaMore = async () => {
+        if (atPhone) { await press(page, byTid(page, "composer-plus")); await press(page, byTid(page, "action-row", { action: "prompt" })); return; }
+        if (!hasMore) { await page.keyboard.press(KEY); return; }
+        await press(page, byTid(page, "more-chip")); await press(page, byTid(page, "more-insert"));
+      };
       const has = await button.count();
       if (has > 1) fail(`${name}: the toolbar has ${has} Insert buttons`);
       if (has === 1) {
@@ -94,18 +116,19 @@ await check("PL5.1 a text put into a composer's text box, and ⌘P in it and els
       await shut();
       await until(async () => (await page.evaluate(focusOf)).box, 5000);
       f = await page.evaluate(focusOf);
-      if (!f.box || f.selected !== " worl") fail(`${name}: after ${has ? "a press on the Insert button" : hasMore ? "the entry of the \"more\" popup" : "the key"} the selection is ${JSON.stringify(f.selected)} in ${f.el}`);
+      if (!f.box || f.selected !== " worl") fail(`${name}: after ${has ? "a press on the Insert button" : atPhone ? "the \"+\" sheet's Insert a prompt row" : hasMore ? "the entry of the \"more\" popup" : "the key"} the selection is ${JSON.stringify(f.selected)} in ${f.el}`);
       await page.keyboard.type("Y");
       if (bare(await boxText()) !== "HelloXYd") fail(`${name}: typing after the Insert button gave ${JSON.stringify(await boxText())}`);
       // reached with the keyboard, it puts the focus back into the box, at the caret
       if (has === 1) { await button.focus(); await page.keyboard.press("Enter"); }
+      else if (atPhone) { await byTid(page, "composer-plus").focus(); await page.keyboard.press("Enter"); const row = byTid(page, "action-row", { action: "prompt" }); await row.waitFor({ state: "visible", timeout: 8000 }); await row.focus(); await page.keyboard.press("Enter"); }
       else if (hasMore) { await byTid(page, "more-chip").focus(); await page.keyboard.press("Enter"); await byTid(page, "more-insert").focus(); await page.keyboard.press("Enter"); }
       else await page.keyboard.press(KEY);
       await shut();
       if (!await until(async () => (await page.evaluate(focusOf)).box, 5000)) fail(`${name}: Enter on the Insert button left the focus in ${(await page.evaluate(focusOf)).el}`);
       await page.keyboard.type("Z");
       if (bare(await boxText()) !== "HelloXYZd") fail(`${name}: typing after Enter on the Insert button gave ${JSON.stringify(await boxText())}`);
-      const m = (await measureComposer(page)).find((c) => !c.none);
+      const m = await fitOf(page);
       if (!m || m.past || m.send !== "ok" || m.docScroll > 0) fail(`${name}: the composer does not fit with the Insert button: ${JSON.stringify(m && { past: m.past, over: m.over, send: m.send })}`);
 
       // elsewhere ⌘P is the browser's: with the focus nowhere, after a press outside the composer, and in another field
@@ -121,7 +144,7 @@ await check("PL5.1 a text put into a composer's text box, and ⌘P in it and els
       else await left("after a press on a message");
       await page.evaluate(() => { const i = document.createElement("input"); i.id = "other-field"; document.body.append(i); i.focus(); });
       await left("in another field");
-      note(`${name}: ⌘P is the text box's alone, the ${has ? "Insert button is" : "\"more\" popup's entry is"} in the toolbar, the caret is kept`);
+      note(`${name}: ⌘P is the text box's alone, the ${has ? "Insert button is" : atPhone ? "\"+\" sheet's row is" : "\"more\" popup's entry is"} in the toolbar, the caret is kept`);
     } catch (e) { fail(`${name}: ${e.message.split("\n")[0]}`); } finally { await ctx.close(); } // (one page at a time: the mock has one stream)
   }
   // a chat's toolbar draws the button where its row has room left, and the composer fits its box
@@ -135,12 +158,12 @@ await check("PL5.1 a text put into a composer's text box, and ⌘P in it and els
     ["a started chat beside a board, at the default panel width", "board-started", 400, null],
     ["a chat's page of 300 px", "plain-started", 300, null]]) {
     const s = state(id);
-    const { page, ctx } = await openAt(open, s, layout, width);
+    const { page, ctx } = await openAt(open, s, layout, width, { wait: BOX }); // (a window under 700 px is the phone layout, whose empty box shows Talk, not Send)
     try {
       await page.evaluate(watchKeys);
       await page.evaluate(() => document.fonts.ready);
       await frame(page);
-      const m = (await measureComposer(page)).find((c) => !c.none);
+      const m = await fitOf(page);
       if (!m || m.past || m.send !== "ok" || m.docScroll > 0) fail(`${name}: the composer does not fit: ${JSON.stringify(m && { past: m.past, over: m.over, send: m.send })}`);
       const has = await byTid(page, "insert-btn").count(), text = await byTid(page, "ctx-meter").and(page.locator(":not([data-compact])")).count();
       const chip = await byTid(page, "more-chip").count();

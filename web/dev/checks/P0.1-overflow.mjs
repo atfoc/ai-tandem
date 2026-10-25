@@ -4,6 +4,9 @@
 // again at its next layout pass), it finds Send past the box by the px the row lost. A2.2 holds every state at every width. Ports dev/checks/P0.1-overflow.mjs with the same cases and assertions; the
 // measure reads testIDs (composer.mjs) and not the old classes. At the tablet and the phone the device's own width is the pane's (the
 // widths the desktop gives are windows), so the cases are the same states at that width.
+// At the phone (ux-improvements C1: the phone viewport, and the desktop's 300 px pages, which are windows under 700 px) the composer is the phone's:
+// its row has "+", a spacer, the ring, Dictate and the primary (Talk, Send or Stop) and no "tool-grow", so the narrowed box is read there as
+// the row's spacer (its second child) lost and LOST px more: the primary, the row's last control, ends that far past the box.
 import { check, seed } from "../shot.mjs";
 import { composersInPage, measureComposer, openState } from "./composer.mjs";
 
@@ -32,13 +35,14 @@ await check("P0.1 the composer's overflow: none where G1 measured it, and the me
       // can run: what it proves is that the measure sees a row that passes its box, not how the toolbar answers a narrower box (A2.2, P0.6).
       let edge;
       ({ edge, m } = await page.evaluate(`(() => {
-        const box = document.querySelector('[data-testid="composer-box"]'), cs = getComputedStyle(box), spare = box.querySelector('[data-testid="tool-grow"]').getBoundingClientRect().width;
+        const box = document.querySelector('[data-testid="composer-box"]'), cs = getComputedStyle(box), phone = !!box.querySelector('[data-testid="composer-phone-tools"]'),
+          spare = (phone ? box.querySelector('[data-testid="composer-phone-tools"]').children[1] : box.querySelector('[data-testid="tool-grow"]')).getBoundingClientRect().width; // (the phone's spacer has no testID)
         box.style.width = (box.getBoundingClientRect().width - spare - ${LOST}) + "px";
         box.style.flex = "none"; box.style.alignSelf = "flex-start";
         const edge = parseFloat(cs.paddingRight) + parseFloat(cs.borderRightWidth);
         return { edge, m: (${composersInPage})().find((c) => !c.none) };
       })()`));
-      const send = m.over.find((o) => o.row === "tools" && o.el.startsWith("part:send"));
+      const send = (await page.locator('[data-testid="composer-phone-tools"]').count()) ? m.over.filter((o) => o.row === "tools").sort((a, b) => b.overBox - a.overBox)[0] : m.over.find((o) => o.row === "tools" && o.el.startsWith("part:send"));
       note(`${id}, its box narrowed by a style: ${m.past} past, Send +${send?.overBox ?? 0}`);
       if (!send || Math.abs(send.overBox - (LOST - edge)) > 1) fail(`${id}, its box narrowed so that the row is ${LOST} px short: the measure finds ${m.past} controls past the box (${m.over.map((o) => `${o.el} +${o.overBox}`).join("; ")}); Send is ${LOST - edge} px past it`);
     } finally { await ctx.close(); }

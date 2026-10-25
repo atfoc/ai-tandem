@@ -12,6 +12,13 @@ export interface ImagePickerPort {
     { canceled: true } | { canceled: false; assets: PickedAsset[] }
   >;
 }
+/** The camera of expo-image-picker (Take photo): the permission is asked first, then the camera's own screen. */
+export interface CameraPort {
+  requestCameraPermissionsAsync(): Promise<{ granted: boolean }>;
+  launchCameraAsync(options: { mediaTypes: "images"[]; allowsEditing: boolean; quality: number; preferredAssetRepresentationMode: "compatible" }): Promise<
+    { canceled: true } | { canceled: false; assets: PickedAsset[] }
+  >;
+}
 export interface PickFs { File: new (...parts: any[]) => FsFile }
 
 /** The type of an image taken from its first bytes alone; "" for anything else (the Client's rule for a picture). */
@@ -26,14 +33,11 @@ export function imageTypeOf(b: Uint8Array): string {
 
 const nameOf = (a: PickedAsset): string => a.fileName || decodeURIComponent(a.uri.split("?")[0].split("/").pop() || "image");
 
-export async function pickImagesWith(picker: ImagePickerPort, fs: PickFs): Promise<DesktopPick> {
+/** What the picker's assets become: the checks of the library's pick (count, 5 MB, the type from the bytes) for each, the ones left out named with why. */
+async function readAssets(assets: PickedAsset[], fs: PickFs): Promise<DesktopPick> {
   const files: DesktopPick["files"] = [];
   const skipped: DesktopPick["skipped"] = [];
-  // `compatible` (iOS; Android has no such thing): the system hands over a HEIC of the library as a JPEG. The default, `automatic`, hands it over as it is, and the
-  // type is taken from the bytes: a phone's photos (HEIC unless the camera is set to "Most Compatible") would all be refused as "Not a PNG, JPEG, GIF or WebP image".
-  const r = await picker.launchImageLibraryAsync({ mediaTypes: ["images"], allowsMultipleSelection: true, quality: 1, preferredAssetRepresentationMode: "compatible" });
-  if (r.canceled || !r.assets?.length) return { files, skipped };
-  for (const asset of r.assets) {
+  for (const asset of assets) {
     const name = nameOf(asset);
     if (files.length >= IMAGES_PER_MESSAGE) { skipped.push({ name, reason: "count" }); continue; }
     try {
@@ -50,4 +54,21 @@ export async function pickImagesWith(picker: ImagePickerPort, fs: PickFs): Promi
     }
   }
   return { files, skipped };
+}
+
+export async function pickImagesWith(picker: ImagePickerPort, fs: PickFs): Promise<DesktopPick> {
+  // `compatible` (iOS; Android has no such thing): the system hands over a HEIC of the library as a JPEG. The default, `automatic`, hands it over as it is, and the
+  // type is taken from the bytes: a phone's photos (HEIC unless the camera is set to "Most Compatible") would all be refused as "Not a PNG, JPEG, GIF or WebP image".
+  const r = await picker.launchImageLibraryAsync({ mediaTypes: ["images"], allowsMultipleSelection: true, quality: 1, preferredAssetRepresentationMode: "compatible" });
+  if (r.canceled || !r.assets?.length) return { files: [], skipped: [] };
+  return readAssets(r.assets, fs);
+}
+
+/** Take photo: the camera's one picture, answered as the library's pick is. A refused permission is an Error that says how to allow the camera. */
+export async function takePhotoWith(picker: CameraPort, fs: PickFs): Promise<DesktopPick> {
+  const allowed = await picker.requestCameraPermissionsAsync();
+  if (!allowed.granted) throw new Error("The camera is off for AI Whiteboard. Allow it in Settings, under AI Whiteboard, then try again.");
+  const r = await picker.launchCameraAsync({ mediaTypes: ["images"], allowsEditing: false, quality: 1, preferredAssetRepresentationMode: "compatible" });
+  if (r.canceled || !r.assets?.length) return { files: [], skipped: [] };
+  return readAssets(r.assets.slice(0, 1), fs);
 }

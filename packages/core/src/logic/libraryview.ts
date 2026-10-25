@@ -166,12 +166,16 @@ export function canMove(libs: LibraryView[], item: Chosen | null, to: Place | nu
   return item.kind === "prompt" || !groupWithBelow(v, item.id).has(to.group);
 }
 
+/** A place as names: its server's name when the tree has a level of servers, then the names of its group from the top. None for the top
+ *  of the only library. (A server's name may hold a "/": a screen that joins the names its own way keeps them apart.) */
+export function placeNames(libs: LibraryView[], at: Place, level: boolean): string[] {
+  const v = libs.find((x) => x.server === at.server);
+  return [...(level && v ? [v.name] : []), ...(v ? groupNames(v, at.group) : [])];
+}
+
 /** A place in words: the path of its group, after its server's name when the tree has a level of
  *  servers. "" for the top of the only library. */
-export function placePath(libs: LibraryView[], at: Place, level: boolean): string {
-  const v = libs.find((x) => x.server === at.server);
-  return [...(level && v ? [v.name] : []), ...(v ? groupNames(v, at.group) : [])].join(PATH_SEP);
-}
+export const placePath = (libs: LibraryView[], at: Place, level: boolean): string => placeNames(libs, at, level).join(PATH_SEP);
 
 /** Where an item is or goes, as the editor and the tree's menu say it. */
 export const placeText = (libs: LibraryView[], at: Place, level: boolean): string => { const path = placePath(libs, at, level); return path ? `In ${path}` : "At the top level"; };

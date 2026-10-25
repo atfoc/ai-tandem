@@ -5,7 +5,9 @@
 // measured it (G1 §Q2); one with a long name is as wide as its cap lets it be, where G1 measured it whole. Ports dev/checks/P0.6-widths.mjs
 // with its states, G1's numbers and its assertions; the reader is composer.mjs' (a control's wrapper in the row is taken apart: a folder's lock
 // and its chip are two controls). The states with a pending move (`act` "move") are played with S8's Branch action (`acts.move`). Desktop only: the widths are those of a window, and the other
-// viewports' devices have their own (the fit at them is A2.2's).
+// viewports' devices have their own (the fit at them is A2.2's). The three narrow controls are shown by the board's panel at 300 px: a chat page of that
+// width is a window under 700 px, the phone layout (ux-improvements C1), whose row has no "more" chip and whose ring is a 44 pt target, so the page's
+// widths of the fixture (every row of it is a wide row) are not shown there; the panel is the wide layout at every width. (The error meter's icon has no panel state: it is read on the page of plain-ctxerr at 300 px, where the phone draws the same icon, CtxError's.)
 //   WRITE=1 PORT=4900 node web/dev/checks/P0.6-widths.mjs    writes the fixture from the page as it is
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -33,7 +35,7 @@ const G1_CHIPS = [
 const CAPPED = [["plain-new-long", "folder", false, 202.4, 337], ["plain-new-long", "model", false, 102.4, 302.6], ["plain-started-long", "folder", true, 186, 320.6], ["plain-started-long", "model-effort", true, 170, 319.9],
   ["plain-remote-new", "server", true, 170, 188], ["plain-remote-started", "server", true, 170, 188]]; // (the server's chip is a fixed one, started or not)
 // What a narrow toolbar has beside its chips: [the fixture's field, the state and the page's width that show it, its selector]
-const NARROW = [["more", "plain-new", 300, tidSel("more-chip")], ["ring", "plain-started", 300, `${tidSel("ctx-meter")}[data-compact]:not([data-tone="error"])`], ["icon", "plain-ctxerr", 300, `${tidSel("ctx-meter")}[data-compact][data-tone="error"]`]];
+const NARROW = [["more", "board-new", 300, tidSel("more-chip")], ["ring", "board-started", 300, `${tidSel("ctx-meter")}[data-compact]:not([data-tone="error"])`], ["icon", "plain-ctxerr", 300, `${tidSel("ctx-meter")}[data-compact][data-tone="error"]`]];
 
 await check("P0.6 the fixture of toolbar widths, with the chips' caps", async ({ url, layout, open, fail, note }) => {
   const states = {}, gaps = new Set(), chromes = new Set(), narrow = {};

@@ -7,6 +7,10 @@
 // and the navigation change: the thumbnails are S10's `image-thumb` (dataSet `state`) in K4's `composer-images`, the remove control is
 // `image-thumb-remove`, the picker is the browser's file chooser (the web build, as the old page's, has a file input: AD-26).
 // The paste is the same on the three viewports (a paste event with files: the phone's keyboard offers it too, or Chromium's device mode does).
+// At the phone (ux-improvements C1) the picker is "+" -> Files (the web build's one file chooser) in place of the toolbar's attach button, the empty box
+// shows Talk (so the check waits for the box, and Send exists once there is something to send), Send has no `title` (its words are its aria-label),
+// and the words about a file that was not added are the strip's lines (`composer-images-line`; a refused file is also a marked tile, `image-refused`),
+// not the line under the composer.
 import { check, mockEval, seed, until } from "../shot.mjs";
 import { byTid, press, tidSel } from "./sel.mjs";
 
@@ -16,15 +20,18 @@ export const viewports = ["desktop", "tablet", "phone"];
 const png = (last) => Buffer.from(`iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk${last}AAAABJRU5ErkJggg==`, "base64");
 const PNG_A = png("YPhfDwAChwGA60e6kg"), PNG_B = png("+M9QDwADhgGAWjR9aw");
 
-await check("IM3.2 images in a chat's composer: the attach button, a paste, the strip, Send, a reload", async ({ url, open, fail, note }) => {
+await check("IM3.2 images in a chat's composer: the attach button, a paste, the strip, Send, a reload", async ({ url, open, fail, note, viewport }) => {
+  const phone = viewport === "phone";
   const states = await seed(url, "A2");
   const s = states.find((x) => x.id === "plain-started");
-  const { ctx, page } = await open({ sel: s.sel, wait: tidSel("send") });
+  const { ctx, page } = await open({ sel: s.sel, wait: tidSel("composer-input") });
   const chat = s.sel.chat;
   const thumbs = () => page.evaluate(() => [...document.querySelectorAll('[data-testid="composer"] [data-testid="composer-images"] [data-testid="image-thumb"]')].map((e) => ({
     name: e.getAttribute("aria-label"), busy: e.dataset.state === "busy", broken: e.dataset.state === "broken", src: e.querySelector("img")?.getAttribute("src") ?? "" })));
-  const send = () => page.evaluate(() => { const b = document.querySelector('[data-testid="composer"] [data-testid="send"]'); return { off: b.disabled, title: b.title }; });
-  const err = () => page.evaluate(() => document.querySelector('[data-testid="composer"] [data-testid="composer-err"]')?.textContent ?? "");
+  // (at the phone the empty box has Talk and no Send: that is "off"; Send says its words by aria-label)
+  const send = () => page.evaluate(() => { const b = document.querySelector('[data-testid="composer"] [data-testid="send"]'); return b ? { off: b.disabled, title: b.title || b.getAttribute("aria-label") } : { off: true, title: "", none: true }; });
+  // (at the phone the strip says what was not added, one line each; the line under the composer holds the rest)
+  const err = () => page.evaluate(() => [...document.querySelectorAll('[data-testid="composer"] [data-testid="composer-err"], [data-testid="composer"] [data-testid="composer-images-line"]')].map((e) => e.textContent).join(" "));
   const text = () => page.evaluate(() => document.querySelector('[data-testid="composer"] [data-testid="composer-input"]').textContent);
   const draft = () => mockEval(`return JSON.stringify(chats[${JSON.stringify(chat)}].draft ?? null);`, url).then((x) => JSON.parse(x));
   /** A paste into the composer's box, as the browser hands it on: files, and text of the types given. */
@@ -39,17 +46,23 @@ await check("IM3.2 images in a chat's composer: the attach button, a paste, the 
 
   // ---- the attach button: the browser's own picker, several files, each through the check
   const button = byTid(page, "composer-tools").locator(tidSel("attach-btn"));
-  if (await button.count() !== 1) fail("the toolbar's row has no attach button");
+  /** What opens the file chooser: the attach button, at the phone "+" and its Files row (the sheet closes, then the chooser opens). */
+  const pick = async () => { if (!phone) return press(page, button); await press(page, byTid(page, "composer-plus")); await press(page, byTid(page, "action-row", { action: "files" })); };
+  if (phone ? await byTid(page, "composer-plus").count() !== 1 : await button.count() !== 1) fail(phone ? 'the toolbar has no "+" (Add to message)' : "the toolbar's row has no attach button");
+  if (phone && (!await byTid(page, "composer-talk").isVisible() || (await send()).none !== true)) fail("the empty phone box does not show Talk without Send");
   if (await send().then((x) => !x.off)) fail("Send is on with nothing in the composer");
   await mockEval("flags.upload = { hold: true };", url);
-  const [chooser] = await Promise.all([page.waitForEvent("filechooser", { timeout: 8000 }), press(page, button)]);
+  const [chooser] = await Promise.all([page.waitForEvent("filechooser", { timeout: 8000 }), pick()]);
   if (!chooser.isMultiple()) fail("the picker takes one file only");
   await chooser.setFiles([{ name: "diagram.png", mimeType: "image/png", buffer: PNG_A }, { name: "notes.txt", mimeType: "text/plain", buffer: Buffer.from("x") }]);
   if (!await until(async () => (await thumbs()).length === 1, 8000)) fail(`a picked image has no thumbnail: ${JSON.stringify(await thumbs())}`);
   let t = await thumbs();
   if (!t[0]?.busy || t[0]?.name !== "diagram.png") fail(`the thumbnail of an image on its way is not busy, or not named: ${JSON.stringify(t)}`);
-  if (!(await send()).off || (await send()).title !== "An image is being uploaded") fail(`Send is not off while an upload runs: ${JSON.stringify(await send())}`);
-  if (await err() !== "Not a PNG, JPEG, GIF or WebP image: notes.txt.") fail(`the error line does not name the file that was not added: ${JSON.stringify(await err())}`);
+  // (the phone: the box is empty and the primary is Talk while the upload runs -- no Send to be off; with text it is Send, soft, with these words)
+  if (!(await send()).off || (!phone && (await send()).title !== "An image is being uploaded")) fail(`Send is not off while an upload runs: ${JSON.stringify(await send())}`);
+  const notAdded = phone ? "notes.txt is not added: send PNG, JPEG, GIF or WebP." : "Not a PNG, JPEG, GIF or WebP image: notes.txt.";
+  if (await err() !== notAdded) fail(`the error line does not name the file that was not added: ${JSON.stringify(await err())}`);
+  if (phone && await byTid(page, "image-refused").count() !== 1) fail("the file that was not added is no marked tile in the phone's strip");
   if (await draft()) fail(`an image on its way is in the draft already: ${JSON.stringify(await draft())}`);
   if (await mockEval(`const n = release("upload"); delete flags.upload; return n;`, url) !== 1) fail("the mock held no upload: the picked image was not uploaded at once");
   if (!await until(async () => { const x = await thumbs(); return x.length === 1 && !x[0].busy; }, 8000)) fail(`the thumbnail stays busy after the upload was answered: ${JSON.stringify(await thumbs())}`);
@@ -77,7 +90,7 @@ await check("IM3.2 images in a chat's composer: the attach button, a paste, the 
   // ---- the draft is there after a reload, text and images
   if (!await until(async () => { const d = await draft(); return d?.text?.includes("B2 cell") && d.images?.length === 2; }, 8000)) fail(`the draft is not saved with its text and two images: ${JSON.stringify(await draft())}`);
   await page.reload();
-  await page.waitForSelector(tidSel("send"), { timeout: 15000 });
+  await page.waitForSelector(tidSel("composer-input"), { timeout: 15000 });
   if (!await until(async () => (await thumbs()).length === 2, 8000)) fail(`after a reload the composer does not show the draft's images: ${JSON.stringify(await thumbs())}`);
 
   // ---- the remove control, and a message of images alone
@@ -94,7 +107,7 @@ await check("IM3.2 images in a chat's composer: the attach button, a paste, the 
 
   // ---- the page goes away while an image is being uploaded (C-IM-18): the draft saved on its way out, and the copy the browser keeps, have the text and not the image
   await page.reload();
-  await page.waitForSelector(tidSel("send"), { timeout: 15000 });
+  await page.waitForSelector(tidSel("composer-input"), { timeout: 15000 });
   await mockEval(`delete chats[${JSON.stringify(chat)}].draft;`, url);
   await mockEval("flags.upload = { hold: true };", url);
   await paste([{ name: "image.png", type: "image/png", bytes: PNG_B }]);

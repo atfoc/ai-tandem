@@ -10,7 +10,7 @@
 //   in a window too low for it stays inside the window; a sheet is closed by a swipe down on its handle. "Back" (the Android
 //   back button) is the Modal's onRequestClose, which on web is Esc: it has no browser form, and Maestro (V) presses it on a device.
 //   Menu: choices are role menuitemradio with aria-checked, a disabled item does nothing and says so, the arrow keys move the focus
-//   (skipping the disabled), the rows of a sheet are at least 44 points tall.
+//   (skipping the disabled), the rows of a sheet are at least 44 points tall (at the phone 50, with a 17 pt label).
 //   Controls: Button and IconButton press, a disabled button does not, `title` is the tooltip on web and the accessibility label.
 //   Resizer: absent on the phone; on desktop (mouse) and tablet (touch) a drag moves the pane by the distance, stops at the pane's
 //   minimum, maximum and the `room` it is given, reports the final width once, and a double click (tap) resets it.
@@ -59,7 +59,9 @@ async function body({ page, viewport, layout, fail }) {
   expect(await text("gallery-last") !== "disabled button", "a disabled Button was pressed");
   const icon = T("gallery-icon-btn");
   expect(await icon.getAttribute("aria-label") === "Hide the sidebar", "IconButton has no accessibility label from its title");
-  expect(await icon.getAttribute("title") === "Hide the sidebar", "IconButton has no tooltip (title) on web");
+  // (the phone has no hover title (ux-improvements 3.1.3): its label alone says what the button is; the wide layouts keep the tooltip)
+  if (viewport === "phone") expect(await icon.getAttribute("title") === null, "IconButton has a hover title at the phone layout");
+  else expect(await icon.getAttribute("title") === "Hide the sidebar", "IconButton has no tooltip (title) on web");
   await press(icon);
   expect(await until(async () => (await text("gallery-last")) === "icon button"), "a press on IconButton did not reach its handler");
 
@@ -195,6 +197,12 @@ async function body({ page, viewport, layout, fail }) {
   await open("sheet"); await shown("sheet");
   const tall = await rect('[role="menuitem"]');
   expect(tall && tall.h >= 44, `a menu row of a sheet is ${tall?.h} tall (at least 44)`);
+  if (viewport === "phone") {
+    // the phone's look of a Menu in a sheet (F1): 50 pt rows with a 17 pt label
+    expect(tall && tall.h >= 49.5, `a menu row of a sheet at the phone is ${tall?.h} tall (at least 50)`);
+    const px = await page.evaluate(() => { const e = [...document.querySelectorAll('[data-testid="sheet"] [role="menuitem"] *')].find((n) => !n.children.length && n.textContent.trim()); return e ? parseFloat(getComputedStyle(e).fontSize) : null; });
+    expect(px === 17, `a menu row's label in a sheet at the phone is ${px} px, not 17`);
+  }
   await page.keyboard.press("Escape"); await closed();
   // a pick that closes
   await open("popover"); await shown("popover");

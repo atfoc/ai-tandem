@@ -11,9 +11,16 @@
 //   Show (B-TC-08): a card of a board tool that names a board that exists has "Show", which opens that board; not while the call runs, and not for a
 //     board that is archived.
 //   Colour (B-TC-29): a command of up to 20,000 characters shown whole is coloured, a longer one is drawn as it is.
+// On the phone (package T2) the permission card says its words differently, and the half of the check that reads them expects the phone's:
+//   the card is "Claude wants to run a command" (a subagent's: "Subagent “<description>” wants to use the board", in the place of "Asked by
+//   subagent · …"), the agent's own title ("Remove the copied fonts"; none when it gave none, there is no "Allow Bash?"), the whole command in a
+//   box, and Deny and Allow (48 pt); an answered card is one line, "Allowed · <title or who>" / "Denied · …", which a tap opens to the card with its
+//   "Approved" or "Denied". A press sends the same POST. The cards that cannot be answered have the same words as on the wide layouts.
+//   Colour moved: the phone's step draws a command whole in a plain box with Copy (it is not coloured as code; there is no Show all), so the
+//   bound of 20,000 characters is proved on the phone as "a command of either length is drawn whole and uncoloured".
 import { callMatcher, callsOf, check, mockEval, seed, until } from "../shot.mjs";
 import { byTid, openChat, press } from "./sel.mjs";
-import { permAt, permCards, toolCards } from "./cards.mjs";
+import { cardAt, permAt, permCards, toolCards } from "./cards.mjs";
 
 export const viewports = ["desktop", "tablet", "phone"];
 
@@ -30,6 +37,8 @@ await check("L13 permission cards and tool cards: the answers, the closed ones, 
   await seed(url, "A1");
   const say = (line) => fail(line);
   const ASK = { kind: "perm", requestId: "q1", toolName: "Bash", input: { command: "rm -rf dist/fonts", description: "Remove the copied fonts" } };
+  const phone = viewport === "phone";
+  const BUTTONS = phone ? ["Deny", "Allow"] : ["Allow", "Don't"];
   const SUB = { kind: "perm", requestId: "q1", toolName: "mcp__board__apply", input: { file_path: "/Users/demo/a.go" }, subagent: "s1" };
   const subs = [{ id: "s1", tool: "s0", description: "Review the sum", prompt: "Review.", kind: "claude", model: "sonnet", effort: "medium", status: "running", started: 1, tokens: 0, window: 200000, toolUses: 0 }];
   await mockEval(make("c_perm", {}, [{ kind: "user", text: "Fix the build." }, ASK, SUB, { kind: "perm", requestId: "q2", toolName: "Bash", input: { command: "git push" }, decided: "allow" }, { kind: "perm", requestId: "q3", toolName: "Edit", input: { file_path: "/a.go" }, decided: "deny" }], subs), url);
@@ -41,9 +50,18 @@ await check("L13 permission cards and tool cards: the answers, the closed ones, 
     try {
       if (!await until(async () => (await permCards(page))?.length === 4, WAIT)) fail(`${viewport}: ${(await permCards(page))?.length} permission cards, not 4`);
       const [own, sub, ok, no] = await permCards(page);
-      if (own.state !== "pending" || own.title !== "Allow Bash?" || own.reason !== "Remove the copied fonts" || own.what !== "rm -rf dist/fonts" || J(own.buttons) !== J(["Allow", "Don't"]) || own.sub) fail(`${viewport}: the waiting request is drawn as ${J(own)}`);
-      if (sub.sub !== "Asked by subagent · Review the sum" || sub.title !== "Allow apply?" || sub.what !== "/Users/demo/a.go") fail(`${viewport}: the request of a subagent is drawn as ${J(sub)}`);
-      if (ok.state !== "allow" || ok.done !== "Approved" || ok.buttons.length || no.state !== "deny" || no.done !== "Denied" || no.buttons.length) fail(`${viewport}: the decided requests are drawn as ${J([ok, no])}`);
+      if (phone) {
+        if (own.state !== "pending" || own.who !== "Claude wants to run a command" || own.title !== "Remove the copied fonts" || own.what !== "rm -rf dist/fonts" || J(own.buttons) !== J(BUTTONS) || own.sub || own.reason) fail(`${viewport}: the waiting request is drawn as ${J(own)}`);
+        if (sub.who !== "Subagent “Review the sum” wants to use the board" || sub.title !== "" || sub.what !== "/Users/demo/a.go" || sub.sub) fail(`${viewport}: the request of a subagent is drawn as ${J(sub)}`);
+        if (ok.state !== "allow" || !ok.folded || !/^✓Allowed · Claude wants to run a command(\d+:\d\d)?git push$/.test(ok.foldedText) || ok.buttons.length || no.state !== "deny" || !no.folded || !/^✕Denied · Claude wants to edit a file(\d+:\d\d)?\/a\.go$/.test(no.foldedText) || no.buttons.length) fail(`${viewport}: the decided requests are drawn as ${J([ok, no])}`);
+        // (a tap on the folded line opens the card, which says it as the wide one does)
+        await press(page, byTid(await permAt(page, 2), "perm-folded"));
+        if (!await until(async () => (await permCards(page))[2].done === "Approved", WAIT)) fail(`${viewport}: the answered request opened by a tap says "${(await permCards(page))[2].done}", not "Approved"`);
+      } else {
+        if (own.state !== "pending" || own.title !== "Allow Bash?" || own.reason !== "Remove the copied fonts" || own.what !== "rm -rf dist/fonts" || J(own.buttons) !== J(BUTTONS) || own.sub) fail(`${viewport}: the waiting request is drawn as ${J(own)}`);
+        if (sub.sub !== "Asked by subagent · Review the sum" || sub.title !== "Allow apply?" || sub.what !== "/Users/demo/a.go") fail(`${viewport}: the request of a subagent is drawn as ${J(sub)}`);
+        if (ok.state !== "allow" || ok.done !== "Approved" || ok.buttons.length || no.state !== "deny" || no.done !== "Denied" || no.buttons.length) fail(`${viewport}: the decided requests are drawn as ${J([ok, no])}`);
+      }
 
       // a press on Allow: the chat's own request, named by its id alone
       await press(page, byTid(await permAt(page, 0), "perm-allow"));
@@ -57,6 +75,9 @@ await check("L13 permission cards and tool cards: the answers, the closed ones, 
       if ((await permCards(page))[0].state !== "pending") fail(`${viewport}: the request was decided before the server said so`);
       // decided elsewhere, with no reload
       await mockEval(put("c_perm", 1, { ...ASK, decided: "allow" }), url);
+      // (on the phone it is folded to one line: "Allowed · …"; a tap shows "Approved")
+      if (phone && !await until(async () => (await permCards(page))[0].folded, WAIT)) fail(`${viewport}: a request answered elsewhere is not folded: ${J((await permCards(page))[0])}`);
+      if (phone) await press(page, byTid(await permAt(page, 0), "perm-folded"));
       if (!await until(async () => (await permCards(page))[0].done === "Approved" && !(await permCards(page))[0].buttons.length, WAIT)) fail(`${viewport}: a request answered elsewhere does not show as approved: ${J((await permCards(page))[0])}`);
     } catch (e) { say(`${viewport}: the permission cards: ${e.message.split("\n")[0]}`); }
     await ctx.close();
@@ -73,7 +94,7 @@ await check("L13 permission cards and tool cards: the answers, the closed ones, 
       await press(page, byTid(page, "perm-allow").first());
       if (!await until(async () => (await permCards(page))[0].error === REFUSED, WAIT)) fail(`${viewport}: a refused answer shows "${(await permCards(page))[0].error}" under the card, not "${REFUSED}"`);
       const [c] = await permCards(page);
-      if (c.state !== "pending" || J(c.buttons) !== J(["Allow", "Don't"])) fail(`${viewport}: after a refused answer the card is ${c.state} with ${J(c.buttons)}`);
+      if (c.state !== "pending" || J(c.buttons) !== J(BUTTONS)) fail(`${viewport}: after a refused answer the card is ${c.state} with ${J(c.buttons)}`);
     } catch (e) { say(`${viewport}: a refused answer: ${e.message.split("\n")[0]}`); }
     await ctx.close();
   }
@@ -97,7 +118,7 @@ await check("L13 permission cards and tool cards: the answers, the closed ones, 
       if (!await until(async () => (await permCards(page))?.length === 2, WAIT)) fail(`${viewport}: ${(await permCards(page))?.length} permission cards in the fork, not 2`);
       const [copied, own] = await permCards(page);
       if (copied.buttons.length || copied.done !== "Closed: it was asked in the thread this was copied from" || !copied.closed) fail(`${viewport}: the request in the copied part is ${J(copied)}`);
-      if (J(own.buttons) !== J(["Allow", "Don't"])) fail(`${viewport}: the request after the copied part has ${J(own.buttons)}`);
+      if (J(own.buttons) !== J(BUTTONS)) fail(`${viewport}: the request after the copied part has ${J(own.buttons)}`);
     } catch (e) { say(`${viewport}: the fork: ${e.message.split("\n")[0]}`); }
     await ctx.close();
   }
@@ -124,18 +145,27 @@ await check("L13 permission cards and tool cards: the answers, the closed ones, 
     const { page, ctx } = await open({ sel: { chat: "c_long" }, wait: '[data-testid="chat-head"]' });
     try {
       if (!await until(async () => (await toolCards(page))?.length === 2, WAIT)) fail(`${viewport}: ${(await toolCards(page))?.length} tool cards, not 2`);
-      const coloured = [];
-      for (const n of [0, 1]) {
-        const card = byTid(page, "tool-card").nth(n);
-        await press(page, byTid(card, "tool-row").first());
-        await byTid(card, "tool-show-all").first().waitFor({ state: "visible", timeout: WAIT });
-        // (the cards are read by their command's text: the thread's order is the page's)
-        await press(page, byTid(card, "tool-show-all").first());
-        await until(async () => (await toolCards(page)).some((c) => c.parts.some((p) => p.part === "text" && p.title === "Command" && p.text[0]?.length > 19000)), WAIT);
+      if (phone) {
+        // (a step draws its command whole in a plain box: each is open to be read, there is no Show all and no colour)
+        for (const n of [0, 1]) await press(page, byTid(await cardAt(page, n), "tool-row").first());
+        if (!await until(async () => (await toolCards(page)).every((c) => c.parts.some((p) => p.title === "Command")), WAIT)) fail(`${viewport}: the long commands did not open`);
+        const drawn = (await toolCards(page)).map((c) => { const cmd = c.parts.find((p) => p.title === "Command"); return [cmd.text.join("").length, cmd.coloured > 0]; }).sort((a, b) => a[0] - b[0]);
+        if (J(drawn) !== J([[fits.length, false], [over.length, false]])) fail(`${viewport}: a command is drawn whole as [its length, coloured] ${J(drawn)}, not ${J([[fits.length, false], [over.length, false]])}`);
+        if (await byTid(page, "tool-show-all").count()) fail(`${viewport}: a command has Show all: the step draws it whole`);
+      } else {
+        const coloured = [];
+        for (const n of [0, 1]) {
+          const card = byTid(page, "tool-card").nth(n);
+          await press(page, byTid(card, "tool-row").first());
+          await byTid(card, "tool-show-all").first().waitFor({ state: "visible", timeout: WAIT });
+          // (the cards are read by their command's text: the thread's order is the page's)
+          await press(page, byTid(card, "tool-show-all").first());
+          await until(async () => (await toolCards(page)).some((c) => c.parts.some((p) => p.part === "text" && p.title === "Command" && p.text[0]?.length > 19000)), WAIT);
+        }
+        for (const c of await toolCards(page)) { const cmd = c.parts.find((p) => p.title === "Command"); if (cmd) coloured.push([cmd.text.join("").length, cmd.coloured > 0]); }
+        coloured.sort((a, b) => a[0] - b[0]);
+        if (J(coloured) !== J([[fits.length, true], [over.length, false]])) fail(`${viewport}: a command shown whole is [its length, coloured] ${J(coloured)}, not ${J([[fits.length, true], [over.length, false]])}`);
       }
-      for (const c of await toolCards(page)) { const cmd = c.parts.find((p) => p.title === "Command"); if (cmd) coloured.push([cmd.text.join("").length, cmd.coloured > 0]); }
-      coloured.sort((a, b) => a[0] - b[0]);
-      if (J(coloured) !== J([[fits.length, true], [over.length, false]])) fail(`${viewport}: a command shown whole is [its length, coloured] ${J(coloured)}, not ${J([[fits.length, true], [over.length, false]])}`);
     } catch (e) { say(`${viewport}: colour: ${e.message.split("\n")[0]}`); }
     await ctx.close();
   }

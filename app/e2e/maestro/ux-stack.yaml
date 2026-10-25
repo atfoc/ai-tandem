@@ -1,0 +1,181 @@
+# aiwb-e2e: needs=server,agent,control app=1
+# ux-stack (ux-improvements package F2, "the phone's stack"; PLAN §2 F2 Device): what only a device shows of the stack Home › group › board › chat. On a
+# scratch server a group "Stack-group" holds a board and a plain chat (the control API); the app is given the server. The group's screen is reached the way
+# a person reaches it: Home's row of the group (`home-row`), then the group's screen (`group-screen`) with its board and chat (the stack then has Home and the group under it).
+#   iOS      a chat: the edge swipe goes back to the group's screen; the group: the edge swipe goes back to Home; a board: the edge swipe does NOT leave
+#            it (the canvas owns the edge), its back control goes to the group
+#   Android  the system's back: chat → group → Home, and from the board → the group (only the edge swipe is off on the board)
+#   both     holding the back control of a chat opens the stack sheet ("Go back to"), and its Home row goes straight to Home
+appId: ${APP_ID}
+---
+- runFlow: _open-app.yaml
+- runFlow: _forget-servers.yaml
+- runScript:
+    file: _ctl.js
+    env:
+      METHOD: POST
+      ROUTE: /group?name=Stack-group
+- evalScript: ${output.group = output.ctl.id}
+- runScript:
+    file: _ctl.js
+    env:
+      METHOD: POST
+      ROUTE: /board?name=Stack-board&group=${output.group}
+- runScript:
+    file: _ctl.js
+    env:
+      METHOD: POST
+      ROUTE: /chat?name=Stack-chat&group=${output.group}
+- runFlow: _add-server.yaml
+# (a row's label is "<name>, <sub-line>": the rows are matched by their id and the name as a pattern)
+- extendedWaitUntil:
+    visible:
+      id: "home-row"
+      text: "Stack-group.*"
+    timeout: 60000
+- takeScreenshot: f2-00-home
+- tapOn:
+    id: "home-row"
+    text: "Stack-group.*"
+- extendedWaitUntil:
+    visible:
+      id: "group-screen"
+    timeout: 30000
+- extendedWaitUntil:
+    visible:
+      id: "home-row"
+      text: "Stack-chat.*"
+    timeout: 60000
+- extendedWaitUntil:
+    visible:
+      id: "home-row"
+      text: "Stack-board.*"
+    timeout: 60000
+- takeScreenshot: f2-00-group
+
+# ---- a chat of the group: back (the edge swipe on iOS, the system's on Android) lands on the group's screen, then Home
+- tapOn:
+    id: "home-row"
+    text: "Stack-chat.*"
+- extendedWaitUntil:
+    visible:
+      id: "chat-head"
+    timeout: 60000
+- waitForAnimationToEnd
+- takeScreenshot: f2-01-chat
+- runFlow:
+    when:
+      platform: iOS
+    commands:
+      - swipe:
+          start: 1%,50%
+          end: 70%,50%
+- runFlow:
+    when:
+      platform: Android
+    commands:
+      - back
+- extendedWaitUntil:
+    visible:
+      id: "group-screen"
+    timeout: 30000
+- waitForAnimationToEnd
+- assertVisible: "Back to Home"
+- assertNotVisible:
+    id: "chat-head"
+- takeScreenshot: f2-02-group
+- runFlow:
+    when:
+      platform: iOS
+    commands:
+      - swipe:
+          start: 1%,50%
+          end: 70%,50%
+- runFlow:
+    when:
+      platform: Android
+    commands:
+      - back
+- extendedWaitUntil:
+    visible:
+      id: "home"
+    timeout: 30000
+- waitForAnimationToEnd
+- assertNotVisible:
+    id: "group-screen"
+- takeScreenshot: f2-03-home
+
+# ---- the board of the group: no edge swipe leaves it; the system's back and the control do, to the group's screen
+- tapOn:
+    id: "home-row"
+    text: "Stack-group.*"
+- extendedWaitUntil:
+    visible:
+      id: "group-screen"
+    timeout: 30000
+- tapOn:
+    id: "home-row"
+    text: "Stack-board.*"
+- extendedWaitUntil:
+    visible:
+      id: "board-stage"
+    timeout: 120000
+- waitForAnimationToEnd
+- runFlow:
+    when:
+      platform: iOS
+    commands:
+      - swipe:
+          start: 1%,50%
+          end: 70%,50%
+      - waitForAnimationToEnd
+      - assertVisible:
+          id: "board-stage"
+      - assertNotVisible:
+          id: "group-screen"
+      - takeScreenshot: f2-04-board-after-swipe
+      - tapOn:
+          id: "nav-back"
+- runFlow:
+    when:
+      platform: Android
+    commands:
+      - back
+- extendedWaitUntil:
+    visible:
+      id: "group-screen"
+    timeout: 30000
+- waitForAnimationToEnd
+- assertVisible: "Back to Home"
+- assertNotVisible:
+    id: "board-stage"
+
+# ---- holding the back control of a chat opens the stack sheet; its Home row goes to Home at once
+- tapOn:
+    id: "home-row"
+    text: "Stack-chat.*"
+- extendedWaitUntil:
+    visible:
+      id: "chat-head"
+    timeout: 60000
+- waitForAnimationToEnd
+- longPressOn:
+    id: "nav-back"
+- extendedWaitUntil:
+    visible:
+      id: "stack-sheet"
+    timeout: 15000
+- assertVisible: "Go back to"
+- assertVisible: "Stack-group"
+- takeScreenshot: f2-05-stack-sheet
+- tapOn: "Home"
+- extendedWaitUntil:
+    visible:
+      id: "home"
+    timeout: 30000
+- waitForAnimationToEnd
+- assertNotVisible:
+    id: "stack-sheet"
+- assertNotVisible:
+    id: "chat-head"
+- takeScreenshot: f2-06-home-again

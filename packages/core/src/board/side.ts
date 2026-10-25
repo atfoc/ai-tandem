@@ -14,7 +14,7 @@
 //
 // One instance per app: createBoardSide() makes it, the app registers it as conn.ts's BoardSide (ports.ts setBoardSide)
 // and gives it its view (attachView) and, on a phone, its engine (setEngine).
-import type { CurrentItemStyle, EngineOp, EngineValues, Files, SavedAppState, ThemeMsg } from "@aiwb/board-bridge/messages.ts";
+import type { CurrentItemStyle, EngineOp, EngineValues, ExportValue, Files, OpenView, PhoneChromeMsg, SavedAppState, ThemeMsg } from "@aiwb/board-bridge/messages.ts";
 import { applyDelta } from "@aiwb/board-bridge/delta.ts";
 import type { BoardChannel, FromView } from "./channel.ts";
 import { RpcError, bbox, expandIds, keyOf, live, refMatch, sceneVersion, toFmt, type Box, type El } from "./scene.ts";
@@ -84,6 +84,24 @@ export type BoardApp = BoardSide & {
   watchView(f: () => void): () => void;
   /** The board whose scene the view shows and has drawn, and that is still the kept one; null for none. */
   liveBoard(): string | null;
+  // ---- the phone's board screen (B1)
+  /** The chrome the view wears on a phone (null: Excalidraw's own, as the wide layouts have it). Sent to the view when it differs from
+   *  what the view was last sent, and to a view that attaches or says `ready` before its `load`. */
+  setPhoneChrome(c: PhoneChromeMsg | null): void;
+  /** The pixels (an integer, 0 to 200) the view keeps free along its top edge, below the app's floating controls in landscape (0: none, the
+   *  start of every view). Sent to the view when it differs from what the view was last sent, and again to a view that attaches or says `ready`. */
+  setTopInset(px: number): void;
+  /** Asked, for a `load` the view does not draw in place (it does not show that board yet), how the board opens; the answer is the
+   *  load's `open`. Null (the default): the scene's own view. */
+  setOpenView(f: ((board: string) => OpenView | undefined) | null): void;
+  /** The phone menu's items the view reports for the board it shows; answers the function that stops listening. */
+  onMenu(f: (board: string, item: "share" | "clear") => void): () => void;
+  /** The whole board as a PNG (every live element, scale 2, background): drawn by the view when the board is on screen, else by the
+   *  engine on the kept scene. Rejects EMPTY for a board with nothing to draw. Marks nothing busy and changes nothing. */
+  boardPicture(id: string): Promise<ExportValue>;
+  /** Deletes every live element of a board this window holds, as one change (one undo step on the view). Rejects NOT_HOLDER and
+   *  ARCHIVED; an empty board is left as it is. */
+  clearBoard(id: string): Promise<void>;
   // ---- as the old page's board.ts
   loadScene(id: string): Promise<Scene>;
   scene(id: string): Scene | undefined;
@@ -168,6 +186,12 @@ export function createBoardSide(options: BoardSideOptions = {}): BoardApp {
   let selectedIds: string[] = [];
   let status: ViewStatus = { board: null, loaded: false, error: "" };
   const statusWatchers = new Set<() => void>();
+  /** The phone's chrome (B1): the one wanted, and the one the attached view was last sent (a view starts with none). */
+  let phone: PhoneChromeMsg | null = null, phoneSent: PhoneChromeMsg | null = null;
+  /** The top inset (B1): the one wanted, and the one the attached view was last sent (a view starts with 0). */
+  let topInset = 0, topInsetSent = 0;
+  let openView: ((board: string) => OpenView | undefined) | null = null;
+  const menuListeners = new Set<(board: string, item: "share" | "clear") => void>();
   const pendingScroll = new Map<string, any[]>(); // by board: the refs show_board brings into view once the board is drawn
   // Excalidraw keeps the user's style choices in appState only while a board is shown; they are carried here for the rest
   // of the session, and given to every board shown.
@@ -183,10 +207,11 @@ export function createBoardSide(options: BoardSideOptions = {}): BoardApp {
   const liveBoard = () => (shown && isLive(shown.board) ? shown.board : null);
 
   // (a point is waited for on the board: the view is in view mode, where the wheel, a drag and a pinch still move the board and a press changes
-  // nothing on it; the app's layer over the canvas takes no pointer, and hears the tap that puts the point)
+  // nothing on it; the app's layer over the canvas takes no pointer, and hears the tap that puts the point. The phone's Add selection
+  // (pickFor "select") keeps the role's mode: the holder selects with Excalidraw's own tools)
   const viewModeOf = (id: string) => {
     const st = getState();
-    return !!st.boards[id]?.archived || st.roles[id] !== "held" || (!!st.picking && st.chats[st.picking]?.board === id);
+    return !!st.boards[id]?.archived || st.roles[id] !== "held" || (!!st.picking && st.pickFor !== "select" && st.chats[st.picking]?.board === id);
   };
   function themeOf(): ThemeMsg {
     const st = getState(), flavour = flavourOf(st.themePref), t = canvasThemeOf(st.theme, flavour);
@@ -195,16 +220,44 @@ export function createBoardSide(options: BoardSideOptions = {}): BoardApp {
   // (a flavour has its own filter, so the filter's id says which chrome the theme has)
   const themeKey = (t: ThemeMsg) => `${t.mode}:${t.filter?.id ?? ""}`;
 
+  const samePhone = (a: PhoneChromeMsg | null, b: PhoneChromeMsg | null) =>
+    a === b || (!!a && !!b && a.title === b.title && a.inset === b.inset && a.band === b.band && a.line === b.line && a.share === b.share);
+
+  /** The view is told the phone chrome if it differs from what it was last sent. */
+  function sendPhone() {
+    if (!view?.ready() || samePhone(phone, phoneSent)) return;
+    phoneSent = phone;
+    view.send({ t: "phone", chrome: phone });
+  }
+
+  /** The view is told the top inset if it differs from what it was last sent. */
+  function sendTopInset() {
+    if (!view?.ready() || topInset === topInsetSent) return;
+    topInsetSent = topInset;
+    view.send({ t: "topInset", px: topInset });
+  }
+
+  /** A view that attaches or says `ready` has nothing: it is sent the chrome before the board (it mounts a board anew when the chrome
+   *  comes or goes), and the top inset if there is one. */
+  function freshView() {
+    phoneSent = null;
+    topInsetSent = 0;
+    sendPhone();
+    sendTopInset();
+  }
+
   /** keepLoaded: the view draws the board it already shows anew in place (board-view applies such a `load` without a new canvas), so the
-   *  status stays `loaded` and the screen shows no loading state; `loaded` comes again when it has. */
-  function sendLoad(id: string, sc: Scene, keepLoaded = shown?.board === id && shown.loaded) {
+   *  status stays `loaded` and the screen shows no loading state; `loaded` comes again when it has. inPlace: the view shows this board
+   *  already (a reload after a step, a stale redraw), so the load says nothing of how it opens: the view would jump. */
+  function sendLoad(id: string, sc: Scene, keepLoaded = shown?.board === id && shown.loaded, inPlace = shown?.board === id) {
     if (!view) return;
     const theme = themeOf(), viewMode = viewModeOf(id);
+    const open = inPlace ? undefined : openView?.(id);
     shown = { board: id, scene: sc, loaded: false, stale: false, viewMode, theme: themeKey(theme) };
     sent.set(id, sc);
     diverged.delete(id);
     selectedIds = [];
-    view.send({ t: "load", board: id, scene: { elements: sc.elements, files: sc.files ?? {}, appState: savedOf(sc.appState) }, viewMode, theme, style: { ...styleMemory } });
+    view.send({ t: "load", board: id, scene: { elements: sc.elements, files: sc.files ?? {}, appState: savedOf(sc.appState) }, viewMode, theme, style: { ...styleMemory }, ...(open ? { open } : {}) });
     setStatus({ board: id, loaded: keepLoaded, error: "" });
   }
 
@@ -263,8 +316,9 @@ export function createBoardSide(options: BoardSideOptions = {}): BoardApp {
   function onView(m: FromView) {
     switch (m.t) {
       case "ready": { // the view is up (again: a web view loaded anew has nothing): the board wanted is sent
+        freshView();
         const sc = wanted ? scenes.get(wanted) : undefined;
-        if (wanted && sc) sendLoad(wanted, sc, false); // (it has drawn nothing)
+        if (wanted && sc) sendLoad(wanted, sc, false, false); // (it has drawn nothing)
         return;
       }
       case "loaded": {
@@ -292,6 +346,11 @@ export function createBoardSide(options: BoardSideOptions = {}): BoardApp {
         if (m.ids.length !== getState().selection.count) setState({ selection: { count: m.ids.length, lines: [] } });
         return;
       }
+      case "menu": {
+        if (shown?.board !== m.board) return;
+        for (const f of [...menuListeners]) f(m.board, m.item);
+        return;
+      }
       case "error": {
         if (shown) setStatus({ board: shown.board, loaded: false, error: m.message });
         return;
@@ -306,6 +365,7 @@ export function createBoardSide(options: BoardSideOptions = {}): BoardApp {
     const unsub = subscribe(viewProps);
     const waiting = engineWaiters; engineWaiters = [];
     for (const w of waiting) w(ch);
+    if (ch.ready()) freshView();
     const sc = wanted ? scenes.get(wanted) : undefined;
     if (wanted && sc && ch.ready()) sendLoad(wanted, sc, false);
     return () => {
@@ -865,6 +925,22 @@ export function createBoardSide(options: BoardSideOptions = {}): BoardApp {
   /** The ids of the elements of a scene that are not deleted (for expandIds). */
   const liveIds = (sc: Scene) => live(sc.elements).map((e) => e.id);
 
+  /** The view draws the picture: Excalidraw measures it itself (a frame's name, the children clipped to a frame, an arrow by its
+   *  curve), checks the limit on that size, and answers the bounds of what it drew. A refusal the agent can act on keeps its code. */
+  async function drawExport(id: string, sc: Scene, onView: boolean, els: El[], scale: number, background: boolean): Promise<ExportValue> {
+    const ch = onView ? view! : await engine();
+    try {
+      return await ch.request({
+        op: "export",
+        target: onView ? "live" : { elements: sc.elements, files: sc.files ?? {}, appState: savedOf(sc.appState) },
+        ids: els.map((e) => e.id), scale, background,
+      });
+    } catch (err: any) {
+      if (err instanceof RpcError && IMAGE_CODES.has(err.code)) throw err;
+      throw new RpcError("RENDER_FAILED", `the picture could not be drawn: ${err?.message ?? String(err)}`);
+    }
+  }
+
   /** get_image: draws the elements chosen by the scope as a PNG. Nothing in the scene or the selection is changed. */
   async function getImage(call: ToolCall): Promise<ToolResult> {
     const p = parseImageArgs(call.args);
@@ -915,21 +991,35 @@ export function createBoardSide(options: BoardSideOptions = {}): BoardApp {
     const els = withText.filter((e) => hasExtent(e as any));
     if (!els.length) throw new RpcError("EMPTY", `the chosen elements on ${name} have no extent (zero width and height), so there is nothing to draw`);
     markBusy(id, call.chat, call.branch);
-    // the view draws it: Excalidraw measures the picture itself (a frame's name, the children clipped to a frame, an arrow by
-    // its curve), checks the limit on that size, and answers the bounds of what it drew
-    const ch = onView ? view! : await engine();
-    let v: EngineValues["export"];
-    try {
-      v = await ch.request({
-        op: "export",
-        target: onView ? "live" : { elements: sc.elements, files: sc.files ?? {}, appState: savedOf(sc.appState) },
-        ids: els.map((e) => e.id), scale, background,
-      });
-    } catch (err: any) {
-      if (err instanceof RpcError && IMAGE_CODES.has(err.code)) throw err;
-      throw new RpcError("RENDER_FAILED", `the picture could not be drawn: ${err?.message ?? String(err)}`);
-    }
+    const v = await drawExport(id, sc, onView, els, scale, background);
     return { text: resultText(scope, v.bounds, countElements(els as any[]), name), image: { mimeType: "image/png", data: v.png } };
+  }
+
+  /** The phone menu's Share: the whole board as a picture. Nothing is marked busy and no element changes. */
+  async function boardPicture(id: string): Promise<ExportValue> {
+    const sc = await loadScene(id);
+    await syncLive(id);
+    const onView = isLive(id);
+    const name = getState().boards[id]?.name ?? ownId(id);
+    // (elements with no extent are left out, as get_image leaves them: they would only stretch the bounds)
+    const els = live(sc.elements).filter((e) => hasExtent(e as any));
+    if (!els.length) throw new RpcError("EMPTY", `${name} has no elements to draw`);
+    return drawExport(id, sc, onView, els, 2, true);
+  }
+
+  /** The phone menu's Clear: every live element of a board this window holds, deleted as one change (one undo step on the view). */
+  async function clearBoard(id: string): Promise<void> {
+    if (getState().roles[id] !== "held") throw new RpcError("NOT_HOLDER", "this window does not hold the board");
+    writable(id);
+    const sc = await heldScene(id);
+    return serial(id, async () => {
+      await syncLive(id);
+      const ids = liveIds(sc);
+      if (!ids.length) return;
+      // (a cascade takes the bound text and the arrows with their containers; the refs are checked before anything changes)
+      await edit(id, sc, { op: "delete", refs: ids.map((i) => ({ id: i })), cascade: true, rev: sc.rev + 1 });
+      saveSoon(id, agentSave);
+    });
   }
 
   async function runTool(call: ToolCall): Promise<ToolResult> {
@@ -1021,6 +1111,11 @@ export function createBoardSide(options: BoardSideOptions = {}): BoardApp {
     viewStatus: () => status,
     watchView: (f) => { statusWatchers.add(f); return () => { statusWatchers.delete(f); }; },
     liveBoard,
+    setPhoneChrome: (c) => { phone = c; sendPhone(); },
+    setTopInset: (px) => { topInset = Math.min(200, Math.max(0, Math.round(Number.isFinite(px) ? px : 0))); sendTopInset(); },
+    setOpenView: (f) => { openView = f; },
+    onMenu: (f) => { menuListeners.add(f); return () => { menuListeners.delete(f); }; },
+    boardPicture, clearBoard,
     loadScene, scene: (id) => scenes.get(id), flush, takeBoard, hasPendingSaves, droppedInOutage,
     selectionLines, selectionRefOn, pointRefOn, showRef, buildContext,
   };

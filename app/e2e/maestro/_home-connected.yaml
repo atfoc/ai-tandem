@@ -1,0 +1,24 @@
+# Shared (package D1): waits until Home says the one server is connected. Phone: Home's line under its title, "<name> ·" and the state word
+# (`home-sub`, `state-word`: Home.tsx OneServer, H1); tablet: the sidebar's section "<host> — Connected". Needs Home or the sidebar on the screen.
+appId: ${APP_ID}
+---
+- runFlow:
+    when:
+      visible:
+        id: "home"
+    commands:
+      - extendedWaitUntil:
+          visible:
+            id: "state-word"
+            text: "Connected"
+          timeout: 120000
+      - assertVisible:
+          id: "home-sub"
+- runFlow:
+    when:
+      visible:
+        id: "side-tree"
+    commands:
+      - extendedWaitUntil:
+          visible: "${SERVER_HOST} — Connected"
+          timeout: 120000

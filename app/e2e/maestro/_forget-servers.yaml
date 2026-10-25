@@ -1,28 +1,80 @@
-# Shared by the flows of the app: removes every server the app already has (an earlier run's scratch server stays in its storage), through the
-# Servers dialog, and leaves the dialog closed. Opens from the sidebar's foot, so the sidebar must be on the screen.
+# Shared by the flows of the app: removes every server the app already has (an earlier run's scratch server stays in its storage) and leaves the Servers screens
+# closed, on Home (phone) or the sidebar (tablet). Opens from the foot (`_open-foot.yaml`: behind Home's gear on the phone), so Home or the sidebar must be on the screen. Two layouts, one branch each:
+#   phone (iPhone, Android phone): the Servers button pushes the list (`srv-add` is its "Add server"); a row pushes the server's detail, whose "Remove server…"
+#     (`srv-remove`) asks in the confirm sheet (`confirm-go`); the detail goes with its entry and the list is under it again; the backs go to Home (`_to-sidebar.yaml`; Settings is between);
+#   wide (iPad, tablet): the Servers dialog, whose rows have Remove and a confirm dialog; Close leaves it.
 appId: ${APP_ID}
 ---
-- tapOn:
-    id: "servers-btn"
+- runFlow:
+    file: _open-foot.yaml
+    env:
+      ID: "servers-btn"
 - extendedWaitUntil:
     visible:
-      id: "servers-add"
+      id: "srv-add|servers-add"
     timeout: 30000
-- repeat:
-    while:
+
+# ---- phone
+- runFlow:
+    when:
       visible:
-        id: "servers-row"
+        id: "srv-add"
     commands:
-      - tapOn:
-          id: "servers-remove"
-      - tapOn:
-          text: "Remove"
+      - repeat:
+          while:
+            visible:
+              id: "srv-row"
+          commands:
+            - tapOn:
+                id: "srv-row"
+            - extendedWaitUntil:
+                visible:
+                  id: "srv-facts"
+                timeout: 30000
+            - scrollUntilVisible:
+                element:
+                  id: "srv-remove"
+                timeout: 20000
+            - tapOn:
+                id: "srv-remove"
+            - extendedWaitUntil:
+                visible:
+                  id: "confirm-go"
+                timeout: 30000
+            - tapOn:
+                id: "confirm-go"
+            - extendedWaitUntil:
+                visible:
+                  id: "srv-add"
+                timeout: 30000
+            - waitForAnimationToEnd
+      - runFlow: _to-sidebar.yaml
       - extendedWaitUntil:
-          notVisible: "Remove server"
+          notVisible:
+            id: "srv-add"
           timeout: 30000
-- tapOn:
-    id: "servers-close"
-- extendedWaitUntil:
-    notVisible:
-      id: "servers-add"
-    timeout: 30000
+
+# ---- wide
+- runFlow:
+    when:
+      visible:
+        id: "servers-add"
+    commands:
+      - repeat:
+          while:
+            visible:
+              id: "servers-row"
+          commands:
+            - tapOn:
+                id: "servers-remove"
+            - tapOn:
+                text: "Remove"
+            - extendedWaitUntil:
+                notVisible: "Remove server"
+                timeout: 30000
+      - tapOn:
+          id: "servers-close"
+      - extendedWaitUntil:
+          notVisible:
+            id: "servers-add"
+          timeout: 30000

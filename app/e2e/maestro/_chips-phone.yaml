@@ -1,0 +1,48 @@
+# Part of `composer-chips` on the phone (package D1, after B2): the selection's reference is not put into the text but beside the box, as a chip of
+# the context row (`ctx-chip`, "1 shape · API", with its × `ctx-chip-remove`; RefBox.tsx keeps it at the caret's offset in the message). Typed:
+# "Move", the selection added through the board (`_chips-add-selection.yaml`), the chip removed with its × and added again, " to", a line break and
+# "thanks". The box itself holds only the plain text (`phone-plain`); the message the server gets holds the reference where the caret was
+# (`server-has-message`, after the send in composer-chips.yaml). Ends with the message typed, not sent.
+appId: ${APP_ID}
+---
+- tapOn:
+    id: "composer-input"
+# the chip row is not on the screen while the keyboard is up (goal 3.6)
+- extendedWaitUntil:
+    notVisible:
+      id: "composer-chip-row"
+    timeout: 10000
+- inputText: "Move"
+- runFlow: _chips-add-selection.yaml
+- extendedWaitUntil:
+    visible:
+      id: "ctx-chip"
+      text: "1 shape · API"
+    timeout: 15000
+- runFlow:
+    file: _check.yaml
+    env:
+      NAME: phone-plain
+- takeScreenshot: v3-04-chip
+# the chip's × takes the reference out of the message; Add selection puts it back at the same caret
+- tapOn:
+    id: "ctx-chip-remove"
+# (the board's own chip, "Open the board Chips-board", is a `ctx-chip` too: the selection's is named by its text)
+- extendedWaitUntil:
+    notVisible:
+      id: "ctx-chip"
+      text: "1 shape · API"
+    timeout: 15000
+- runFlow: _chips-add-selection.yaml
+- extendedWaitUntil:
+    visible:
+      id: "ctx-chip"
+      text: "1 shape · API"
+    timeout: 15000
+- runFlow:
+    file: _check.yaml
+    env:
+      NAME: phone-plain
+- inputText: " to"
+- pressKey: Enter
+- inputText: "thanks"

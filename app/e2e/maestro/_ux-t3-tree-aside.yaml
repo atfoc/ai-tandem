@@ -1,0 +1,89 @@
+# Part of `ux-composer` (package D1, for T3's "one sheet at a time", goal 3.1.4 and 3.5): on the phone the chat tree is a full-height sheet, and a row's
+# actions (a P1 ActionSheet, `fk-row-sheet`) and its Label form (a P3 FormSheet, `fk-label-form`) replace it while open (TreeSheet.tsx `aside`): on iOS a
+# second `Modal` beside an open one does not show, so only a device shows that they are drawn and that the tree comes back after. Run on the chat the
+# flow has started (two messages: the user's and the stand-in's reply).
+# ASSERTED: the tree opens from the header's Tree; a hold on a row shows its actions and not the tree; a tap on the dimmed page above them closes them
+# without action and the tree is back; Label… shows the form and neither the tree nor the actions; Save brings the tree back with the row's tag "⚑ Kbd-mark"
+# (the label saved through the server); Done closes the tree.
+appId: ${APP_ID}
+---
+- tapOn:
+    id: "chat-tree"
+- extendedWaitUntil:
+    visible:
+      id: "tree-popup"
+    timeout: 20000
+- extendedWaitUntil:
+    visible:
+      id: "fk-row"
+    timeout: 20000
+- waitForAnimationToEnd
+- takeScreenshot: t3-01-tree
+# a hold on a row: its actions, and the tree has stepped aside
+- longPressOn:
+    id: "fk-row"
+    index: 0
+- extendedWaitUntil:
+    visible:
+      id: "fk-row-sheet"
+    timeout: 15000
+- waitForAnimationToEnd
+- assertNotVisible:
+    id: "tree-popup"
+- assertVisible: "Label…"
+- takeScreenshot: t3-02-row-actions
+# closed without an action (a tap on the dimmed page above the fit sheet): the tree comes back
+- tapOn:
+    point: 50%,8%
+- extendedWaitUntil:
+    visible:
+      id: "tree-popup"
+    timeout: 15000
+- waitForAnimationToEnd
+- assertNotVisible:
+    id: "fk-row-sheet"
+- assertVisible:
+    id: "fk-row"
+# Label…: the form, alone
+- longPressOn:
+    id: "fk-row"
+    index: 0
+- extendedWaitUntil:
+    visible:
+      id: "fk-row-sheet"
+    timeout: 15000
+- waitForAnimationToEnd
+- tapOn: "Label…"
+- extendedWaitUntil:
+    visible:
+      id: "fk-label-form"
+    timeout: 15000
+- waitForAnimationToEnd
+- assertNotVisible:
+    id: "tree-popup"
+- assertNotVisible:
+    id: "fk-row-sheet"
+- tapOn:
+    id: "fk-label-input"
+- inputText: "Kbd-mark"
+- takeScreenshot: t3-03-label-form
+- tapOn:
+    id: "sheet-right"
+# saved: the form is gone, the tree is back with the row's tag
+- extendedWaitUntil:
+    visible:
+      id: "tree-popup"
+    timeout: 15000
+- extendedWaitUntil:
+    visible: ".*Kbd-mark"
+    timeout: 20000
+- waitForAnimationToEnd
+- assertNotVisible:
+    id: "fk-label-form"
+- takeScreenshot: t3-04-labeled
+- tapOn:
+    id: "fk-done"
+- extendedWaitUntil:
+    notVisible:
+      id: "tree-popup"
+    timeout: 15000

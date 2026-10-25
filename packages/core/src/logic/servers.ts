@@ -187,3 +187,18 @@ export function removeText(name: string): string {
 
 /** Whether the sidebar's button shows its dot. */
 export function anyNotConnected(list: ServerView[]): boolean { return list.some((v) => v.state !== "connected"); }
+
+/** The record of when each entry's state began (`State.serverSince`, epoch milliseconds), after the list became `next`: an
+ *  entry whose state differs from the one in `prev`, or that has no record, is stamped `now`; the records of entries no longer
+ *  listed go. The same object when nothing changed. */
+export function sinceAfter(since: Record<string, number>, prev: readonly ServerView[], next: readonly ServerView[], now: number): Record<string, number> {
+  const out: Record<string, number> = {};
+  let changed = Object.keys(since).length !== next.length;
+  for (const v of next) {
+    const was = prev.find((x) => x.id === v.id);
+    const t = was && was.state === v.state && v.id in since ? since[v.id] : now;
+    out[v.id] = t;
+    if (since[v.id] !== t) changed = true;
+  }
+  return changed ? out : since;
+}

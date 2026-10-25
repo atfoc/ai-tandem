@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   branchName, buildTree, childrenOf, entryId, FILTERS, forkLinks, labelAt, markerAt, nameOfBranch, ownerOf, pathTo, preview, rowActions, rows,
-  sharedCount, siblingsOf, tipBranch, tipOf, tips, withLive,
+  sharedCount, siblingBranch, siblingsOf, siblingTarget, tipBranch, tipOf, tips, withLive,
   type ForkLink, type RowActions,
 } from "../src/logic/forktree.ts";
 import { LIVE_FORK } from "../src/logic/forkpoints.ts";
@@ -699,4 +699,34 @@ test("a long chat is drawn without running out of stack", () => {
   assert.deepEqual(rows(t, { filter: "labeled" }).map((x) => x.gutter + x.id), [`main:${n - 1}`]);
   assert.equal(pathTo(t, t.leaf).length, n);
   assert.equal(nameOfBranch(t, "main"), "the end");
+});
+
+test("siblingBranch: the branch to view for the previous or next sibling, no wrap", () => {
+  const t = buildTree(EXAMPLE);
+  assert.equal(siblingBranch(t, "main", 3, 1), "a1b2c3d4");
+  assert.equal(siblingBranch(t, "main", 3, -1), null);
+  assert.equal(siblingBranch(t, "a1b2c3d4", 3, -1), "main");
+  assert.equal(siblingBranch(t, "a1b2c3d4", 3, 1), null);
+  assert.equal(siblingBranch(t, "main", 1, 1), null); // a thread that passes no split
+  assert.equal(siblingBranch(t, "a1b2c3d4", 1, -1), null);
+});
+
+test("siblingBranch: the chat's current branch if it goes through the sibling, else the most recent, else the sibling's own", () => {
+  // main:3 is passed by main, and by e5f6a7b8 (split off a1b2c3d4 below the first split, so on main's part of the path it passes main:1 only)
+  const low = buildTree(nested(3));
+  assert.equal(siblingBranch(low, "main", 3, 1), "a1b2c3d4"); // the next sibling of three
+  assert.equal(siblingBranch(low, "a1b2c3d4", 3, 1), "e5f6a7b8");
+  assert.equal(siblingBranch(low, "e5f6a7b8", 3, -1), "a1b2c3d4");
+  // a1b2c3d4:3 is passed by a1b2c3d4 and by a branch that split off it later: the current one is chosen, else the newest
+  const deep = nested(4, [u(4, "deeper")]);
+  assert.equal(siblingBranch(buildTree(deep), "main", 3, 1), "e5f6a7b8");  // current is e5f6a7b8, which goes through a1b2c3d4:3
+  assert.equal(siblingBranch(buildTree({ ...deep, current: "main" }), "main", 3, 1), "e5f6a7b8"); // not current: the most recent through it
+  assert.equal(siblingBranch(buildTree({ ...deep, current: "a1b2c3d4" }), "main", 3, 1), "a1b2c3d4"); // current goes through it
+});
+
+test("siblingTarget: a sibling that is the entry a branch ends at is shown by that branch, at that entry's index", () => {
+  const t = buildTree(branchedAtEnd());
+  assert.deepEqual(siblingTarget(t, "b1", 3, -1), { branch: "main", index: 1 });
+  assert.deepEqual(siblingTarget(t, "main", 1, 1), null);
+  assert.deepEqual(siblingTarget(buildTree(EXAMPLE), "main", 3, 1), { branch: "a1b2c3d4", index: 3 });
 });

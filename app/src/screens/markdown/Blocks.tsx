@@ -4,15 +4,22 @@ import { memo, useEffect, useState } from "react";
 import { Text as RNText, View } from "react-native";
 
 import { SANS } from "../../ui/fonts.ts";
+import { TYPE } from "../../ui/metrics.ts";
 import { useTokens } from "../../ui/theme.tsx";
 import { webStyle } from "../../ui/webstyle.ts";
 import { CodeBlock } from "./CodeBlock.tsx";
 import type { Block } from "./doc.ts";
 import { Inlines } from "./Inline.tsx";
 import { spaced } from "./layout.ts";
-import { HEADING, type Look } from "./look.ts";
+import { HEADING, PHONE_HEADING, type Look } from "./look.ts";
 import { LookContext, useLook } from "./look.tsx";
 import { TableBlock } from "./Table.tsx";
+
+/** The width of a list's marker column on the phone, in points (the wide layouts keep 20). */
+const LIST_INDENT = 24;
+
+/** A text line's height: the thread's 1.45 of the size, the phone's reading body 1.5 (TYPE.bodyLine). */
+const lineOf = (look: Look): number => Math.round(look.size * (look.phone ? TYPE.bodyLine : 1.45) * 100) / 100;
 
 type Inside = "root" | "li" | "quote" | "group";
 
@@ -33,12 +40,12 @@ function BlockView({ block, mt, inside, caret }: { block: Block; mt: number; ins
   switch (block.k) {
     case "p":
       return (
-        <RNText testID="md-p" style={{ marginTop: mt, color: look.color, fontFamily: SANS, fontSize: look.size, lineHeight: Math.round(look.size * 1.45 * 100) / 100 }}>
+        <RNText testID="md-p" style={{ marginTop: mt, color: look.color, fontFamily: SANS, fontSize: look.size, lineHeight: lineOf(look) }}>
           <Inlines kids={block.kids} />{caret ? <Caret /> : null}
         </RNText>
       );
     case "h": {
-      const size = look.size * HEADING[block.depth - 1];
+      const size = look.phone ? PHONE_HEADING[block.depth - 1] : look.size * HEADING[block.depth - 1];
       return (
         <RNText testID="md-h" dataSet={{ depth: block.depth }} role="heading" aria-level={block.depth}
           style={{ marginTop: mt, color: block.depth === 6 ? t.muted : look.color, fontFamily: SANS, fontSize: size, lineHeight: size * 1.3, fontWeight: "600" }}>
@@ -73,7 +80,7 @@ function ListView({ block, mt, caret }: { block: Extract<Block, { k: "list" }>; 
       {items.map((li, i) => (
         <View key={i} testID="md-li" role="listitem" style={{ flexDirection: "row", marginTop: i ? 0.15 * look.size : 0, paddingLeft: li.task ? 4 : 0 }}>
           {li.task ? null : (
-            <RNText testID="md-marker" selectable={false} style={{ width: 20, paddingRight: 5, textAlign: "right", color: t.muted, fontFamily: block.ordered ? SANS : undefined, fontSize: look.size, lineHeight: Math.round(look.size * 1.45 * 100) / 100 }}>
+            <RNText testID="md-marker" selectable={false} style={{ width: look.phone ? LIST_INDENT : 20, paddingRight: 5, textAlign: "right", color: t.muted, fontFamily: block.ordered ? SANS : undefined, fontSize: look.size, lineHeight: lineOf(look) }}>
               {block.ordered ? `${block.start + i}.` : "•"}
             </RNText>
           )}

@@ -1,6 +1,6 @@
 // The subagent's drawer (the old page's Subagents.tsx SubThread, SubagentDrawer): the open subagent of the chat on screen, with its prompt, its own
 // thread and its report. On the wide layouts it lies over the right of the window (700 points at most, 58 % of it); on the phone it is
-// the pushed screen of the stack (AD-71: `drawer-screen`, whose bar has the back) and fills it. The store's `subDrawer` says which one is
+// the pushed screen of the stack (AD-71: `drawer-screen`) and fills it, drawing its own content bar with the back (Screen.tsx). The store's `subDrawer` says which one is
 // open; the drawer belongs to the chat on screen and closes with it (nav.ts), and a board chat's drawer shows only while its panel does.
 //
 // It closes by its ×, by the back and, on web, by Esc through the overlay stack (`useOverlayClose`): the layers that open over it (the large
@@ -26,6 +26,7 @@ import { Dots, ItemView, StickyList, chatMarkdownEnv, usePrefixEnd, useOffWhy } 
 import { Markdown, MarkdownEnvProvider } from "../markdown/index.ts";
 import { closeSub, openSub, useNow, useSubThread } from "./hooks.ts";
 import { SubMark, SubName, SubStats } from "./Parts.tsx";
+import { SubScreen } from "./Screen.tsx";
 
 /** A chat's subagent as the drawer shows it: its state with what the Agent / Task call that started it says (the call is in the chat's
  *  thread, or in the outer subagent's). sa is undefined until the subagent is known. readOnly: it was started in the part copied from the
@@ -53,7 +54,7 @@ export function SubagentDrawer() {
     return phone || !c.board || s.panel; // a board chat's drawer only while its panel shows (on the phone the chat is the screen)
   });
   const chat = useStore((s) => (d ? shownView(s, d.chat) : undefined));
-  const { sa, readOnly } = useSub(d?.chat ?? "", d?.sub ?? "");
+  const { subs, call, sa, readOnly } = useSub(d?.chat ?? "", d?.sub ?? "");
   const picking = useStore((s) => !!s.picking); // the wait for a point on the board ends with its own Esc
   const live = shown && !!chat && !!d && !!sa;
   useOverlayClose(live && !picking, closeSub);
@@ -64,7 +65,9 @@ export function SubagentDrawer() {
   return (
     <MarkdownEnvProvider env={chatMarkdownEnv}>
       <View {...tid("sub-drawer", { status: sa.status, waiting: subWaiting(sa), readonly: readOnly, sub: sa.id, layout })} accessibilityLabel="Subagent" style={root as never}>
-        <SubThread chat={chat} sid={d.sub} branch={d.branch} readOnly={readOnly} onClose={closeSub} onOpen={(sid) => openSub(chat.id, sid)} />
+        {phone
+          ? <SubScreen key={sa.id} chat={chat} sa={sa} call={call} subs={subs} branch={d.branch} readOnly={readOnly} onOpen={(sid) => openSub(chat.id, sid)} />
+          : <SubThread chat={chat} sid={d.sub} branch={d.branch} readOnly={readOnly} onClose={closeSub} onOpen={(sid) => openSub(chat.id, sid)} />}
       </View>
     </MarkdownEnvProvider>
   );

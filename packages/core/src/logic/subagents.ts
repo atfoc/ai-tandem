@@ -176,6 +176,14 @@ export function fmtDuration(ms: number): string {
   return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, "0")}m`;
 }
 
+/** The phone row's duration: "40s", "7m" (minutes only, from one minute on), "1h 02m". */
+export function fmtDurationShort(ms: number): string {
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, "0")}m`;
+}
+
 /** A chat's subagents in the order they started (nested ones included). */
 export const subList = (subs: Record<string, Subagent> | undefined): Subagent[] =>
   Object.values(subs ?? {}).sort((a, b) => (a.started ?? 0) - (b.started ?? 0) || a.id.localeCompare(b.id));
@@ -218,4 +226,77 @@ export function subTree(subs: Record<string, Subagent> | undefined): SubNode[] {
   walk("", 1);
   for (const sa of all) if (!seen.has(sa.id)) { seen.add(sa.id); out.push({ sa, level: 1 }); walk(sa.id, 2); } // a loop in the records hangs on no root
   return out;
+}
+
+/** The head of a call's card on the phone: how many subagents the roots stand for (each root and every one it started, at any depth, once)
+ *  and how many of them run (a waiting one too), and whether every root is a background one. Roots not linked yet have no id and
+ *  count one each. */
+export function subRunCounts(subs: Record<string, Subagent> | undefined, roots: Subagent[]): { count: number; running: number; background: boolean } {
+  const seen = new Set<string>();
+  let count = 0, running = 0;
+  const walk = (sa: Subagent) => {
+    if (sa.id) { if (seen.has(sa.id)) return; seen.add(sa.id); }
+    count++;
+    if (subStatus(sa) === "running") running++; // one that waits on those it started still runs (the mockup's "2 running")
+    for (const x of subChildren(subs, sa.id)) walk(x);
+  };
+  for (const r of roots) walk(r);
+  return { count, running, background: roots.length > 0 && roots.every((r) => !!r.background) };
+}
+
+// ---- the phone's subagent screen: its steps folded to one row, and the pills
+
+/** What a subagent's steps did, counted from its thread: every tool call is a step; files read (a Read of a file, not a search), files
+ *  edited (distinct paths, a Write counts), commands run. */
+export type StepsSummary = { steps: number; reads: number; edits: number; runs: number };
+
+const READ_FILE = new Set(["Read", "read"]);
+const EDIT_FILE = new Set(["Edit", "MultiEdit", "NotebookEdit", "edit", "Write", "write"]);
+const RUN_COMMAND = new Set(["Bash", "bash", "powershell"]);
+
+export function stepsSummary(items?: Item[]): StepsSummary {
+  const out = { steps: 0, reads: 0, edits: 0, runs: 0 };
+  const edited = new Set<string>();
+  let unnamed = 0;
+  for (const it of items ?? []) {
+    if (it?.kind !== "tool") continue;
+    out.steps++;
+    const name = it.name ?? "", input: any = it.input ?? {};
+    if (READ_FILE.has(name)) out.reads++;
+    else if (RUN_COMMAND.has(name)) out.runs++;
+    else if (EDIT_FILE.has(name)) edited.add(String(input.file_path ?? input.notebook_path ?? input.path ?? `#${unnamed++}`));
+  }
+  out.edits = edited.size;
+  return out;
+}
+
+/** "14 steps · read 8 files": the steps, then at most two of the read, edited and ran counts that are not 0, in that order. steps is the
+ *  tool-call count the pills show (Claude's own count can be larger than the loaded thread's), `sum` what the loaded thread did. */
+export function stepsLine(steps: number, sum: Pick<StepsSummary, "reads" | "edits" | "runs">): string {
+  const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+  const parts = [
+    sum.reads ? `read ${plural(sum.reads, "file", "files")}` : "",
+    sum.edits ? `edited ${plural(sum.edits, "file", "files")}` : "",
+    sum.runs ? `ran ${plural(sum.runs, "command", "commands")}` : "",
+  ].filter(Boolean).slice(0, 2);
+  return [plural(steps, "step", "steps"), ...parts].join(" · ");
+}
+
+/** "Subagent 1 of 4 · Done": where it stands in the chat's subagents (the order ‹ › goes through), then its state in words. */
+export function subScreenSub(sa: Subagent, subs: Record<string, Subagent> | undefined): { text: string; tone: "ok" | "wait" | "bad" } {
+  const list = subTree(subs), at = list.findIndex((n) => n.sa.id === sa.id);
+  const state = sa.notCarried ? { word: "Stopped", tone: "wait" as const }
+    : subWaiting(sa) ? { word: subWaitingText(sa, subs), tone: "wait" as const }
+    : sa.status === "running" ? { word: "Running", tone: "ok" as const }
+    : sa.status === "completed" ? { word: "Done", tone: "wait" as const }
+    : sa.status === "failed" ? { word: "Failed", tone: "bad" as const }
+    : sa.status === "stopped" ? { word: "Stopped", tone: "wait" as const }
+    : { word: String(sa.status ?? ""), tone: "wait" as const };
+  return { text: [at >= 0 ? `Subagent ${at + 1} of ${list.length}` : "Subagent", state.word].filter(Boolean).join(" · "), tone: state.tone };
+}
+
+/** The subagents on either side of one in the chat's order, without wrapping round: the first has no previous, the last no next. */
+export function subNeighbours(sa: Subagent, subs: Record<string, Subagent> | undefined): { prev?: Subagent; next?: Subagent } {
+  const list = subTree(subs).map((n) => n.sa), at = list.findIndex((x) => x.id === sa.id);
+  return at < 0 ? {} : { prev: list[at - 1], next: list[at + 1] };
 }

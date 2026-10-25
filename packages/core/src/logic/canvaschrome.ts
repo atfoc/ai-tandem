@@ -23,7 +23,9 @@ const SURFACES: Record<string, Source> = {
   "--input-border-color": "--line-2",
   "--input-hover-bg-color": "--panel",
   "--input-label-color": "--text",
-  "--keybinding-color": "--faint",
+  // (a shortcut is written on a tool's button, on surface0 where it is chosen or hovered: faint is 2.56:1 to 2.80:1 there in Latte and
+  // Frappe, under the 3:1 of A6.3; subtext0 is 3.20:1 or more on it in every flavour)
+  "--keybinding-color": "ctp:subtext0",
   "--color-disabled": "--faint",
   "--dialog-border-color": "--line",
   "--link-color": "ctp:blue",

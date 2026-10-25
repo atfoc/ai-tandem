@@ -21,10 +21,13 @@ import { ServersButton } from "../servers";
 import { SettingsButton } from "../voice/SettingsButton.tsx";
 import { useSideHidden, Text } from "./parts.tsx";
 
+/** "Show archived" on or off, kept over a reload: the one writer of its key (Settings' Archived page uses it too). */
+export function setShowArchived(on: boolean): void { setState({ showArchived: on }); safeSet("aiwb.archived", on ? "1" : "0"); }
+
 export function Foot() {
   const t = useTokens();
   const showArchived = useStore((s) => s.showArchived);
-  const set = (on: boolean) => { setState({ showArchived: on }); safeSet("aiwb.archived", on ? "1" : "0"); };
+  const set = setShowArchived;
   return (
     <View {...tid("side-foot")} style={[styles.foot, { borderTopColor: t.line }]}>
       <Pressable {...tid("side-archived")} role="switch" aria-checked={showArchived} accessibilityState={{ checked: showArchived }} aria-label="Show archived"

@@ -14,14 +14,21 @@ import { Overlay } from "../../ui/Overlay.tsx";
 import { Text } from "../../ui/Text.tsx";
 import { useTokens } from "../../ui/theme.tsx";
 import { tid } from "../../ui/tid.ts";
+import { usePhone } from "../../ui/useLayout.ts";
 import { usePointer } from "../../ui/usePointer";
 import { webStyle } from "../../ui/webstyle.ts";
 import { PromptLine, SearchField } from "./parts.tsx";
+import { PromptSheet } from "./phone/PromptSheet.tsx";
 import { useLibraries } from "./useLibraries.ts";
 
 export const INSERT_POPUP_ID = "insert-popup";
 
+/** The phone draws the Prompt sheet (phone/PromptSheet.tsx); the wide layouts the dialog below. */
 export function InsertPopup({ target }: { target: InsertTarget }) {
+  return usePhone() ? <PromptSheet target={target} /> : <InsertDialog target={target} />;
+}
+
+function InsertDialog({ target }: { target: InsertTarget }) {
   const t = useTokens();
   const pointer = usePointer();
   const libs = useLibraries();

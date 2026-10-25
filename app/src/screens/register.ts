@@ -13,3 +13,6 @@ import "./composerimages";
 import "./subagents";
 import "./library";
 import "./voice";
+import "./home";
+import "./settings";
+import "./usage";

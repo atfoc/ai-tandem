@@ -2,7 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { ENGINE_OPS, FROM_BOARD_TYPES, TO_BOARD_TYPES } from "../src/messages.ts";
 import { CHROME_VARS } from "../src/chrome.ts";
-import type { CanvasFilterMsg, CurrentItemStyle, El, EngineOp, FromBoard, SavedAppState, ThemeMsg, ToBoard } from "../src/messages.ts";
+import { BAND_HEIGHT } from "../src/messages.ts";
+import type { CanvasFilterMsg, CurrentItemStyle, El, EngineOp, FromBoard, PhoneChromeMsg, SavedAppState, ThemeMsg, ToBoard } from "../src/messages.ts";
 import { MAX_DEPTH, parseFromBoard, parseToBoard, validateFromBoard, validateToBoard } from "../src/validate.ts";
 
 // ---- one valid message of every kind (typed, so the validators and the types are held to each other)
@@ -19,9 +20,12 @@ const filter: CanvasFilterMsg = {
 };
 const theme: ThemeMsg = { mode: "dark", filter };
 const scene = { elements: [rect, text], files, appState };
+const chrome: PhoneChromeMsg = { title: "Checkout flow", inset: 64, band: "#eff1f5", line: "#ccd0da", share: true };
 
 const toBoard = {
   load: { t: "load", board: "b1", scene, viewMode: false, theme, style },
+  phone: { t: "phone", chrome },
+  topInset: { t: "topInset", px: 52 },
   unload: { t: "unload" },
   viewMode: { t: "viewMode", on: true },
   theme: { t: "theme", theme: { mode: "light", filter: null } },
@@ -36,6 +40,7 @@ const fromBoard = {
   changed: { t: "changed", board: "b1", elements: [rect, text], order: ["r1", "t1"], files, appState, style },
   view: { t: "view", board: "b1", scrollX: 10, scrollY: -4, zoom: 0.75, width: 800, height: 600 },
   selection: { t: "selection", board: "b1", ids: ["r1"] },
+  menu: { t: "menu", board: "b1", item: "share" },
   res: { t: "res", id: 7, ok: true, value: { png: "iVBOR", bounds: { x: 0, y: 0, width: 10, height: 10 } } },
   error: { t: "error", message: "boom" },
 } satisfies Record<(typeof FROM_BOARD_TYPES)[number], FromBoard>;
@@ -270,6 +275,51 @@ test("load carries the theme and the style too, and all of them are checked", ()
   bad(validateToBoard({ ...load, viewMode: "yes" }), "a viewMode that is not a boolean");
   const { theme: _t, ...noTheme } = load;
   bad(validateToBoard(noTheme), "no theme");
+});
+
+test("phone: the chrome of the phone's board, or null for Excalidraw's own", () => {
+  assert.equal(BAND_HEIGHT, 64);
+  ok(validateToBoard({ t: "phone", chrome: null }), "no chrome");
+  ok(validateToBoard({ t: "phone", chrome: { ...chrome, title: "", inset: 0, share: false } }), "an empty title, no inset, no share");
+  ok(validateToBoard({ t: "phone", chrome: { ...chrome, title: "x".repeat(200), inset: 400 } }), "the longest title, the widest inset");
+  const one = (c: Partial<Record<keyof PhoneChromeMsg, unknown>>) => ({ t: "phone", chrome: { ...chrome, ...c } });
+  for (const b of [{ title: "x".repeat(201) }, { title: 5 }, { inset: -1 }, { inset: 401 }, { inset: NaN }, { inset: Infinity }, { inset: "64" },
+    { band: "#fff" }, { band: "eff1f5" }, { band: "#eff1f5ff" }, { band: "red" }, { band: "url(x)" }, { band: 0 }, { line: "#ggg000" }, { line: null }, { share: "yes" }, { share: 1 }])
+    bad(validateToBoard(one(b)), JSON.stringify(b));
+  bad(validateToBoard({ t: "phone" }), "no chrome key");
+  bad(validateToBoard({ t: "phone", chrome: { title: "a", inset: 0, band: "#000000", line: "#000000" } }), "no share");
+  bad(validateToBoard({ t: "phone", chrome: { ...chrome, extra: 1 } }), "an extra key in the chrome");
+  bad(validateToBoard({ t: "phone", chrome: "x" }), "chrome a string");
+  bad(validateFromBoard(toBoard.phone), "phone as from");
+});
+
+test("topInset: an integer of pixels from 0 to 200", () => {
+  ok(validateToBoard({ t: "topInset", px: 0 }), "none");
+  ok(validateToBoard({ t: "topInset", px: 200 }), "the most");
+  for (const px of [-1, 201, 1.5, NaN, Infinity, "52", null, undefined]) bad(validateToBoard({ t: "topInset", px }), String(px));
+  bad(validateToBoard({ t: "topInset" }), "no px");
+  bad(validateToBoard({ t: "topInset", px: 8, extra: 1 }), "an extra key");
+  bad(validateFromBoard(toBoard.topInset), "topInset as from");
+});
+
+test("load's open: {fit} or a view, absent is fine, nothing else", () => {
+  const load = toBoard.load;
+  ok(validateToBoard({ ...load, open: { fit: 16 } }), "a fit");
+  ok(validateToBoard({ ...load, open: { fit: 0 } }), "a fit of 0");
+  ok(validateToBoard({ ...load, open: { fit: 200 } }), "a fit of 200");
+  ok(validateToBoard({ ...load, open: { scrollX: -120.5, scrollY: 40, zoom: 0.5 } }), "a view");
+  for (const o of [{ fit: -1 }, { fit: 201 }, { fit: NaN }, { fit: "16" }, {}, { fit: 16, scrollX: 0, scrollY: 0, zoom: 1 }, { scrollX: 0, scrollY: 0 },
+    { scrollX: 0, scrollY: 0, zoom: 0 }, { scrollX: 0, scrollY: 0, zoom: -1 }, { scrollX: Infinity, scrollY: 0, zoom: 1 }, { scrollX: 0, scrollY: NaN, zoom: 1 },
+    { scrollX: 0, scrollY: 0, zoom: 1, extra: 1 }, { fit: 16, extra: 1 }, null, 16, "fit"])
+    bad(validateToBoard({ ...load, open: o }), JSON.stringify(o));
+});
+
+test("menu: the item is share or clear, for a board", () => {
+  ok(validateFromBoard({ t: "menu", board: "b1", item: "clear" }), "clear");
+  for (const m of [{ item: "find" }, { item: "export" }, { item: "" }, { item: 1 }, { item: null }, { board: "" }])
+    bad(validateFromBoard({ ...fromBoard.menu, ...m }), JSON.stringify(m));
+  bad(validateFromBoard({ t: "menu", board: "b1" }), "no item");
+  bad(validateToBoard(fromBoard.menu), "menu as to");
 });
 
 test("ids: select and scrollTo take strings", () => {

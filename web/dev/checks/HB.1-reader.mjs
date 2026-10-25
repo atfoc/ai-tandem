@@ -15,6 +15,12 @@
 //   A reader's paste is not saved: Excalidraw's clipboard text, pasted into the canvas of a reader, writes nothing (no PUT, the stored revision and shapes
 //     as they were; Excalidraw's view mode refuses it on its own, the check's note says so); the same paste in the canvas of the writer is written (the
 //     proof that the paste reaches the canvas).
+// The phone (B1) has no reader's bar and no "Editing" mark: its reader's sign is the bottom row's button `board-take` (Edit here) and the bar's state
+//   word (`state-word`, data-word `view` "View only", `taken` "Another window is editing", `agent` "An agent is editing", `editing` "Editing" for the writer),
+//   so the texts above are checked by the word, the `role` and `writer` attributes of the bar by the word's `data-word` (none and none: `view`, a window
+//   under a writer or a lost board: `taken`, the headless writer: `agent`), the writer's mark by the word `editing`, and a window that lost the board
+//   also gets the toast "Another window took over this board" (data-kind `board-lost`, with the action Edit here). The role "lost" and "none" the bar's
+//   attributes tell are not on the phone's screen: the word and the toast are what it says. The button's `Taking over…` form is not read here.
 // The pixels of a screenshot are read by the browser's own decoder, in a page of its own (as P7.5-canvas.mjs and L24 do).
 import { callsOf, check, mockEval, seed, until } from "../shot.mjs";
 import { byTid, dragTo, openBoard, openChat, press, tidSel } from "./sel.mjs";
@@ -27,8 +33,10 @@ const BOARD = "b_ui";
 const READY = tidSel("board-canvas", { board: BOARD, state: "ready" });
 const GREEN = [0, 200, 0], BLUE = [0, 0, 200];
 const VIEW_ONLY = "View only.", OTHER = "View only. Another window is editing this board.", AGENT = "View only. An agent is editing this board.", LOST = "Another window took over this board. View only.";
+const WORDS = { [VIEW_ONLY]: ["view", "View only"], [OTHER]: ["taken", "Another window is editing"], [AGENT]: ["agent", "An agent is editing"], [LOST]: ["taken", "Another window is editing"] }; // (the phone's state words for the bar's texts)
 
-await check("HB.1 a window is a reader of the board it shows; the button makes it the writer", async ({ url, browser, open, fail, note, touch }) => {
+await check("HB.1 a window is a reader of the board it shows; the button makes it the writer", async ({ url, browser, open, fail, note, touch, viewport }) => {
+  const phone = viewport === "phone";
   const decoder = await browser.newPage();
   await seed(url, "A2");
   const { ctx, page } = await open({ sel: { board: BOARD, chat: null }, wait: READY });
@@ -40,8 +48,12 @@ await check("HB.1 a window is a reader of the board it shows; the button makes i
   const held = () => mockEval(`return heldBoards.has("${BOARD}");`, url);
   const rev = () => mockEval(`return scenes.${BOARD}.rev;`, url);
   const shapes = () => mockEval(`return scenes.${BOARD}.scene.elements.filter((e) => !e.isDeleted).length;`, url);
-  const bar = byTid(page, "board-role"), take = byTid(page, "board-take"), mark = byTid(page, "board-editing");
-  const barSays = async () => ((await bar.first().textContent({ timeout: 1000 }).catch(() => "")) ?? "").replace(/\s+/g, " ").replace(/Edit here$/, "").trim();
+  const take = byTid(page, "board-take"), word = byTid(page, "state-word").first();
+  const bar = phone ? take : byTid(page, "board-role"), mark = phone ? byTid(page, "state-word", { word: "editing" }) : byTid(page, "board-editing"); // (a reader's sign, the writer's mark)
+  const raw = async () => ((await (phone ? word : bar.first()).textContent({ timeout: 1000 }).catch(() => "")) ?? "").replace(/\s+/g, " ").replace(/Edit here$/, "").trim();
+  // (the text the screen says, in the bar's own words: on the phone the word found in WORDS)
+  const barSays = async () => { const t = await raw(); return phone ? (Object.keys(WORDS).find((k) => WORDS[k][1] === t && k !== LOST) ?? t) : t; };
+  const attrsAre = async (role, who, wordKey) => phone ? (await word.getAttribute("data-word")) === wordKey : (await bar.first().getAttribute("data-role")) === role && (await bar.first().getAttribute("data-writer")) === who;
   const writer = (kind) => mockEval(`writer("${BOARD}", ${J(kind)}); return 1;`, url);
   const view = () => page.evaluate(() => window.__aiwbView?.() ?? null);
 
@@ -52,7 +64,7 @@ await check("HB.1 a window is a reader of the board it shows; the button makes i
   if (await page.locator(LIVE).count()) fail("the board's canvas can be drawn on before the button was pressed");
   if (takes() || await held()) fail(`opening the board took it (${takes()} takes, held by the page: ${await held()})`);
   if (await barSays() !== VIEW_ONLY) fail(`nobody writes the board and the bar says "${await barSays()}", not "${VIEW_ONLY}"`);
-  if (await bar.first().getAttribute("data-role") !== "none" || await bar.first().getAttribute("data-writer") !== "none") fail(`the bar's role and writer are ${await bar.first().getAttribute("data-role")} and ${await bar.first().getAttribute("data-writer")}, not none and none`);
+  if (!await attrsAre("none", "none", "view")) fail(phone ? `the bar's state word is ${await word.getAttribute("data-word")}, not view` : `the bar's role and writer are ${await bar.first().getAttribute("data-role")} and ${await bar.first().getAttribute("data-writer")}, not none and none`);
   if (await take.first().textContent() !== "Edit here") fail(`the button reads "${await take.first().textContent()}", not "Edit here"`);
   if (await mark.count()) fail('a reader shows the "Editing" mark');
 
@@ -72,7 +84,7 @@ await check("HB.1 a window is a reader of the board it shows; the button makes i
   for (const [kind, text, writerAttr] of [["window", OTHER, "window"], ["headless", AGENT, "headless"], ["", VIEW_ONLY, "none"]]) {
     await writer(kind);
     if (!await until(async () => (await barSays()) === text, 10000)) fail(`the board is written by ${kind || "nobody"} and the bar says "${await barSays()}", not "${text}"`);
-    if (await bar.first().getAttribute("data-writer") !== writerAttr) fail(`the bar's writer is ${await bar.first().getAttribute("data-writer")}, not ${writerAttr}`);
+    if (!phone && await bar.first().getAttribute("data-writer") !== writerAttr) fail(`the bar's writer is ${await bar.first().getAttribute("data-writer")}, not ${writerAttr}`);
     if (!await take.count()) fail(`the bar has no button while ${kind || "nobody"} writes the board`);
   }
   if (takes() || await held()) fail("a change of writer made the reader take the board");
@@ -135,7 +147,8 @@ await check("HB.1 a window is a reader of the board it shows; the button makes i
     if (!await held()) fail("the button was pressed and the mock does not hold the board for the page");
     if (await bar.count()) fail("the reader's bar stays after the board was taken");
     if (!await page.locator(`${READY} ${LIVE}`).count()) fail("the board that was taken cannot be drawn on");
-    if ((await mark.first().textContent())?.trim() !== "Editing") fail(`the writer's mark says "${await mark.first().textContent()}", not "Editing"`);
+    if (!await until(() => mark.count(), 10000)) fail(phone ? 'the bar\'s state word is not "Editing" for the writer' : "the writer shows no Editing mark");
+    else if ((await mark.first().textContent())?.trim() !== "Editing") fail(`the writer's mark says "${await mark.first().textContent()}", not "Editing"`);
     if (await page.evaluate(() => window.__mark) !== "same page") fail("the page was loaded again by the take");
     // the same paste, in the canvas of the writer, is written
     const s0 = saves(), n0 = await shapes();
@@ -149,8 +162,11 @@ await check("HB.1 a window is a reader of the board it shows; the button makes i
     await writer("window");
     if (!await until(() => bar.count(), 10000)) fail("the board went to another window and the writer's mark stays");
     else {
-      if (await bar.first().getAttribute("data-role") !== "lost") fail(`the bar's role is ${await bar.first().getAttribute("data-role")}, not lost`);
-      if (await barSays() !== LOST) fail(`the board went to another window and the bar says "${await barSays()}", not "${LOST}"`);
+      if (!phone && await bar.first().getAttribute("data-role") !== "lost") fail(`the bar's role is ${await bar.first().getAttribute("data-role")}, not lost`);
+      if (phone) {
+        if (!await until(async () => /Another window took over this board/.test((await byTid(page, "toast", { kind: "board-lost" }).first().textContent().catch(() => "")) ?? ""), 10000)) fail("the board went to another window and the phone shows no toast that it took it over");
+        if (!await attrsAre("lost", "window", "taken") || await raw() !== WORDS[LOST][1]) fail(`the board went to another window and the bar's word says "${await raw()}", not "${WORDS[LOST][1]}"`);
+      } else if (await barSays() !== LOST) fail(`the board went to another window and the bar says "${await barSays()}", not "${LOST}"`);
       if (!await take.count()) fail("a window that lost the board has no button");
     }
     if (await page.locator(LIVE).count()) fail("the canvas of a window that lost the board can be drawn on");

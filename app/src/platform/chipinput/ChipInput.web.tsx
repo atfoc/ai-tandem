@@ -14,6 +14,7 @@ import React, { forwardRef, useEffect, useImperativeHandle, useRef } from "react
 import { pastedImages, pastedName } from "@aiwb/core/logic/chatimage.ts";
 import { insertText, isInsertKey, lines, openInsertPopup, sameBox } from "@aiwb/core/logic/insert.ts";
 import { serializeRef, type Ref } from "@aiwb/core/logic/refs.ts";
+import { TYPE } from "../../ui/metrics.ts";
 import { BASE_SIZE } from "../../ui/Text.tsx";
 import { SANS } from "../../ui/fonts.ts";
 import { useTokens } from "../../ui/theme.tsx";
@@ -26,7 +27,7 @@ const CLASS = "aiwb-chipinput", CHIP = "aiwb-chip";
 
 /** The rules the box needs that a style prop cannot say (pseudo-elements, the placeholder). Added to the page once. */
 const STYLES = `
-.${CLASS} { position: relative; flex: 1 1 auto; min-width: 0; box-sizing: border-box; outline: 0; padding: 3px 0; min-height: calc(3 * 1.45em + 6px); max-height: max(calc(6 * 1.45em), 40vh); overflow-y: auto; overscroll-behavior: contain; white-space: pre-wrap; overflow-wrap: anywhere; cursor: text; color: var(--cin-text); font-family: var(--cin-font); font-size: var(--cin-size); line-height: 1.45; }
+.${CLASS} { position: relative; flex: 1 1 auto; min-width: 0; box-sizing: border-box; outline: 0; padding: 3px 0; min-height: var(--cin-min, calc(3 * 1.45em + 6px)); max-height: var(--cin-max, max(calc(6 * 1.45em), 40vh)); overflow-y: auto; overscroll-behavior: contain; white-space: pre-wrap; overflow-wrap: anywhere; cursor: text; color: var(--cin-text); font-family: var(--cin-font); font-size: var(--cin-size); line-height: 1.45; }
 .${CLASS}.is-empty::before { content: attr(data-placeholder); position: absolute; left: 0; top: 3px; color: var(--cin-faint); pointer-events: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
 .${CLASS}[aria-readonly="true"] { color: var(--cin-muted); cursor: default; caret-color: transparent; }
 .${CHIP} { display: inline-flex; align-items: center; gap: 4px; vertical-align: baseline; max-width: 100%; box-sizing: border-box; margin: 0 1px; padding: 0 6px 0 5px; border: 1px solid color-mix(in srgb, var(--cin-accent) 30%, transparent); border-radius: 5px; background: var(--cin-bg); color: var(--cin-accent); font-weight: 600; font-size: 12px; line-height: 1.5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: default; }
@@ -174,7 +175,7 @@ function pasteValue(t: string, el: HTMLDivElement | null) {
 }
 
 export const ChipInput = forwardRef<ChipInputHandle, ChipInputProps>(function ChipInput(props, ref) {
-  const { placeholder, locked = false, readOnly = false, testID = "composer-input" } = props;
+  const { placeholder, locked = false, readOnly = false, testID = "composer-input", size } = props;
   const t = useTokens();
   const box = useRef<HTMLDivElement>(null);
   const last = useRef<Range | null>(null); // the caret, kept while focus is elsewhere
@@ -264,13 +265,20 @@ export const ChipInput = forwardRef<ChipInputHandle, ChipInputProps>(function Ch
     return endOf(el);
   };
 
+  /** A span of the value (the box may hold less than it did) as a range of the box. */
+  const spanOf = (el: HTMLElement, at: { start: number; end: number }): Range => {
+    const to = caretAt(el, Math.max(at.start, at.end)), range = caretAt(el, Math.min(at.start, at.end));
+    range.setEnd(to.startContainer, to.startOffset);
+    return range;
+  };
+
   /** The insert popup (core logic/insert.ts) is opened with what puts a text into the box, or leaves the box as it is. It
    *  takes the focus, and the box's selection goes with the focus: where the caret or the selection is, is kept
    *  here. A box filled anew meanwhile (set) has no such place left: the text then goes to its end. */
-  const openInsert = () => {
+  const openInsert = (at?: { start: number; end: number } | null) => {
     const el = box.current;
     if (!el || now.current.locked || now.current.readOnly) return;
-    mark.current = where(el);
+    mark.current = at ? spanOf(el, at) : where(el);
     const back = (): { el: HTMLDivElement; at: Range } | null => {
       const el = box.current, at = mark.current;
       mark.current = null;
@@ -307,12 +315,7 @@ export const ChipInput = forwardRef<ChipInputHandle, ChipInputProps>(function Ch
     insertRef(r: Ref, at?: { start: number; end: number } | null) {
       const el = box.current;
       if (!el || now.current.locked || now.current.readOnly) return;
-      let range = where(el);
-      if (at) { // (a span of the value: the box may hold less than it did)
-        const to = caretAt(el, Math.max(at.start, at.end));
-        range = caretAt(el, Math.min(at.start, at.end));
-        range.setEnd(to.startContainer, to.startOffset);
-      }
+      const range = at ? spanOf(el, at) : where(el);
       el.focus();
       range.deleteContents();
       const before = document.createRange(); before.selectNodeContents(el); before.setEnd(range.startContainer, range.startOffset);
@@ -349,6 +352,10 @@ export const ChipInput = forwardRef<ChipInputHandle, ChipInputProps>(function Ch
       changed();
     },
     openInsert,
+    select(at: { start: number; end: number }) {
+      const el = box.current;
+      if (el) place(spanOf(el, at));
+    },
     focus(atEnd?: boolean) {
       const el = box.current;
       if (!el) return;
@@ -394,7 +401,9 @@ export const ChipInput = forwardRef<ChipInputHandle, ChipInputProps>(function Ch
 
   const style = {
     "--cin-text": t.text, "--cin-muted": t.muted, "--cin-faint": t.faint, "--cin-accent": t.accent, "--cin-bg": t.bg,
-    "--cin-font": SANS, "--cin-size": `${BASE_SIZE}px`,
+    "--cin-font": SANS, "--cin-size": `${size === "phone" ? TYPE.control : BASE_SIZE}px`,
+    // (the phone's box: one line high when empty, six at most, then it scrolls; the lines and the 3 px above and below as in the default box)
+    ...(size === "phone" ? { "--cin-min": "calc(1.45em + 6px)", "--cin-max": "calc(6 * 1.45em + 6px)" } : null),
   } as React.CSSProperties;
 
   return (

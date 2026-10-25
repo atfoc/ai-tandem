@@ -14,7 +14,11 @@ import { act, byTid, press } from "./sel.mjs";
 export const viewports = ["desktop", "tablet", "phone"];
 
 const HEIGHT = 640;
-const POP = "usage-pop";
+// (a window narrower than 700 pt has the phone layout, and there the popup is the sheet "Context and usage", `usage-sheet`, drawn by
+// usage/UsageSheet.tsx: package T3. That is the phone viewport, and the desktop's "page of 300 px" windows (264 + 300 = 564 wide).)
+const sheetAt = (viewport, pane) => viewport === "phone" || (!!pane.size && pane.size[0] < 700);
+let POPID = "usage-pop";
+const POP = () => POPID;
 
 /** In the page: a popup's box against the window, and what is at each of its corners: at the point of the corner's rounding that lies nearest
  *  the box's corner, and 2 px further in (a point outside the rounding is not the popup's). */
@@ -34,12 +38,12 @@ await check("A2.4 the usage popover lies inside the window, and closes", async (
   const states = await seed(url, "A2");
   const state = (id) => states.find((s) => s.id === id) ?? (() => { throw new Error(`the seed has no state ${id}`); })();
   const frame = (page) => page.evaluate(() => new Promise((ok) => requestAnimationFrame(() => requestAnimationFrame(() => ok()))));
-  const gone = (page) => until(async () => !await byTid(page, POP).count(), 5000);
+  const gone = (page) => until(async () => !await byTid(page, POP()).count(), 5000);
   /** The popup's box once it has stopped moving (a sheet rises). */
   const settled = async (page) => {
     let last = "";
-    await until(async () => { await frame(page); const p = await page.evaluate(popupInPage, `[data-testid="${POP}"]`); const now = JSON.stringify(p); const same = p && now === last; last = now; return same; }, 8000);
-    return page.evaluate(popupInPage, `[data-testid="${POP}"]`);
+    await until(async () => { await frame(page); const p = await page.evaluate(popupInPage, `[data-testid="${POP()}"]`); const now = JSON.stringify(p); const same = p && now === last; last = now; return same; }, 8000);
+    return page.evaluate(popupInPage, `[data-testid="${POP()}"]`);
   };
 
   let seen = 0;
@@ -47,6 +51,7 @@ await check("A2.4 the usage popover lies inside the window, and closes", async (
     const s = state(id), at = `${id}, a ${s.pane[0]} of 300 px`;
     // (the pane of 300 px is a window of the desktop; the other viewports are the devices' own)
     const pane = viewport === "desktop" ? paneSize(s.pane[0], 300, HEIGHT) : {};
+    POPID = sheetAt(viewport, pane) ? "usage-sheet" : "usage-pop";
     const { page, ctx } = await open({ sel: s.sel, wait: '[data-testid="chat-head"]', ...pane });
     try {
       await act(page, s.act);
@@ -56,7 +61,7 @@ await check("A2.4 the usage popover lies inside the window, and closes", async (
       // what the page sees of the key: a listener on the window, in the bubbling phase, where the composer's own keys are taken
       await page.evaluate(() => { window.__keys = []; window.addEventListener("keydown", (e) => window.__keys.push(e.key)); });
       await press(page, ring.first());
-      if (!await until(() => byTid(page, POP).count(), 5000)) { fail(`${at}: the usage popover did not open`); await ctx.close(); continue; }
+      if (!await until(() => byTid(page, POP()).count(), 5000)) { fail(`${at}: the usage popover did not open`); await ctx.close(); continue; }
       const p = await settled(page);
       if (!p) fail(`${at}: the usage popover is not open`);
       else {
@@ -67,7 +72,8 @@ await check("A2.4 the usage popover lies inside the window, and closes", async (
       // the context as numbers, in the old words
       const said = (await byTid(page, "usage-ctx").first().innerText()).replace(/\s+/g, " ").trim();
       const started = id === "plain-started" || id === "board-started";
-      if (started ? !/^Context: [\d,]+ of [\d,]+ tokens \(\d+\.\d%\)( System prompt, tools, board reads and the conversation so far\.)?$/.test(said)
+      // (the sheet says the numbers as its big share and its words: "21% used · 42.9k of 200k tokens")
+      if (started ? !(POPID === "usage-sheet" ? /^\d+% used · [\d.]+k of [\d.]+k tokens$/ : /^Context: [\d,]+ of [\d,]+ tokens \(\d+\.\d%\)( System prompt, tools, board reads and the conversation so far\.)?$/).test(said)
         : !/^Context window: [\d,]+ tokens\. Usage shows after the first reply\.$/.test(said)) fail(`${at}: the popover says "${said}"`);
       // Esc closes it, and the page sees no Esc (the key is taken before what is under the popup)
       await page.keyboard.press("Escape");
@@ -78,7 +84,7 @@ await check("A2.4 the usage popover lies inside the window, and closes", async (
       if (!(await page.evaluate(() => window.__keys)).includes("Escape")) fail(`${at}: an Esc with no popup open does not reach the page`);
       // a press outside closes it (the dimmed page of a sheet, the transparent layer of a popover)
       await press(page, ring.first());
-      if (!await until(() => byTid(page, POP).count(), 5000)) fail(`${at}: the usage popover did not open again`);
+      if (!await until(() => byTid(page, POP()).count(), 5000)) fail(`${at}: the usage popover did not open again`);
       await settled(page);
       await press(page, byTid(page, "overlay-backdrop").first(), { position: { x: 4, y: 4 } });
       if (!await gone(page)) fail(`${at}: a press outside did not close the usage popover`);

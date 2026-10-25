@@ -1,6 +1,8 @@
 // The Quote sheet that a long press on a message opens (package K5): which message it is open for. The sheet itself is `QuoteSheet`
 // in the shell's `Overlays` slot; the long press (hold.ts) and the composer's list open it through here.
-export type PickTarget = { chat: string; index: number } | null;
+/** `mode`: "quote" (the Quote sheet) or "select" (the same text to select and copy: the message sheet's Select text). */
+export type PickMode = "quote" | "select";
+export type PickTarget = { chat: string; index: number; mode?: PickMode } | null;
 
 let now: PickTarget = null;
 const listeners = new Set<() => void>();
@@ -15,9 +17,9 @@ export const holdEnded = (): void => { grace = Date.now() + GRACE_MS; };
 export const inGrace = (): boolean => Date.now() < grace;
 
 /** Opens the sheet for the message at `index` of the chat's thread. */
-export function openPick(chat: string, index: number): void {
+export function openPick(chat: string, index: number, mode: PickMode = "quote"): void {
   holdEnded();
-  set({ chat, index });
+  set({ chat, index, mode });
 }
 export const closePick = (): void => set(null);
 export const pickNow = (): PickTarget => now;

@@ -10,10 +10,17 @@
 // Ports dev/checks/A5.2-cards.mjs (package S6) at desktop, tablet and phone: the same seed (A5), the same threads, assertions and words; the
 // cards are read over testIDs (`cards.mjs`) and a card's row is pressed with `press` (a tap on a touch viewport). The window of 700 px of the
 // old check is the desktop's; the tablet and the phone are the devices' own. The subagent's drawer is S7's, the real one, read as the cards of the thread are (`sub-drawer-body`).
+// The phone draws a step instead of the wide card (package T2; screens/tools/StepCard.tsx): `cards.mjs` reads it into the same parts, and the
+// phone half expects what the step shows of each (see PHONE below): a failed step is open by itself and its line says "exit code N" (the
+// command is in the open step); the command is plain code in a box with Copy (no colour, no description: the label carries it); an output shows its
+// last six lines (Show all output for the rest; a tab is four columns); an edit is its path beside the title, "+1 −1", and rows of its change under
+// a fade (a tab is two columns, from one line before the first change, ten rows at most) with Show full diff and Copy; a write's content is
+// those rows, all added; a change has no title ("every occurrence", "Edit 1 of 2" are not drawn: two edits are two blocks) and the path is
+// the project-relative one (the full path is not drawn on a step); folded runs of reads open with a tap before their steps are there.
 // Besides the old check (B-TC-15): a change selected from end to end gives its lines and no sign (the platform's selection, read with getSelection()).
 import { check, paneSize, seed, until } from "../shot.mjs";
-import { openCards, rowOfCard, toolCards } from "./cards.mjs";
-import { act, press } from "./sel.mjs";
+import { addedRows, cardAt, openCards, openSubSteps, phoneBrief, phoneRows, phoneText, rowOfCard, showAllOutput, toolCards } from "./cards.mjs";
+import { act, byTid, press } from "./sel.mjs";
 
 export const viewports = ["desktop", "tablet", "phone"];
 
@@ -58,36 +65,50 @@ const THREADS = {
   ],
 };
 /** A card's parts in short: "path internal/calc/sum.go +1 −1", "text Output · failed", "change Change", "note …". */
-const brief = (card) => card.parts.map((p) => (p.part === "path" ? ["path", p.path, p.counts, p.lines].filter(Boolean).join(" ") : p.part === "text" || p.part === "change" ? `${p.part} ${p.title}` : `${p.part} ${p.text}`));
+const brief = (card) => card.parts.map((p) => (p.part === "path" ? ["path", p.path, p.counts, p.lines].filter(Boolean).join(" ") : p.part === "diffbar" ? "bar" : p.part === "text" || p.part === "change" ? `${p.part} ${p.title}`.trim() : `${p.part} ${p.text}`));
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
 
 
 await check("A5.2 a tool card by its kind, for the three agents, in the thread and the drawer", async ({ url, viewport, open, fail, note }) => {
   const states = await seed(url, "A5");
   const state = (id) => states.find((s) => s.id === id) ?? (() => { throw new Error(`the seed has no state ${id}`); })();
+  const phone = viewport === "phone";
   const win = viewport === "desktop" ? paneSize("page", 700, 900) : {};
   const show = async (sel, { theme } = {}) => open({ sel, wait: '[data-testid="chat-head"]', ...win, ls: { ...win.ls, ...(theme ? { "aiwb.theme": theme } : {}) } });
   /** Holds the cards of a thread against their list, closed and then open. Answers the open cards. */
   const holds = async (page, root, name, want) => {
     if (!await until(async () => (await toolCards(page, root))?.length === want.length, 15000)) { fail(`${name}: ${(await toolCards(page, root))?.length} cards, not ${want.length}`); return null; }
+    // (on the phone a step that failed is open by itself and its second line is "exit code N", not the command: that is in the open step)
+    const failedOf = (i) => want[i][2].includes("text Output · failed");
+    const hintOf = (i) => (phone && failedOf(i) && want[i][1] ? "" : want[i][1]);
     const closed = await toolCards(page, root);
     for (const [i, c] of closed.entries()) {
-      const [label, hint] = want[i], at = `${name}, card ${i + 1}`;
-      if (c.open) fail(`${at}: is open as the thread is drawn`);
+      const [label] = want[i], at = `${name}, card ${i + 1}`;
+      if (c.open !== (phone && failedOf(i))) fail(`${at}: is ${c.open ? "open" : "closed"} as the thread is drawn${phone ? " (only a failed step opens by itself)" : ""}`);
       if (c.label !== label) fail(`${at}: its label is "${c.label}", not "${label}"`);
-      if (c.hint !== hint) fail(`${at} ("${label}"): beside the label stands "${c.hint}", not "${hint}"`);
+      if (c.hint !== hintOf(i)) fail(`${at} ("${label}"): beside the label stands "${c.hint}", not "${hintOf(i)}"`);
+      if (phone && failedOf(i) && !/^exit code \d+$/.test(c.exit)) fail(`${at} ("${label}"): the failed step's line says "${c.exit}", not "exit code N"`);
     }
     await openCards(page, root);
+    if (phone) await showAllOutput(page, root);
     const cards = await toolCards(page, root);
     for (const [i, c] of cards.entries()) {
       const at = `${name}, card ${i + 1} ("${want[i][0]}")`;
       if (!c.open) fail(`${at}: did not open`);
-      if (c.label !== want[i][0] || c.hint !== want[i][1]) fail(`${at}: open, its row says "${c.label}" and "${c.hint}"`);
-      if (!same(brief(c), want[i][2])) fail(`${at}: open it shows ${JSON.stringify(brief(c))}, not ${JSON.stringify(want[i][2])}`);
+      if (c.label !== want[i][0] || c.hint !== hintOf(i)) fail(`${at}: open, its row says "${c.label}" and "${c.hint}"`);
+      const wanted = phone ? phoneBrief(want[i][2]) : want[i][2];
+      if (!same(brief(c), wanted)) fail(`${at}: open it shows ${JSON.stringify(brief(c))}, not ${JSON.stringify(wanted)}`);
     }
     return cards;
   };
-  const part = (card, title) => card.parts.find((p) => p.title === title || p.part === title);
+  const phoneTextIf = (text) => (phone ? phoneText(text) : text);
+  // (the phone's step does not add "· failed" to an output's title: its failed output is red and the step says it failed)
+  const part = (card, title) => card.parts.find((p) => p.title === (phone ? title.replace(" · failed", "") : title) || p.part === title);
+  /** The wide card's part by its title, the phone step's by its kind (a change has no title there; the n-th of its changes). */
+  const change = (card, title, n = 0) => (phone ? card.parts.filter((p) => p.part === "change")[n] : part(card, title));
+  /** A change's rows as the card draws them: the wide card's, or the step's. */
+  const rowsOf = (rows) => (phone ? phoneRows(rows) : rows);
 
   // ---- the three agents' threads
   let seen = 0;
@@ -103,22 +124,27 @@ await check("A5.2 a tool card by its kind, for the three agents, in the thread a
         // a shell card: the whole command with its line breaks, coloured, the description before it; the output apart
         const cmd = part(c2, "Command"), out = part(c2, "Output · failed"), ok = part(c1, "Output");
         expect("the command of the second card", cmd.text, ["go vet ./... &&\n  go test ./internal/calc/ -run TestSum"]);
-        expect("its description", cmd.lead, "Vet, then one test");
-        if (!cmd.coloured) fail(`${name}: the command of the second card is not coloured as code`);
+        // (the description is the label of the step on the phone, which the card's label above has proved; its command is plain code with Copy)
+        if (phone) { if (!cmd.copy) fail(`${name}: the command of the second card has no Copy`); }
+        else {
+          expect("its description", cmd.lead, "Vet, then one test");
+          if (!cmd.coloured) fail(`${name}: the command of the second card is not coloured as code`);
+        }
         if (ok.coloured || out.coloured) fail(`${name}: an output is coloured as code`);
-        expect("the output of the second card", out.text, ["--- FAIL: TestSum (0.00s)\n    calc_test.go:12: Sum([1 2 3]) = 12, want 6\nFAIL\nFAIL\tai-whiteboard/internal/calc\t0.288s\nExit code 1"]);
+        expect("the output of the second card", out.text, [phoneTextIf("--- FAIL: TestSum (0.00s)\n    calc_test.go:12: Sum([1 2 3]) = 12, want 6\nFAIL\nFAIL\tai-whiteboard/internal/calc\t0.288s\nExit code 1")]);
         if (!out.failed || ok.failed) fail(`${name}: the failed command's output is ${out.failed ? "" : "not "}marked, the other's is ${ok.failed ? "" : "not "}`);
         // (the box of an output: the second of a shell card's text boxes; cards by their place on screen)
-        const edge = (n) => p.page.evaluate((n) => {
+        const edge = (n) => p.page.evaluate(([n, ph]) => {
           const cards = [...document.querySelectorAll('[data-testid="thread"] [data-testid="tool-card"]')].sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
-          return getComputedStyle(cards[n].querySelectorAll('[data-testid="tool-text"]')[1]).borderTopColor;
-        }, n);
+          return getComputedStyle(cards[n].querySelectorAll('[data-testid="tool-text"], [data-testid="step-output"]')[ph ? 0 : 1]).borderTopColor;
+        }, [n, phone]);
         if (await edge(0) === await edge(1)) fail(`${name}: the failed output's box has the border of one that did not fail (${await edge(1)})`);
         // an edit: the path in full in its title, the change with the lines around it
-        expect("the path's title of the fourth card", c4.parts[0].title, FULL + SUM);
-        expect("the change of the fourth card", part(c4, "Change").rows, FUNC);
+        if (!phone) expect("the path's title of the fourth card", c4.parts[0].title, FULL + SUM);
+        expect("the change of the fourth card", change(c4, "Change").rows, rowsOf(FUNC));
         expect("the change of the fifth card", c5.parts[1].rows, ["-total", "+sum"]);
         expect("the edits of the sixth card", [c6.parts[1].rows, c6.parts[2].rows], [["-Sum adds", "+Sum doubles and adds"], ["-x * 2", "+2 * x"]]);
+        if (phone) for (const c of [c4, c5, c6]) if (c.parts.at(-1).part !== "diffbar" || c.parts.at(-1).full !== "Show full diff" || !c.parts.at(-1).copy) fail(`${name}: an edit's step ends with ${JSON.stringify(c.parts.at(-1))}, not Show full diff and Copy`);
         // B-TC-15: the sign of a line, and what is not the change's own, is not selected or copied: a copied change is its lines
         const picked = await p.page.evaluate(() => {
           const cards = [...document.querySelectorAll('[data-testid="thread"] [data-testid="tool-card"]')].sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
@@ -128,26 +154,28 @@ await check("A5.2 a tool card by its kind, for the three agents, in the thread a
         });
         const own = picked.rows.map((r) => r[2]).join("\n");
         if (picked.text !== own) fail(`${name}: a change selected from end to end gives ${JSON.stringify(picked.text)}, not its lines ${JSON.stringify(own)}: the signs (or something else of the card) are selected`);
-        if (!picked.rows.some((r) => r[1] === "+") || !picked.rows.some((r) => r[1] === "-")) fail(`${name}: the change selected has no sign on its added and removed lines, so the selection proves nothing: ${JSON.stringify(picked.rows)}`);
+        if (!picked.rows.some((r) => r[1] === "+") || !picked.rows.some((r) => r[1] === "-" || r[1] === "−")) fail(`${name}: the change selected has no sign on its added and removed lines, so the selection proves nothing: ${JSON.stringify(picked.rows)}`);
         // a write: the content as it is
-        expect("the content of the seventh card", part(c7, "Content").text, ["package calc\n\nimport \"testing\"\n\nfunc TestSum(t *testing.T) {\n\tif got := Sum([]int{1, 2, 3}); got != 12 {\n\t\tt.Fatalf(\"Sum = %d\", got)\n\t}\n}"]);
+        if (phone) expect("the content of the seventh card", change(c7).rows, addedRows("package calc\n\nimport \"testing\"\n\nfunc TestSum(t *testing.T) {\n\tif got := Sum([]int{1, 2, 3}); got != 12 {\n\t\tt.Fatalf(\"Sum = %d\", got)\n\t}\n}"));
+        else expect("the content of the seventh card", part(c7, "Content").text, ["package calc\n\nimport \"testing\"\n\nfunc TestSum(t *testing.T) {\n\tif got := Sum([]int{1, 2, 3}); got != 12 {\n\t\tt.Fatalf(\"Sum = %d\", got)\n\t}\n}"]);
         // any other tool: its input as JSON
         if (!part(c8, "NotebookEdit").text[0]?.includes('"new_source": "sum(x * 2 for x in xs)"')) fail(`${name}: the eighth card's input is ${JSON.stringify(part(c8, "NotebookEdit").text)}`);
       }
       if (id === "cursor") {
         const [, , k7, k8, , k10, , , , , k6] = cards;
         // the file before and after, 124 lines each: the one line that changed, three around it, the rest as numbers
-        expect("the change of a whole file's one-line edit", part(k7, "Change").rows, ["@⋯ 60 unchanged lines", ...FUNC, "@⋯ 57 unchanged lines"]);
-        expect("the change of a new file", part(k8, "Change").rows, ["+// Package calc adds numbers.", "+package calc"]);
-        const gone = part(k10, "Deleted").rows;
+        expect("the change of a whole file's one-line edit", change(k7, "Change").rows, rowsOf(["@⋯ 60 unchanged lines", ...FUNC, "@⋯ 57 unchanged lines"]));
+        expect("the change of a new file", change(k8, "Change").rows, ["+// Package calc adds numbers.", "+package calc"]);
+        const gone = change(k10, "Deleted").rows;
         if (gone.length !== 10 || gone.some((r) => r[0] !== "-") || gone[0] !== "-package calc") fail(`${name}: the deleted file's lines are ${JSON.stringify(gone)}`);
         if (!part(k6, "Result").text[0]?.startsWith("package calc\n\n// Sum adds the numbers.\nfunc Sum")) fail(`${name}: the result of Read is ${JSON.stringify(part(k6, "Result").text)}`);
       }
       if (id === "pi") {
         const [, p2, p3, , p5] = cards;
         expect("the output of the failed command", part(p2, "Output · failed").text, ["--- FAIL: TestSum (0.00s)\nFAIL\n\nCommand exited with code 1"]);
-        expect("the edits of the third card", [p3.parts[1].rows, p3.parts[2].rows], [FUNC, ["-Sum adds", "+Sum doubles and adds"]]);
-        expect("the content of the fifth card", part(p5, "Content").text, ["// Package calc adds numbers.\npackage calc"]);
+        expect("the edits of the third card", [p3.parts[1].rows, p3.parts[2].rows], [rowsOf(FUNC), ["-Sum adds", "+Sum doubles and adds"]]);
+        if (phone) expect("the content of the fifth card", change(p5).rows, addedRows("// Package calc adds numbers.\npackage calc"));
+        else expect("the content of the fifth card", part(p5, "Content").text, ["// Package calc adds numbers.\npackage calc"]);
       }
     } catch (e) { fail(`${name}: ${e.message.split("\n")[0]}`); }
     await p.ctx.close();
@@ -162,7 +190,7 @@ await check("A5.2 a tool card by its kind, for the three agents, in the thread a
       await toolCards(p.page); // (the thread is drawn)
       if (!await until(async () => (await toolCards(p.page))?.length === 9, 15000)) fail(`${name}: ${(await toolCards(p.page))?.length} cards, not 9`);
       await press(p.page, await rowOfCard(p.page, 3));
-      await p.page.waitForSelector('[data-testid="tool-diff"]', { timeout: 5000 });
+      await p.page.waitForSelector('[data-testid="tool-diff"], [data-testid="step-diff"]', { timeout: 5000 });
       tones[theme] = await p.page.evaluate(() => {
         const one = (kind) => document.querySelector(`[data-testid="diff-row"][data-kind="${kind}"]`);
         const bg = (kind) => getComputedStyle(one(kind)).backgroundColor;
@@ -171,7 +199,8 @@ await check("A5.2 a tool card by its kind, for the three agents, in the thread a
       const t = tones[theme];
       if (t.add === t.del || t.add === t.same || t.del === t.same) fail(`${name}: an added line (${t.add}), a removed one (${t.del}) and one that stays (${t.same}) are not told apart by their ground`);
       await press(p.page, await rowOfCard(p.page, 3));
-      if (!await until(async () => !await p.page.locator('[data-testid="tool-detail"]').count(), 5000)) fail(`${name}: a press on an open card's row did not close it`);
+      // (the phone's failed steps are open by themselves: it is the card pressed that has to close)
+      if (!await until(async () => !await (await cardAt(p.page, 3)).locator('[data-testid="tool-detail"]').count(), 5000)) fail(`${name}: a press on an open card's row did not close it`);
     } catch (e) { fail(`${name}: ${e.message.split("\n")[0]}`); }
     await p.ctx.close();
   }
@@ -183,6 +212,8 @@ await check("A5.2 a tool card by its kind, for the three agents, in the thread a
     const s = state("sub"), p = await show(s.sel), name = "the subagent's drawer";
     try {
       await act(p.page, s.act);
+      // (the phone's subagent screen folds the steps of an ended subagent into one row, which a tap opens)
+      if (phone) await openSubSteps(p.page);
       const cards = await holds(p.page, DRAWER_ROOT, name, [
         ["Recent changes", "git log -3 -- internal/calc/sum.go", SHELL],
         ["Edited sum.go", SUM, [`path ${SUM} +1 −1`, "change Change"]],

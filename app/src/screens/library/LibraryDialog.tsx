@@ -34,9 +34,10 @@ import { Text } from "../../ui/Text.tsx";
 import { useTokens } from "../../ui/theme.tsx";
 import { tid } from "../../ui/tid.ts";
 import { useControlRef } from "../../ui/useControlRef";
-import { useLayout } from "../../ui/useLayout.ts";
+import { useLayout, usePhone } from "../../ui/useLayout.ts";
 import { webStyle } from "../../ui/webstyle.ts";
 import { confirm } from "../shell/nav.ts";
+import { pushScreen, pushedScreens } from "../shell/screens.ts";
 import { About, Editor, NONE_TEXT, Notice } from "./Editor.tsx";
 import { createLibDrag, type Spots } from "./libdrag.ts";
 import { insertKey } from "./open.ts";
@@ -77,7 +78,16 @@ function whenStore(ok: () => boolean, ms = 3000): Promise<boolean> {
 
 export function LibraryDialog() {
   const dlg = useStore((s) => s.libraryDialog);
-  if (!dlg) return null;
+  const phone = usePhone();
+  // On the phone the library is a pushed screen (package S4), not this dialog: whoever asked for the dialog (the insert sheet's "Library", the sidebar foot,
+  // Settings' row) gets the screen, and the text box it came from is as it was.
+  useEffect(() => {
+    if (!dlg || !phone) return;
+    setState({ libraryDialog: null });
+    dlg.back?.cancel();
+    if (pushedScreens().at(-1)?.name !== "library") pushScreen("library", {});
+  }, [dlg, phone]);
+  if (!dlg || phone) return null;
   return <Library back={dlg.back} />;
 }
 

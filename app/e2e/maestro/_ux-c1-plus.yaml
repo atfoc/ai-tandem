@@ -1,0 +1,18 @@
+# Shared by `storage-picker-permission` (package C1): opens the phone composer's "+" sheet ("Add to message") and presses the row named ROW ("Photo library",
+# "Take photo", "Files"). The sheet closes by itself and the app opens what the row names 0.4 s later (PlusSheet.tsx `AFTER_CLOSE_MS`); this ends once the sheet is
+# gone and the composer is back, so the caller's next wait ("the system's picker is up: the composer left the accessibility tree") cannot be met by the closing sheet.
+# Rows of the sheet are all `action-row` on a device (the `action` is a web dataSet), so a row is pressed by its label.
+appId: ${APP_ID}
+---
+- tapOn:
+    id: "composer-plus"
+- extendedWaitUntil:
+    visible:
+      id: "plus-sheet"
+    timeout: 20000
+- waitForAnimationToEnd
+- tapOn: "${ROW}"
+- extendedWaitUntil:
+    notVisible:
+      id: "plus-sheet"
+    timeout: 20000

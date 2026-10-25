@@ -186,6 +186,25 @@ export function markerAt(t: ChatTree, branch: string, i: number): { n: number; m
   return sibs.length > 0 && t.entries[id] ? { n: sibs.indexOf(id) + 1, m: sibs.length } : null;
 }
 
+/** Where the previous (-1) or next (1) sibling of the message at index i of a branch's thread is shown: the branch to view and the index
+ *  of the message in it. null at the ends (no wrap) and where the thread passes no split. The branch is the one the chat is on (the tree's
+ *  `current`) when it goes through the sibling, else the most recent branch through it (the view lists them oldest first), else the sibling's
+ *  own. A sibling that is the entry a branch ends at (branched off at its end) is shown by the branch that ends there. */
+export function siblingTarget(t: ChatTree, branch: string, i: number, dir: -1 | 1): { branch: string; index: number } | null {
+  const sibs = siblingsOf(t, entryId(ownerOf(t.view, branch, i), i));
+  const at = sibs.indexOf(entryId(ownerOf(t.view, branch, i), i));
+  const to = at < 0 ? undefined : t.entries[sibs[at + dir]];
+  if (!to) return null;
+  const index = to.item.i;
+  const ended = to.end ? tipBranch(t, to.id) : null;
+  if (ended) return { branch: ended, index };
+  const through = t.view.branches.filter((b) => index < b.len && ownerOf(t.view, b.id, index) === to.branch).map((b) => b.id);
+  return { branch: through.includes(t.view.current) ? t.view.current : through[through.length - 1] ?? to.branch, index };
+}
+
+/** The branch to view for the previous (-1) or next (1) sibling of the message at index i of a branch's thread (siblingTarget). */
+export const siblingBranch = (t: ChatTree, branch: string, i: number, dir: -1 | 1): string | null => siblingTarget(t, branch, i, dir)?.branch ?? null;
+
 // ---- names
 
 const oneLine = (s: string, n: number) => {

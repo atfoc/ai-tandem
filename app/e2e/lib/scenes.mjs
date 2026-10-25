@@ -12,5 +12,12 @@ export function sceneOf(name) {
       text("chips-rect-text", CHIPS_RECT.id, 70, 165, 160, CHIPS_RECT.label),
     ]);
   }
+  if (name === "spread") { // three labelled rectangles far apart (ux-board: a board that opens fitted shows all of them with margins)
+    const rect = (id, x, y, fill, label) => [
+      base(id, "rectangle", x, y, 220, 120, { backgroundColor: fill, boundElements: [{ id: `${id}-text`, type: "text" }] }),
+      text(`${id}-text`, id, x + 30, y + 45, 160, label),
+    ];
+    return scene([...rect("spread-a", 0, 0, "#a5d8ff", "Left"), ...rect("spread-b", 1400, 200, "#b2f2bb", "Right"), ...rect("spread-c", 700, 900, "#ffec99", "Bottom")]);
+  }
   throw new Error(`no scene ${name}`);
 }

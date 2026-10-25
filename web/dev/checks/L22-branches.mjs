@@ -14,7 +14,7 @@
 // branch through the tree (the end row of the branch, a double click or two taps: fork.mjs `openRow`).
 import { callsOf, check, mockEval, seed, until } from "../shot.mjs";
 import { byTid, press } from "./sel.mjs";
-import { composerSeen, endRow, menuOfRow, openRow, openTree, pressAct } from "./fork.mjs";
+import { closeTree, composerSeen, endRow, menuOfRow, openRow, openTree, pressAct } from "./fork.mjs";
 import { rowOfCard, toolCards } from "./cards.mjs";
 
 export const viewports = ["desktop", "tablet", "phone"];
@@ -33,10 +33,12 @@ const MAKE = `chats.${CHAT} = chat(${J(CHAT)}, { name: "Two branches", group: "g
   alt.items.push({ kind: "user", text: "Something else" }, { kind: "text", text: "Else.", done: true }, { kind: "end", point: "q2" });
   send({ type: "snapshot", ...snapshot() });`;
 
-await check("L22 what belongs to one branch of a chat", async ({ url, viewport, open, fail }) => {
+await check("L22 what belongs to one branch of a chat", async ({ url, viewport, layout, open, fail }) => {
   await seed(url, "A1");
   await mockEval(MAKE, url);
   const say = (line) => fail(`${viewport}: ${line}`);
+  // (the phone draws a subagent's result as the report row of its card, T2: `sub-report-row`; the wide layouts as the `sub-result` row)
+  const RESULT = viewport === "phone" ? "sub-report-row" : "sub-result";
 
   // ---- B-TH-18: an open tool card of the shared part is closed on the other branch
   {
@@ -67,7 +69,7 @@ await check("L22 what belongs to one branch of a chat", async ({ url, viewport, 
     await openRow(page, endRow(page, "alt"));
     await page.waitForFunction(() => [...document.querySelectorAll('[data-testid="msg"][data-role="user"]')].some((m) => (m.textContent ?? "").includes("Something else")), null, { timeout: WAIT });
     if (!await until(async () => (await rows()) === 0, WAIT)) say(`the other branch's thread shows ${await rows()} subagent rows: the subagent of main`);
-    if (await byTid(page, "sub-result").count()) say("the other branch's thread shows a result row of main's subagent");
+    if (await byTid(page, RESULT).count()) say("the other branch's thread shows a result row of main's subagent");
     await openTree(page);
     await openRow(page, endRow(page, "main"));
     if (!await until(async () => (await rows()) === 1, WAIT)) say(`back on main its thread has ${await rows()} subagent rows, not 1`);
@@ -85,7 +87,8 @@ await check("L22 what belongs to one branch of a chat", async ({ url, viewport, 
     const last = byTid(page, "fk-row", { kind: "user" }).last();
     await last.scrollIntoViewIfNeeded();
     await menuOfRow(page, last);
-    const box = await byTid(page, "menu").last().boundingBox(), size = page.viewportSize(), row = await last.boundingBox();
+    if (viewport === "phone" && (await byTid(page, "fk-row-sheet").count() !== 1 || await byTid(page, "fk-nav").count())) say("the held row's action sheet is not alone: the tree is drawn under it, or the sheet is missing");
+    const box = await byTid(page, "menu").last().boundingBox(), size = page.viewportSize(), row = viewport === "phone" ? null : await last.boundingBox(); // (the phone's tree is not drawn while the row's sheet is open)
     if (!box) say("the menu of a tree row has no box");
     else if (box.x < 0 || box.y < 0 || box.x + box.width > size.width + 0.5 || box.y + box.height > size.height + 0.5) say(`the menu of the lowest row of the tree is at ${J(box)} in a window of ${J(size)}: it leaves the window`);
     else if (viewport !== "phone" && box.y + box.height > row.y + row.height) say(`the menu of the row at the foot of a low window is at ${J(box)}, below its row at ${J(row)}: it is not put above it`);
@@ -106,9 +109,24 @@ await check("L22 what belongs to one branch of a chat", async ({ url, viewport, 
     const LEFT = { position: { x: 24, y: 10 } };
     const drawer = byTid(page, "sub-drawer");
     const opened = async (sid, from) => {
-      if (from) await press(page, byTid(drawer, "sub-next").first()); // (the drawer covers the rows on a narrow window: the next subagent is one press away)
+      // (the phone's neighbour bar names its buttons "sub-screen-next" and "sub-screen-prev", T2)
+      if (from) await press(page, byTid(drawer, viewport === "phone" ? "sub-screen-next" : "sub-next").first()); // (the drawer covers the rows on a narrow window: the next subagent is one press away)
       else await press(page, byTid(page, "sub-row", { sub: sid }).first(), LEFT);
       await drawer.first().waitFor({ state: "visible", timeout: WAIT });
+      // (changed with T2, again with X2: the phone's subagent screen folds the steps of a subagent that ended, "N steps" -- these two ended. A request that can
+      // still be answered is never inside the fold (X2): sa_y's live card stands under the fold's row, so it is NOT opened with the fold first. sa_x is read-only,
+      // its request is closed and cannot be answered, so it stays folded: the fold is pressed for it only if the card is not drawn)
+      if (viewport === "phone") {
+        await until(async () => (await byTid(drawer, "sub-screen").first().getAttribute("data-sub").catch(() => null)) === sid, WAIT);
+        const live = !!from; // (the first call is sa_x, read-only; the second, reached by "next", is sa_y)
+        if (live) {
+          if (!await until(async () => await byTid(drawer, "perm").count() === 1, WAIT)) say(`the live permission card of ${sid} is not drawn without the fold being pressed`);
+          if (await byTid(drawer, "sub-steps", { open: "true" }).count()) say(`the fold of ${sid} was opened: the live card should stand outside it`);
+        } else {
+          const fold = byTid(drawer, "sub-steps", { open: "false" }).first();
+          if (await until(async () => await fold.count() > 0, 3000)) await press(page, fold);
+        }
+      }
       if (!await until(async () => (await drawer.first().getAttribute("data-sub")) === sid && await byTid(drawer, "perm").count() === 1, WAIT)) say(`the drawer of ${sid} did not show its permission card`);
       return { readonly: await drawer.first().getAttribute("data-readonly"), buttons: await byTid(drawer, "perm-allow").count(), closed: await byTid(drawer, "perm").first().getAttribute("data-closed") };
     };
@@ -130,7 +148,9 @@ await check("L22 what belongs to one branch of a chat", async ({ url, viewport, 
     if (!await until(() => asked().length === 1, WAIT)) say("Fork and edit made no fork call");
     else if (asked()[0].body?.at !== 4 || asked()[0].body?.message !== 4) say(`Fork and edit asked for ${J(asked()[0].body)}, not a fork at the point before the message (4) with that message (4)`);
     if (!await until(async () => (await composerSeen(page)).box === "Check the fonts", WAIT)) say(`the box of the new chat holds ${J((await composerSeen(page)).box)}, not the message "Check the fonts"`);
-    const users = await page.evaluate(() => [...document.querySelectorAll('[data-testid="msg"][data-role="user"]')].map((m) => (m.textContent ?? "").trim()));
+    const usersNow = () => page.evaluate(() => [...document.querySelectorAll('[data-testid="msg"][data-role="user"]')].map((m) => (m.textContent ?? "").trim()));
+    await until(async () => (await usersNow()).length > 0, WAIT); // (the new chat's thread is drawn a moment after its box)
+    const users = await usersNow();
     if (users.length !== 1 || !users[0].includes("List the files")) say(`the new chat's thread has the user messages ${J(users)}: the copy is not the first turn alone`);
     const name = (await byTid(page, "chat-head-name").first().textContent().catch(() => "")) ?? "";
     if (!name.includes("(fork)")) say(`the chat that is open after Fork and edit is "${name}", not the fork`);
@@ -148,11 +168,23 @@ await check("L22 what belongs to one branch of a chat", async ({ url, viewport, 
     const alert = async () => (await byTid(page, "fk-alert", { kind: "quiet" }).first().textContent().catch(() => "")) ?? "";
     const onBranch = (text) => page.waitForFunction((t) => [...document.querySelectorAll('[data-testid="msg"][data-role="user"]')].some((m) => (m.textContent ?? "").includes(t)), text, { timeout: WAIT });
     await stop.first().waitFor({ state: "visible", timeout: WAIT });
-    if (!await until(async () => (await alert()).includes("1 other branch working"), WAIT)) say(`on main, with alt working too, the header says "${await alert()}", not "1 other branch working"`);
-    // (B-FK-25) the alert names the other branches that work and opens the tree
-    await press(page, byTid(page, "fk-alert", { kind: "quiet" }).first());
-    await byTid(page, "fk-row").first().waitFor({ state: "visible", timeout: WAIT });
-    await press(page, byTid(page, "fk-close").first());
+    if (layout === "phone") {
+      // (the content bar has no quiet pill: the Tree's count says that the chat has split, and the Tree is the way to the other branch)
+      const tree = byTid(page, "chat-tree").first();
+      if (await tree.getAttribute("data-count") !== "2") say(`with alt working too, the Tree button counts ${await tree.getAttribute("data-count")}, not 2 branches`);
+      await openTree(page);
+    } else {
+      if (!await until(async () => (await alert()).includes("1 other branch working"), WAIT)) say(`on main, with alt working too, the header says "${await alert()}", not "1 other branch working"`);
+      // (B-FK-25) the alert names the other branches that work and opens the tree
+      await press(page, byTid(page, "fk-alert", { kind: "quiet" }).first());
+      await byTid(page, "fk-row").first().waitFor({ state: "visible", timeout: WAIT });
+    }
+    if (layout === "phone") { // (the row a working branch ends at: its mark says so in a word, and its Stop is a 44 pt target)
+      const box = await byTid(page, "fk-stop").first().boundingBox();
+      if (!box || box.height < 44 || box.width < 44) say(`the Stop of the phone's tree is ${J(box)}, not a 44 pt target`);
+      if (!/working|tool|Bash/i.test(await byTid(page, "fk-mark").first().textContent().catch(() => "") ?? "")) say("the working branch's row has no word for what it does");
+    }
+    await closeTree(page);
     if (!await until(async () => !(await byTid(page, "fk-nav").count()), WAIT)) say("the tree did not close");
     const w0 = writes().length;
     // alt is shown: viewing makes no call, its Stop is there, and a press on it interrupts alt and nothing else
@@ -167,12 +199,12 @@ await check("L22 what belongs to one branch of a chat", async ({ url, viewport, 
     // a result told to main while alt is shown reaches main's thread, not alt's
     await mockEval(`const list = items.${CHAT}; list.push({ kind: "subresult", subagent: "sa_x" }); send({ type: "chat_items", chat: ${J(CHAT)}, branch: "main", version: (versions.${CHAT} = (versions.${CHAT} ?? 1) + 1), updates: [{ index: list.length - 1, item: list[list.length - 1] }] });`, url);
     await page.waitForTimeout(300);
-    if (await byTid(page, "sub-result").count()) say("the result of main's subagent shows in the thread of the branch that is shown");
+    if (await byTid(page, RESULT).count()) say("the result of main's subagent shows in the thread of the branch that is shown");
     // main is still working, with its own Stop, and shows the result
     await openTree(page);
     await openRow(page, endRow(page, "main"));
     await onBranch("Check the fonts");
-    if (!await until(async () => (await byTid(page, "sub-result").count()) === 1, WAIT)) say(`main's thread has ${await byTid(page, "sub-result").count()} result rows of its subagent, not 1`);
+    if (!await until(async () => (await byTid(page, RESULT).count()) === 1, WAIT)) say(`main's thread has ${await byTid(page, RESULT).count()} result rows of its subagent, not 1`);
     if (!await until(async () => (await stop.count()) === 1, WAIT)) say("main, still working after the Stop on the other branch, has no Stop");
     else {
       await press(page, stop.first());

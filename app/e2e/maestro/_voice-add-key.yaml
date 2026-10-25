@@ -1,0 +1,47 @@
+# Shared by `voice-mic` and `voice-devices`: on the Voice screen, types the key ${KEY} into Add key (the P3 sheet: the card's "Add ElevenLabs key" with no key,
+# the key row to replace one), Test key finds the stand-in's six voices, Save (the head's right) closes the sheet; the screen then has the key row.
+appId: ${APP_ID}
+---
+- runFlow:
+    when:
+      visible:
+        id: "vs-add-key"
+    commands:
+      - tapOn:
+          id: "vs-add-key"
+- runFlow:
+    when:
+      visible:
+        id: "vs-key-row"
+    commands:
+      - tapOn:
+          id: "vs-key-row"
+- extendedWaitUntil:
+    visible:
+      id: "vs-key-sheet"
+    timeout: 30000
+- tapOn:
+    id: "vs-key"
+- inputText: ${KEY}
+# (the sheet rides on the keyboard: a press on its title lets the field go and the keyboard away, as `_blur.yaml` does, so Test key is pressed where it stays)
+- tapOn:
+    id: "sheet-title"
+- waitForAnimationToEnd
+- tapOn:
+    id: "vs-key-test"
+- extendedWaitUntil:
+    visible:
+      id: "vs-key-result"
+      text: ".*Works: 6 voices found.*"
+    timeout: 60000
+- takeScreenshot: ${SHOT}
+- tapOn:
+    id: "sheet-right"
+- extendedWaitUntil:
+    notVisible:
+      id: "vs-key-sheet"
+    timeout: 30000
+- extendedWaitUntil:
+    visible:
+      id: "vs-key-row"
+    timeout: 30000

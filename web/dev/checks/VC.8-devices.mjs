@@ -29,6 +29,16 @@
 //                  ends with the mic_blocked popover; private headphones unplugged while a reply is spoken: the session pauses (the context is
 //                  suspended, nothing comes out loud) with its reason and Continue on the speech bar, on the pill's orb and in Read aloud's chip, and
 //                  Continue goes on. After each, a typed message still sends and a new session works
+// The phone (ux-improvements S3, plans/ux-improvements/s3-design.md): Settings > Voice is the pushed Voice screen and the devices are two Advanced rows
+// (`vs-mic`, `vs-speaker`, their value the saved choice by name or "System default") whose P2 sheets (`vs-device-sheet-mic`, `-speaker`) list only while
+// open. The scenarios that go through Settings run the same proofs there: the screen lists nothing and opens nothing (the count of `enumerateDevices` is
+// the same before and after it opens; a sheet lists when it opens); before the permission the Microphone sheet holds System default alone and says why;
+// Test microphone (permission, list, meter with a peak, a pick restarts the test, End test) and Test speaker (the chosen sink, no request) are in the
+// sheets; plug and unplug are followed while a sheet is open; a saved device that is gone is "(not connected)" in the sheet and still saved; the notice of
+// Test speaker / Test microphone on a missing device is in the sheet (and on the screen behind it), stays after the chime, goes on its timer, and is
+// not there when the gear opens Settings again; a microphone test ends with its sheet. Not on the phone, because the design removed it: the devices card
+// with its own no-key line (`vs-devices-nokey`; with no key the screen has no device row at all and lists nothing), the voice list that "came" before
+// Test speaker (the voices are Choose voice's), and Close/Esc (Back). The scenarios that never open Settings are the same on every layout.
 // OUT=/tmp/x keeps a screenshot of the page in the states that have a new look there, for a person's look. ONLY=choose,missing runs the scenarios named
 // (nothing, choose, check, missing, settingsnotice, nokey, mic, speaker, pause, pill).
 import fs from "node:fs";
@@ -37,8 +47,10 @@ import { atRest, callsOf, check, mockEval, seed, until } from "../shot.mjs";
 import { installDevices } from "./devices.mjs";
 import { pressAct } from "./fork.mjs";
 import { byTid, openBoard, openChat, press, showList, tidSel } from "./sel.mjs";
+import { closeSheet, openAddKey, openVoice, saveKey, sheetShown, voiceKeyState } from "./voicephone.mjs";
 
 export const viewports = ["desktop", "tablet", "phone"];
+export const limit = 900; // (seconds: dev/uicheck.mjs gives this check this long; 347 s alone at three viewports on 25ea7ea, past 600 s under load)
 
 const OUT = process.env.OUT;
 const ONLY = process.env.ONLY ? process.env.ONLY.split(",") : null;
@@ -58,6 +70,8 @@ const NAMES = ["Desk Mic", "Stand-in Headset", "Desk Speakers", "Stand-in Headph
 
 await check("VC.8 voice devices: choosing, checking, missing at the start, lost during a session", async ({ url, viewport, layout, open, fail, note }) => {
   const wide = layout !== "phone";
+  // the board's voice: the wide pill, or on the phone (package V1) the docked orb and its card (the paused sentence, Continue and the notice are the card's)
+  const PILL = wide ? { orb: "pill-orb", words: "pill-words", cont: "pill-continue", notice: "caption-notice" } : { orb: "voice-orb", words: "voice-card-words", cont: "voice-card-continue", notice: "voice-card-notice" };
   const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
   const log = () => mockEval("return voice.log();", url);
   const stt = async () => (await log()).filter((e) => e.kind === "stt");
@@ -93,7 +107,7 @@ await check("VC.8 voice devices: choosing, checking, missing at the start, lost 
     setInterval(() => {
       const n = window.__aiwbVoice.notice();
       if (n && !seen.includes(n.text)) seen.push(n.text);
-      for (const e of document.querySelectorAll('[data-testid="voice-notice"], [data-testid="caption-notice"]')) { const t = e.textContent.replace(/\s+/g, " ").trim(); if (t && !seen.includes(t)) seen.push(t); }
+      for (const e of document.querySelectorAll('[data-testid="voice-notice"], [data-testid="caption-notice"], [data-testid="voice-card-notice"]')) { const t = e.textContent.replace(/\s+/g, " ").trim(); if (t && !seen.includes(t)) seen.push(t); }
     }, 25);
   });
   const notices = (p) => p.evaluate(() => window.__notices);
@@ -117,7 +131,7 @@ await check("VC.8 voice devices: choosing, checking, missing at the start, lost 
     await seed(url, "A2");
     const ls = { "aiwb.voice.settings": J({ autoSend: true, pauseMs: 600, ...s }) };
     const sel = at === "chat" ? { chat: CHAT } : { board: BOARD, chat: null };
-    const wait = at === "chat" ? tidSel("send") : tidSel("board-canvas", { board: BOARD });
+    const wait = at === "chat" ? tidSel("composer-input") : tidSel("board-canvas", { board: BOARD });
     const o = await open({ sel, ls, wait });
     const page = o.page;
     await installDevices(o.ctx, devices);
@@ -145,6 +159,12 @@ await check("VC.8 voice devices: choosing, checking, missing at the start, lost 
 
   /** The Dictate or Speech mode control: in the row, or in the open "more" popup when the row has no room. Presses it. */
   const pressVoice = async (p, which) => {
+    if (!wide) { // (the phone's toolbar, C1: the mic is `composer-dictate`, Talk `composer-talk` while the box is empty; no "more" popup)
+      // (Talk stands in the place of Send only while the box is empty: words left in it by Dictation are cleared first, as a person would)
+      if (which === "speech" && !await byTid(p, "composer-talk").count() && await text(p)) await clearBox(p);
+      await press(p, byTid(p, which === "dictate" ? "composer-dictate" : "composer-talk").first());
+      return;
+    }
     let last = "";
     for (let i = 0; i < 40; i++) { // (a page just opened is still measuring its toolbar: wait for a place that stays)
       const at = await p.evaluate(() => { const t = document.querySelector('[data-testid="composer-tools"]'); return t ? `${t.dataset.voice}/${t.dataset.insert}/${t.dataset.more}` : ""; });
@@ -212,15 +232,19 @@ await check("VC.8 voice devices: choosing, checking, missing at the start, lost 
     }
   };
 
-  /** Settings: the sidebar's gear (the phone's list first). Closing brings the chat back (the phone left it). */
+  /** Settings: the sidebar's gear (the phone: Home's gear, then Settings' Voice row). Closing brings the chat back (the phone left it). */
   const openSettings = async (p) => {
+    if (!wide) { await openVoice(p); return; } // (the phone: Home's gear pushes Settings, its Voice row the Voice screen)
     await showList(p);
     await press(p, byTid(p, "settings-btn").first());
     if (!await shown(byTid(p, "settings-dialog"))) throw new Error("the Settings button opened no dialog");
   };
   const closeSettings = async (p, chat = true) => {
-    await press(p, byTid(p, "vs-close"));
-    if (!await gone(byTid(p, "settings-dialog"))) fail("Close left Settings open");
+    if (!wide) await showList(p); // (Back through Voice and Settings to Home)
+    else {
+      await press(p, byTid(p, "vs-close"));
+      if (!await gone(byTid(p, "settings-dialog"))) fail("Close left Settings open");
+    }
     if (chat) await openChat(p, CHAT);
   };
   const menuTexts = async (p, picker) => {
@@ -231,13 +255,84 @@ await check("VC.8 voice devices: choosing, checking, missing at the start, lost 
     await gone(byTid(p, "menu"));
     return items;
   };
-  const pickShown = async (p, picker) => (await textOf(byTid(p, picker))).replace(/▾/g, "").trim();
+  const pickShown = async (p, picker) => (wide ? (await textOf(byTid(p, picker))).replace(/▾/g, "").trim() : textOf(byTid(p, picker).last().locator('[data-testid="cell-value"]')));
   const pick = async (p, picker, label) => {
     await press(p, byTid(p, picker));
     const item = byTid(p, "menu-item").filter({ hasText: label }).first();
     if (!await shown(item)) throw new Error(`${picker}: no menu item "${label}"`);
     await press(p, item);
     await gone(byTid(p, "menu"));
+  };
+
+  // ---- the phone: Settings > Voice is the pushed Voice screen (voicephone.mjs); the devices are in P2 sheets that list only while open
+  const cellValue = (p, id) => textOf(byTid(p, id).last().locator('[data-testid="cell-value"]'));
+  const sheetRows = (p, id) => p.evaluate((id) => {
+    const all = document.querySelectorAll(`[data-testid="${id}"]`), s = all[all.length - 1];
+    return s ? [...s.querySelectorAll('[data-testid="picker-row"]')].map((e) => e.innerText.replace(/\s+/g, " ").trim().replace(/\s*✓$/, "")) : [];
+  }, id);
+  const sheetPick = (p, id, label) => press(p, byTid(p, id).last().locator('[data-testid="picker-row"]').filter({ hasText: label }).first());
+  const MIC_SHEET = "vs-device-sheet-mic", SPEAKER_SHEET = "vs-device-sheet-speaker";
+  const openDeviceSheet = async (p, kind) => { await press(p, byTid(p, kind === "mic" ? "vs-mic" : "vs-speaker").last()); await sheetShown(p, kind === "mic" ? MIC_SHEET : SPEAKER_SHEET); };
+  /** The Settings > Voice part of the "choose" scenario on the phone: the same things as the dialog's, in the sheets. */
+  const phoneChoose = async (page) => {
+    const c0 = await dev(page, "calls");
+    if (c0.getUserMedia !== 0) fail("opening Settings asked for the microphone");
+    if (c0.enumerateDevices !== 0) fail(`opening the Voice screen listed devices: ${J(c0)}`);
+    for (const id of ["vs-mic", "vs-speaker"]) if ((await pickShown(page, id)) !== "System default") fail(`before the permission ${id} shows "${await pickShown(page, id)}"`);
+    // before the permission: the Microphone sheet lists System default alone and the note says why
+    await openDeviceSheet(page, "mic");
+    if (!await until(async () => (await dev(page, "calls")).enumerateDevices > 0, 15000)) fail("the Microphone sheet listed no device");
+    for (const [sheet, name] of [[MIC_SHEET, "Microphone"]]) {
+      const items = await sheetRows(page, sheet);
+      if (items.length !== 1 || !/^System default/.test(items[0])) fail(`before the permission the ${name} sheet lists ${J(items)}`);
+    }
+    if ((await textOf(byTid(page, "vs-devices-note"))) !== "Allow the microphone to see your other devices.") fail(`the note before the permission says "${await textOf(byTid(page, "vs-devices-note"))}"`);
+    if ((await dev(page, "granted")) !== false) fail("the stand-in was granted before the tap");
+    if ((await dev(page, "calls")).getUserMedia !== 0) fail("opening the Microphone sheet asked for the microphone");
+    // Test microphone asks, and the list fills: System default first, then the two devices
+    await press(page, byTid(page, "vs-mic-test").last());
+    if (!await shown(byTid(page, "vs-mic-level"))) fail("Test microphone drew no meter");
+    await until(async () => (await sheetRows(page, MIC_SHEET)).length === 3, 15000);
+    const mics = await sheetRows(page, MIC_SHEET);
+    if (!/^System default/.test(mics[0] ?? "") || mics.slice(1).join() !== "Desk Mic,Stand-in Headset") fail(`the microphones listed are ${J(mics)}, not System default, Desk Mic, Stand-in Headset`);
+    if (await byTid(page, "vs-devices-note").count()) fail("the note stays after the microphone was allowed");
+    // 6.2: the meter moves with the microphone and nothing is sent
+    if (!await until(async () => Number(await byTid(page, "vs-mic-level").last().getAttribute("data-peak")) > 0, 15000)) fail("the meter never moved while the test ran");
+    await shot(page, "1-testing");
+    const sent = (await log()).filter((e) => e.kind === "stt" || e.kind === "token" || e.kind === "tts");
+    if (sent.length) fail(`Test microphone made a request of the voice service: ${J(sent.map((e) => e.kind))}`);
+    await press(page, byTid(page, "vs-mic-test").last());
+    if (!await until(async () => (await byTid(page, "vs-mic-level").count()) === 0, 10000)) fail("the meter stays after End test");
+    // the list follows a device plugged in or out while the sheet is open
+    await dev(page, "plug", { kind: "input", id: "mic-usb", label: "USB Mic", hz: 500 });
+    if (!await until(async () => (await sheetRows(page, MIC_SHEET)).includes("USB Mic"), 15000)) fail("a microphone plugged in while the sheet is open is not listed");
+    await dev(page, "unplug", "mic-usb");
+    if (!await until(async () => (await sheetRows(page, MIC_SHEET)).length === 3, 15000)) fail("a microphone unplugged while the sheet is open is still listed");
+    await sheetPick(page, MIC_SHEET, "Stand-in Headset");
+    await closeSheet(page, MIC_SHEET);
+    // the Speaker sheet: it lists when it opens (the permission is there), follows plug and unplug, and Test speaker plays on the pick
+    await openDeviceSheet(page, "speaker");
+    await until(async () => (await sheetRows(page, SPEAKER_SHEET)).length === 3, 15000);
+    const outs = await sheetRows(page, SPEAKER_SHEET);
+    if (!/^System default/.test(outs[0] ?? "") || outs.slice(1).join() !== "Desk Speakers,Stand-in Headphones") fail(`the speakers listed are ${J(outs)}, not System default, Desk Speakers, Stand-in Headphones`);
+    await dev(page, "plug", { kind: "output", id: "out-usb", label: "USB Speakers" });
+    if (!await until(async () => (await sheetRows(page, SPEAKER_SHEET)).includes("USB Speakers"), 15000)) fail("a speaker plugged in while the sheet is open is not listed");
+    await dev(page, "unplug", "out-usb");
+    if (!await until(async () => (await sheetRows(page, SPEAKER_SHEET)).length === 3, 15000)) fail("a speaker unplugged while the sheet is open is still listed");
+    await sheetPick(page, SPEAKER_SHEET, "Stand-in Headphones");
+    await until(async () => (await settings(page)).mic?.id === "mic-headset" && (await settings(page)).speaker?.id === "out-headphones");
+    const s1 = await settings(page);
+    if (J(s1.mic) !== J(HEADSET) || J(s1.speaker) !== J(PHONES)) fail(`the picks are kept as ${J([s1.mic, s1.speaker])}`);
+    // Test speaker: with the chosen sink, no request of the voice service
+    await knob("voice.reset(); return 1;");
+    const w0 = await page.evaluate(() => window.__aiwbVoice.player().writes);
+    await press(page, byTid(page, "vs-speaker-test").last());
+    if (!await until(async () => (await page.evaluate(() => window.__aiwbVoice.player().writes)) > w0, 15000)) fail("Test speaker wrote no sound to the player");
+    if (!(await sinks(page)).some((x) => x.sinkId === "out-headphones")) fail(`Test speaker did not play on the speaker picked: ${J(await sinks(page))}`);
+    await until(async () => (await byTid(page, "vs-speaker-test").last().getAttribute("data-playing")) === "false", 15000);
+    if ((await log()).length) fail(`Test speaker made a request of the voice service: ${J((await log()).map((e) => e.kind))}`);
+    await closeSheet(page, SPEAKER_SHEET);
+    if ((await cellValue(page, "vs-mic")) !== "Stand-in Headset" || (await cellValue(page, "vs-speaker")) !== "Stand-in Headphones") fail(`the rows say "${await cellValue(page, "vs-mic")}" and "${await cellValue(page, "vs-speaker")}" after the picks`);
   };
 
   // ---- 6.1: nothing chosen is the system default, with no notice and no listing
@@ -284,7 +379,16 @@ await check("VC.8 voice devices: choosing, checking, missing at the start, lost 
     // (a session lists once at its start, so the count after sessions is not asserted) Settings lists when it opens
     const before = (await dev(page, "calls")).enumerateDevices;
     await openSettings(page);
-    if (!await until(async () => (await dev(page, "calls")).enumerateDevices > before, 10000)) fail("opening Settings listed no device");
+    if (wide) {
+      if (!await until(async () => (await dev(page, "calls")).enumerateDevices > before, 10000)) fail("opening Settings listed no device");
+    } else {
+      // (the phone's Voice screen lists nothing: a device list is a sheet's, listed while it is open)
+      await sleep(1000);
+      if ((await dev(page, "calls")).enumerateDevices !== before) fail("opening the Voice screen listed devices");
+      await openDeviceSheet(page, "mic");
+      if (!await until(async () => (await dev(page, "calls")).enumerateDevices > before, 10000)) fail("opening the Microphone sheet listed no device");
+      await closeSheet(page, MIC_SHEET);
+    }
     await closeSettings(page, false);
   });
 
@@ -292,58 +396,61 @@ await check("VC.8 voice devices: choosing, checking, missing at the start, lost 
   await scenario("choose", {}, async (p) => {
     const { page, calls, hits } = p;
     await openSettings(page);
-    const c0 = await dev(page, "calls");
-    if (c0.getUserMedia !== 0) fail("opening Settings asked for the microphone");
-    // before the permission: System default alone, the note says why
-    for (const id of ["vs-mic", "vs-speaker"]) {
-      if ((await pickShown(page, id)) !== "System default") fail(`before the permission ${id} shows "${await pickShown(page, id)}"`);
-      const items = await menuTexts(page, id);
-      if (items.length !== 1 || !/^System default/.test(items[0])) fail(`before the permission ${id} lists ${J(items)}`);
+    if (!wide) await phoneChoose(page);
+    else {
+      const c0 = await dev(page, "calls");
+      if (c0.getUserMedia !== 0) fail("opening Settings asked for the microphone");
+      // before the permission: System default alone, the note says why
+      for (const id of ["vs-mic", "vs-speaker"]) {
+        if ((await pickShown(page, id)) !== "System default") fail(`before the permission ${id} shows "${await pickShown(page, id)}"`);
+        const items = await menuTexts(page, id);
+        if (items.length !== 1 || !/^System default/.test(items[0])) fail(`before the permission ${id} lists ${J(items)}`);
+      }
+      if ((await textOf(byTid(page, "vs-devices-note"))) !== "Allow the microphone to see your other devices.") fail(`the note before the permission says "${await textOf(byTid(page, "vs-devices-note"))}"`);
+      if ((await dev(page, "granted")) !== false) fail("the stand-in was granted before the tap");
+      // Test microphone asks, and the lists fill: System default first, then the two devices of each kind
+      await press(page, byTid(page, "vs-mic-test"));
+      if (!await shown(byTid(page, "vs-mic-level"))) fail("Test microphone drew no meter");
+      await until(async () => (await menuTexts(page, "vs-mic")).length === 3, 15000);
+      const mics = await menuTexts(page, "vs-mic"), outs = await menuTexts(page, "vs-speaker");
+      if (!/^System default/.test(mics[0] ?? "") || mics.slice(1).join() !== "Desk Mic,Stand-in Headset") fail(`the microphones listed are ${J(mics)}, not System default, Desk Mic, Stand-in Headset`);
+      if (!/^System default/.test(outs[0] ?? "") || outs.slice(1).join() !== "Desk Speakers,Stand-in Headphones") fail(`the speakers listed are ${J(outs)}, not System default, Desk Speakers, Stand-in Headphones`);
+      if (await byTid(page, "vs-devices-note").count()) fail("the note stays after the microphone was allowed");
+      // 6.2: the meter moves with the microphone and nothing is sent
+      if (!await until(async () => Number(await byTid(page, "vs-mic-level").getAttribute("data-peak")) > 0, 15000)) fail("the meter never moved while the test ran");
+      await shot(page, "1-testing");
+      const sent = (await log()).filter((e) => e.kind === "stt" || e.kind === "token" || e.kind === "tts");
+      if (sent.length) fail(`Test microphone made a request of the voice service: ${J(sent.map((e) => e.kind))}`);
+      await press(page, byTid(page, "vs-mic-test"));
+      if (!await gone(byTid(page, "vs-mic-level"))) fail("the meter stays after End test");
+      // the lists follow a device plugged in or out while Settings is open
+      await dev(page, "plug", { kind: "input", id: "mic-usb", label: "USB Mic", hz: 500 });
+      await dev(page, "plug", { kind: "output", id: "out-usb", label: "USB Speakers" });
+      if (!await until(async () => (await menuTexts(page, "vs-mic")).includes("USB Mic") && (await menuTexts(page, "vs-speaker")).includes("USB Speakers"), 15000)) fail("a microphone and a speaker plugged in while Settings is open are not listed");
+      await dev(page, "unplug", "mic-usb");
+      await dev(page, "unplug", "out-usb");
+      if (!await until(async () => (await menuTexts(page, "vs-mic")).length === 3 && (await menuTexts(page, "vs-speaker")).length === 3, 15000)) fail("a microphone and a speaker unplugged while Settings is open are still listed");
+      // the picks
+      await pick(page, "vs-mic", "Stand-in Headset");
+      await pick(page, "vs-speaker", "Stand-in Headphones");
+      await until(async () => (await settings(page)).mic?.id === "mic-headset" && (await settings(page)).speaker?.id === "out-headphones");
+      const s1 = await settings(page);
+      if (J(s1.mic) !== J(HEADSET) || J(s1.speaker) !== J(PHONES)) fail(`the picks are kept as ${J([s1.mic, s1.speaker])}`);
+      // Test speaker: with the chosen sink, no request of the voice service (a key is set, and its voices came, so a request would be a choice)
+      if (!await shown(byTid(page, "vs-voice-row"), 15000)) fail("the voices did not come with the key set");
+      await knob("voice.reset(); return 1;");
+      const w0 = await page.evaluate(() => window.__aiwbVoice.player().writes);
+      await press(page, byTid(page, "vs-speaker-test"));
+      if (!await until(async () => (await page.evaluate(() => window.__aiwbVoice.player().writes)) > w0, 15000)) fail("Test speaker wrote no sound to the player");
+      if (!(await sinks(page)).some((x) => x.sinkId === "out-headphones")) fail(`Test speaker did not play on the speaker picked: ${J(await sinks(page))}`);
+      await until(async () => (await byTid(page, "vs-speaker-test").getAttribute("data-playing")) === "false", 15000);
+      if ((await log()).length) fail(`Test speaker made a request of the voice service: ${J((await log()).map((e) => e.kind))}`);
     }
-    if ((await textOf(byTid(page, "vs-devices-note"))) !== "Allow the microphone to see your other devices.") fail(`the note before the permission says "${await textOf(byTid(page, "vs-devices-note"))}"`);
-    if ((await dev(page, "granted")) !== false) fail("the stand-in was granted before the tap");
-    // Test microphone asks, and the lists fill: System default first, then the two devices of each kind
-    await press(page, byTid(page, "vs-mic-test"));
-    if (!await shown(byTid(page, "vs-mic-level"))) fail("Test microphone drew no meter");
-    await until(async () => (await menuTexts(page, "vs-mic")).length === 3, 15000);
-    const mics = await menuTexts(page, "vs-mic"), outs = await menuTexts(page, "vs-speaker");
-    if (!/^System default/.test(mics[0] ?? "") || mics.slice(1).join() !== "Desk Mic,Stand-in Headset") fail(`the microphones listed are ${J(mics)}, not System default, Desk Mic, Stand-in Headset`);
-    if (!/^System default/.test(outs[0] ?? "") || outs.slice(1).join() !== "Desk Speakers,Stand-in Headphones") fail(`the speakers listed are ${J(outs)}, not System default, Desk Speakers, Stand-in Headphones`);
-    if (await byTid(page, "vs-devices-note").count()) fail("the note stays after the microphone was allowed");
-    // 6.2: the meter moves with the microphone and nothing is sent
-    if (!await until(async () => Number(await byTid(page, "vs-mic-level").getAttribute("data-peak")) > 0, 15000)) fail("the meter never moved while the test ran");
-    await shot(page, "1-testing");
-    const sent = (await log()).filter((e) => e.kind === "stt" || e.kind === "token" || e.kind === "tts");
-    if (sent.length) fail(`Test microphone made a request of the voice service: ${J(sent.map((e) => e.kind))}`);
-    await press(page, byTid(page, "vs-mic-test"));
-    if (!await gone(byTid(page, "vs-mic-level"))) fail("the meter stays after Stop test");
-    // the lists follow a device plugged in or out while Settings is open
-    await dev(page, "plug", { kind: "input", id: "mic-usb", label: "USB Mic", hz: 500 });
-    await dev(page, "plug", { kind: "output", id: "out-usb", label: "USB Speakers" });
-    if (!await until(async () => (await menuTexts(page, "vs-mic")).includes("USB Mic") && (await menuTexts(page, "vs-speaker")).includes("USB Speakers"), 15000)) fail("a microphone and a speaker plugged in while Settings is open are not listed");
-    await dev(page, "unplug", "mic-usb");
-    await dev(page, "unplug", "out-usb");
-    if (!await until(async () => (await menuTexts(page, "vs-mic")).length === 3 && (await menuTexts(page, "vs-speaker")).length === 3, 15000)) fail("a microphone and a speaker unplugged while Settings is open are still listed");
-    // the picks
-    await pick(page, "vs-mic", "Stand-in Headset");
-    await pick(page, "vs-speaker", "Stand-in Headphones");
-    await until(async () => (await settings(page)).mic?.id === "mic-headset" && (await settings(page)).speaker?.id === "out-headphones");
-    const s1 = await settings(page);
-    if (J(s1.mic) !== J(HEADSET) || J(s1.speaker) !== J(PHONES)) fail(`the picks are kept as ${J([s1.mic, s1.speaker])}`);
-    // Test speaker: with the chosen sink, no request of the voice service (a key is set, and its voices came, so a request would be a choice)
-    if (!await shown(byTid(page, "vs-voice-row"), 15000)) fail("the voices did not come with the key set");
-    await knob("voice.reset(); return 1;");
-    const w0 = await page.evaluate(() => window.__aiwbVoice.player().writes);
-    await press(page, byTid(page, "vs-speaker-test"));
-    if (!await until(async () => (await page.evaluate(() => window.__aiwbVoice.player().writes)) > w0, 15000)) fail("Test speaker wrote no sound to the player");
-    if (!(await sinks(page)).some((x) => x.sinkId === "out-headphones")) fail(`Test speaker did not play on the speaker picked: ${J(await sinks(page))}`);
-    await until(async () => (await byTid(page, "vs-speaker-test").getAttribute("data-playing")) === "false", 15000);
-    if ((await log()).length) fail(`Test speaker made a request of the voice service: ${J((await log()).map((e) => e.kind))}`);
     await closeSettings(page);
     // the app restarted: the picks are still the settings, and Settings shows them
     await page.reload();
     await page.waitForFunction(() => !!window.__aiwbVoice && !!window.__aiwbDevices && !!window.__aiwbSend, null, { timeout: 30000 });
-    await page.waitForSelector(tidSel("send"), { timeout: 30000 });
+    await page.waitForSelector(tidSel("composer-input"), { timeout: 30000 }); // (the phone's empty box shows Talk, not Send)
     await watchNotices(page);
     await page.evaluate((k) => window.__aiwbVoice.setKey(k), KEY);
     const s2 = await settings(page);
@@ -383,8 +490,8 @@ await check("VC.8 voice devices: choosing, checking, missing at the start, lost 
     // the voice pill on a board: the same microphone
     await openSettings(page).then(() => closeSettings(page, false));
     await openBoard(page, BOARD);
-    const orb = byTid(page, "pill-orb");
-    if (!await shown(orb)) fail("the board shows no pill");
+    const orb = byTid(page, PILL.orb);
+    if (!await shown(orb)) fail(wide ? "the board shows no pill" : "the board shows no orb");
     else {
       await script([{ after: 3, partial: "draw" }, { after: 6, committed: "draw a red box" }]);
       const k = (await stt()).length;
@@ -444,7 +551,15 @@ await check("VC.8 voice devices: choosing, checking, missing at the start, lost 
     if (J(await notices(page)) !== J([want])) fail(`the notices of the start are ${J(await notices(page))}, one was wanted`);
     await stopDictate(page);
     await openSettings(page);
-    if (!await until(async () => (await pickShown(page, "vs-mic")) === "Stand-in Headset (not connected)", 15000)) fail(`Settings shows the missing microphone as "${await pickShown(page, "vs-mic")}"`);
+    if (wide) {
+      if (!await until(async () => (await pickShown(page, "vs-mic")) === "Stand-in Headset (not connected)", 15000)) fail(`Settings shows the missing microphone as "${await pickShown(page, "vs-mic")}"`);
+    } else {
+      // (the phone's row names the saved choice without listing; its sheet says the device is gone)
+      if ((await pickShown(page, "vs-mic")) !== "Stand-in Headset") fail(`the Microphone row shows "${await pickShown(page, "vs-mic")}", not the saved choice`);
+      await openDeviceSheet(page, "mic");
+      if (!await until(async () => (await sheetRows(page, MIC_SHEET)).includes("Stand-in Headset (not connected)"), 15000)) fail(`the Microphone sheet lists the missing microphone as ${J(await sheetRows(page, MIC_SHEET))}`);
+      await closeSheet(page, MIC_SHEET);
+    }
     if (J((await settings(page)).mic) !== J(HEADSET)) fail(`the saved microphone is ${J((await settings(page)).mic)} after a session without it`);
     await closeSettings(page);
     // back: the next session uses it, and says nothing
@@ -508,6 +623,45 @@ await check("VC.8 voice devices: choosing, checking, missing at the start, lost 
     await dev(page, "unplug", "out-headphones");
     await dev(page, "unplug", "mic-headset");
     await openSettings(page);
+    if (!wide) {
+      // (the notice stands in the sheet that makes the test, and on the screen behind it: the last one is the sheet's)
+      const notice = byTid(page, "vs-devices-notice");
+      await openDeviceSheet(page, "speaker");
+      if (!await shown(byTid(page, "vs-speaker-test"))) fail("the Speaker sheet has no Test speaker");
+      if (await notice.count()) fail("the Speaker sheet shows a notice before any test");
+      const wantS = "“Stand-in Headphones” isn't connected. Using the system speaker.";
+      await press(page, byTid(page, "vs-speaker-test").last());
+      if (!await shown(notice.last(), 5000)) fail("Test speaker on a speaker that is not there announced nothing in Settings");
+      else if ((await textOf(notice.last())) !== wantS) fail(`the Speaker sheet says "${await textOf(notice.last())}", not "${wantS}"`);
+      await shot(page, "3-settings-notice");
+      if (!await until(async () => (await byTid(page, "vs-speaker-test").last().getAttribute("data-playing")) === "false", 15000)) fail("Test speaker never ended");
+      if (!await notice.count()) fail("the notice went with the chime; it should stay on its timer");
+      if ((await usedSinks(page)).includes("out-headphones")) fail(`Test speaker was sent to the missing speaker: ${J(await usedSinks(page))}`);
+      if ((await sinks(page)).length === 0) fail("Test speaker played nowhere");
+      if (await byTid(page, "voice-notice").count()) fail("a chat's notice line shows the Settings notice");
+      if (!await gone(notice, 15000)) fail("the notice of Settings does not go away by itself");
+      if (J((await settings(page)).speaker) !== J(PHONES)) fail(`the saved speaker is ${J((await settings(page)).speaker)} after Test speaker without it`);
+      await closeSheet(page, SPEAKER_SHEET);
+      // Test microphone
+      const wantM = "“Stand-in Headset” isn't connected. Using the system microphone.";
+      await openDeviceSheet(page, "mic");
+      await press(page, byTid(page, "vs-mic-test").last());
+      if (!await shown(byTid(page, "vs-mic-level"))) fail("Test microphone drew no meter on the default");
+      if (!await shown(notice.last(), 5000)) fail("Test microphone on a microphone that is not there announced nothing in Settings");
+      else if ((await textOf(notice.last())) !== wantM) fail(`the Microphone sheet says "${await textOf(notice.last())}", not "${wantM}"`);
+      if (!(await opened(page)).some((o) => o.live && o.deviceId === "mic-desk")) fail(`Test microphone opened ${J(await opened(page))}, not the default`);
+      if (J((await settings(page)).mic) !== J(HEADSET)) fail(`the saved microphone is ${J((await settings(page)).mic)} after Test microphone without it`);
+      // closing the sheet ends the test; leaving the Voice screen takes the notice away (as closing the dialog does), and the gear opens Settings
+      // with no notice from the last opening
+      await closeSheet(page, MIC_SHEET);
+      if (!await until(async () => !(await opened(page)).some((o) => o.live), 10000)) fail("the microphone test goes on after its sheet was closed");
+      await closeSettings(page, false);
+      if (!await until(async () => (await page.evaluate(() => window.__aiwbVoice.notice())) === null, 5000)) fail("the notice of Settings stays after the Voice screen was left");
+      await openSettings(page);
+      if (await byTid(page, "vs-devices-notice").count()) fail("the notice of the last opening shows when Settings opens again");
+      await closeSettings(page, false);
+      return;
+    }
     if (!await shown(byTid(page, "vs-speaker-test"))) fail("the devices card has no Test speaker");
     if (await byTid(page, "vs-devices-notice").count()) fail("the devices card shows a notice before any test");
     const wantS = "“Stand-in Headphones” isn't connected. Using the system speaker.";
@@ -542,6 +696,25 @@ await check("VC.8 voice devices: choosing, checking, missing at the start, lost 
   await scenario("nokey", { settings: {}, key: false }, async (p) => {
     const { page } = p;
     await openSettings(page);
+    if (!wide) {
+      // (the design drops the devices card's own no-key line: with no key the Voice screen is the card and the dimmed voice row, and has no device row)
+      if ((await voiceKeyState(page)) !== "none") fail(`the Voice screen's key state is ${J(await voiceKeyState(page))}, not "none"`);
+      await sleep(1500);
+      const c = await dev(page, "calls");
+      if (c.enumerateDevices !== 0 || c.getUserMedia !== 0 || c.setSinkId !== 0) fail(`the Voice screen listed or opened devices with no key saved: ${J(c)}`);
+      for (const id of ["vs-mic", "vs-speaker", "vs-mic-test", "vs-speaker-test"]) if (await byTid(page, id).count()) fail(`${id} is offered with no key saved`);
+      await shot(page, "4-devices-nokey");
+      // the key saved: the rows come, and still nothing is listed until a sheet opens
+      await saveKey(page, KEY);
+      if (!await shown(byTid(page, "vs-mic"))) fail("the rows did not come after the key was saved");
+      await sleep(1000);
+      if ((await dev(page, "calls")).enumerateDevices !== 0) fail("the Voice screen lists devices once the key is saved");
+      await openDeviceSheet(page, "mic");
+      if (!await until(async () => (await dev(page, "calls")).enumerateDevices > 0, 10000)) fail("the Microphone sheet lists no device once the key is saved");
+      await closeSheet(page, MIC_SHEET);
+      await closeSettings(page, false);
+      return;
+    }
     const want = "Add your key to choose a microphone and a speaker.";
     if (!await shown(byTid(page, "vs-devices-nokey"))) fail("with no key the devices card does not say that a key is needed");
     else if ((await textOf(byTid(page, "vs-devices-nokey"))) !== want) fail(`with no key the devices card says "${await textOf(byTid(page, "vs-devices-nokey"))}", not "${want}"`);
@@ -686,7 +859,7 @@ await check("VC.8 voice devices: choosing, checking, missing at the start, lost 
     const cont = byTid(page, "voice-reading-continue");
     if (!await shown(cont, 5000)) fail("Read aloud's pause offers no Continue reading");
     else if ((await textOf(cont)) !== "Continue reading") fail(`the continue control says "${await textOf(cont)}"`);
-    if (!await byTid(page, "voice-reading").count()) fail("Stop reading is gone during the pause");
+    if (!await byTid(page, "voice-reading").count()) fail("End reading is gone during the pause");
     if (!await shown(byTid(page, "voice-notice"), 5000) || (await textOf(byTid(page, "voice-notice"))) !== wantP) fail(`the composer's line says "${await textOf(byTid(page, "voice-notice"))}", not the pause sentence`);
     await shot(page, "6-reading-paused");
     for (let i = 0; i < 5; i++) {
@@ -709,25 +882,25 @@ await check("VC.8 voice devices: choosing, checking, missing at the start, lost 
     await knob("voice.pace({ chunkMs: 300, chunks: 10 }); return 1;");
     await reply(SLOW, 4, 400);
     await press(page, orb);
-    if (!await until(async () => (await byTid(page, "pill-orb").getAttribute("data-state")) === "speaking", 60000)) throw new Error(`the pill never spoke: the orb is ${await byTid(page, "pill-orb").getAttribute("data-state")}`);
+    if (!await until(async () => (await byTid(page, PILL.orb).getAttribute("data-state")) === "speaking", 60000)) throw new Error(`the pill never spoke: the orb is ${await byTid(page, PILL.orb).getAttribute("data-state")}`);
   };
-  const endPill = async (page) => { for (let i = 0; i < 5 && (await sess(page)).phase !== "idle"; i++) { await press(page, byTid(page, "pill-orb")); await sleep(400); } return phaseIs(page, "idle", 8000); };
+  const endPill = async (page) => { for (let i = 0; i < 5 && (await sess(page)).phase !== "idle"; i++) { await press(page, byTid(page, PILL.orb)); await sleep(400); } return phaseIs(page, "idle", 8000); };
   await scenario("pill", { at: "board", settings: { speaker: PHONES }, devices: { granted: true } }, async (p) => {
     const { page, calls } = p;
-    const orb = byTid(page, "pill-orb");
+    const orb = byTid(page, PILL.orb);
     await orb.first().waitFor({ state: "visible", timeout: 15000 });
     await pillTurn(page, orb);
     await dev(page, "unplug", "out-headphones");
     if (!await until(async () => (await orb.getAttribute("data-state")) === "paused", 10000)) { fail(`headphones lost while the pill speaks: the orb is ${await orb.getAttribute("data-state")}, not paused`); return; }
-    if (!await shown(byTid(page, "pill-continue"), 5000)) fail("the paused pill shows no Continue");
+    if (!await shown(byTid(page, PILL.cont), 5000)) fail("the paused pill shows no Continue");
     const wantP = PAUSED("Stand-in Headphones");
-    if (!(await textOf(byTid(page, "pill-words"))).includes(wantP)) fail(`the pill's words line says "${await textOf(byTid(page, "pill-words"))}", not the pause sentence`);
+    if (!(await textOf(byTid(page, PILL.words))).includes(wantP)) fail(`the pill's words line says "${await textOf(byTid(page, PILL.words))}", not the pause sentence`);
     await shot(page, "7-pill-paused");
     for (let i = 0; i < 5; i++) {
       await sleep(300);
       if ((await playerSink(page, "out-headphones"))?.state !== "suspended") { fail("during the pill's pause the context is not suspended"); break; }
     }
-    await press(page, byTid(page, "pill-continue"));
+    await press(page, byTid(page, PILL.cont));
     if (!await until(async () => (await orb.getAttribute("data-state")) !== "paused", 5000)) fail("Continue left the orb paused");
     if (!await until(async () => (await playerSink(page, "out-headphones"))?.state === "running", 10000)) fail("after Continue the pill's context does not run");
     if (!await endPill(page)) fail(`the pill did not end: ${J(await sess(page))}`);
@@ -751,12 +924,12 @@ await check("VC.8 voice devices: choosing, checking, missing at the start, lost 
   });
   await scenario("pill", { at: "board", settings: { speaker: SPEAKERS }, devices: { granted: true } }, async (p) => {
     const { page } = p;
-    const orb = byTid(page, "pill-orb");
+    const orb = byTid(page, PILL.orb);
     await orb.first().waitFor({ state: "visible", timeout: 15000 });
     await pillTurn(page, orb);
     await dev(page, "unplug", "out-desk");
     if (!await until(async () => (await notices(page)).includes(LOST_SPEAKER("Desk Speakers")), 10000)) fail(`no notice for the pill's speaker lost: ${J(await notices(page))}`);
-    else if (!await shown(byTid(page, "caption-notice"), 3000)) fail("the notice is not a caption above the pill");
+    else if (!await shown(byTid(page, PILL.notice), 3000)) fail("the notice is not a caption above the pill (the phone: on the card)");
     if ((await orb.getAttribute("data-state")) === "paused") fail("a public speaker lost paused the pill");
     if (!await until(async () => (await playerSink(page, "out-desk"))?.calls.at(-1) === "", 10000)) fail(`the pill's sound was not moved to the default: ${J(await sinks(page))}`);
     await shot(page, "8-pill-notice");

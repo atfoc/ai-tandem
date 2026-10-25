@@ -1,0 +1,16 @@
+# Shared by `voice-mic` and `voice-devices`: from the pushed Voice screen back through Settings to Home (H1; the sidebar on a
+# tablet), the stack's back twice.
+appId: ${APP_ID}
+---
+- tapOn:
+    id: "nav-back"
+- extendedWaitUntil:
+    visible:
+      id: "settings-screen"
+    timeout: 30000
+- tapOn:
+    id: "nav-back"
+- extendedWaitUntil:
+    visible:
+      id: "home|side-tree"
+    timeout: 30000

@@ -1,7 +1,7 @@
 // A block's inline content (AD-75): nested Text for emphasis, code, links and mentions; a chip where a reference tag stood.
 // What is drawn is doc.ts's; the text of every leaf is what displayed.ts counts quotes in.
 import { useContext, type ReactNode } from "react";
-import { Pressable, Text as RNText, View } from "react-native";
+import { Pressable, Text as RNText, View, type TextStyle } from "react-native";
 
 import { chipTitle } from "../../platform/chipinput/chipvalue.ts";
 import { linkProps } from "../../platform/openlink";
@@ -13,6 +13,8 @@ import { LOCAL_SERVER } from "@aiwb/core/types.ts";
 
 import type { Inline } from "./doc.ts";
 import { useMarkdownEnv, WhereContext } from "./env.tsx";
+import { LinkText } from "./LinkSheet.tsx";
+import { linkText } from "./linksheet.ts";
 import { alpha } from "./look.ts";
 import { useLook } from "./look.tsx";
 
@@ -34,11 +36,15 @@ function InlineNode({ n }: { n: Inline }): ReactNode {
     case "del": return <RNText style={{ color: t.muted, textDecorationLine: "line-through" }}><Inlines kids={n.kids} /></RNText>;
     case "sup": return <RNText style={{ fontSize: look.size * 0.75 }}><Inlines kids={n.kids} /></RNText>;
     case "code":
+      // On the phone a chip: mono at 14, rounded and padded where the platform draws that on nested text (web; a drawn space would be
+      // text a quote counts, so there is none)
       return (
-        <RNText testID="md-code-inline" style={{ fontFamily: MONO, fontSize: (look.size * 12) / 13, backgroundColor: look.user ? alpha(t.bg, 0.6) : t.panel }}>{n.v}</RNText>
+        <RNText testID="md-code-inline" style={[{ fontFamily: MONO, fontSize: look.phone ? 14 : (look.size * 12) / 13, backgroundColor: look.user ? alpha(t.bg, 0.6) : look.phone ? t.hover2 : t.panel },
+          look.phone ? (webStyle({ borderRadius: 5, paddingInline: 4 }) as TextStyle | undefined) : undefined]}>{n.v}</RNText>
       );
     case "link":
-      // (a footnote's "#…" opens nothing)
+      // (a footnote's "#…" opens nothing; on the phone a link is underlined and held it opens the link sheet)
+      if (look.phone && !n.href.startsWith("#")) return <LinkText href={n.href} text={linkText(n.kids)} press={linkProps(n.href)}><Inlines kids={n.kids} /></LinkText>;
       return (
         <RNText testID="md-link" dataSet={{ href: n.href }} style={{ color: t.accent }} {...(n.href.startsWith("#") ? {} : linkProps(n.href))}>
           <Inlines kids={n.kids} />

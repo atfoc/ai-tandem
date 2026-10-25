@@ -29,7 +29,7 @@ const stubs: Record<string, string> = {
   boardside: `export const boardApp = new Proxy({}, { get: () => async () => {} });`,
   focus: `export const focusIn = () => false; export const focusTid = () => {};`,
   rn: `export const Dimensions = { get: () => ({ width: 1200, height: 800 }) };`,
-  breakpoints: `export const layoutOf = () => "wide";`,
+  uselayout: `export const windowLayout = () => "desktop";`,
 };
 const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "aiwb-newchat-")), "newchat.mjs");
 await esbuild.build({
@@ -45,7 +45,7 @@ await esbuild.build({
       b.onResolve({ filter: /(^|\/)boardside\.ts$/ }, () => ({ path: "boardside", namespace: "stub" }));
       b.onResolve({ filter: /platform\/focus$/ }, () => ({ path: "focus", namespace: "stub" }));
       b.onResolve({ filter: /^react-native$/ }, () => ({ path: "rn", namespace: "stub" }));
-      b.onResolve({ filter: /(^|\/)breakpoints\.ts$/ }, () => ({ path: "breakpoints", namespace: "stub" }));
+      b.onResolve({ filter: /(^|\/)useLayout\.ts$/ }, () => ({ path: "uselayout", namespace: "stub" }));
       b.onLoad({ filter: /.*/, namespace: "stub" }, (a) => ({ contents: stubs[a.path], loader: "js" }));
     },
   }],

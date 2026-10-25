@@ -62,8 +62,12 @@ test("every key the page writes, by the place that writes it: a setting, a key o
     "app/platform/serverstorecore.ts LIST_KEY",             // the list itself,
     "app/platform/serverstorecore.ts name",                 // a list set aside under a name not taken yet (the key is made by the function),
     "app/platform/serverstorecore.ts CLIENT_ID_KEY",        // and the id of this client
+    "app/screens/board/viewmemory.ts VIEWS_KEY",            // the phone's open view of a board: where each of the newest 50 was last looked at (numbers, by board key; B1)
     "app/screens/composer/recent.ts RECENT_KEY",            // this computer's recent folders: content, of this computer alone (below)
+    "app/screens/home/recent.ts key",                       // Home's search (H2): the words searched for and the boards and chats opened, kept on the device (keys of this server's things)
+    "app/screens/library/phone/promptrecent.ts PROMPT_RECENT_KEY", // this computer's recent prompts (their ids): of this computer alone, a remote server's are in memory
     "app/screens/shell/Pane.tsx \"aiwb.widths\"",           // a setting
+    "app/screens/shell/homeplace.ts KEY",                   // the phone's Home place: the entry id of the server Home shows and the keys of the groups browsed
     "app/screens/shell/nav.ts \"aiwb.sel\"",                // what is selected: the keys of a board and a chat (entry id and id)
     "app/screens/shell/nav.ts \"aiwb.side\"",               // a setting
     "app/screens/sidebar/Foot.tsx \"aiwb.archived\"",       // a setting
@@ -105,9 +109,10 @@ test("the two keys that hold content are written for this computer's things alon
 
 test("the board layer, the canvas, the uploads and the event layer write nothing to the browser's storage", () => {
   const mine = (prefix: string) => Object.keys(text).filter((f) => f.startsWith(prefix));
-  const board = [...mine("app/screens/board/"), ...mine("app/screens/composerimages/"), ...mine("app/screens/images/"), ...mine("app/screens/library/"), ...mine("app/screens/servers/"), ...mine("core/board/")];
+  const board = [...mine("app/screens/board/"), ...mine("app/screens/composerimages/"), ...mine("app/screens/images/"), ...mine("app/screens/library/").filter((f) => f !== "app/screens/library/phone/promptrecent.ts"), ...mine("app/screens/servers/"), ...mine("core/board/")];
   assert.ok(board.length > 20, "the files were found");
-  for (const f of ["core/state/uploads.ts", "core/state/chatdraft.ts", "core/state/conn.ts", "core/api.ts", "core/libraryapi.ts", "core/serversapi.ts", ...board]) {
+  // (the phone's open view, viewmemory.ts, is the one place the board layer keeps something: numbers of a view, by board key)
+  for (const f of ["core/state/uploads.ts", "core/state/chatdraft.ts", "core/state/conn.ts", "core/api.ts", "core/libraryapi.ts", "core/serversapi.ts", ...board.filter((f) => f !== "app/screens/board/viewmemory.ts")]) {
     assert.ok(f in text, f);
     assert.equal(/\bsafe(Set|Get|Remove)\b|\blocalStorage\b|\bkv\??\.(get|set|remove)\b/.test(code(f)), false, `${f} reaches the storage`);
   }

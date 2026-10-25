@@ -11,17 +11,24 @@
 // A-SG-04). Deviations: a double click is two taps on a touch viewport, and a right click is made on the desktop only; the part that
 // drags a row onto a head and looks at what lights is the drag's (S2): a press and a move on a head starts no drag, and a row
 // dropped on a head lights nothing and makes no call, with the drag of the viewport (a mouse presses and moves, a finger is held first).
+// The phone (package H1) has no section heads and no collapse: a server is a chip of Home and a group a screen pushed over it
+// (plans/ux-improvements/h1-design.md §2, §3). Its half (`onPhone` below) proves that a chip is not a group either: a press shows that
+// server's Home and nothing else, two presses rename nothing, a long press opens the server's sheet (no menu of a group); a group is pushed as
+// its screen (the one that server's own page shows collapsed too), a section's group with a local group's id is its own screen; nothing of
+// this is sent to any server or kept under "aiwb.collapsed"; a finger held and moved on a row or a chip drags nothing (no drag on Home until
+// a package adds one); through an outage and a reload the server's Home comes back with its groups and a group made meanwhile.
 import { callsOf, check, mockEval, seed, until } from "../shot.mjs";
-import { byTid, mouseDrag, press, touchNow } from "./sel.mjs";
+import { back, byTid, hold, mouseDrag, press, showHome, touchDrag, touchNow } from "./sel.mjs";
 import { dragReader } from "./drag.mjs";
-import { groupHead, section, sectionHead, sectionToggle, sideSeen } from "./side.mjs";
+import { groupHead, homeOf, section, sectionHead, sectionToggle, sideSeen } from "./side.mjs";
 
 export const viewports = ["desktop", "tablet", "phone"];
 
 const J = JSON.stringify;
 const STUDIO = "s_studio", KEY = "aiwb.collapsed";
 
-await check("SEC.3 a section's head collapses and does nothing else; collapse is the browser's own", async ({ url, open, fail, note }) => {
+await check("SEC.3 a section's head collapses and does nothing else; collapse is the browser's own", async ({ url, open, fail, note, layout }) => {
+  if (layout === "phone") return onPhone({ url, open, fail, note });
   await seed(url, "SEC");
   const { page } = await open({ wait: '[data-testid="side-tree"]' });
   const touch = await touchNow(page);
@@ -142,3 +149,73 @@ await check("SEC.3 a section's head collapses and does nothing else; collapse is
 
   note(`the head collapses and expands, renames nothing and has no menu; ${want.length + 1} collapses kept in the kv key, over a reload and an outage, none sent to any server, this computer's group included`);
 }, { viewports, page: false });
+
+/** The phone's half: a chip and a group's row of Home (see the head of the file). */
+async function onPhone({ url, open, fail, note }) {
+  await seed(url, "SEC");
+  const { page } = await open({ wait: '[data-testid="home"]' });
+  const calls = callsOf(page);
+  const writes = () => calls.filter((c) => c.method !== "GET");
+  const chip = (id) => byTid(page, "server-chip", { server: id }).first();
+  const stored = () => page.evaluate((k) => localStorage.getItem(k), KEY);
+  await showHome(page, STUDIO);
+  if (!await until(async () => (await homeOf(page)).rows.length, 15000)) fail("Studio Mac's Home has no row");
+  const top = (await homeOf(page)).outline;
+
+  // ---- a press on a chip shows that server's Home; a press on the selected one changes nothing; two presses rename nothing
+  await press(page, chip("s_empty"));
+  if (!await until(async () => (await homeOf(page)).server === "s_empty", 10000)) fail("a press on Empty box's chip did not show its Home");
+  await press(page, chip(STUDIO));
+  if (!await until(async () => J((await homeOf(page)).outline) === J(top), 10000)) fail("back on Studio Mac's chip, its Home is not what it was");
+  await press(page, chip(STUDIO));
+  await page.waitForTimeout(300);
+  const again = await homeOf(page);
+  if (again.server !== STUDIO || J(again.outline) !== J(top)) fail(`a press on the selected chip changed Home: ${J([again.server, again.outline])}`);
+  await chip(STUDIO).tap(); await chip(STUDIO).tap();
+  if (await byTid(page, "name-input").count()) fail("two presses on a chip opened a rename box");
+
+  // ---- a long press opens the server's sheet, not a group's menu
+  // (S2's server sheet, `srv-sheet`, replaced H1's stopgap `server-sheet-stopgap` that this check named)
+  const sheet = byTid(page, "srv-sheet").last();
+  await hold(page, chip(STUDIO), { until: sheet });
+  if (!await until(() => sheet.isVisible(), 10000)) fail("a long press on a chip opened no server sheet");
+  if (await byTid(page, "menu-item").filter({ hasText: /Rename|Delete|Move to/ }).count()) fail("a long press on a chip opened a group's menu (Rename, Delete or Move to)");
+  await page.keyboard.press("Escape");
+  await until(async () => !await sheet.isVisible(), 5000);
+
+  // ---- a group is a screen: the one Studio Mac's own page shows collapsed opens like any other; the local g_shop is another screen
+  if (!await mockEval('return onServer("s_studio", () => groups.find((g) => g.id === "g_shop").collapsed === true);', url)) fail("the seed's group Renders is not collapsed on Studio Mac itself: the check proves nothing of it");
+  await press(page, byTid(page, "home-row", { kind: "group", key: `${STUDIO}~g_shop` }).first());
+  if (!await until(async () => (await homeOf(page, `${STUDIO}~g_shop`)).rows.length === 3, 10000)) fail(`Studio Mac's group Renders (collapsed on its own page) is no screen with its rows: ${J((await homeOf(page, `${STUDIO}~g_shop`)).outline)}`);
+  const theirs = (await homeOf(page, `${STUDIO}~g_shop`)).outline;
+  await showHome(page, "local");
+  await press(page, byTid(page, "home-row", { kind: "group", key: "g_shop" }).first());
+  if (!await until(async () => (await homeOf(page, "g_shop")).rows.length > 0, 10000)) fail("this computer's group Shop is no screen with its rows");
+  const ours = (await homeOf(page, "g_shop")).outline;
+  if (J(ours) === J(theirs)) fail(`this computer's group g_shop and Studio Mac's show the same rows: ${J(ours)}`);
+  await back(page);
+  if (writes().length) fail(`pressing chips and groups made the calls ${J(writes().map((c) => `${c.method} ${c.path}`))}`);
+  if (await stored() !== null && await stored() !== "[]") fail(`Home wrote "${KEY}": ${await stored()}`);
+
+  // ---- a finger held and moved on a row or a chip drags nothing
+  await showHome(page, STUDIO);
+  const row = byTid(page, "home-row", { kind: "chat", key: `${STUDIO}~c_plain` }).first();
+  await touchDrag(page, row, byTid(page, "home-row", { kind: "group", key: `${STUDIO}~g_old` }).first());
+  await touchDrag(page, chip(STUDIO), chip("s_empty"));
+  await page.waitForTimeout(500);
+  if (writes().length) fail(`a drag on Home made the calls ${J(writes().map((c) => `${c.method} ${c.path}`))}`);
+  if (await byTid(page, "drop-mark").count()) fail("a drag on Home drew a drop mark");
+
+  // ---- through an outage and back, the groups are there with one made meanwhile; a reload shows the same server's Home
+  await showHome(page, STUDIO);
+  await mockEval(`setServerState("${STUDIO}", "unreachable", { detail: "connection refused" });`, url);
+  if (!await until(async () => (await homeOf(page)).state === "trouble", 10000)) fail("Studio Mac's Home does not say that its server dropped");
+  await mockEval(`await elsewhere("${STUDIO}", "POST", "/groups", { name: "Made meanwhile" }); setServerState("${STUDIO}", "connected");`, url);
+  if (!await until(async () => { const o = (await homeOf(page)).outline; return o.includes("group Made meanwhile") && o.includes("group Renders") && o.includes("group Old takes"); }, 10000)) fail(`back, Studio Mac's Home does not list its groups and the one made meanwhile: ${J((await homeOf(page)).outline)}`);
+  await page.reload(); await byTid(page, "home").first().waitFor({ state: "attached", timeout: 15000 });
+  if (!await until(async () => (await homeOf(page)).server === STUDIO && (await homeOf(page)).outline.includes("group Made meanwhile"), 15000)) fail(`after a reload Home does not show Studio Mac, the server it showed (saved in "aiwb.home"), with its groups: ${J([(await homeOf(page)).server, (await homeOf(page)).outline, await page.evaluate(() => localStorage.getItem("aiwb.home"))])}`);
+  if (writes().some((c) => c.server !== "local" && (c.body && typeof c.body === "object" && "collapsed" in c.body || /collapsed/.test(c.path)))) fail("a call to another server carried collapsed");
+  if (await mockEval('return onCalls.filter((c) => c.body && typeof c.body === "object" && "collapsed" in c.body).length;', url)) fail("the mock was told of a collapse");
+
+  note("a chip shows its server's Home and renames nothing, its long press opens the server's sheet; groups are screens (the local g_shop apart); no drag, no call, no collapse kept; back after an outage and a reload with its groups");
+}

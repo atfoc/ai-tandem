@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   NOT_CARRIED, subStatus,
-  fmtDuration, isSubagentTool, showReport, subActivity, subagentOf, subBadge, subDurationMs, subKey,
+  fmtDuration, fmtDurationShort, subRunCounts, isSubagentTool, showReport, subActivity, subagentOf, subBadge, subDurationMs, subKey,
   subLine, subList, subModelLabel, subReport, subResultLine, subToolCount,
   subAncestors, subChildren, subTree, subWaiting, subWaitingText,
 } from "../src/logic/subagents.ts";
@@ -427,4 +427,24 @@ test("subResultLine: a nested subagent's result goes to the subagent that starte
   assert.deepEqual(subResultLine({ ...done, delivery: "given-up" }), { name: "Count files", text: "Done · could not be delivered", tone: "muted" });
   assert.deepEqual(subResultLine({ ...done, status: "failed", error: "boom", delivery: "sent" }),
     { name: "Count files", text: "Failed · ended with an error · sent to the subagent that started it", tone: "error" });
+});
+
+test("fmtDurationShort: minutes only from one minute on", () => {
+  assert.equal(fmtDurationShort(40000), "40s");
+  assert.equal(fmtDurationShort(60000), "1m");
+  assert.equal(fmtDurationShort(425000), "7m");
+  assert.equal(fmtDurationShort(3720000), "1h 02m");
+});
+
+test("subRunCounts: the roots and every subagent they started, the ones that work, and whether all roots are background", () => {
+  const subs = {
+    a: sub({ id: "a", background: true, waiting: true }),
+    b: sub({ id: "b", background: true, parent: "a" }),
+    c: sub({ id: "c", background: true, status: "completed" }),
+  };
+  assert.deepEqual(subRunCounts(subs, [subs.a, subs.c]), { count: 3, running: 2, background: true });
+  assert.deepEqual(subRunCounts(subs, [subs.a, { ...subs.c, background: false }]), { count: 3, running: 2, background: false });
+  // a call not linked yet has no id: it counts one; a loop in the records is walked once
+  assert.deepEqual(subRunCounts({ x: sub({ id: "x", parent: "x" }) }, [sub({ id: "x", parent: "x" }), sub({ id: "" })]), { count: 2, running: 2, background: false });
+  assert.deepEqual(subRunCounts(undefined, []), { count: 0, running: 0, background: false });
 });

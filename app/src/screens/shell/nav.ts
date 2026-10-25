@@ -2,8 +2,6 @@
 // (the old page's Sidebar.tsx's first part, and the sidebar's hide control), the Ui seam of @aiwb/core (ports.ts `Ui`), and the
 // confirm and error dialogs' requests. They set the store (AD-71: navigation follows the store; a back sets it, never the
 // other way round).
-import { Dimensions } from "react-native";
-
 import { api, type ChatPlace } from "@aiwb/core/api.ts";
 import { sideSaved } from "@aiwb/core/logic/layout.ts";
 import { selOf } from "@aiwb/core/logic/sel.ts";
@@ -16,8 +14,9 @@ import { attempt, confirm, reportError } from "./confirm.ts";
 import type { ChatView } from "@aiwb/core/types.ts";
 
 import { focusIn, focusTid } from "../../platform/focus";
-import { layoutOf } from "../../ui/breakpoints.ts";
+import { windowLayout } from "../../ui/useLayout.ts";
 import { boardApp } from "./boardside.ts";
+import { clearPushed } from "./screens.ts";
 
 const CREATE_FAILED = "Couldn't create the whiteboard";
 const CHAT_FAILED = "Couldn't start the chat";
@@ -49,6 +48,7 @@ export function select(sel: Sel): void {
   const prev = getState().sel;
   if (prev.board && prev.board !== sel.board) void boardApp.flush(prev.board); // closing a board writes it
   setState({ sel }); safeSet("aiwb.sel", JSON.stringify(sel));
+  if (sel.board !== prev.board || sel.chat !== prev.chat) clearPushed(); // opening content from a pushed screen shows the content, not the screen over it
   if (sel.chat !== prev.chat) setState({ subDrawer: null });
   if (sel.board && getState().boards[sel.board]?.new && reachable(getState(), sel.board)) void api.seenBoard(sel.board).catch(() => {});
   if (sel.board && sel.chat) lastChat.set(sel.board, sel.chat);
@@ -66,7 +66,7 @@ export function select(sel: Sel): void {
 
 /** Opens a board with the last chat opened on it if it still exists, else its newest chat, else none. On the phone a board opens alone, with the canvas on screen (the stack's chat screen
  *  would hide it): its chat is one press away on the bar ("Chats N"); `withChat` says otherwise. */
-export function openBoard(id: string, withChat = layoutOf(Dimensions.get("window").width) !== "phone"): void {
+export function openBoard(id: string, withChat = windowLayout() !== "phone"): void {
   const s = getState();
   const last = lastChat.get(id);
   const lc = last && s.chats[last]?.board === id && (s.showArchived || !s.chats[last].archived) ? last : null;

@@ -3,7 +3,7 @@
 // (logic/sections.ts). The sidebar is sections only, with a head (the logo, the control that hides it, a "+") above and a foot below
 // (the old page's Sidebar.tsx). It fills the shell's slot `Sidebar`: the side pane on the wide layouts, the first screen of the phone's stack.
 import { useContext, useEffect, useRef, useState } from "react";
-import { Dimensions, ScrollView, StyleSheet, View } from "react-native";
+import { ScrollView, StyleSheet, View } from "react-native";
 import { SafeAreaInsetsContext } from "react-native-safe-area-context";
 
 import { sidebarEntries } from "@aiwb/core/logic/sections.ts";
@@ -12,14 +12,13 @@ import { LOCAL_SERVER, UNGROUPED } from "@aiwb/core/types.ts";
 
 import { hasThisComputer } from "../../platform/thiscomputer.ts";
 import { useStore } from "../../state/useStore.ts";
-import { layoutOf } from "../../ui/breakpoints.ts";
 import { IconButton } from "../../ui/IconButton.tsx";
 import { BoardIcon, ChatIcon, GroupIcon, Logo } from "../../ui/icons.tsx";
 import { Menu, MenuItem, MenuSep } from "../../ui/Menu.tsx";
 import { Overlay } from "../../ui/Overlay.tsx";
 import { useTokens } from "../../ui/theme.tsx";
 import { tid } from "../../ui/tid.ts";
-import { useLayout } from "../../ui/useLayout.ts";
+import { useLayout, windowLayout } from "../../ui/useLayout.ts";
 import { addBoard, attempt, newChat, setEditRow, setExpandBoardRow } from "../shell/nav.ts";
 import { clipRef, DragGhost, LOCK_SCROLL, setScroller, useDragActive } from "./drag.tsx";
 import { SideHideButton } from "../shell/SideRail.tsx";
@@ -43,7 +42,7 @@ export function Sidebar() {
   const [editing, setEditing] = useState<string | null>(null);
   // (what is made while the sidebar is hidden gets no rename box: nobody would see it, and hiding wins)
   // (on the phone what is made may open its own screen over the list, which hides it as well: a board does, a group does not)
-  const edit = (key: string | null) => { if (mayRename(getState().sideHidden, layoutOf(Dimensions.get("window").width), stackOf(getState()))) setEditing(key); };
+  const edit = (key: string | null) => { if (mayRename(getState().sideHidden, windowLayout(), stackOf(getState()))) setEditing(key); };
   useEffect(() => { setEditRow(edit); return () => setEditRow(() => {}); }, []);
   useEffect(() => { setExpandBoardRow((board) => setBoardRowOpen(board, true)); return () => setExpandBoardRow(() => {}); }, []);
   useSideHidden(() => setEditing(null));

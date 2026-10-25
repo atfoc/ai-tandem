@@ -1,7 +1,8 @@
 // L0 (new in the app, package T1): the helpers of sel.mjs and the frame of dev/shot.mjs check(), at desktop, tablet and phone, on a
 // stand-in page: the page of the app is loaded (so the viewport, the device and the mock are real) and its document is replaced by
-// a small one that draws the contract the screens of Track S draw (IDS of sel.mjs): a sidebar tree of rows, a stack on the phone, a
-// hidden sidebar and its show control, a header for a chat and a bar for a board, a row's menu button shown on hover, a menu
+// a small one that draws the contract the screens of Track S draw (IDS of sel.mjs): a sidebar tree of rows, on the phone Home (H1: the
+// `home` of one server, its `home-row`s, a group a row that pushes a `group-screen`; the page's `__aiwbHome.placeOf` stands in for the
+// store's) and a stack, a hidden sidebar and its show control, a header for a chat and a bar for a board, a row's menu button shown on hover, a menu
 // that opens a second one, a long press (500 ms) and a drag (at once with a mouse, after a 300 ms hold with a finger).
 // It proves what a port relies on, and nothing of the app: tidSel/byTid with dataSet values; layoutNow and touchNow follow the
 // window; press and hover do the thing of the viewport; openChat/openBoard/back take the path of the layout (the list is brought
@@ -16,27 +17,32 @@ export const viewports = ["desktop", "tablet", "phone"];
 const STAND_IN = String.raw`
 document.body.innerHTML = '';
 const el = (html) => { const t = document.createElement('template'); t.innerHTML = html.trim(); return t.content.firstChild; };
-const style = el('<style>body{margin:0;font:14px sans-serif} [data-testid=side-row]{display:flex;gap:8px;padding:10px;border:1px solid #ccc;min-height:44px;align-items:center}' +
-  '.menu-btn{visibility:hidden} [data-testid=side-row]:hover .menu-btn{visibility:visible} @media (pointer:coarse){.menu-btn{visibility:visible}}' +
+const style = el('<style>body{margin:0;font:14px sans-serif} [data-testid=side-row],[data-testid=menu-row]{display:flex;gap:8px;padding:10px;border:1px solid #ccc;min-height:44px;align-items:center}' +
+  '.menu-btn{visibility:hidden} [data-testid=side-row]:hover .menu-btn,[data-testid=menu-row]:hover .menu-btn{visibility:visible} @media (pointer:coarse){.menu-btn{visibility:visible}}' +
   '[data-testid=menu]{position:fixed;left:20px;top:200px;background:#eee;border:1px solid #999;padding:4px;z-index:5} [data-testid=menu-item]{display:block;padding:12px}' +
   '#pad{width:120px;height:60px;background:#ddd;touch-action:none;user-select:none} #lp{width:120px;height:60px;background:#cde;touch-action:none;user-select:none} #zone{width:200px;height:80px;background:#efe;margin-top:8px}' +
   '[hidden]{display:none !important}</style>');
 const root = el('<div data-testid="app-root"></div>');
 document.body.append(style, root);
 root.innerHTML = '<div data-testid="side-tree" id="tree"></div><button data-testid="side-show" id="show">Show</button><button data-testid="side-hide" id="hide">Hide</button>' +
-  '<div id="detail"><button data-testid="nav-back" id="back">Back</button><div data-testid="chat-head" id="chat-head"></div><div data-testid="board-bar" id="board-bar"></div></div>' +
-  '<div id="lp" data-testid="lp-target" data-state="idle">hold</div><div id="pad" data-testid="drag-pad" data-state="idle">drag</div><div id="zone" data-testid="drag-zone"></div><div id="result" data-testid="result"></div>';
-const S = { sel: null, kind: null, hidden: false, menu: null };
+  '<div data-testid="home" id="home" data-server="local" data-state="list"></div><div data-testid="group-screen" id="group" data-key="s_studio"></div>' +
+  '<button data-testid="nav-back" id="back">Back</button><div id="detail"><div data-testid="chat-head" id="chat-head"></div><div data-testid="board-bar" id="board-bar"></div></div>' +
+  '<div data-testid="menu-row" id="menurow"><span>A row with a menu</span></div><div id="lp" data-testid="lp-target" data-state="idle">hold</div><div id="pad" data-testid="drag-pad" data-state="idle">drag</div><div id="zone" data-testid="drag-zone"></div><div id="result" data-testid="result"></div>';
+const S = { sel: null, kind: null, hidden: false, menu: null, group: false };
 const ROWS = [["chat", "c_plain", "A plain chat"], ["board", "b_arch", "Architecture"], ["chat", "s_studio~c_plain", "Studio chat"]];
+// (where a thing sits, as the page's seam says it: the studio chat is inside the group "s_studio")
+window.__aiwbHome = { placeOf: (kind, key) => ({ server: 'local', groups: key === 's_studio~c_plain' ? ['s_studio'] : [], board: null }), server: () => 'local' };
 const $ = (id) => document.getElementById(id);
 const phone = () => innerWidth < 700;
 function draw() {
   const p = phone();
-  $('tree').hidden = p ? !!S.sel : S.hidden;
+  $('tree').hidden = p || S.hidden;
+  $('home').hidden = !p || !!S.sel || S.group;
+  $('group').hidden = !p || !!S.sel || !S.group;
   $('show').hidden = p || !S.hidden;
   $('hide').hidden = p || S.hidden;
   $('detail').hidden = !S.sel;
-  $('back').hidden = !p || !S.sel;
+  $('back').hidden = !p || !(S.sel || S.group);
   $('chat-head').hidden = S.kind !== 'chat'; $('board-bar').hidden = S.kind !== 'board';
   $('chat-head').textContent = S.kind === 'chat' ? 'chat ' + S.sel : ''; $('board-bar').textContent = S.kind === 'board' ? 'board ' + S.sel : '';
   for (const r of document.querySelectorAll('[data-testid=side-row]')) r.setAttribute('aria-selected', String(!p && r.dataset.key === S.sel));
@@ -52,6 +58,15 @@ function pick(t) {
   S.menu = t === 'Move to…' ? ['Shop', 'Other'] : null;
   draw();
 }
+function homeRow(kind, key, name, onclick) {
+  const r = el('<div role="button" data-testid="home-row" tabindex="0"></div>');
+  r.dataset.kind = kind; r.dataset.key = key; r.dataset.server = 'local'; r.textContent = name; r.onclick = onclick;
+  return r;
+}
+const open = (kind, key) => () => { S.sel = key; S.kind = kind; draw(); };
+$('home').append(homeRow('chat', 'c_plain', 'A plain chat', open('chat', 'c_plain')), homeRow('board', 'b_arch', 'Architecture', open('board', 'b_arch')),
+  homeRow('group', 's_studio', 'Studio', () => { S.group = true; draw(); }));
+$('group').append(homeRow('chat', 's_studio~c_plain', 'Studio chat', open('chat', 's_studio~c_plain')));
 for (const [kind, key, name] of ROWS) {
   const r = el('<div role="button" data-testid="side-row" tabindex="0"></div>');
   r.dataset.kind = kind; r.dataset.key = key;
@@ -61,9 +76,10 @@ for (const [kind, key, name] of ROWS) {
   r.querySelector('button').onclick = (e) => { e.stopPropagation(); S.menu = ['Rename', 'Move to…']; draw(); };
   $('tree').append(r);
 }
+{ const b = el('<button class="menu-btn" data-testid="row-menu" aria-label="More">⋯</button>'); b.onclick = () => { S.menu = ['Rename', 'Move to…']; draw(); }; $('menurow').append(b); }
 $('show').onclick = () => { S.hidden = false; draw(); };
 $('hide').onclick = () => { S.hidden = true; draw(); };
-$('back').onclick = () => { S.sel = null; S.kind = null; draw(); };
+$('back').onclick = () => { if (S.sel) { S.sel = null; S.kind = null; } else S.group = false; draw(); };
 addEventListener('resize', draw);
 // a long press: 500 ms of a pointer down
 let lp = 0;
@@ -102,10 +118,10 @@ await check("L0 the helpers of sel.mjs at three viewports, on a stand-in page", 
   // ---- navigating by the path of the layout
   await openChat(page, "c_plain");
   expect(await text(byTid(page, IDS.chatHead)) === "chat c_plain", "openChat did not open the chat");
-  expect(await byTid(page, IDS.tree).first().isVisible() === (layout !== "phone"), layout === "phone" ? "the list is still on screen on the phone after a chat opened" : "the list is gone on a wide layout after a chat opened");
+  expect(await byTid(page, layout === "phone" ? IDS.home : IDS.tree).first().isVisible() === (layout !== "phone"), layout === "phone" ? "Home is still on screen on the phone after a chat opened" : "the list is gone on a wide layout after a chat opened");
   const wentBack = await back(page);
   expect(wentBack === (layout === "phone"), `back answered ${wentBack} at ${layout}`);
-  expect(layout !== "phone" || await byTid(page, IDS.tree).first().isVisible(), "back did not bring the list back on the phone");
+  expect(layout !== "phone" || await byTid(page, IDS.home).first().isVisible(), "back did not bring Home back on the phone");
   await openBoard(page, "b_arch"); // (from the list on the phone, from the open chat on a wide layout)
   expect(await text(byTid(page, IDS.boardBar)) === "board b_arch", "openBoard did not open the board");
   await openChat(page, "s_studio~c_plain"); // (from an open board: the phone goes back first)
@@ -123,7 +139,7 @@ await check("L0 the helpers of sel.mjs at three viewports, on a stand-in page", 
   await back(page);
 
   // ---- hover and the menu of a row
-  const row = byTid(page, IDS.row, { key: "c_plain" });
+  const row = byTid(page, "menu-row"); // (a row of its own: the phone's rows are Home's, with no menu button)
   await page.mouse.move(1000, 700); // (the last press left the pointer over a row)
   expect(await byTid(row, "row-menu").isVisible() === touch, touch ? "a row's menu button is hidden on a touch viewport" : "a row's menu button shows with no hover");
   await hover(page, row);
@@ -168,7 +184,7 @@ await check("L0 the helpers of sel.mjs at three viewports, on a stand-in page", 
     expect(await until(() => layoutNow(page) === "phone"), "layoutNow does not follow a resize");
     await until(() => page.evaluate(() => !document.getElementById("back").hidden)); // (the stand-in has drawn the stack)
     await openChat(page, "c_plain"); // (the phone's path now: the stand-in drew the stack at the resize)
-    expect(!await byTid(page, IDS.tree).first().isVisible(), "after a resize to the phone's width the list is still on screen with a chat open");
+    expect(!await byTid(page, IDS.home).first().isVisible() && !await byTid(page, IDS.tree).first().isVisible(), "after a resize to the phone's width a list is still on screen with a chat open");
     expect(await back(page), "back did nothing after a resize to the phone's width");
   }
 }, { viewports, page: { wait: '[data-testid="app-root"]' } });

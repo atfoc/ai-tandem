@@ -22,12 +22,36 @@
 //   it can be changed and nothing new goes there; back, it can be changed again. A call refused on the way to it
 //   shows the reason and keeps what was typed. Removed from the list, it takes its entry and its prompts with it,
 //   and the tree has no level of servers again.
-// Ports dev/checks/PL4.1-library.mjs (S11) to the new build, at the three viewports (C-PL-01, 03 to 11, 15 to 18, 23; the popup is a dialog at the desktop and the tablet, a sheet on the phone, with the
-// same words). What changed: the selectors (testIDs, `library.mjs` reads the popup), the presses (a click with a mouse, a tap with a finger), the drag (a pointer gesture: the mouse
+// At the phone (ux-improvements S4) there is no popup: the library is the Library screen (`lib-screen`, pushed from Settings' Prompt library row, and from
+// the sidebar foot's button where the phone still has it), a group is a pushed screen (`lib-group-screen`, its back naming the screen below), the editor is a
+// P3 sheet (`prompt-editor`), the Group row opens the move picker (P2), a new or renamed group is a P3 (`group-form`), a delete is a P4 (`confirm-sheet`).
+// `playPhone` below proves the same behaviours through those screens, with the phone's words (read from the screens, not from the popup's `seen()`):
+//   the Library screen opens with its search; without another server no section titles; groups before prompts, both by name; a group opens (pushed, back
+//   names the screen below) and back returns; a search is the flat list of hits with their paths in the example's order ("No prompts match" for none), emptied the
+//   lists are back; a prompt's editor (a tap, or a tap on a hit) has its name and text and says where it is in its Group row; a save the server refuses (a name of
+//   its group in another case; a prompt deleted meanwhile) is the server's sentence in `form-error` with what was typed kept; leaving with unsaved changes asks
+//   (Keep editing keeps them, Discard changes drops them, a press on the dimmed page asks too); "+" > New prompt makes a prompt at the top level, a group's
+//   "New prompt here" one in that group, a group's "New group here" a group in it, "+" > New group a group at the top, and the lists show them; a name with "/" is
+//   said before the save; deleting asks first, and a group's question says "Delete group and N prompts"; a change made behind the page (the second window's
+//   save reaches the page as the stream's library event, so the check changes the mock's library) shows with no reload: a new prompt in the list, a new text in an
+//   editor with nothing unsaved; what is typed stays and the later save wins; another server joining gives one titled section per server (this computer first), a
+//   search for the server's name and a prompt's name finds the prompt, a prompt made with the Group row set to that server's top level is made there; when the server
+//   drops its prompts stay, its section has the one not-connected notice, its editor is read-only with Save, the Group row and Delete off, "New prompt here" waits and
+//   nothing new can be put there; back, it can be changed again; a call refused on the way shows the reason with what was typed kept; removed from the list its section
+//   and prompts are gone and no section is titled again.
+//   Left out at the phone, having no counterpart: the sidebar foot's button between Servers and the picker, Enter on it, Esc, Close and a press beside the popup,
+//   the focus going back to the button (a pushed screen has its back and a sheet its Cancel); the ⌘P-style keys, Tab and the tree's arrow keys; the tree's twists
+//   (a group is a screen); the buttons under the tree and the chosen row (the editor is a sheet over the list); dragging (a move is the picker, swipe and long press,
+//   PL6.1's, with UX.S4.1 and UX.S4.2); Revert (Cancel and the leave guard); a server's entry in the tree (a prompt goes to a server by the editor's Group row, a
+//   picker's Top level of that server).
+// Ports dev/checks/PL4.1-library.mjs (S11) to the new build, at the three viewports (C-PL-01, 03 to 11, 15 to 18, 23; the popup is a dialog at the desktop and the tablet, the screens above on the phone, with the
+// same words where there are the same things). What changed: the selectors (testIDs, `library.mjs` reads the popup), the presses (a click with a mouse, a tap with a finger), the drag (a pointer gesture: the mouse
 // drags at once, a finger is held first), the question that asks before a drop (`confirm-dialog`), and "a click beside the popup" is a press at the window's corner, on the dimmed page.
 import { check, mockEval, seed, until } from "../shot.mjs";
 import { byTid, pointerDragger, press, showList, tidSel } from "./sel.mjs";
 import { seen } from "./library.mjs";
+import { atRest } from "./settings.mjs";
+import { barOf, openGroup, openLibrary, pressSheetRow, rowsOf, sectionsOf, sheetOf, texts, topScreen } from "./libphone.mjs";
 
 export const viewports = ["desktop", "tablet", "phone"];
 
@@ -43,7 +67,383 @@ const THEIRS = { groups: [g("g_team", "team")], prompts: [p("p_stand", "standup"
 const TOP = "At the top level";
 const NONE = "Choose a prompt to edit it, or make a new one. Right-click in the list to make one there; drag a prompt or a group to move it.";
 
-await check("PL4.1 the library popup: the tree, the search, the editor, a second window and another server", async ({ url, open, fail, note, touch }) => {
+// ---- the phone's half: the same behaviours through the Library screen, a group's screen and the sheets
+const PHONE_TOP = ["git", "git commit", "misc"];
+const ARROW = " › ";
+// a hit of the wide list ("git/commit message") as the phone says it: the path under the name ("git", "This computer › git"), "Top level" for none
+const phoneHit = (line) => { const p = line.split("/"); return `${p.slice(0, -1).join(ARROW) || "Top level"}|${p[p.length - 1]}`; };
+
+async function playPhone({ url, open, fail, note }) {
+  const { page } = await open();
+  const lib = (server = "local") => mockEval(`return libraries[${JSON.stringify(server)}] ?? null;`, url);
+  const servers = (list) => mockEval(`setServers(${JSON.stringify(list)});`, url);
+  const setLib = (server, l) => mockEval(`setLibrary(${JSON.stringify(server)}, ${JSON.stringify(l)});`, url);
+  await servers([]); // (the seed's servers leave the list: this computer's library is the only one until Studio joins)
+  await setLib("local", EXAMPLE);
+
+  // ---- what the screens show now
+  /** The editor on top, or null. */
+  const editorOf = () => page.evaluate(() => {
+    const T = (id) => [...document.querySelectorAll(`[data-testid="${id}"]`)].pop();
+    if (!T("prompt-editor")) return null;
+    const txt = (id) => T(id)?.innerText.replace(/\s+/g, " ").trim() ?? "", off = (id) => T(id)?.getAttribute("aria-disabled") === "true", ro = (e) => !!e && (e.readOnly || e.disabled);
+    return { title: txt("sheet-title"), name: T("editor-name")?.value ?? "", text: T("editor-text")?.value ?? "", group: txt("editor-group-row"), problem: txt("editor-problem"), err: txt("form-error"),
+      notice: txt("editor-off-notice"), saveOff: off("sheet-right"), groupOff: off("editor-group-row"), deleteOff: T("editor-delete") ? off("editor-delete") : null, roName: ro(T("editor-name")), roText: ro(T("editor-text")) };
+  });
+  /** The group form on top, or null. */
+  const formOf = () => page.evaluate(() => {
+    const T = (id) => [...document.querySelectorAll(`[data-testid="${id}"]`)].pop();
+    if (!T("group-form")) return null;
+    const txt = (id) => T(id)?.innerText.replace(/\s+/g, " ").trim() ?? "";
+    return { title: txt("sheet-title"), name: T("group-form-name")?.value ?? "", where: txt("group-form-where"), problem: txt("group-form-problem"), err: txt("form-error"), saveOff: T("sheet-right")?.getAttribute("aria-disabled") === "true" };
+  });
+  /** The question (P4) on top, or null. */
+  const askOf = () => page.evaluate(() => {
+    const T = (id) => [...document.querySelectorAll(`[data-testid="${id}"]`)].pop();
+    if (!T("confirm-sheet")) return null;
+    const txt = (id) => T(id)?.innerText.replace(/\s+/g, " ").trim() ?? "";
+    return { title: txt("confirm-title"), body: txt("confirm-body"), go: txt("confirm-go"), alt: txt("confirm-alt"), cancel: txt("confirm-cancel") };
+  });
+  const read = async () => {
+    const [top, bar, rows, secs, ed, form, ask, none, notices] = await Promise.all([topScreen(page), barOf(page), rowsOf(page), sectionsOf(page), editorOf(), formOf(), askOf(), texts(page, "lib-phone-none"), texts(page, "lib-off-notice")]);
+    return { top: top.testId, back: bar.back, title: bar.title, rows, secs, ed, form, ask, none: none[0] ?? "", notices, names: rows.map((r) => r.name).join("|"), hits: rows.filter((r) => r.kind === "hit").map((r) => `${r.sub}|${r.name}`) };
+  };
+  /** Waits for the screens to show what `want` says; fails with what they show. */
+  const shows = async (what, want) => {
+    let s;
+    if (!await until(async () => want((s = await read())), 10000)) fail(`${what}: the screens show ${JSON.stringify({ ...s, rows: s.rows.map((r) => `${r.kind} ${r.name}`) })}`);
+    return s;
+  };
+
+  // ---- what is pressed
+  const search = () => byTid(page, "lib-phone-search").last();
+  const plus = async (action) => { await press(page, byTid(page, "lib-plus").last()); await byTid(page, "action-sheet").last().waitFor({ state: "visible", timeout: 10000 }); await atRest(page, "action-row"); await pressSheetRow(page, "action-sheet", action); };
+  const row = (kind, id) => byTid(page, `lib-${kind}-row`, { id }).last();
+  const field = (id) => byTid(page, id).last();
+  const sheetBtn = (side) => byTid(page, `sheet-${side}`).last();
+  const goBack = async () => { await press(page, byTid(page, "nav-back").last()); };
+  /** The Library screen on top, whatever group screens are over it. */
+  const home = async () => {
+    for (let i = 0; i < 6 && (await topScreen(page)).testId !== "lib-screen"; i++) { await goBack(); await page.waitForTimeout(300); }
+    await atRest(page, "lib-screen");
+  };
+  /** The editor, the group form and any question closed: Cancel, and Discard changes when it asks. */
+  const closeSheets = async () => {
+    for (let i = 0; i < 4; i++) {
+      if (await byTid(page, "confirm-sheet").count()) { await press(page, byTid(page, "confirm-go").last()); await page.waitForTimeout(300); continue; }
+      if (await byTid(page, "prompt-editor").count() || await byTid(page, "group-form").count()) { await press(page, sheetBtn("left")); await page.waitForTimeout(400); continue; }
+      break;
+    }
+    if (!await until(async () => !(await byTid(page, "prompt-editor").count()) && !(await byTid(page, "group-form").count()) && !(await byTid(page, "confirm-sheet").count()), 10000)) fail(`a sheet is still open: ${JSON.stringify(await read())}`);
+  };
+  const reset = async (l = EXAMPLE) => { await closeSheets(); await setLib("local", l); await home(); await shows("the example again", (s) => s.top === "lib-screen" && s.names === PHONE_TOP.join("|")); };
+  /** Presses a prompt's row on the screen on top and waits for its editor. */
+  const edit = async (id, name) => { await press(page, row("prompt", id)); return shows(`the editor of "${name}"`, (s) => s.ed?.name === name); };
+  const save = () => press(page, sheetBtn("right"));
+
+  try {
+    // ---- the Library screen: from the sidebar foot where the phone has its button, and from Settings
+    const foot = byTid(page, "library-btn").first();
+    if (await foot.isVisible().catch(() => false)) {
+      await press(page, foot);
+      let s = await shows("the sidebar foot's button", (x) => x.top === "lib-screen");
+      if (s.title !== "Prompt library") fail(`the foot's button opens a screen titled ${JSON.stringify(s.title)}`);
+      await showList(page);
+    } else note("the phone's sidebar foot has no Library button: the Library screen is reached from Settings' Prompt library row only");
+    await openLibrary(page);
+    let s = await shows("the Library screen", (x) => x.top === "lib-screen" && x.names === PHONE_TOP.join("|"));
+    if (s.title !== "Prompt library" || s.back !== "Settings") fail(`the Library screen's bar says back ${JSON.stringify(s.back)}, title ${JSON.stringify(s.title)}`);
+    if (await byTid(page, "lib-phone-search").count() < 1 || (await search().getAttribute("placeholder")) !== "Search prompts") fail("the Library screen has no search");
+    if (s.rows.some((r) => r.kind !== "group") || s.secs.length !== 1 || s.secs[0].title) fail(`one library: the sections are ${JSON.stringify(s.secs)} and the rows ${JSON.stringify(s.rows.map((r) => r.kind))}, not one section with no title of groups`);
+    // groups before prompts, both by name
+    await setLib("local", { ...EXAMPLE, prompts: [...EXAMPLE.prompts, p("p_zeta", "zeta", "", "Z."), p("p_alpha", "Alpha", "", "A.")] });
+    s = await shows("groups before prompts", (x) => x.names === [...PHONE_TOP, "Alpha", "zeta"].join("|") && x.rows.map((r) => r.kind).join() === "group,group,group,prompt,prompt");
+    await setLib("local", EXAMPLE);
+    // a group opens (pushed), and back returns
+    await openGroup(page, "g_git");
+    s = await shows("the group git", (x) => x.top === "lib-group-screen" && x.title === "git" && x.names === "commit message|review" && x.rows.every((r) => r.kind === "prompt"));
+    if (s.back !== "Prompt library") fail(`the group screen's back is ${JSON.stringify(s.back)}, not "Prompt library"`);
+    await goBack();
+    await shows("back from the group", (x) => x.top === "lib-screen" && x.title === "Prompt library" && x.names === PHONE_TOP.join("|"));
+    note("the Library screen opens with its search and no section titles, groups before prompts; a group opens and back returns");
+
+    // ---- the search: the flat list of hits, in the order of the goal file's example
+    for (const [query, want] of SEARCHES) {
+      await search().fill(query);
+      s = await shows(`the search "${query}"`, (x) => x.rows.every((r) => r.kind === "hit") && x.hits.join("&") === want.map(phoneHit).join("&") && (want.length || x.none === `No prompts match “${query}”`));
+      if (!want.length && s.rows.length) fail(`the search "${query}" finds ${JSON.stringify(s.hits)}`);
+      if (s.secs.length) fail(`the search "${query}" shows the sections too: ${JSON.stringify(s.secs)}`);
+    }
+    await search().fill("squ");
+    await shows("a search for squash", (x) => x.hits.join() === "git commit|squash");
+    await press(page, row("hit", "p_squash"));
+    s = await shows("a tap on a prompt found", (x) => x.ed?.name === "squash");
+    if (s.ed.text !== "Squash them." || s.ed.group !== "Group git commit" || s.ed.title !== "Prompt" || !s.ed.saveOff) fail(`the editor of "squash" shows ${JSON.stringify(s.ed)}`);
+    await closeSheets();
+    await search().fill("");
+    await shows("the search emptied", (x) => x.top === "lib-screen" && x.names === PHONE_TOP.join("|") && x.rows.every((r) => r.kind === "group"));
+    note("the four searches of the example give its results in its order, with their paths; a tap on a hit opens the editor; emptied, the lists are back");
+
+    // ---- the editor, and a save the server refuses: the reason, and what was typed
+    await openGroup(page, "g_git");
+    s = await edit("p_msg", "commit message");
+    if (s.ed.text !== "Write a commit message." || s.ed.group !== "Group git" || s.ed.title !== "Prompt" || !s.ed.saveOff) fail(`the editor of "commit message" shows ${JSON.stringify(s.ed)}`);
+    await field("editor-name").fill("REVIEW");
+    await field("editor-text").fill("Typed text.\nA second line.");
+    await save();
+    s = await shows("a name of its group, in another case", (x) => !!x.ed?.err);
+    if (s.ed.err !== 'There is already a prompt called "review" in the group "git".' || s.ed.name !== "REVIEW" || s.ed.text !== "Typed text.\nA second line.") fail(`a refused save left ${JSON.stringify(s.ed)}`);
+    if ((await lib()).prompts.find((x) => x.id === "p_msg").name !== "commit message") fail("a refused save changed the prompt");
+    // the same name in another group is taken, and the sheet closes
+    await field("editor-name").fill("squash");
+    await save();
+    await shows("the same name in another group", (x) => !x.ed && x.names === "review|squash");
+    let saved = (await lib()).prompts.find((x) => x.id === "p_msg");
+    if (saved.name !== "squash" || saved.text !== "Typed text.\nA second line." || saved.parent !== "g_git") fail(`the saved prompt is ${JSON.stringify(saved)}`);
+    // a prompt deleted meanwhile: what was typed stays, and the save says why it cannot be
+    await edit("p_msg", "squash");
+    await field("editor-text").fill("Typed over a prompt that is gone.");
+    await mockEval(`libraries.local.prompts = libraries.local.prompts.filter((x) => x.id !== "p_msg"); sendLibrary("local");`, url);
+    s = await shows("a prompt deleted under what was typed", (x) => x.names === "review" && x.ed?.text === "Typed over a prompt that is gone.");
+    await save();
+    s = await shows("the save of a prompt that is gone", (x) => !!x.ed?.err);
+    if (s.ed.err !== "This prompt no longer exists." || s.ed.text !== "Typed over a prompt that is gone.") fail(`the save of a prompt that is gone left ${JSON.stringify(s.ed)}`);
+    await closeSheets();
+    await reset();
+    note("a refused save shows the server's sentence and keeps the typed name and text, for a name that is taken and for a prompt deleted meanwhile");
+
+    // ---- unsaved changes: leaving asks first
+    await search().fill("review");
+    await shows("a search for review", (x) => x.hits.join() === "git|review");
+    await press(page, row("hit", "p_review"));
+    await shows("the editor of review", (x) => x.ed?.name === "review");
+    await field("editor-text").fill("Not saved yet.");
+    await press(page, sheetBtn("left"));
+    s = await shows("leaving a prompt with unsaved changes", (x) => !!x.ask);
+    if (s.ask.title !== "Discard changes to “review”?" || s.ask.body !== "The changes to the prompt “review” are not saved. Discarding goes back to the saved text." || [s.ask.go, s.ask.alt, s.ask.cancel].join() !== "Discard changes,Save and close,Keep editing") fail(`the question is ${JSON.stringify(s.ask)}`);
+    await press(page, byTid(page, "confirm-cancel").last());
+    await shows("Keep editing", (x) => !x.ask && x.ed?.name === "review" && x.ed.text === "Not saved yet.");
+    await page.touchscreen.tap(10, 6); // (a press on the dimmed page above the sheet)
+    await shows("a press on the dimmed page", (x) => !!x.ask && x.ed?.text === "Not saved yet.");
+    await press(page, byTid(page, "confirm-cancel").last());
+    await shows("Keep editing, once more", (x) => !x.ask && x.ed?.text === "Not saved yet.");
+    await press(page, sheetBtn("left"));
+    await shows("leaving again", (x) => !!x.ask);
+    await press(page, byTid(page, "confirm-go").last());
+    await shows("Discard changes", (x) => !x.ask && !x.ed && x.top === "lib-screen");
+    if ((await lib()).prompts.find((x) => x.id === "p_review").text !== "Review this change.") fail("what was discarded was saved");
+    // (with nothing typed nothing is asked, and what was discarded is gone when the editor opens again)
+    await press(page, row("hit", "p_review"));
+    s = await shows("the prompt as it is saved", (x) => x.ed?.text === "Review this change.");
+    await press(page, sheetBtn("left"));
+    await shows("leaving a prompt with nothing typed", (x) => !x.ask && !x.ed);
+    await search().fill("");
+    note("leaving unsaved changes asks: Keep editing keeps them, Discard changes drops them, a press on the dimmed page asks too");
+
+    // ---- new items, and the names the screens check themselves
+    await reset();
+    await plus("new-prompt");
+    s = await shows("New prompt at the top", (x) => x.ed?.title === "New prompt");
+    if (s.ed.group !== "Group Top level" || s.ed.name !== "" || s.ed.text !== "" || !s.ed.saveOff) fail(`a new prompt at the top starts as ${JSON.stringify(s.ed)}`);
+    await field("editor-name").fill("a/b");
+    s = await shows("a name with a slash", (x) => !!x.ed?.problem);
+    if (s.ed.problem !== 'A name cannot contain "/".' || !s.ed.saveOff) fail(`a name with "/" leaves ${JSON.stringify(s.ed)}`);
+    await field("editor-name").fill("todo-top");
+    await field("editor-text").fill("TODO: ");
+    await save();
+    await shows("a new prompt saved at the top", (x) => !x.ed && x.names === [...PHONE_TOP, "todo-top"].join("|") && x.rows[3].kind === "prompt");
+    let made = (await lib()).prompts.find((x) => x.name === "todo-top");
+    if (!made || made.parent !== "" || made.text !== "TODO: ") fail(`the new prompt at the top is ${JSON.stringify(made)}`);
+    // "New prompt here" of a group makes the prompt in that group
+    await openGroup(page, "g_misc");
+    await press(page, byTid(page, "lib-new-here").last());
+    s = await shows("New prompt here", (x) => x.ed?.title === "New prompt");
+    if (s.ed.group !== "Group misc" || s.ed.name !== "" || s.ed.text !== "" || !s.ed.saveOff) fail(`a new prompt in "misc" starts as ${JSON.stringify(s.ed)}`);
+    await field("editor-name").fill("todo");
+    await field("editor-text").fill("x");
+    await save();
+    await shows("a new prompt saved in the group", (x) => !x.ed && x.top === "lib-group-screen" && x.names === "git commit style|todo");
+    made = (await lib()).prompts.find((x) => x.name === "todo");
+    if (!made || made.parent !== "g_misc" || made.text !== "x") fail(`the new prompt in "misc" is ${JSON.stringify(made)}`);
+    // "New group here" of a group makes a group in it, its name checked before the save
+    await press(page, byTid(page, "lib-more").last());
+    await byTid(page, "action-sheet").last().waitFor({ state: "visible", timeout: 10000 });
+    await atRest(page, "action-row");
+    await pressSheetRow(page, "action-sheet", "new-group");
+    s = await shows("New group here", (x) => x.form?.title === "New group");
+    if (s.form.where !== "In misc" || s.form.name !== "" || !s.form.saveOff) fail(`a new group in "misc" starts as ${JSON.stringify(s.form)}`);
+    await field("group-form-name").fill("a/b");
+    s = await shows("a group name with a slash", (x) => !!x.form?.problem);
+    if (s.form.problem !== 'A name cannot contain "/".' || !s.form.saveOff) fail(`a group name with "/" leaves ${JSON.stringify(s.form)}`);
+    await field("group-form-name").fill("inner");
+    await save();
+    s = await shows("a new group saved in the group", (x) => !x.form && x.names === "inner|git commit style|todo" && x.rows[0].kind === "group");
+    const inner = (await lib()).groups.find((x) => x.name === "inner");
+    if (!inner || inner.parent !== "g_misc") fail(`the new group is ${JSON.stringify(inner)}`);
+    // (a nested group's back names the screen below)
+    await openGroup(page, inner.id);
+    s = await shows("the nested group", (x) => x.top === "lib-group-screen" && x.title === "inner");
+    if (s.back !== "misc") fail(`the nested group's back is ${JSON.stringify(s.back)}, not "misc"`);
+    await goBack();
+    await shows("back to the group", (x) => x.title === "misc");
+    await goBack();
+    await shows("back to the Library screen", (x) => x.top === "lib-screen");
+    // "+" > New group makes a group at the top, beside the others
+    await plus("new-group");
+    s = await shows("New group at the top", (x) => x.form?.title === "New group");
+    if (s.form.where !== "In Top level") fail(`a new group at the top says ${JSON.stringify(s.form.where)}`);
+    await field("group-form-name").fill("outer");
+    await save();
+    await shows("a new group saved at the top", (x) => !x.form && x.names === ["git", "git commit", "misc", "outer", "todo-top"].join("|"));
+    const outer = (await lib()).groups.find((x) => x.name === "outer");
+    if (!outer || outer.parent !== "") fail(`the new group at the top is ${JSON.stringify(outer)}`);
+    note("new prompts and groups go where they are made (the top by \"+\", a group by its \"here\"), the lists show them, and a name with \"/\" is said before the save");
+
+    // ---- deleting asks first; a group's question says how many prompts go with it
+    await press(page, row("prompt", (await lib()).prompts.find((x) => x.name === "todo-top").id));
+    await shows("the editor of todo-top", (x) => x.ed?.name === "todo-top");
+    await press(page, byTid(page, "editor-delete").last());
+    s = await shows("Delete prompt…", (x) => !!x.ask);
+    if (s.ask.title !== "Delete “todo-top”?" || s.ask.body !== "“todo-top” is deleted from This computer's library." || s.ask.go !== "Delete prompt" || !s.ed) fail(`a prompt's question is ${JSON.stringify(s.ask)}`);
+    await press(page, byTid(page, "confirm-cancel").last());
+    await shows("Cancel on the question", (x) => !x.ask && !!x.ed);
+    if (!(await lib()).prompts.some((x) => x.name === "todo-top")) fail("Cancel deleted the prompt");
+    await press(page, byTid(page, "editor-delete").last());
+    await shows("Delete prompt… again", (x) => !!x.ask);
+    await press(page, byTid(page, "confirm-go").last());
+    await shows("a prompt deleted", (x) => !x.ask && !x.ed && !x.names.includes("todo-top"));
+    if ((await lib()).prompts.some((x) => x.name === "todo-top")) fail("the prompt was not deleted in the mock");
+    await openGroup(page, "g_misc");
+    await press(page, byTid(page, "lib-more").last());
+    await byTid(page, "action-sheet").last().waitFor({ state: "visible", timeout: 10000 });
+    await atRest(page, "action-row");
+    await pressSheetRow(page, "action-sheet", "delete");
+    s = await shows("Delete group…", (x) => !!x.ask);
+    if (s.ask.title !== "Delete “misc”?" || s.ask.go !== "Delete group and 2 prompts" || s.ask.body !== "The group “misc” and everything in it are deleted from This computer's library.") fail(`a group's question is ${JSON.stringify(s.ask)}`);
+    await press(page, byTid(page, "confirm-cancel").last());
+    await shows("Cancel on the group's question", (x) => !x.ask && x.title === "misc");
+    if (!(await lib()).groups.some((x) => x.name === "misc")) fail("Cancel deleted the group");
+    await press(page, byTid(page, "lib-more").last());
+    await byTid(page, "action-sheet").last().waitFor({ state: "visible", timeout: 10000 });
+    await atRest(page, "action-row");
+    await pressSheetRow(page, "action-sheet", "delete");
+    await shows("Delete group… again", (x) => !!x.ask);
+    await press(page, byTid(page, "confirm-go").last());
+    await shows("a group deleted", (x) => !x.ask && x.top === "lib-screen" && x.names === ["git", "git commit", "outer"].join("|"));
+    const left = await lib();
+    if (left.groups.some((x) => ["misc", "inner"].includes(x.name)) || left.prompts.some((x) => ["todo", "git commit style"].includes(x.name))) fail(`after the group was deleted the library holds ${JSON.stringify(left)}`);
+    note("deleting asks first; a prompt's question and a group's, which says how many prompts go with it, and both delete");
+
+    // ---- a change made in a second window
+    await reset();
+    await mockEval(`libraries.local.prompts.push({ id: "p_w2", name: "from window two", parent: "", text: "Made elsewhere." }); sendLibrary("local");`, url);
+    s = await shows("a prompt made in the second window", (x) => x.names === [...PHONE_TOP, "from window two"].join("|") && x.rows[3].kind === "prompt");
+    await openGroup(page, "g_git");
+    await edit("p_review", "review");
+    // the chosen prompt's new text is in the editor that has nothing unsaved
+    await mockEval(`const x = libraries.local.prompts.find((p) => p.id === "p_review"); x.name = "review twice"; x.text = "Changed in window two."; sendLibrary("local");`, url);
+    s = await shows("the open prompt changed in the second window", (x) => x.ed?.text === "Changed in window two." && x.ed.name === "review twice" && x.ed.saveOff && x.names === "commit message|review twice");
+    // what is typed here stays when the other window saves, and the later save wins
+    await field("editor-text").fill("Typed in window one.");
+    await mockEval(`libraries.local.prompts.find((p) => p.id === "p_review").text = "Saved first by window two."; sendLibrary("local");`, url);
+    await page.waitForTimeout(800);
+    s = await shows("the other window's save under what is typed", (x) => x.ed?.text === "Typed in window one." && !x.ask && !x.ed.err && !x.ed.saveOff);
+    await save();
+    if (!await until(async () => (await lib()).prompts.find((x) => x.id === "p_review").text === "Typed in window one.", 10000)) fail("the later save did not win");
+    await shows("the later save done", (x) => !x.ed && x.names === "commit message|review twice");
+    note("a prompt made and a prompt changed behind the page show with no reload; what is typed stays and the later of two saves wins");
+
+    // ---- another server
+    await reset();
+    await servers([STUDIO]);
+    await setLib("s_studio", THEIRS);
+    s = await shows("a server that joined the list", (x) => x.secs.length === 2);
+    if (s.secs.map((c) => c.title).join("|") !== "This computer|Studio" || s.secs[0].server !== "local" || s.secs[1].server !== "s_studio" || s.secs.map((c) => c.rows).join() !== "3,1" || s.notices.length) fail(`the sections are ${JSON.stringify(s.secs)}, notices ${JSON.stringify(s.notices)}`);
+    await search().fill("studio stand");
+    await shows("a search for the server's name and a prompt's name", (x) => x.hits.join() === "Studio › team|standup");
+    await search().fill("git commit");
+    await shows("the example's search with two libraries", (x) => x.hits.join("&") === SEARCHES[0][1].map((l) => phoneHit("This computer/" + l)).join("&"));
+    await search().fill("");
+    await shows("the search emptied", (x) => x.secs.length === 2);
+    // a prompt made at the top of the server's library is that server's: the editor's Group row set to it
+    await plus("new-prompt");
+    s = await shows("New prompt with two servers", (x) => x.ed?.title === "New prompt");
+    if (s.ed.group !== "Group This computer › Top level") fail(`a new prompt with two servers starts in ${JSON.stringify(s.ed.group)}`);
+    await press(page, byTid(page, "editor-group-row").last());
+    await atRest(page, "move-picker");
+    await press(page, byTid(page, "move-picker").last().locator(tidSel("picker-row", { value: "s_studio|" })));
+    s = await shows("Studio's top level picked", (x) => x.ed?.group === "Group Studio › Top level");
+    await field("editor-name").fill("retro");
+    await field("editor-text").fill("What went well?");
+    await save();
+    await shows("a prompt made on the other server", (x) => !x.ed && x.secs.map((c) => c.rows).join() === "3,2");
+    const retro = (await lib("s_studio")).prompts.find((x) => x.name === "retro");
+    if (!retro || retro.parent !== "" || retro.text !== "What went well?" || (await lib()).prompts.some((x) => x.name === "retro")) fail(`the prompt made at Studio's top is ${JSON.stringify(retro)} there`);
+    await openGroup(page, "g_team");
+    s = await shows("Studio's group", (x) => x.top === "lib-group-screen" && x.title === "team" && x.names === "standup");
+    s = await edit("p_stand", "standup");
+    if (s.ed.group !== "Group Studio › team") fail(`the editor says Studio's prompt is in ${JSON.stringify(s.ed.group)}`);
+
+    // the server drops: its prompts stay; nothing of it can be changed, and nothing new goes there
+    await field("editor-text").fill("Typed before the server dropped.");
+    await mockEval(`setServerState("s_studio", "unreachable");`, url);
+    s = await shows("a server that dropped", (x) => !!x.ed?.notice);
+    if (!/^Studio is not connected/.test(s.ed.notice) || s.ed.text !== "Typed before the server dropped." || !s.ed.saveOff || !s.ed.groupOff || s.ed.deleteOff !== true || !s.ed.roName || !s.ed.roText) fail(`a prompt of a server that dropped shows ${JSON.stringify(s.ed)}`);
+    if (s.notices.length !== 1) fail(`with the server dropped its screen has ${s.notices.length} notices, not one`);
+    await closeSheets();
+    s = await shows("the editor closed", (x) => !x.ed && x.names === "standup");
+    const nh = await page.evaluate(() => { const e = [...document.querySelectorAll('[data-testid="lib-new-here"]')].pop(); return { off: e?.getAttribute("aria-disabled"), text: e?.textContent }; });
+    if (nh.off !== "true" || !nh.text.includes("Studio is not connected")) fail(`with the server dropped "New prompt here" is ${JSON.stringify(nh)}`);
+    await home();
+    s = await shows("the server's section", (x) => x.secs.some((c) => c.notice.length));
+    const away = s.secs.find((c) => c.server === "s_studio"), here = s.secs.find((c) => c.server === "local");
+    if (away.notice.length !== 1 || !away.notice[0].startsWith("Studio is not connected") || here.notice.length || away.rows !== 2 || here.rows !== 3) fail(`with the server dropped the sections are ${JSON.stringify(s.secs)}`);
+    await search().fill("stand");
+    await shows("its prompt in a search", (x) => x.hits.join() === "Studio › team|standup");
+    await search().fill("");
+    await plus("new-prompt");
+    s = await shows("New prompt with the server dropped", (x) => x.ed?.title === "New prompt");
+    if (s.ed.group !== "Group This computer › Top level") fail(`with the server dropped a new prompt goes to ${JSON.stringify(s.ed.group)}`);
+    await press(page, byTid(page, "editor-group-row").last());
+    await atRest(page, "move-picker");
+    const offered = await page.evaluate(() => [...document.querySelectorAll('[data-testid="move-picker"]')].pop().querySelectorAll('[data-testid="picker-row"]').length && [...[...document.querySelectorAll('[data-testid="move-picker"]')].pop().querySelectorAll('[data-testid="picker-row"]')].filter((r) => r.dataset.value.startsWith("s_studio|")).map((r) => [r.getAttribute("aria-disabled"), r.innerText.replace(/\s+/g, " ").trim()]));
+    if (!offered.length || offered.some(([off, text]) => off !== "true" || !text.includes("Studio is not connected"))) fail(`with the server dropped its places in the picker are ${JSON.stringify(offered)}`);
+    await page.keyboard.press("Escape");
+    await until(async () => (await byTid(page, "move-picker").count()) === 0, 10000);
+    await closeSheets();
+    // back, it can be changed again
+    await mockEval(`setServerState("s_studio", "connected");`, url);
+    await shows("the server back", (x) => !x.secs.some((c) => c.notice.length) && x.notices.length === 0);
+    await openGroup(page, "g_team");
+    s = await edit("p_stand", "standup");
+    if (s.ed.notice || s.ed.roText || s.ed.text !== "What did you do yesterday?") fail(`the server back, its prompt shows ${JSON.stringify(s.ed)}`);
+    await field("editor-text").fill("What will you do today?");
+    await save();
+    if (!await until(async () => (await lib("s_studio")).prompts.find((x) => x.id === "p_stand").text === "What will you do today?", 10000)) fail("the save on the server that is back did not reach its library");
+    await shows("the save on the server that is back", (x) => !x.ed);
+    // a call refused on the way to the server: the reason, and what was typed
+    await mockEval(`flags.library = { refuse: { status: 503, code: "server_unreachable", error: "Studio is not connected: its prompts cannot be changed until it is back." } };`, url);
+    await edit("p_stand", "standup");
+    await field("editor-text").fill("Typed while the way was cut.");
+    await save();
+    s = await shows("a call refused on the way", (x) => !!x.ed?.err);
+    if (s.ed.err !== "Studio is not connected: its prompts cannot be changed until it is back." || s.ed.text !== "Typed while the way was cut.") fail(`a call refused on the way left ${JSON.stringify(s.ed)}`);
+    await mockEval("delete flags.library;", url);
+    await closeSheets();
+    // removed from the list, it takes its section and its prompts with it
+    await servers([]);
+    await setLib("s_studio", null);
+    s = await shows("a server removed from the list", (x) => x.top === "lib-screen" && x.names === PHONE_TOP.join("|") && x.secs.length === 1 && !x.secs[0].title);
+    await search().fill("stand");
+    await shows("a search for its prompt", (x) => x.rows.length === 0 && x.none === "No prompts match “stand”");
+    note("another server's library is a titled section and found by its name, is changed from here, stays and is unchangeable while the server is away, and goes with the server");
+  } catch (e) { fail(e.message.split("\n")[0]); }
+}
+
+await check("PL4.1 the library popup: the tree, the search, the editor, a second window and another server", async ({ url, open, fail, note, touch, layout }) => {
+  if (layout === "phone") return playPhone({ url, open, fail, note });
+  // the buttons of a question, in the order they are drawn: the dialog's Cancel then the action, the phone's confirm sheet's action then Cancel
+  const askButtons = (action) => (layout === "phone" ? `${action},Cancel` : `Cancel,${action}`);
   const seeded = await seed(url, "A2");
   const sel = seeded.find((s) => s.id === "plain-started")?.sel ?? fail("the seed has no state plain-started");
   const lib = (server = "local") => mockEval(`return libraries[${JSON.stringify(server)}] ?? null;`, url);
@@ -185,7 +585,7 @@ await check("PL4.1 the library popup: the tree, the search, the editor, a second
     await a.field.text.fill("Not saved yet.");
     await press(page, a.row("squash"));
     s = await a.shows("leaving a prompt with unsaved changes", (x) => !!x.ask);
-    if (s.ask.title !== "Discard changes?" || s.ask.body !== "The changes to the prompt “review” are not saved." || s.ask.buttons.join() !== "Cancel,Discard") fail(`the question is ${JSON.stringify(s.ask)}`);
+    if (s.ask.title !== "Discard changes?" || s.ask.body !== "The changes to the prompt “review” are not saved." || s.ask.buttons.join() !== askButtons("Discard")) fail(`the question is ${JSON.stringify(s.ask)}`);
     await a.answer("Cancel");
     s = await a.shows("Cancel", (x) => !x.ask && x.form?.name === "review" && x.form.text === "Not saved yet." && x.open === 1);
     await page.keyboard.press("Escape");
@@ -256,7 +656,7 @@ await check("PL4.1 the library popup: the tree, the search, the editor, a second
     // ---- deleting asks first; a group's question says how many prompts go with it
     await press(page, a.button("Delete"));
     s = await a.shows("Delete on a group", (x) => !!x.ask);
-    if (s.ask.title !== "Delete group" || s.ask.body !== "“misc” is deleted with everything in it: 2 prompts and 1 group." || s.ask.buttons.join() !== "Cancel,Delete") fail(`a group's question is ${JSON.stringify(s.ask)}`);
+    if (s.ask.title !== "Delete group" || s.ask.body !== "“misc” is deleted with everything in it: 2 prompts and 1 group." || s.ask.buttons.join() !== askButtons("Delete")) fail(`a group's question is ${JSON.stringify(s.ask)}`);
     await a.answer("Cancel");
     await a.shows("Cancel on the question", (x) => !x.ask && x.rows.includes("misc"));
     await press(page, a.button("Delete"));

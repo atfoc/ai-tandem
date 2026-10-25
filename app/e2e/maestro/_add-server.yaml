@@ -1,41 +1,128 @@
-# Shared by the flows of the app that need the scratch server in it (composer-chips, storage-picker-permission): adds the scratch server in the Servers sheet by pasting what a server prints (address, fingerprint, secret), tests the
-# connection, accepts the fingerprint (it is the printed one), saves and closes the sheet. Needs the sidebar on the screen and the server not added yet.
+# Shared by the flows of the app that need the scratch server in it (composer-chips, storage-picker-permission, voice-mic, voice-devices, net-pinned-stream, ux-stack, ux-rows, _v4-images):
+# adds the scratch server by pasting what a server prints (address, fingerprint, secret), tests the connection, trusts the printed fingerprint and saves, and leaves the Servers
+# screens closed, on Home (phone) or on the sidebar with "<host> — Connected" (tablet). Needs Home or the sidebar on the screen and the server not added yet.
+# Two layouts, one branch each:
+#   phone: Home's gear → Settings' Servers row (`_open-foot.yaml`) → the list's "Add server" → "Choose how" → "Paste setup text" (the clipboard is read on that press; the simulator's is empty) → the paste box gets the
+#     three lines → "Test connection" (the code's fingerprint is the pin; "Matches the fingerprint in the code") → "Trust and save" (the toast closes the flow) → the list → back to Home;
+#   wide (iPad, tablet): the Servers dialog's form, the text in its paste box, Test connection, Accept fingerprint, Save, Close.
 appId: ${APP_ID}
 ---
-- tapOn:
-    id: "servers-btn"
-- tapOn:
-    id: "servers-add"
-- waitForAnimationToEnd
-- tapOn:
-    id: "servers-input-code"
-- inputText: "https://${SERVER_HOST}:${SERVER_PORT}"
-- pressKey: Enter
-- inputText: "Fingerprint: ${SERVER_FINGERPRINT}"
-- pressKey: Enter
-- inputText: "Secret: ${SERVER_SECRET}"
-# (a line typed in one go is a paste to the box, and the form is filled at once, as Android's keyboard types a line: the button is for the text that was not)
-- tapOn:
-    id: "addserver-read"
-    optional: true
-- tapOn:
-    id: "servers-form-test"
+- runFlow:
+    file: _open-foot.yaml
+    env:
+      ID: "servers-btn"
 - extendedWaitUntil:
-    visible: "It is the fingerprint the pasted text printed."
-    timeout: 60000
-- tapOn:
-    id: "servers-form-accept"
+    visible:
+      id: "srv-add|servers-add"
+    timeout: 30000
+
+# ---- phone
+- runFlow:
+    when:
+      visible:
+        id: "srv-add"
+    commands:
+      - tapOn:
+          id: "srv-add"
+      - extendedWaitUntil:
+          visible: "Paste setup text.*"
+          timeout: 30000
+      - tapOn: "Paste setup text.*"
+      # (the clipboard may hold something from another app: iOS then asks first)
+      - tapOn:
+          text: "Allow Paste"
+          optional: true
+      - extendedWaitUntil:
+          visible:
+            id: "add-field-code"
+          timeout: 30000
+      - tapOn:
+          id: "add-field-code"
+      - inputText: "https://${SERVER_HOST}:${SERVER_PORT}"
+      - pressKey: Enter
+      - inputText: "Fingerprint: ${SERVER_FINGERPRINT}"
+      - pressKey: Enter
+      - inputText: "Secret: ${SERVER_SECRET}"
+      # (a line typed in one go is a paste to the box, and the text is taken at once, as Android's keyboard types a line: the button is for the text that was not)
+      - tapOn:
+          id: "add-read"
+          optional: true
+      - extendedWaitUntil:
+          visible:
+            id: "add-test"
+          timeout: 30000
+      - tapOn:
+          id: "add-test"
+      - extendedWaitUntil:
+          visible:
+            id: "add-trust"
+          timeout: 60000
+      - assertVisible:
+          id: "add-match"
+      - assertVisible: ".*Matches the fingerprint in the code.*"
+      - tapOn:
+          id: "add-trust"
+      - assertNotVisible: "Not Now"
+      - extendedWaitUntil:
+          visible:
+            id: "srv-row"
+          timeout: 60000
+      - extendedWaitUntil:
+          visible: ".*Connected.*"
+          timeout: 60000
+      - runFlow: _to-sidebar.yaml
+      # (the sidebar's section says it; on the phone Home has no such line, the flow that follows waits for what it needs of the server's lists)
+      - runFlow:
+          when:
+            visible:
+              id: "side-tree"
+          commands:
+            - extendedWaitUntil:
+                visible: "${SERVER_HOST} — Connected"
+                timeout: 60000
+
+# ---- wide
+- runFlow:
+    when:
+      visible:
+        id: "servers-add"
+    commands:
+      - tapOn:
+          id: "servers-add"
+      - waitForAnimationToEnd
+      - tapOn:
+          id: "servers-input-code"
+      - inputText: "https://${SERVER_HOST}:${SERVER_PORT}"
+      - pressKey: Enter
+      - inputText: "Fingerprint: ${SERVER_FINGERPRINT}"
+      - pressKey: Enter
+      - inputText: "Secret: ${SERVER_SECRET}"
+      # (a line typed in one go is a paste to the box, and the form is filled at once, as Android's keyboard types a line: the button is for the text that was not)
+      - tapOn:
+          id: "addserver-read"
+          optional: true
+      - tapOn:
+          id: "servers-form-test"
+      - extendedWaitUntil:
+          visible: "It is the fingerprint the pasted text printed."
+          timeout: 60000
+      - tapOn:
+          id: "servers-form-accept"
+      - extendedWaitUntil:
+          visible: "Connected"
+          timeout: 60000
+      - tapOn:
+          id: "servers-save"
+      - assertNotVisible: "Not Now"
+      - extendedWaitUntil:
+          visible: "Connected"
+          timeout: 60000
+      - tapOn:
+          id: "servers-close"
+      - extendedWaitUntil:
+          visible: "${SERVER_HOST} — Connected"
+          timeout: 60000
 - extendedWaitUntil:
-    visible: "Connected"
-    timeout: 60000
-- tapOn:
-    id: "servers-save"
-- assertNotVisible: "Not Now"
-- extendedWaitUntil:
-    visible: "Connected"
-    timeout: 60000
-- tapOn:
-    id: "servers-close"
-- extendedWaitUntil:
-    visible: "${SERVER_HOST} — Connected"
-    timeout: 60000
+    visible:
+      id: "home|side-tree"
+    timeout: 30000

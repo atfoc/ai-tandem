@@ -1,0 +1,33 @@
+# Shared by `net-pinned-stream` (phone layout): with the Servers list on the screen, "Add server" › "Paste setup text" opens the paste step of "New server", the three lines a server
+# prints are typed with the fingerprint FINGERPRINT (env), and the sheet ends on the check step with "Test connection" on the screen. Needs ADDRESS, FINGERPRINT and SECRET (env).
+appId: ${APP_ID}
+---
+- tapOn:
+    id: "srv-add"
+- extendedWaitUntil:
+    visible: "Paste setup text.*"
+    timeout: 30000
+- tapOn: "Paste setup text.*"
+# (the clipboard may hold something from another app: iOS then asks first)
+- tapOn:
+    text: "Allow Paste"
+    optional: true
+- extendedWaitUntil:
+    visible:
+      id: "add-field-code"
+    timeout: 30000
+- tapOn:
+    id: "add-field-code"
+- inputText: "${ADDRESS}"
+- pressKey: Enter
+- inputText: "Fingerprint: ${FINGERPRINT}"
+- pressKey: Enter
+- inputText: "Secret: ${SECRET}"
+# (a line typed in one go is a paste to the box, and the text is taken at once, as Android's keyboard types a line: the button is for the text that was not)
+- tapOn:
+    id: "add-read"
+    optional: true
+- extendedWaitUntil:
+    visible:
+      id: "add-test"
+    timeout: 30000

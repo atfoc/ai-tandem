@@ -13,12 +13,14 @@ import { boardNames, shownBranch } from "@aiwb/core/state/store.ts";
 import type { ChatView, Item } from "@aiwb/core/types.ts";
 
 import { useStore } from "../../state/useStore.ts";
+import { usePhone } from "../../ui/useLayout.ts";
 import { Text } from "../../ui/Text.tsx";
 import { useTokens } from "../../ui/theme.tsx";
 import { tid } from "../../ui/tid.ts";
 import { Guard } from "../shell/Guard.tsx";
 import { select } from "../shell/nav.ts";
 import { CardLink, PartView, plural } from "./Parts.tsx";
+import { StepCard } from "./StepCard.tsx";
 import { wrap } from "./webtext.ts";
 
 const safeParse = (s?: string) => { try { return s ? JSON.parse(s) : {}; } catch { return s ? { "…": s } : {}; } };
@@ -26,7 +28,8 @@ const safeParse = (s?: string) => { try { return s ? JSON.parse(s) : {}; } catch
 /** A tool call. live is false in a subagent's thread once it ended: a call with no result was cut. An item the card cannot draw costs its
  *  own card, not the thread: "Couldn't show this tool call." with the cause, and the card is drawn again when its item changes. */
 export function ToolCard(p: { item: Item; chat: ChatView; live?: boolean }) {
-  return <Guard what="this tool call" resetKey={p.item}><Card {...p} /></Guard>;
+  const phone = usePhone(); // the phone draws a step (StepCard.tsx); the wide layouts keep the card below
+  return <Guard what="this tool call" resetKey={p.item}>{phone ? <StepCard {...p} /> : <Card {...p} />}</Guard>;
 }
 
 /** The cards the user opened, by chat, branch and call: the thread is a virtual list that lets a row go when it is far off screen, and a card

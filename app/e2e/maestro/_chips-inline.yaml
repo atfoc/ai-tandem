@@ -1,0 +1,148 @@
+# Part of `composer-chips` on the wide layouts (iPad, tablet) only (package D1 moved it here): the chip input with the selection's reference inline,
+# typed around, the caret never inside it, Backspace taking it whole, a double tap selecting it. Since B2 the phone never puts a reference into the
+# text: it stands beside the box as a chip of the context row (RefBox.tsx, RefChips.tsx), so on the phone `_chips-phone.yaml` runs instead; the chip
+# input itself (inline chips, under touch) is still shown on the phone by `composer-chips-gallery`. Ends with the message typed, not sent.
+appId: ${APP_ID}
+---
+# Where the chip is drawn, as percentages of the screen (Maestro taps points): the first line of the box with the keyboard up, "Move <chip> to"
+# (the chip from 15% to 42% of the width, its “API” at 37%) and "ab <chip> cd" (the chip from 11%, its “API” at 33%); the box is on the line at
+# 44% of the iPhone 16e's screen with its keyboard up (iPhone 17, the chat of a new chat with its intro: the line at 54%, the chip from 16% to 48% of the width, its “API” at 41%, in the "ab" case about 4% left of that: the iOS values below, not yet run). Medium Phone API 36.1 (1080x2400, Gboard up): the chip from 14% to 38%, the line at 52%. A tap on a word puts the platform's caret at the word's end, so the left tap is on the chip's leading edge.
+- runFlow:
+    when:
+      platform: iOS
+    commands:
+      - evalScript: ${output.at_left = "18%,54%"}
+      - evalScript: ${output.at_right = "45%,54%"}
+      - evalScript: ${output.at_word = "37%,54%"}
+      - evalScript: ${output.at_past = "75%,54%"}
+- runFlow:
+    when:
+      platform: Android
+    commands:
+      - evalScript: ${output.at_left = "16%,52%"}
+      - evalScript: ${output.at_right = "35%,52%"}
+      - evalScript: ${output.at_word = "30%,52%"}
+      - evalScript: ${output.at_past = "75%,52%"}
+
+# ---- "Add selection" puts a chip at the caret; type around it
+- tapOn:
+    id: "composer-input"
+# the chip row is not on the screen while the keyboard is up (goal 3.6)
+- extendedWaitUntil:
+    notVisible:
+      id: "composer-chip-row"
+    timeout: 10000
+- inputText: "Move"
+- runFlow: _chips-add-selection.yaml
+- inputText: "to"
+- waitForAnimationToEnd:
+    timeout: 3000
+- takeScreenshot: v3-04-chip
+- runFlow:
+    file: _check.yaml
+    env:
+      NAME: inserted
+
+# ---- a tap on the chip's left half: the caret goes to its start; typing there is before the chip
+- tapOn:
+    point: ${output.at_left}
+- runFlow:
+    file: _check.yaml
+    env:
+      NAME: caret-at-chip-start
+- inputText: "X"
+- runFlow:
+    file: _check.yaml
+    env:
+      NAME: x-before-chip
+- eraseText: 1                                                           # the X, not the chip
+- runFlow:
+    file: _check.yaml
+    env:
+      NAME: inserted-again
+- takeScreenshot: v3-05-typed
+# ---- the right half: the caret goes to its end; typing there is after the chip
+- tapOn:
+    point: ${output.at_right}
+- runFlow:
+    file: _check.yaml
+    env:
+      NAME: caret-at-chip-end
+- inputText: "Y"
+- runFlow:
+    file: _check.yaml
+    env:
+      NAME: y-after-chip
+
+# ---- Backspace: the space after the chip, then the chip whole (the box is emptied first: the same Backspace takes the chip of what is left)
+- tapOn:
+    point: ${output.at_past}   # (the caret to the end of the text: Backspace takes what is before it)
+- eraseText: 60
+- runFlow:
+    file: _check.yaml
+    env:
+      NAME: empty
+- inputText: "a"
+- runFlow: _chips-add-selection.yaml
+- runFlow:
+    file: _check.yaml
+    env:
+      NAME: a-chip-space
+- eraseText: 1
+- runFlow:
+    file: _check.yaml
+    env:
+      NAME: a-chip
+- eraseText: 1
+- runFlow:
+    file: _check.yaml
+    env:
+      NAME: a-only
+- takeScreenshot: v3-05-backspace
+
+# ---- a double tap in a chip selects it whole; typing over it replaces it; a single tap inside it puts the caret on an edge
+- tapOn:
+    point: ${output.at_past}   # (the caret to the end of the text: Backspace takes what is before it)
+- eraseText: 10
+- inputText: "ab"
+- runFlow: _chips-add-selection.yaml
+- inputText: "cd"
+- runFlow:
+    file: _select-chip.yaml
+    env:
+      AT: ${output.at_word}
+- runFlow:
+    file: _check.yaml
+    env:
+      NAME: chip-selected
+- inputText: "Z"
+- runFlow:
+    file: _check.yaml
+    env:
+      NAME: chip-replaced
+- tapOn:
+    point: ${output.at_past}   # (the caret to the end of the text: Backspace takes what is before it)
+- eraseText: 10
+- inputText: "ab"
+- runFlow: _chips-add-selection.yaml
+- inputText: "cd"
+- tapOn:
+    point: ${output.at_word}
+- runFlow:
+    file: _check.yaml
+    env:
+      NAME: caret-at-an-edge
+
+# ---- a line break (Enter is a line break on touch) and the send: the message goes with the chip, and the stand-in agent answers it
+- tapOn:
+    point: ${output.at_past}   # (the caret to the end of the text: Backspace takes what is before it)
+- eraseText: 60
+- inputText: "Move"
+- runFlow: _chips-add-selection.yaml
+- inputText: "to"
+- pressKey: Enter
+- inputText: "thanks"
+- runFlow:
+    file: _check.yaml
+    env:
+      NAME: message

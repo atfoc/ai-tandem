@@ -13,8 +13,11 @@
 // From the sweep (D-SV-09): the page asks before it unloads (`beforeunload` is prevented) only while a drawing waits: not with the board open and
 // nothing drawn, not once the drawing is saved, and with the drawing waiting for its server the reload is met by the browser's dialog (asserted,
 // where the check had only accepted it).
+// On the phone (package H1) the list is Home: a reload is waited for by Home (under the chat in the stack, or alone), and in the place of a
+// section's collapse Home's chip of another server is pressed: Home's place (`aiwb.home`, h1-design.md §2) is what the browser keeps of it,
+// keys only. The phone has no collapse (Home lists one server at a time).
 import { callMatcher, check, dragResizer, mockEval, seed, until } from "../shot.mjs";
-import { byTid, openChat, press, showList } from "./sel.mjs";
+import { byTid, openChat, press, showHome, showList } from "./sel.mjs";
 import { drawer, editHere } from "./boarddraw.mjs";
 import { section, sectionToggle } from "./side.mjs";
 
@@ -24,16 +27,21 @@ const J = JSON.stringify;
 const DRAFT = callMatcher(/\/draft\?/), SCENE = callMatcher(/\/boards\/b_loose\/scene\?/); // (the app's calls, held on their way)
 const STUDIO = "s_studio", KEY = `${STUDIO}~c_note`;
 // what the page may keep: its settings, what is selected and collapsed, the chat a board reopens with (a key),
-// and of this computer's chats and folders their unsaved drafts and the recent folders
-const SETTINGS = ["aiwb.sel", "aiwb.collapsed", "aiwb.widths", "aiwb.archived", "aiwb.side", "aiwb.theme", "aiwb.lastChat", "aiwb.dirs"];
+// and of this computer's chats and folders their unsaved drafts and the recent folders; on the phone the server and groups Home shows
+const SETTINGS = ["aiwb.sel", "aiwb.collapsed", "aiwb.widths", "aiwb.archived", "aiwb.side", "aiwb.theme", "aiwb.lastChat", "aiwb.dirs", "aiwb.home", "aiwb.search.opened", "aiwb.search.recent"];
 
 await check("SEC.9 the app's storage holds nothing of a section's chat or whiteboard", async ({ url, viewport, open, fail, note }) => {
   await seed(url, "SEC");
+  const phone = viewport === "phone";
+  /** What a reload is waited for by: the list (the sidebar's sections; on the phone Home, drawn under an open chat too). */
+  const LIST = phone ? "home" : "side-section";
   const p = await open({ sel: { chat: KEY }, wait: '[data-testid="chat-head"]' }), { page } = p;
   const storeOf = (pg) => pg.evaluate(() => Object.fromEntries(Object.keys(localStorage).map((k) => [k, localStorage.getItem(k)])));
   const store = () => storeOf(page);
   const box = () => byTid(page, "composer-input").first();
   const typedSoFar = [];
+  /** The caret at the end of the whole text (End goes to the end of the line only: the phone's box is narrow and wraps). */
+  const toEnd = () => page.keyboard.press("End").then(() => page.evaluate(() => { const el = document.activeElement; if (el?.isContentEditable) { const r = document.createRange(); r.selectNodeContents(el); r.collapse(false); const s = getSelection(); s.removeAllRanges(); s.addRange(r); } }));
   /** What a page keeps besides localStorage: sessionStorage, and everything in every IndexedDB database, as text. */
   const otherOf = (pg) => pg.evaluate(async () => {
     const out = {};
@@ -58,7 +66,11 @@ await check("SEC.9 the app's storage holds nothing of a section's chat or whiteb
     for (const [k, v] of Object.entries(s)) {
       if (k.startsWith("aiwb.draft.") && (k.includes("~") || k.includes(STUDIO) || k.includes("c_note"))) fail(`${when}: localStorage has the key ${k} = ${v.slice(0, 80)}`);
       if (k.startsWith("aiwb.dirs.")) fail(`${when}: localStorage has the recent folders of a server: ${k}`);
-      if ((k + v).includes(STUDIO) && k !== "aiwb.sel" && k !== "aiwb.collapsed" && k !== "aiwb.lastChat") fail(`${when}: localStorage names Studio Mac under ${k}: ${v.slice(0, 120)}`);
+      if ((k + v).includes(STUDIO) && k !== "aiwb.sel" && k !== "aiwb.collapsed" && k !== "aiwb.lastChat" && k !== "aiwb.home" && k !== "aiwb.search.opened") fail(`${when}: localStorage names Studio Mac under ${k}: ${v.slice(0, 120)}`);
+      if (k === "aiwb.home" && (() => { const h = JSON.parse(v); return Object.keys(h).some((x) => x !== "server" && x !== "groups") || ![h.server, ...(h.groups ?? [])].every((x) => x === null || /^[\w~-]+$/.test(x)); })()) fail(`${when}: aiwb.home holds more than keys: ${v.slice(0, 120)}`);
+      // (H2's search keeps the things opened as keys and kinds, never a title; the words searched for are typed by the person, and this check types none)
+      if (k === "aiwb.search.opened" && (() => { const o = JSON.parse(v); return !Array.isArray(o) || o.some((x) => Object.keys(x).sort().join() !== "key,kind" || !/^[\w~-]+$/.test(x.key) || !["board", "chat"].includes(x.kind)); })()) fail(`${when}: aiwb.search.opened holds more than keys and kinds: ${v.slice(0, 160)}`);
+      if (k === "aiwb.search.recent" && (() => { const w = JSON.parse(v); return !Array.isArray(w) || w.length > 0; })()) fail(`${when}: aiwb.search.recent holds words this check never typed: ${v.slice(0, 160)}`);
       if (k === "aiwb.lastChat" && Object.entries(JSON.parse(v)).some(([owner, chat]) => typeof chat !== "string" || !/^[\w~-]+$/.test(owner + chat))) fail(`${when}: aiwb.lastChat holds more than keys: ${v.slice(0, 120)}`);
     }
     for (const [k, v] of [...Object.entries(s), ...Object.entries(other)]) {
@@ -99,7 +111,7 @@ await check("SEC.9 the app's storage holds nothing of a section's chat or whiteb
   await openChat(page, KEY);
 
   // ---- a reload: the section's chat opens again from the selection
-  await page.reload(); await byTid(page, "side-section").first().waitFor({ state: "attached", timeout: 15000 });
+  await page.reload(); await byTid(page, LIST).first().waitFor({ state: "attached", timeout: 15000 });
   if ((JSON.parse(await page.evaluate(() => localStorage.getItem("aiwb.sel") ?? "{}"))).chat !== KEY) fail("after a reload the selection is not the section's chat");
   await clean("after a reload");
   if (!await until(async () => (await box().textContent().catch(() => "")) === "remember the LUTs and the gamma", 10000)) fail(`after a reload the section's chat does not open with its server's draft: "${await box().textContent().catch(() => "")}"`);
@@ -109,31 +121,37 @@ await check("SEC.9 the app's storage holds nothing of a section's chat or whiteb
   // from the drop on, and nowhere in the app's storage)
   await mockEval(`flags.draft = { hold: true };`, url);
   typedSoFar.push(" typed in the dark");
-  await press(page, box()); await page.keyboard.press("End"); await page.keyboard.type(" typed in the dark");
+  await press(page, box()); await toEnd(); await page.keyboard.type(" typed in the dark");
   await page.waitForTimeout(600); // (the save's debounce of 400 ms: the save is on its way)
   await mockEval(`setServerState("${STUDIO}", "unreachable", { detail: "connection refused" }); release("draft"); delete flags.draft;`, url);
-  await byTid(page, "remote-bar").first().waitFor({ state: "attached", timeout: 15000 });
+  // (the phone has no banner: its header's sub-line says the server is off)
+  if (phone) await page.waitForFunction(() => /offline/.test(document.querySelector('[data-testid="chat-head-sub"]')?.textContent ?? ""), null, { timeout: 15000 });
+  else await byTid(page, "remote-bar").first().waitFor({ state: "attached", timeout: 15000 });
   // (two frames and the save's debounce of 400 ms: what the app would keep, it has kept by then)
   await until(async () => Object.keys(await store()).some((k) => k.startsWith("aiwb.draft.")), 1500);
   await clean("typed just before the server dropped, and not saved");
   if ((await box().textContent()) !== "remember the LUTs and the gamma typed in the dark") fail(`the box has "${await box().textContent()}"`);
-  await box().click({ force: true }).catch(() => {}); await page.keyboard.press("End"); await page.keyboard.type(" and after");
+  await box().click({ force: true }).catch(() => {}); await toEnd(); await page.keyboard.type(" and after");
   if ((await box().textContent()) !== "remember the LUTs and the gamma typed in the dark") fail(`the read-only box took what was typed during the outage: "${await box().textContent()}"`);
-  await until(async () => await byTid(section(page, "s_empty"), "side-section-state").count() > 0, 5000);
-  await showList(page);
-  await press(page, sectionToggle(page, "s_empty")); // a collapse, so that the browser keeps what it is to keep
+  if (phone) await showHome(page, "s_empty"); // (another server's Home, so that the browser keeps the place Home shows)
+  else {
+    await until(async () => await byTid(section(page, "s_empty"), "side-section-state").count() > 0, 5000);
+    await showList(page);
+    await press(page, sectionToggle(page, "s_empty")); // a collapse, so that the browser keeps what it is to keep
+  }
   if (viewport === "desktop") await dragResizer(page, '[data-testid="side-pane"] [data-testid="resizer"]', 30); // and a width
   const kept = await clean("with a collapse and a width saved");
   // (the phone's list is the screen below the chat: to reach it the chat is left, and the selection with it)
   const kept_ = JSON.parse(kept["aiwb.sel"] ?? "{}").chat ?? null;
   if (viewport === "phone" ? kept_ !== null : kept_ !== KEY) fail(`the selection kept is ${kept["aiwb.sel"]}, not ${viewport === "phone" ? "none, the chat left for the list" : "the section's chat"}`);
-  if (J(JSON.parse(kept["aiwb.collapsed"] ?? "[]")) !== J(["s_empty"])) fail(`the collapse kept is ${kept["aiwb.collapsed"]}`);
+  if (phone) { if (J(JSON.parse(kept["aiwb.home"] ?? "{}")) !== J({ server: "s_empty", groups: [] })) fail(`Home's place kept is ${kept["aiwb.home"]}, not the server chosen by its chip`); }
+  else if (J(JSON.parse(kept["aiwb.collapsed"] ?? "[]")) !== J(["s_empty"])) fail(`the collapse kept is ${kept["aiwb.collapsed"]}`);
   if (viewport === "desktop" && !kept["aiwb.widths"]) fail("no width is kept");
   const others = Object.keys(kept).filter((k) => !SETTINGS.includes(k));
   if (others.length) fail(`localStorage has other keys than the selection, the collapse, the widths and the app's settings: ${J(others)}`);
 
   // ---- a reload during the outage: nothing of the chat is known
-  await page.reload(); await byTid(page, "side-section").first().waitFor({ state: "attached", timeout: 15000 });
+  await page.reload(); await byTid(page, LIST).first().waitFor({ state: "attached", timeout: 15000 });
   if (await byTid(page, "chat-head").count()) fail("after a reload during the outage the section's chat is on the page");
   if ((await page.content()).includes("typed in the dark")) fail("after a reload during the outage what was typed in the section's chat is on the page");
   await clean("after a reload during the outage");
@@ -180,7 +198,7 @@ await check("SEC.9 the app's storage holds nothing of a section's chat or whiteb
     if (!await asks()) fail("a drawing waits for its server and the page does not ask before it unloads");
     const dialogs = [];
     pg.on("dialog", (d) => { dialogs.push(d.type()); void d.accept().catch(() => {}); });
-    await pg.reload(); await byTid(pg, "side-section").first().waitFor({ state: "attached", timeout: 15000 });
+    await pg.reload(); await byTid(pg, LIST).first().waitFor({ state: "attached", timeout: 15000 });
     if (!dialogs.includes("beforeunload")) fail(`a drawing waits for its server and the reload was not met by the browser's dialog (dialogs: ${J(dialogs)})`);
     if (await pg.locator(".excalidraw").count() || await byTid(pg, "board-off").count() || await byTid(pg, "board-role").count() || await byTid(pg, "board-canvas").count()) fail("after a reload during the outage the section's board is on the page");
     await clean("after a reload during the board's outage", pg);

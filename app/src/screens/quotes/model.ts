@@ -1,6 +1,7 @@
 // What the quotes screens decide and no screen needs to draw (package K5): what the comment field holds and how it is kept, the words of the
 // count and of the list, the reference a span of a message's displayed text makes. No React and no react-native here, so Node loads it.
 // The logic of a quote itself (finding it again, previewing it, its key) is @aiwb/core's logic/quotes.ts.
+import { agentName } from "@aiwb/core/agents.ts";
 import { quoteKey, quotable, withComment } from "@aiwb/core/logic/quotes.ts";
 import type { Item, Reference } from "@aiwb/core/types.ts";
 
@@ -17,6 +18,25 @@ export function withFloat(qs: Reference[], f: Pick<Editing, "r" | "edit" | "text
 /** The count's words: "❝ 2 comments" with the word, "❝ 2" without it (a narrow composer). */
 export const countTitle = (n: number): string => `${n} quoted passage${n === 1 ? "" : "s"} in this message`;
 export const countWord = (n: number): string => `comment${n === 1 ? "" : "s"}`;
+
+/** The phone's chip: "1 quote", "2 quotes". */
+export const chipWord = (n: number): string => `${n} quote${n === 1 ? "" : "s"}`;
+
+/** The phone sheet's sub-line under "Quoted in this message". */
+export const sheetSub = (n: number): string => `${n} passage${n === 1 ? "" : "s"} from this chat`;
+
+/** Where a quote is from, in one line for the phone sheet: the agent and which of its replies ("Claude Code · the last reply", "Claude Code · 2 replies up":
+ *  the replies counted from the end of the thread, the last one first), "Your message" for one of the person's own, and a plain sentence for an item the thread no
+ *  longer has. `items` is the thread's list, `agent` the chat's agent kind ("" when it has none). */
+export function quoteSource(items: readonly Pick<Item, "kind">[] | undefined, agent: string, r: Pick<Reference, "item">): string {
+  const it = items?.[r.item];
+  if (!it) return "No longer in this chat";
+  if (it.kind === "user") return "Your message";
+  const name = agent ? agentName(agent) : "The agent";
+  let up = 0;
+  for (let i = r.item; i < items!.length; i++) if (items![i].kind === "text") up++;
+  return `${name} · ${up <= 1 ? "the last reply" : `${up} replies up`}`;
+}
 
 /** The list's head hint: what a press on a quote does. */
 export const listHint = (canEdit: boolean, touch: boolean): string => `${touch ? "tap" : "click"} one to ${canEdit ? "edit" : "show"} it`;

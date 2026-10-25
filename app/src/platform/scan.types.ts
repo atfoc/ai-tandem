@@ -5,4 +5,9 @@ export type ScannerProps = {
   onText(text: string): string | null;
   /** The person left the scanner. */
   onClose(): void;
+  /** The scanner's "Paste text instead" at its foot (the phone's add flow); without it the scanner has no such button. */
+  onPaste?(): void;
+  /** The scanner's title and the line of help under the aim; default: no title, and the words of `SCAN_AIM`. */
+  title?: string;
+  hint?: string;
 };

@@ -1,7 +1,7 @@
 // A chat's header (the old page's ChatView.tsx's ChatHeader): the agent's glyph, the chat's name (a tap renames it) and a line under it: [the
 // board ·] the agent · the folder · the server's name (a chat of a section) · the status · the branch crumb. The branch alert and the
-// Tree button (S8) stand before the ×; the × hides the panel of a board's chat (wide layouts). On the phone this is the one bar of the
-// screen (AD-71): the stack's back first, then the same header, so the chat's title is shown once.
+// Tree button (S8) stand before the ×; the × hides the panel of a board's chat. On the phone this is the one bar of the screen (AD-71),
+// drawn by PhoneHeader.tsx, so the chat's title is shown once.
 import { useEffect, useRef, useState } from "react";
 import { Pressable, StyleSheet, TextInput, View, type NativeSyntheticEvent, type TextInputKeyPressEventData, type TextStyle } from "react-native";
 
@@ -16,7 +16,8 @@ import { boardNames, chatTitle, isLegacy, setState, shownView, threadOf } from "
 import type { ChatView } from "@aiwb/core/types.ts";
 
 import { useStore } from "../../state/useStore.ts";
-import { useLayout } from "../../ui/useLayout.ts";
+import { PHONE, TYPE } from "../../ui/metrics.ts";
+import { usePhone } from "../../ui/useLayout.ts";
 import { useEscLayer } from "../../ui/useEscLayer";
 import { IconButton } from "../../ui/IconButton.tsx";
 import { AgentGlyph, BoardIcon, Pencil } from "../../ui/icons.tsx";
@@ -25,11 +26,11 @@ import { useTokens } from "../../ui/theme.tsx";
 import { tid } from "../../ui/tid.ts";
 import { usePointer } from "../../ui/usePointer";
 import { webStyle } from "../../ui/webstyle.ts";
-import { BackButton } from "../shell/BackButton.tsx";
 import { reportError } from "../shell/nav.ts";
 import { agentColours } from "./colour.ts";
 import { useNow } from "../subagents/hooks.ts";
 import { tildify, useWhere } from "./hooks.ts";
+import { PhoneHeader } from "./PhoneHeader.tsx";
 import { useChatParts } from "./parts.tsx";
 
 /** Renames a chat on its server; the same name, or none, asks nothing. The name shows when the chat's server tells it (a `chat`
@@ -39,8 +40,8 @@ export function renameChat(chat: ChatView, name: string, title = chatTitle(chat)
   void api.renameChat(chat.id, name).catch((e) => { console.error(e); if (inSection(chat.id)) reportError("Couldn't rename the chat", e); });
 }
 
-/** The field the name is typed in: the name is selected, Enter or leaving the field commits, Esc cancels. */
-export function NameInput({ chat, onDone }: { chat: ChatView; onDone: () => void }) {
+/** The field the name is typed in: the name is selected, Enter or leaving the field commits, Esc cancels. `phone`: the size of a bar's title. */
+export function NameInput({ chat, onDone, phone }: { chat: ChatView; onDone: () => void; phone?: boolean }) {
   const t = useTokens();
   const items = useStore((s) => threadOf(s, chat.id)?.items);
   const [v, setV] = useState(chatTitle(chat, items));
@@ -66,12 +67,16 @@ export function NameInput({ chat, onDone }: { chat: ChatView; onDone: () => void
   return (
     <TextInput {...tid("chat-name-input")} ref={box} value={v} onChangeText={setV} autoFocus selectTextOnFocus onBlur={commit} onSubmitEditing={commit} onKeyPress={key}
       returnKeyType="done" accessibilityLabel="Chat name" placeholderTextColor={t.faint}
-      style={[styles.nameInput, { color: t.text, backgroundColor: t.bg, borderColor: t.accent }, webStyle({ outlineStyle: "none", boxShadow: `0 0 0 3px ${t.accentSoft}` }) as TextStyle | undefined]} />
+      style={[styles.nameInput, phone && styles.nameInputPhone, { color: t.text, backgroundColor: t.bg, borderColor: t.accent }, webStyle({ outlineStyle: "none", boxShadow: `0 0 0 3px ${t.accentSoft}` }) as TextStyle | undefined]} />
   );
 }
 
 export function ChatHeader({ chatId }: { chatId: string }) {
-  const t = useTokens(), parts = useChatParts(), pointer = usePointer(), layout = useLayout();
+  return usePhone() ? <PhoneHeader chatId={chatId} /> : <WideHeader chatId={chatId} />;
+}
+
+function WideHeader({ chatId }: { chatId: string }) {
+  const t = useTokens(), parts = useChatParts(), pointer = usePointer();
   const c = useStore((s) => shownView(s, chatId));
   const items = useStore((s) => threadOf(s, chatId)?.items);
   const board = useStore((s) => (c?.board ? s.boards[c.board] : undefined));
@@ -89,7 +94,6 @@ export function ChatHeader({ chatId }: { chatId: string }) {
   const a = agentColours(t, c.agent);
   return (
     <View {...tid("chat-head", { chat: chatId, status: status || undefined, frozen })} style={[styles.head, { borderBottomColor: t.line }]}>
-      {layout === "phone" && <BackButton />}
       <View style={[styles.glyph, { backgroundColor: a.soft }]}><AgentGlyph agent={c.agent} size={14} /></View>
       <View style={styles.main}>
         {editing && named ? <NameInput chat={c} onDone={() => setEditing(false)} /> : (
@@ -113,7 +117,7 @@ export function ChatHeader({ chatId }: { chatId: string }) {
         </Text>
       </View>
       <parts.HeaderTail chat={chatId} />
-      {c.board && layout !== "phone" && <IconButton {...tid("chat-hide")} title="Hide chat (⌘J)" onPress={() => setState({ panel: false })}>{(color) => <Text size={16} style={{ color }}>×</Text>}</IconButton>}
+      {c.board && <IconButton {...tid("chat-hide")} title="Hide chat (⌘J)" onPress={() => setState({ panel: false })}>{(color) => <Text size={16} style={{ color }}>×</Text>}</IconButton>}
     </View>
   );
 }
@@ -125,4 +129,5 @@ const styles = StyleSheet.create({
   nameRow: { flexDirection: "row", alignItems: "center", gap: 6, maxWidth: "100%", alignSelf: "flex-start" },
   name: { flexShrink: 1, minWidth: 0 },
   nameInput: { width: "100%", fontSize: 13, fontWeight: "500", borderWidth: 1, borderRadius: 5, paddingVertical: 1, paddingHorizontal: 5 },
+  nameInputPhone: { fontSize: TYPE.control, minHeight: PHONE.target, borderRadius: 8, paddingHorizontal: 10 },
 });

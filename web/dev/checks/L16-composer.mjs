@@ -5,7 +5,7 @@
 //   C-TX-05/06/07  Send is off with a blank box (white space too), on with text; the text is trimmed; at Send the box is empty and the draft with it
 //   C-TX-08  a Send that is refused puts its text back into the empty box and says why under the composer (C-RO-09); `cap` does not read the chat again (C-CH-06)
 //   C-TX-10/15/16  a busy chat: Send off and says "The agent is working", Enter sends nothing and typing goes on; Stop stops it, and so does Esc
-//   C-TX-19  the box has room for three lines at least, grows with its text and then scrolls inside
+//   C-TX-19  the box has room for three lines at least (the phone: one line, growing to six), grows with its text and then scrolls inside
 //   C-TX-20, C-NC-12  the box has the focus a moment after a chat is opened and after a new chat is made (the desktop's: a keyboard)
 //   C-MN-01/02/03/04/06  "@" in a board chat opens the list of the other boards of its server (six at most), by what follows; "a@b" opens none; a plain chat
 //            has none; the arrows move the highlight, Enter and Tab pick, Esc closes and leaves the text, a press on an option picks it and the box keeps the
@@ -15,8 +15,12 @@
 //   C-RO-14  the note beside the context row goes by itself after 2.5 s
 //   (sweep, rn-sw-webtest) the folder of a chat that has not started, changed from elsewhere, is the composer's at once (web/test/sectionviews.test.ts)
 // Keys are the desktop's (a hardware keyboard on a tablet has them too: the tablet runs them, the phone the parts a finger does).
+// At the phone (ux-improvements C1) the composer is the phone's: the empty box shows Talk (`composer-talk`) and no Send, Send comes with text, Stop
+// while the agent works (Send beside it once something is typed); Enter is a line break and Ctrl+Enter sends; the controls have no `title`, so their
+// words are read from `aria-label`; the @ list is the dock above the composer (`mention-dock`, four rows at most, names without "@"); the context row's
+// chips are `ctx-chip` with `data-kind` (board: "Open the board <name>"; ref: the name and a "Remove <name> from the message" ×).
 import { atRest, callMatcher, callsOf, check, mockEval, seed, until } from "../shot.mjs";
-import { chip, frame, openAt, openState, placesOf } from "./composer.mjs";
+import { MORE, POP, chip, closeChoice, frame, openAt, openChoice, openState, phoneChip, placesOf } from "./composer.mjs";
 import { byTid, openChat, press, tidSel } from "./sel.mjs";
 
 export const viewports = ["desktop", "tablet", "phone"];
@@ -26,14 +30,36 @@ const POST = /\/chats\/(\w+)\/messages(\?|$)/;
 
 await check("L16 the composer: Enter, trim, refusals, growth, focus, the @ list, the model's search, the bars", async ({ url, viewport, layout, open, fail, note }) => {
   const keys = viewport !== "phone"; // (a hardware keyboard: the desktop's, and a tablet's)
+  const phone = !keys;
   let states = await seed(url, "A2");
   const state = (id) => states.find((s) => s.id === id);
   /** A state's page on a seed made anew: what an earlier section sent or changed is not there. */
-  const fresh = async (id) => { states = await seed(url, "A2"); return openState(open, state(id), layout, 0); };
+  const fresh = async (id, o = {}) => { states = await seed(url, "A2"); return openState(open, state(id), layout, 0, o); };
   const box = (page) => byTid(page, "composer-input").first();
   const text = async (page) => (await box(page).textContent()) ?? "";
   const send = (page) => byTid(page, "send").first();
+  const talk = (page) => byTid(page, "composer-talk").first();
+  /** What a primary control says: its title (the wide layouts), its aria-label (the phone has no hover titles). */
+  const says = (loc) => loc.getAttribute(phone ? "aria-label" : "title");
+  /** The phone's empty box: Talk and no Send (a blank box is one with no text). */
+  const talking = async (page) => (await talk(page).isVisible()) && !await byTid(page, "send").count();
+  /** Send is "off": at the wide layouts a disabled button, at the phone no Send at all while the box is blank (Talk is there). */
+  const sendOff = async (page) => phone ? await talking(page) : await send(page).isDisabled();
+  const popOf = (page) => byTid(page, phone ? "mention-dock" : "mention-pop");
   const posts = (calls, from = 0) => calls.slice(from).filter((c) => c.method === "POST" && POST.test(c.path));
+  /** The phone's folder path as the user reads it: its text without the embedding marks that keep its characters in order. */
+  const pathText = async (page) => ((await byTid(page, "dir-path").first().textContent()) ?? "").replace(/[\u202A-\u202E]/g, "");
+  /** The effort's chip, wherever the toolbar's fit puts it: in the row in a wide page, in the "more" popup at the tablet's width, where voice's pair
+   *  keeps the room and Effort leaves early (core's LEAVING). The popup is opened when the chip is not in the row, and stays open through a pick. */
+  const effortChipOf = async (page) => {
+    if (await chip(page, "effort").count() && !await chip(byTid(page, "more-pop"), "effort").count()) return chip(page, "effort").first();
+    if (!await page.locator(POP).count()) {
+      if (!await page.locator(MORE).count()) return fail("the effort's chip is neither in the toolbar's row nor behind a \"more\" chip"), null;
+      await press(page, page.locator(MORE));
+      if (!await until(() => page.locator(POP).count(), 5000)) return fail("the \"more\" chip did not open its popup"), null;
+    }
+    return chip(byTid(page, "more-pop"), "effort").first();
+  };
   const type = async (page, s) => { await press(page, box(page)); await page.keyboard.type(s); };
 
   // ---- the box: placeholder, Enter, Shift+Enter, trim, Send's state, the draft
@@ -42,12 +68,13 @@ await check("L16 the composer: Enter, trim, refusals, growth, focus, the @ list,
     const calls = callsOf(page);
     const ph = () => box(page).evaluate((b) => ({ text: b.getAttribute("data-placeholder"), empty: b.classList.contains("is-empty") }));
     if ((await ph()).text !== "Ask Claude Code…" || !(await ph()).empty) fail(`a plain chat's box says ${J(await ph())}, not "Ask Claude Code…" when empty`);
-    if (!await send(page).isDisabled()) fail("Send is on with a blank box");
+    if (!await until(() => sendOff(page), 10000)) fail(phone ? "the empty box does not show Talk without a Send" : "Send is on with a blank box");
     await type(page, "   ");
-    if (!await send(page).isDisabled()) fail("Send is on with a box of white space only");
+    if (!await sendOff(page)) fail(phone ? "a box of white space only does not show Talk without a Send" : "Send is on with a box of white space only");
     await page.keyboard.press("Backspace"); await page.keyboard.press("Backspace"); await page.keyboard.press("Backspace");
     await type(page, "  first line");
     if ((await ph()).empty) fail("the placeholder stays when text is typed");
+    if (phone && await talk(page).count()) fail("Talk stays beside text in the box: the primary is Send once something is typed");
     if (await send(page).isDisabled()) fail("Send is off with text in the box");
     if (keys) {
       await page.keyboard.press("Shift+Enter");
@@ -60,16 +87,32 @@ await check("L16 the composer: Enter, trim, refusals, growth, focus, the @ list,
       if (!sent) fail("Enter did not send the message");
       else if (sent.body?.text !== "first line\nsecond line") fail(`the message sent is ${J(sent.body?.text)}, not "first line\\nsecond line" (trimmed, a line break as "\\n")`);
     } else {
-      // (a finger: Send is the button; the web box's Enter sends all the same, a keyboard being what a browser has)
+      // (the phone: Enter is a line break and sends nothing, Send is the button; Ctrl+Enter sends too, below)
+      await page.keyboard.press("Enter");
       await page.keyboard.type("second line  ");
+      await page.waitForTimeout(300);
+      if (posts(calls).length) fail("Enter sent the message at the phone: it is a line break there");
+      if (!/first line\s*\n\s*second line/.test(await text(page))) fail(`Enter made no line break at the phone: ${J(await text(page))}`);
       const from = calls.length;
       await press(page, send(page));
       const sent = await until(() => posts(calls, from)[0], 10000);
       if (!sent) fail("a press on Send did not send the message");
-      else if (sent.body?.text !== "first linesecond line") fail(`the message sent is ${J(sent.body?.text)}, not "first linesecond line" (trimmed)`);
+      else if (sent.body?.text !== "first line\nsecond line") fail(`the message sent is ${J(sent.body?.text)}, not "first line\nsecond line" (trimmed, a line break as "\n")`);
     }
     if (!await until(async () => (await text(page)) === "", 5000)) fail(`after Send the box holds ${J(await text(page))}`);
-    if (!await until(async () => await send(page).isDisabled(), 5000)) fail("after Send, with the box empty, Send is on");
+    if (!await until(() => sendOff(page), 5000)) fail(phone ? "after Send, with the box empty, the primary is not Talk" : "after Send, with the box empty, Send is on");
+    await ctx.close();
+  }
+  if (phone) { // Ctrl+Enter sends at the phone (a keyboard on it), Enter does not; the box is empty after it
+    const { page, ctx } = await fresh("plain-new");
+    const calls = callsOf(page);
+    await type(page, "by the keys");
+    const from = calls.length;
+    await page.keyboard.press("Control+Enter");
+    const sent = await until(() => posts(calls, from)[0], 10000);
+    if (!sent) fail("Ctrl+Enter did not send the message at the phone");
+    else if (sent.body?.text !== "by the keys") fail(`Ctrl+Enter sent ${J(sent.body?.text)}, not "by the keys"`);
+    if (!await until(async () => (await text(page)) === "", 5000)) fail(`after Ctrl+Enter the box holds ${J(await text(page))}`);
     await ctx.close();
   }
   { // a board chat's placeholder
@@ -97,6 +140,17 @@ await check("L16 the composer: Enter, trim, refusals, growth, focus, the @ list,
     if (!await byTid(page, "composer-err").count()) fail("the refusal's sentence went by itself");
     const pickOther = async (kind) => {
       await atRest(page, 12);
+      if (phone) { // (the model sheet: a model's row without the ✓, or the effort control's other segment; Done closes it)
+        const sheet = await openChoice(page, "model");
+        const other = kind === "model" ? byTid(sheet, "picker-row").filter({ hasNot: page.locator(tidSel("picker-check")) }).first() : byTid(byTid(sheet, "effort-seg"), "segment", { on: "false" }).first();
+        if (!await until(() => other.count(), 5000)) { fail(`the ${kind}'s sheet has no other ${kind === "model" ? "row" : "segment"} to pick`); await closeChoice(page); return false; }
+        const from = calls.length;
+        await press(page, other);
+        const saved = await until(() => calls.slice(from).some((c) => c.method === "PATCH" && /\/chats\/c_A2_new/.test(c.path) && (c.body?.[kind])), 10000);
+        if (!saved) fail(`a pick of the ${kind} made no PATCH`);
+        await closeChoice(page);
+        return saved;
+      }
       if (!await chip(page, kind).first().isVisible()) await press(page, byTid(page, "more-chip").first());
       await press(page, chip(page, kind).first());
       const rows = byTid(page, "pick-row"), other = rows.and(page.locator('[aria-selected="false"]')).first();
@@ -185,12 +239,16 @@ await check("L16 the composer: Enter, trim, refusals, growth, focus, the @ list,
   {
     const { page, ctx } = await fresh("plain-busy");
     const calls = callsOf(page);
+    if (phone && (!await byTid(page, "stop").count() || await byTid(page, "send").count())) fail("at the phone a busy chat with an empty box shows Stop alone (no Send, no Talk)");
+    if (phone && await talk(page).count()) fail("at the phone a busy chat shows Talk: the primary is Stop");
     await type(page, "while it works");
     if ((await text(page)) !== "while it works") fail(`typing in a busy chat gave ${J(await text(page))}`);
-    if (!await send(page).isDisabled() || await send(page).getAttribute("title") !== "The agent is working") fail(`Send of a busy chat is ${await send(page).isDisabled() ? "off" : "on"} and says "${await send(page).getAttribute("title")}"`);
+    if (!await send(page).isDisabled() || await says(send(page)) !== "The agent is working") fail(`Send of a busy chat is ${await send(page).isDisabled() ? "off" : "on"} and says "${await says(send(page))}"`);
     if (keys) { await page.keyboard.press("Enter"); await page.waitForTimeout(300); if (posts(calls).length) fail("Enter sent a message to a busy chat"); }
     const stop = byTid(page, "stop").first();
-    if (await stop.getAttribute("title") !== "Stop (Esc)") fail(`Stop says "${await stop.getAttribute("title")}", not "Stop (Esc)"`);
+    const stopSays = phone ? "Stop" : "Stop (Esc)"; // (no keyboard hint at the phone)
+    if (await says(stop) !== stopSays) fail(`Stop says "${await says(stop)}", not "${stopSays}"`);
+    if (phone && (!await send(page).count() || !await stop.count())) fail("at the phone a busy chat with text typed shows Stop and Send together"); // (the primary's states: Stop, and Send beside it once something is typed)
     const from = calls.length;
     await press(page, stop);
     if (!await until(() => calls.slice(from).some((c) => c.method === "POST" && /\/chats\/c_A2_busy\/interrupt/.test(c.path)), 10000)) fail("a press on Stop made no interrupt call");
@@ -213,12 +271,23 @@ await check("L16 the composer: Enter, trim, refusals, growth, focus, the @ list,
   // ---- a chat with no agent: the box says so, Send is off with the reason, the empty thread offers nothing to send (C-CH-05)
   for (const [id, holder, why] of [["plain-noagent", "Choose an agent…", "Choose an agent to send a message."],
     ["plain-noagent-installed", "No agent is installed", "No agent is installed on Bare box. Install Claude Code, Cursor or pi on that machine."]]) {
-    const { page, ctx } = await fresh(id);
+    const blockedBox = phone && id === "plain-noagent-installed"; // (the phone's block replaces the box: there is no composer-input to wait for)
+    const { page, ctx } = await fresh(id, blockedBox ? { wait: '[data-testid="composer-block"]' } : {});
     const calls = callsOf(page);
+    if (blockedBox) {
+      // (the phone says it once, in the box's place: the block of kind noagent replaces the box, the toolbar and Send, and the empty thread does not repeat it)
+      const block = byTid(page, "composer-block", { kind: "noagent", place: "box" });
+      if (await block.count() !== 1 || !(await block.first().textContent()).includes(why.slice(0, why.indexOf(". ") + 1))) fail(`${id}: the phone's composer block is ${J(await byTid(page, "composer-block").allTextContents())}, not the noagent block in the box's place saying ${J(why)}`);
+      if (await box(page).count() || await send(page).count()) fail(`${id}: the phone draws the box or Send beside the noagent block`);
+      if (await byTid(page, "empty-reason").count()) fail(`${id}: the phone's empty thread repeats the block as ${J(await byTid(page, "empty-reason").allTextContents())}`);
+      if (await byTid(page, "suggestion").count()) fail(`${id}: the empty thread of a chat with no agent offers a suggestion to send`);
+      await ctx.close();
+      continue;
+    }
     const t = await box(page).getAttribute("data-placeholder");
     if (t !== holder) fail(`${id}: the box says ${J(t)}, not ${J(holder)}`);
     await type(page, "no one to hear it");
-    if (!await send(page).isDisabled() || await send(page).getAttribute("title") !== why) fail(`${id}: Send is ${await send(page).isDisabled() ? "off" : "on"} and says ${J(await send(page).getAttribute("title"))}, not off with ${J(why)}`);
+    if (!await send(page).isDisabled() || await says(send(page)) !== why) fail(`${id}: Send is ${await send(page).isDisabled() ? "off" : "on"} and says ${J(await says(send(page)))}, not off with ${J(why)}`);
     if (keys) { await page.keyboard.press("Enter"); await page.waitForTimeout(300); }
     if (posts(calls).length) fail(`${id}: Enter sent a message to a chat with no agent`);
     if (await byTid(page, "empty-reason").count() !== 1 || (await byTid(page, "empty-reason").first().textContent()) !== why) fail(`${id}: the empty thread says ${J(await byTid(page, "empty-reason").allTextContents())}, not ${J(why)}`);
@@ -231,14 +300,17 @@ await check("L16 the composer: Enter, trim, refusals, growth, focus, the @ list,
     const { page, ctx } = await fresh("plain-new");
     const h = () => box(page).evaluate((b) => ({ h: b.getBoundingClientRect().height, scroll: b.scrollHeight > b.clientHeight + 1, line: parseFloat(getComputedStyle(b).lineHeight), win: innerHeight }));
     const empty = await h();
-    if (empty.h < 3 * empty.line) fail(`the empty box is ${empty.h} px high: room for three lines is ${3 * empty.line}`);
+    // (the phone's box starts at one line and grows to six: goal 3.6; the wide layouts keep room for three lines)
+    const rows = phone ? 1 : 3;
+    if (empty.h < rows * empty.line) fail(`the empty box is ${empty.h} px high: room for ${rows} line${rows > 1 ? "s" : ""} is ${rows * empty.line}`);
     await press(page, box(page));
     for (let i = 0; i < 5; i++) { await page.keyboard.type("line " + i); await page.keyboard.press("Shift+Enter"); }
     const some = await h();
     if (some.h <= empty.h) fail(`the box did not grow with six lines: ${empty.h} then ${some.h} px`);
     for (let i = 0; i < 30; i++) { await page.keyboard.type("more " + i); await page.keyboard.press("Shift+Enter"); }
     const many = await h();
-    if (many.h > Math.max(6 * many.line, 0.4 * many.win) + 8 || !many.scroll) fail(`with thirty-five lines the box is ${many.h} px high and ${many.scroll ? "" : "does not "}scroll${many.scroll ? "s" : ""}: it stops at six lines or 40% of the window (${Math.max(6 * many.line, 0.4 * many.win)} px) and scrolls`);
+    const cap = phone ? 6 * many.line : Math.max(6 * many.line, 0.4 * many.win); // (the phone: six lines, then it scrolls)
+    if (many.h > cap + (phone ? 24 : 8) || !many.scroll) fail(`with thirty-five lines the box is ${many.h} px high and ${many.scroll ? "" : "does not "}scroll${many.scroll ? "s" : ""}: it stops at six lines${phone ? "" : " or 40% of the window"} (${cap} px) and scrolls`);
     await ctx.close();
   }
 
@@ -257,13 +329,13 @@ await check("L16 the composer: Enter, trim, refusals, growth, focus, the @ list,
   // ---- the @ list of a board chat
   {
     const { page, ctx } = await fresh("board-new");
-    const pop = () => byTid(page, "mention-pop");
+    const pop = () => popOf(page);
     const items = () => byTid(page, "mention-item").allTextContents();
     await press(page, box(page));
     await page.keyboard.type("@");
     if (!await until(() => pop().count(), 5000)) fail('"@" in a board chat opened no list of boards');
     const all = await items();
-    if (!all.length || all.length > 6 || all.some((x) => !x.startsWith("@"))) fail(`the list of boards is ${J(all)}: boards named with "@", six at most`);
+    if (!all.length || all.length > (phone ? 4 : 6) || (!phone && all.some((x) => !x.startsWith("@")))) fail(`the list of boards is ${J(all)}: ${phone ? "board names (the dock shows no \"@\"), four rows at most" : 'boards named with "@", six at most'}`);
     if (all.some((x) => /pipeline/.test(x))) note("(the chat's own board is in its list: a board may be named in its own chat)");
     await page.keyboard.type("sk");
     const narrowed = await until(async () => { const i = await items(); return i.length && i.every((x) => /sk/i.test(x)) ? i : null; }, 5000);
@@ -284,14 +356,18 @@ await check("L16 the composer: Enter, trim, refusals, growth, focus, the @ list,
     }
     const picked = (await text(page)).trim();
     if (!/^@\S+$/.test(picked)) fail(`the pick made ${J(picked)}, not "@Name "`);
-    // the context row names the board that was mentioned
-    if (!await until(async () => (await byTid(page, "ctx-chip", { ref: true }).allTextContents()).some((x) => x.trim() === picked), 5000)) fail(`the context row has no chip for ${picked}: ${J(await byTid(page, "ctx-chip").allTextContents())}`);
-    if (await byTid(page, "ctx-chip", { ref: true }).first().getAttribute("title").then((t) => !/^Referenced board/.test(t ?? "")).catch(() => true)) fail("the chip of a mentioned board has no tooltip \"Referenced board\"");
-    // the chat's own board is a chip of the context row, with its tooltip (C-MN-06)
-    const own = byTid(page, "ctx-chip").and(page.locator(":not([data-ref])")).first();
-    if (!(await own.getAttribute("aria-label").catch(() => "") ?? "").startsWith("Every message names this board to the agent")) fail(`the chip of the chat's own board says ${J(await own.getAttribute("aria-label").catch(() => null))}, not "Every message names this board to the agent …"`);
+    // the context row names the board that was mentioned (at the phone the ref chip is the name and its ×, "Remove <name> from the message")
+    const refs = phone ? byTid(page, "ctx-chip", { kind: "ref" }) : byTid(page, "ctx-chip", { ref: true });
+    if (!await until(async () => (await refs.allTextContents()).some((x) => x.trim() === (phone ? picked.slice(1) : picked)), 5000)) fail(`the context row has no chip for ${picked}: ${J(await byTid(page, "ctx-chip").allTextContents())}`);
+    if (phone) {
+      if (await refs.first().locator(tidSel("ctx-chip-remove")).getAttribute("aria-label").then((t) => t !== `Remove ${picked.slice(1)} from the message`).catch(() => true)) fail(`the × of the chip of a mentioned board says ${J(await refs.first().locator(tidSel("ctx-chip-remove")).getAttribute("aria-label").catch(() => null))}, not "Remove ${picked.slice(1)} from the message"`);
+    } else if (await refs.first().getAttribute("title").then((t) => !/^Referenced board/.test(t ?? "")).catch(() => true)) fail("the chip of a mentioned board has no tooltip \"Referenced board\"");
+    // the chat's own board is a chip of the context row, with its tooltip (C-MN-06); at the phone its words are "Open the board <name>"
+    const own = phone ? byTid(page, "ctx-chip", { kind: "board" }).first() : byTid(page, "ctx-chip").and(page.locator(":not([data-ref])")).first();
+    const ownSays = phone ? "Open the board " : "Every message names this board to the agent";
+    if (!(await own.getAttribute("aria-label").catch(() => "") ?? "").startsWith(ownSays)) fail(`the chip of the chat's own board says ${J(await own.getAttribute("aria-label").catch(() => null))}, not "${ownSays} …"`);
     // the same name again replaces the pick: one chip for it, not two (C-MN-04)
-    const chipsNow = () => byTid(page, "ctx-chip", { ref: true }).count();
+    const chipsNow = () => refs.count();
     const one = await chipsNow();
     await page.keyboard.type("@sk");
     if (!await until(() => pop().count(), 5000)) fail('"@sk" typed after a pick opened no list');
@@ -318,11 +394,30 @@ await check("L16 the composer: Enter, trim, refusals, growth, focus, the @ list,
     const { page, ctx } = await fresh("plain-new");
     await type(page, "@");
     await page.waitForTimeout(400);
-    if (await byTid(page, "mention-pop").count()) fail('"@" in a plain chat opened a list');
+    if (await popOf(page).count()) fail('"@" in a plain chat opened a list');
     await ctx.close();
   }
 
   // ---- the model's list: it searches, the arrows and Enter pick, the effort follows the model
+  if (phone) { // the model sheet: the kit's search field comes only past 8 models, the plain chat's catalog has fewer (UX.C2 proves it with the pi seed's many); the rows are the catalog's; the effort is its control, not a second list
+    const { page, ctx } = await fresh("plain-new");
+    const calls = callsOf(page);
+    const sheet = await openChoice(page, "model");
+    if (await byTid(sheet, "picker-search").count()) fail("the model sheet of a catalog of four models has a search field: it comes past 8");
+    const rows = await byTid(sheet, "picker-row").evaluateAll((els) => els.map((e) => e.dataset.value));
+    if (J(rows) !== J(["opus", "sonnet", "haiku", "long"])) fail(`the model sheet lists ${J(rows)}, not the catalog's ["opus","sonnet","haiku","long"]`);
+    if (await byTid(sheet, "picker-row").filter({ has: page.locator(tidSel("picker-check")) }).count() !== 1) fail("the model sheet does not tick the chosen model alone");
+    const from = calls.length;
+    await press(page, byTid(sheet, "picker-row", { value: "sonnet" }));
+    if (!await until(() => calls.slice(from).some((c) => c.method === "PATCH" && /\/chats\/c_A2_new/.test(c.path) && c.body?.model === "sonnet"), 10000)) fail("a press on a model's row made no PATCH with the model");
+    if (!await byTid(page, "model-sheet").count()) fail("the model sheet closed with a model pick: it stays open for the effort (Done closes it)");
+    // the effort follows the model: it keeps the effort the new model offers, else its default
+    const on = await until(async () => (await byTid(byTid(sheet, "effort-seg"), "segment", { on: "true" }).evaluateAll((els) => els.map((e) => e.dataset.value)))[0] ?? null, 5000);
+    if (!on) fail("after a model pick the effort control has no segment on: this model offers efforts");
+    await closeChoice(page);
+    if (!((await phoneChip(page, "model").textContent()) ?? "").includes("Sonnet 5.5")) fail(`the model chip says ${J(await phoneChip(page, "model").textContent())} after Sonnet 5.5 was picked`);
+    await ctx.close();
+  }
   if (keys) {
     const { page, ctx } = await fresh("plain-new");
     const calls = callsOf(page);
@@ -341,13 +436,33 @@ await check("L16 the composer: Enter, trim, refusals, growth, focus, the @ list,
       if (!await until(() => calls.slice(from).some((c) => c.method === "PATCH" && /\/chats\/c_A2_new/.test(c.path) && c.body?.model), 10000)) fail("Enter in the search picked no model");
       if (!await until(() => byTid(page, "picker").count().then((n) => !n), 5000)) fail("the list stays open after a pick");
       // the effort follows the model: it keeps the effort the new model offers, else its default
-      const effort = await until(async () => (await chip(page, "effort").first().textContent().catch(() => "")) || null, 5000);
+      const at = await effortChipOf(page);
+      const effort = at && await until(async () => (await at.textContent().catch(() => "")) || null, 5000);
       if (!effort) fail("after a model pick the toolbar has no effort chip: this model offers efforts");
     }
     await ctx.close();
   }
 
   // ---- the effort's list has no search field: the arrows, Enter and Esc act on it from the keyboard (C-CH-25); the arrows go around the ends (C-CH-12)
+  if (phone) { // the model sheet's effort control: no search, the chosen segment alone is on, a press on another saves it and the sheet stays open
+    const { page, ctx } = await fresh("plain-new");
+    const calls = callsOf(page);
+    const sheet = await openChoice(page, "model"), seg = byTid(sheet, "effort-seg");
+    const state = () => byTid(seg, "segment").evaluateAll((els) => ({ ids: els.map((e) => e.dataset.value), on: els.map((e, i) => (e.dataset.on === "true" ? i : -1)).filter((i) => i >= 0) }));
+    if (await byTid(seg, "picker-search").count() || await byTid(sheet, "picker-search").count()) fail("the effort control has a search field");
+    const st = await state();
+    if (st.ids.length < 3 || st.on.length !== 1) fail(`the effort control is ${J(st)}: it has three segments at least and the chosen one alone is on`);
+    else for (const want of [st.ids[(st.on[0] + 1) % st.ids.length], st.ids[st.on[0]]]) { // (the next one, then back to the chosen one)
+      const from = calls.length;
+      await press(page, byTid(seg, "segment", { value: want }));
+      const got = await until(() => calls.slice(from).filter((c) => c.method === "PATCH" && /\/chats\/c_A2_new/.test(c.path) && c.body?.effort).map((c) => c.body.effort)[0], 10000);
+      if (got !== want) fail(`a press on the effort ${want} saved ${J(got)}`);
+      else if (!await until(async () => J((await state()).on) === J([st.ids.indexOf(want)]), 5000)) fail(`after a press on ${want} the segments are ${J(await state())}: it alone is on`);
+      if (!await byTid(page, "model-sheet").count()) fail("the model sheet closed with an effort pick: Done closes it");
+    }
+    await closeChoice(page);
+    await ctx.close();
+  }
   if (keys) {
     const { page, ctx } = await fresh("plain-new");
     const calls = callsOf(page);
@@ -355,7 +470,9 @@ await check("L16 the composer: Enter, trim, refusals, growth, focus, the @ list,
     const listGone = () => until(() => byTid(page, "pick-row").count().then((c) => !c), 5000);
     /** Opens the effort's list: the ids of its rows, the chosen one (which is ticked, alone), or null. */
     const open = async () => {
-      await press(page, chip(page, "effort").first());
+      const at = await effortChipOf(page);
+      if (!at) return null;
+      await press(page, at);
       if (!await until(() => byTid(page, "pick-row").count(), 5000)) { fail("the effort's chip opened no list"); return null; }
       if (await byTid(page, "picker-search").count()) fail("the effort's list has a search field");
       // (the list starts its highlight on the chosen row a moment after it opens, drawn as a ring: the keys are pressed once it is there)
@@ -404,16 +521,21 @@ await check("L16 the composer: Enter, trim, refusals, growth, focus, the @ list,
       await route.continue().catch(() => {});
     });
     const listings = (from) => calls.slice(from).filter((c) => c.method === "GET" && /^\/api\/dirs/.test(c.path));
-    const c = chip(page, "folder").first();
-    if (!await c.count()) await press(page, byTid(page, "more-chip").first());
+    const c = phone ? phoneChip(page, "folder") : chip(page, "folder").first();
+    if (!phone && !await c.count()) await press(page, byTid(page, "more-chip").first());
     if (!await until(() => c.count(), 5000)) fail("the toolbar has no folder chip, in its row or in the popup of the more chip");
     else {
       await press(page, c);
-      const input = byTid(page, "dir-input").first(), use = byTid(page, "dir-use").first();
-      if (!await until(() => input.count(), 5000)) fail("a press on the folder's chip opened no browser");
+      // (at the phone the sheet shows the path as a button: a tap on it types one, and Enter lists the typed path and shows the button again)
+      const input = byTid(page, phone ? "folder-sheet" : "dirs").first().locator(tidSel("dir-input")).first(), use = byTid(page, "dir-use").first();
+      const typing = async () => { if (phone && !await input.count()) await press(page, byTid(page, "dir-path").first()); return until(() => input.count(), 5000); };
+      if (!await until(() => (phone ? byTid(page, "dir-path") : input).count(), 5000)) fail("a press on the folder's chip opened no browser");
+      else if (!await typing()) fail("a press on the folder's path typed no path");
       else {
         const shows = async (name) => await until(async () => (await use.textContent().catch(() => "")) === `Use ${name}`, 5000);
-        const type = async (path) => { await input.fill(path); await input.press("Enter"); };
+        const type = async (path) => { await typing(); await input.fill(path); await input.press("Enter"); };
+        /** What the field holds: the field itself, or at the phone (it shows the button once a path is listed) the button's path. */
+        const held = async () => (await input.count()) ? input.inputValue() : (await pathText(page)).trim();
         await shows("shop"); // (the chat's own folder, listed when the browser opens)
         let from = calls.length;
         await type("~/projects");
@@ -427,10 +549,11 @@ await check("L16 the composer: Enter, trim, refusals, growth, focus, the @ list,
         if (!await shows("scratch")) fail(`the listing asked for last is not shown: the button says "${await use.textContent()}"`);
         await page.waitForTimeout(3500); // (the late answer has come)
         if (await use.textContent() !== "Use scratch") fail(`an answer that came late replaced the listing asked for last: the button says "${await use.textContent()}"`);
-        if (!(await input.inputValue()).endsWith("/projects/scratch")) fail(`an answer that came late replaced what the field holds: "${await input.inputValue()}"`);
+        if (!(await held()).endsWith(phone ? "scratch" : "/projects/scratch")) fail(`an answer that came late replaced what the field holds: "${await held()}"`);
         // a listing's answer does not take what is being typed from the field
         slow.set("~/projects/shop", 1500);
         await type("~/projects/shop");
+        await typing();
         await input.fill("~/projects/sh");
         await shows("shop");
         await page.waitForTimeout(500);
@@ -445,94 +568,122 @@ await check("L16 the composer: Enter, trim, refusals, growth, focus, the @ list,
   {
     const { page, ctx } = await fresh("plain-new");
     const calls = callsOf(page);
-    const folder = chip(page, "folder").first();
+    const folder = phone ? phoneChip(page, "folder") : chip(page, "folder").first();
+    // (the phone's folder sheet: no ".." row (the Up button before the path), the path is a button that a tap turns into the field, and no Recent list: it opens in the chat's folder)
+    const sheet = () => byTid(page, "folder-sheet").first();
     const opens = async () => {
       await atRest(page, 12); // (the toolbar fits its chips to the width: the folder's is in the row or in the "more" popup once it has)
+      if (phone) { await press(page, folder); return !!await until(() => byTid(page, "dir-path").count(), 5000); }
       if (!await folder.isVisible()) await press(page, byTid(page, "more-chip").first());
       await press(page, folder);
       return !!await until(() => byTid(page, "dir-input").count(), 5000);
     };
-    const head = () => byTid(page, "dirs").first().locator(tidSel("menu-head")).first().textContent();
+    const head = () => phone ? byTid(sheet(), "sheet-title").first().textContent() : byTid(page, "dirs").first().locator(tidSel("menu-head")).first().textContent();
     const use = () => byTid(page, "dir-use").first().textContent();
-    const names = async () => (await byTid(page, "dir-item").allTextContents()).map((x) => x.trim().replace(/^↰/, ""));
-    const browser = () => byTid(page, "dir-browser").first().textContent();
-    const into = async (label) => { await press(page, byTid(page, "dir-item").and(page.locator(`[aria-label=${J(label)}]`)).first()); };
-    const closePopup = async () => { if (await byTid(page, "more-pop").count()) { await page.keyboard.press("Escape"); await until(async () => !await byTid(page, "more-pop").count(), 5000); } };
+    const names = async () => phone ? byTid(page, "dir-item").evaluateAll((els) => els.map((e) => e.getAttribute("aria-label"))) : (await byTid(page, "dir-item").allTextContents()).map((x) => x.trim().replace(/^↰/, ""));
+    const browser = async () => phone ? (await pathText(page)) + " " + (await byTid(page, "dir-browser").first().textContent()) : byTid(page, "dir-browser").first().textContent(); // (the path button holds the folder shown; the list holds the rest)
+    const up = ".."; // (the wide list's first row, at the phone the Up button before the path)
+    const into = async (label) => { await press(page, label === up && phone ? byTid(page, "dir-up").first() : byTid(page, "dir-item").and(page.locator(`[aria-label=${J(label)}]`)).first()); };
+    const closePopup = async () => { if (!phone && await byTid(page, "more-pop").count()) { await page.keyboard.press("Escape"); await until(async () => !await byTid(page, "more-pop").count(), 5000); } };
+    const dismiss = async () => { if (phone) await closeChoice(page); else await page.keyboard.press("Escape"); };
+    /** Types a path into the browser and lists it: the field is there already at the wide layouts, the phone's path button turns into it with a tap. */
+    const typePath = async (path) => {
+      if (phone && !await byTid(page, "dir-input").count()) await press(page, byTid(page, "dir-path").first());
+      const input = byTid(page, "dir-input").first();
+      await input.fill(path); await input.press("Enter");
+    };
     if (!await opens()) fail("a press on the folder's chip opened no browser");
     else {
       if (await head() !== "Start the agent in") fail(`the browser of this computer's folders is headed ${J(await head())}, not "Start the agent in"`);
       if (!await until(async () => (await use()) === "Use shop", 5000)) fail(`the browser starts at ${J(await use())}, not at the chat's own folder`);
-      if (J(await names()) !== J(["..", "docs", "web", "storefront-monorepo-with-a-very-long-folder-name"])) fail(`the chat's folder lists ${J(await names())}, not "..", then its sub-folders`);
+      const subs = ["docs", "web", "storefront-monorepo-with-a-very-long-folder-name"];
+      if (J(await names()) !== J(phone ? subs : ["..", ...subs])) fail(`the chat's folder lists ${J(await names())}, not ${phone ? "its sub-folders (the phone has no \"..\" row: Up is the button before the path)" : '"..", then its sub-folders'}`);
       if (!(await browser()).includes("~/projects/shop")) fail(`the browser does not name the folder it shows with "~": ${J(await browser())}`);
       if ((await browser()).includes("Recent")) fail("the browser lists recent folders though none was used");
-      await into("..");
-      if (!await until(async () => (await use()) === "Use projects" && J(await names()) === J(["..", "empty-repo", "scratch", "shop"]), 5000)) fail(`".." did not list the parent: ${J(await use())}, ${J(await names())}`);
+      if (phone && await byTid(page, "dir-up").first().getAttribute("aria-label") !== "Up to projects") fail(`the Up button says ${J(await byTid(page, "dir-up").first().getAttribute("aria-label"))}, not "Up to projects"`);
+      await into(up);
+      if (!await until(async () => (await use()) === "Use projects" && J(await names()) === J(phone ? ["empty-repo", "scratch", "shop"] : ["..", "empty-repo", "scratch", "shop"]), 5000)) fail(`".." did not list the parent: ${J(await use())}, ${J(await names())}`);
       await into("empty-repo");
-      if (!await until(async () => (await use()) === "Use empty-repo", 5000) || !(await browser()).includes("No subfolders") || J(await names()) !== J([".."])) fail(`a folder with no sub-folder shows ${J(await names())} and ${(await browser()).includes("No subfolders") ? "" : "not "}"No subfolders"`);
+      if (!await until(async () => (await use()) === "Use empty-repo", 5000) || !(await browser()).includes("No subfolders") || J(await names()) !== J(phone ? [] : [".."])) fail(`a folder with no sub-folder shows ${J(await names())} and ${(await browser()).includes("No subfolders") ? "" : "not "}"No subfolders"`);
+      if (phone && !await byTid(page, "dir-empty").count()) fail("an empty folder has no dir-empty text at the phone");
       // a path that is not a folder is refused in the browser, and the folder shown stays
-      const input = byTid(page, "dir-input").first();
-      await input.fill("~/nowhere"); await input.press("Enter");
+      await typePath("~/nowhere");
       if (!await until(() => byTid(page, "dir-err").count(), 5000)) fail("a path that is no folder said nothing in the browser");
       else if (!(await byTid(page, "dir-err").first().textContent()).includes("is not a directory")) fail(`the refusal in the browser says ${J(await byTid(page, "dir-err").first().textContent())}`);
       if (await use() !== "Use empty-repo") fail(`a refused path changed the folder shown: ${J(await use())}`);
       // a folder is used: the chat gets it (PATCH), and the browser lists it among the recent ones the next time
-      await input.fill("~/notes"); await input.press("Enter");
+      await typePath("~/notes");
       if (!await until(async () => (await use()) === "Use notes", 5000)) fail(`a "~" path was not listed: ${J(await use())}`);
       const from = calls.length;
       await press(page, byTid(page, "dir-use").first());
       if (!await until(() => calls.slice(from).some((c) => c.method === "PATCH" && /\/chats\/c_A2_new/.test(c.path) && c.body?.cwd === "/Users/demo/notes"), 10000)) fail("Use notes made no PATCH with the folder");
-      await until(async () => !await byTid(page, "dirs").count(), 5000);
+      await until(async () => !await byTid(page, phone ? "folder-sheet" : "dirs").count(), 5000); // (the pick closes the browser; at the phone the sheet)
       await closePopup();
       if (!await opens()) fail("the browser did not open again");
       else {
-        await into("..");
+        await into(up);
         if (!await until(async () => (await use()) === "Use Demo" || (await use()) === "Use demo", 5000)) fail(`".." from "notes" lists ${J(await use())}`);
         const b = await browser();
-        if (!b.includes("Recent") || !(await names()).includes("~/notes")) fail(`the browser does not list the folder used as a recent one: ${J(await names())}`);
-        await page.keyboard.press("Escape");
+        if (phone) { if (b.includes("Recent") || (await names()).some((x) => x.startsWith("~"))) fail(`the phone's folder sheet lists recent folders: ${J(await names())} (none, goal 3.6: it opens in the chat's folder)`); }
+        else if (!b.includes("Recent") || !(await names()).includes("~/notes")) fail(`the browser does not list the folder used as a recent one: ${J(await names())}`);
+        await dismiss();
       }
       await closePopup();
       const kept = await page.evaluate(() => localStorage.getItem("aiwb.dirs"));
       if (kept !== J(["/Users/demo/notes"])) fail(`this computer's recent folders in the app's storage are ${J(kept)}, not ["/Users/demo/notes"]`);
       await page.reload();
-      await byTid(page, "send").first().waitFor({ state: "visible", timeout: 30000 });
+      await box(page).waitFor({ state: "visible", timeout: 30000 }); // (the phone empty box shows Talk, not Send)
       if (!await opens()) fail("after a reload the folder's chip opened no browser");
       else {
-        await into("..");
-        if (!await until(async () => (await names()).includes("~/notes"), 5000)) fail(`after a reload the recent folders are ${J((await names()))}: this computer's list is not kept on the device`);
-        await page.keyboard.press("Escape");
+        await into(up);
+        if (phone) { // (the list is kept on the device (above) but the phone's sheet shows none)
+          await page.waitForTimeout(500);
+          if ((await names()).some((x) => x.startsWith("~")) || (await browser()).includes("Recent")) fail(`after a reload the phone's folder sheet lists recent folders: ${J(await names())}`);
+        } else if (!await until(async () => (await names()).includes("~/notes"), 5000)) fail(`after a reload the recent folders are ${J((await names()))}: this computer's list is not kept on the device`);
+        await dismiss();
       }
     }
     await ctx.close();
   }
   { // another server's browser: headed by the server, and nothing of it kept on this device
     const { page, ctx } = await fresh("plain-remote-new");
-    const folder = chip(page, "folder").first();
+    const folder = phone ? phoneChip(page, "folder") : chip(page, "folder").first();
     await atRest(page, 12);
-    if (!await folder.isVisible()) await press(page, byTid(page, "more-chip").first());
+    if (!phone && !await folder.isVisible()) await press(page, byTid(page, "more-chip").first());
     await press(page, folder);
-    if (!await until(() => byTid(page, "dir-input").count(), 5000)) fail("a press on the folder's chip of a chat of a section opened no browser");
+    // (the phone: the sheet's sub-line names the server (its title is "Start the agent in"), the path is a button, and no Recent list is drawn)
+    const field = phone ? "dir-path" : "dir-input";
+    if (!await until(() => byTid(page, field).count(), 5000)) fail("a press on the folder's chip of a chat of a section opened no browser");
     else {
-      const head = await byTid(page, "dirs").first().locator(tidSel("menu-head")).first().textContent();
-      if (head !== "Folder on lab-gpu-box.tailnet-1234.ts.net") fail(`the browser of a section's folders is headed ${J(head)}, not "Folder on <server>"`);
+      const head = phone ? await byTid(page, "folder-sheet").first().locator(tidSel("sheet-sub")).first().textContent() : await byTid(page, "dirs").first().locator(tidSel("menu-head")).first().textContent();
+      if (head !== (phone ? "lab-gpu-box.tailnet-1234.ts.net" : "Folder on lab-gpu-box.tailnet-1234.ts.net")) fail(`the browser of a section's folders is headed ${J(head)}, not ${phone ? "the server's name" : '"Folder on <server>"'}`);
       if (!await until(async () => (await byTid(page, "dir-use").first().textContent()) === "Use shop", 5000)) fail(`the section's browser starts at ${J(await byTid(page, "dir-use").first().textContent())}`);
-      if (!(await byTid(page, "dir-browser").first().textContent()).includes("~/projects/shop")) fail("the section's browser does not shorten the folder with that server's home");
-      // a folder used there is listed as a recent one for as long as the app runs, and nothing of it is kept on this device
+      if (!((phone ? await pathText(page) : await byTid(page, "dir-browser").first().textContent()) ?? "").includes("~/projects/shop")) fail("the section's browser does not shorten the folder with that server's home");
+      // a folder used there is listed as a recent one for as long as the app runs (the phone's sheet lists none), and nothing of it is kept on this device
+      if (phone) await press(page, byTid(page, "dir-path").first());
       const input = byTid(page, "dir-input").first();
       await input.fill("/home/dev/projects"); await input.press("Enter"); // (the mock expands "~" with this computer's home alone)
       if (!await until(async () => (await byTid(page, "dir-use").first().textContent()) === "Use projects", 5000)) fail(`a path of the section's server was not listed: ${J(await byTid(page, "dir-use").first().textContent())}`);
       await press(page, byTid(page, "dir-use").first());
-      await until(async () => !await byTid(page, "dirs").count(), 5000);
+      await until(async () => !await byTid(page, phone ? "folder-sheet" : "dirs").count(), 5000);
       if (await byTid(page, "more-pop").count()) { await page.keyboard.press("Escape"); await until(async () => !await byTid(page, "more-pop").count(), 5000); }
       await atRest(page, 12);
-      if (!await folder.isVisible()) await press(page, byTid(page, "more-chip").first());
+      if (!phone && !await folder.isVisible()) await press(page, byTid(page, "more-chip").first());
       await press(page, folder);
-      await byTid(page, "dir-input").first().waitFor({ state: "visible", timeout: 5000 });
+      await byTid(page, field).first().waitFor({ state: "visible", timeout: 5000 });
+      if (phone) { // the sheet opens in the chat's folder, "projects"; no recent folder is listed under it
+        await until(async () => (await byTid(page, "dir-use").first().textContent()) === "Use projects", 5000);
+        await press(page, byTid(page, "dir-item").and(page.locator('[aria-label="shop"]')).first());
+        await until(async () => (await byTid(page, "dir-use").first().textContent()) === "Use shop", 5000);
+        const listed = await byTid(page, "dir-item").evaluateAll((els) => els.map((e) => e.getAttribute("aria-label")));
+        if (listed.some((x) => x.startsWith("~")) || (await byTid(page, "folder-sheet").first().textContent()).includes("Recent")) fail(`the phone's folder sheet lists recent folders after one was used: ${J(listed)}`);
+      } else {
       await press(page, byTid(page, "dir-item").and(page.locator('[aria-label="shop"]')).first());
       if (!await until(async () => (await byTid(page, "dir-item").allTextContents()).some((x) => x.trim() === "~/projects"), 5000)) fail(`the section's browser lists no recent folder after one was used: ${J(await byTid(page, "dir-item").allTextContents())}`);
+      }
       const stored = await page.evaluate(() => Object.fromEntries(Object.keys(localStorage).filter((k) => k.startsWith("aiwb.dirs")).map((k) => [k, localStorage.getItem(k)])));
       if (J(stored).includes("/home/dev")) fail(`the folders of the section's server are in this device's storage: ${J(stored)}`);
-      await page.keyboard.press("Escape");
+      if (phone) await closeChoice(page); else await page.keyboard.press("Escape");
     }
     await ctx.close();
   }
@@ -540,16 +691,18 @@ await check("L16 the composer: Enter, trim, refusals, growth, focus, the @ list,
   { // a chat whose folder is gone: the browser starts at the server's default folder, with nothing said of the folder that cannot be read
     const { page, ctx } = await fresh("plain-new");
     await mockEval(`chats.c_A2_new.cwd = "/gone/dir"; send({ type: "chat", chat: chats.c_A2_new });`, url);
-    const folder = chip(page, "folder").first();
+    const folder = phone ? phoneChip(page, "folder") : chip(page, "folder").first();
     await mockEval(`chats.c_A2_new.folderMissing = true; send({ type: "chat", chat: chats.c_A2_new });`, url);
     await until(async () => (await folder.textContent().catch(() => "")).includes("dir"), 5000); // (the chip names the folder that is gone)
     await atRest(page, 12);
-    if (!await folder.isVisible()) await press(page, byTid(page, "more-chip").first());
+    if (!phone && !await folder.isVisible()) await press(page, byTid(page, "more-chip").first());
     await press(page, folder);
-    if (!await until(() => byTid(page, "dir-input").count(), 5000)) fail("a press on the folder's chip of a chat whose folder is gone opened no browser");
+    if (!await until(() => byTid(page, phone ? "dir-path" : "dir-input").count(), 5000)) fail("a press on the folder's chip of a chat whose folder is gone opened no browser");
     else {
-      // (the chip is in the row or in the "more" popup: it is read where it is)
-      if (!(await folder.getAttribute("title").catch(() => "") ?? "").startsWith("Folder not found: /gone/dir")) fail(`the folder chip of a chat whose folder is gone says ${J(await folder.getAttribute("title").catch(() => null))}, not "Folder not found: /gone/dir"`);
+      // (the chip is in the row or in the "more" popup: it is read where it is; the phone has no hover title: its chip is red (data-missing) and says "Folder: dir")
+      if (phone) {
+        if (await folder.getAttribute("data-missing") !== "true" || await folder.getAttribute("aria-label") !== "Folder: dir") fail(`the folder chip of a chat whose folder is gone is data-missing=${J(await folder.getAttribute("data-missing"))}, aria-label ${J(await folder.getAttribute("aria-label"))}, not missing and "Folder: dir"`);
+      } else if (!(await folder.getAttribute("title").catch(() => "") ?? "").startsWith("Folder not found: /gone/dir")) fail(`the folder chip of a chat whose folder is gone says ${J(await folder.getAttribute("title").catch(() => null))}, not "Folder not found: /gone/dir"`);
       if (!await until(async () => (await byTid(page, "dir-use").first().textContent().catch(() => "")) === "Use shop", 5000)) fail(`the browser of a chat whose folder is gone starts at ${J(await byTid(page, "dir-use").first().textContent().catch(() => ""))}, not at the server's default folder`);
       await page.waitForTimeout(300);
       if (await byTid(page, "dir-err").count()) fail(`the browser of a chat whose folder is gone says ${J(await byTid(page, "dir-err").first().textContent())} though it listed the default folder`);
@@ -565,7 +718,9 @@ await check("L16 the composer: Enter, trim, refusals, growth, focus, the @ list,
     if (!await until(() => byTid(page, "archived-bar").count(), 10000)) fail("an archived chat has no bar");
     else {
       if (await box(page).count()) fail("an archived chat draws a box");
-      if (!(await byTid(page, "archived-bar").first().textContent()).startsWith("Archived — unarchive to continue")) fail(`the bar says "${await byTid(page, "archived-bar").first().textContent()}"`);
+      // (the phone's block, V1: the title, what to do and a full-width Unarchive, in the box's place)
+      const barWant = phone ? "This chat is archived." : "Archived — unarchive to continue";
+      if (!(await byTid(page, "archived-bar").first().textContent()).startsWith(barWant) || (phone && !(await byTid(page, "archived-bar").first().textContent()).includes("Unarchive it to send a message."))) fail(`the bar says "${await byTid(page, "archived-bar").first().textContent()}"`);
       // an Unarchive the server refuses: its sentence stands under the bar, the bar stays (C-RO-07)
       const refuse = callMatcher(/^POST \/api\/chats\/c_plain\/unarchive/);
       await page.route(refuse, (route) => route.fulfill({ status: 409, contentType: "application/json", body: J({ error: "Cannot unarchive: its board is archived", code: "board_archived" }) }));
@@ -587,7 +742,8 @@ await check("L16 the composer: Enter, trim, refusals, growth, focus, the @ list,
     if (!await until(() => bar.count(), 10000)) fail("a chat of the old board connection has no bar");
     else {
       const said = (await bar.first().textContent()).trim();
-      if (said !== "This chat used the old board connection — start a new chat to continue") fail(`the bar of a chat of the old board connection says ${J(said)}`);
+      // (the phone's block: the title and, under it, what to do — no button on a chat that is not a board's)
+      if (phone ? said !== "This chat used the old board connection.Start a new chat on this board to go on." : said !== "This chat used the old board connection — start a new chat to continue") fail(`the bar of a chat of the old board connection says ${J(said)}`);
       if (await box(page).count() || await send(page).count() || await byTid(page, "composer-tools").count()) fail("a chat of the old board connection draws a box, a Send or a toolbar");
       if (await byTid(page, "unarchive").count()) fail("a chat of the old board connection offers Unarchive");
     }
@@ -598,8 +754,9 @@ await check("L16 the composer: Enter, trim, refusals, growth, focus, the @ list,
   // client or the owner does in a section's chat shows in the open view", its last part; the events are the same for a chat of a section)
   {
     const { page, ctx } = await fresh("plain-new");
-    const label = async (kind) => (await placesOf(page))?.chips.find((c) => c.kind === kind)?.label ?? null;
-    if (await label("folder") === null) await press(page, byTid(page, "more-chip").first()); // (a narrow toolbar keeps the folder in the "more" popup)
+    // (the phone's chips are in its own row, `composer-chip-row`, which placesOf does not look into: read the chip itself)
+    const label = async (kind) => phone ? (await chip(page, kind).first().textContent({ timeout: 2000 }).catch(() => null))?.replace(/▾/g, "").trim() ?? null : (await placesOf(page))?.chips.find((c) => c.kind === kind)?.label ?? null;
+    if (!phone && await label("folder") === null) await press(page, byTid(page, "more-chip").first()); // (a narrow toolbar keeps the folder in the "more" popup)
     const folderWas = await label("folder");
     await mockEval(`Object.assign(chats.c_A2_new, { cwd: "/srv/other-place" }); send({ type: "chat", chat: chats.c_A2_new });`, url);
     if (!await until(async () => ((await label("folder")) ?? "").includes("other-place"), 10000)) fail(`the folder chip of a chat that has not started says "${await label("folder")}" after its folder was changed from elsewhere, not "other-place" (it said "${folderWas}")`);

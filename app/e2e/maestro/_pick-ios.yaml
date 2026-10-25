@@ -6,7 +6,7 @@ appId: ${APP_ID}
 # the picker is up when the app's own screen is covered (the system's picker is a layer over it: the app's controls leave the accessibility tree)
 - extendedWaitUntil:
     notVisible:
-      id: "attach-btn"
+      id: "composer-plus"
     timeout: 20000
 - waitForAnimationToEnd
 - tapOn:

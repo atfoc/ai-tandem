@@ -1,4 +1,4 @@
-// One chat: its header, its thread and, under them, the composer (K3 fills that place: parts.tsx). The shell mounts it in the
+// One chat: its header, its thread and, under them, what stands above the composer (T2's dock) and the composer (K3 fills that place: parts.tsx). The shell mounts it in the
 // `ChatView` slot (screens/shell/slots.tsx) for a plain chat's page, for the panel beside a board and for the phone's chat screen.
 import { StyleSheet, View } from "react-native";
 
@@ -23,6 +23,7 @@ export function ChatView({ chat }: { chat: string }) {
         <ChatHeader chatId={chat} />
         <Thread chatId={chat} />
         <parts.Banner chat={chat} />
+        <parts.AboveComposer chat={chat} />
         <parts.Composer chat={chat} />
       </View>
     </MarkdownEnvProvider>

@@ -12,13 +12,13 @@ export const CODE_SIZE = 11;
 export const CODE_LINE = 1.4;
 export const codeStyle = { fontFamily: MONO, fontSize: CODE_SIZE, lineHeight: CODE_SIZE * CODE_LINE, ...tabs };
 
-/** `testID` goes on the text: `dataSet.tokens` is how many of its runs are coloured. */
-export function Code({ text, lang, color }: { text: string; lang?: string; color?: string }) {
+/** `testID` goes on the text: `dataSet.tokens` is how many of its runs are coloured. `size`: the phone's steps draw it larger (13 pt). */
+export function Code({ text, lang, color, size }: { text: string; lang?: string; color?: string; size?: number }) {
   const t = useTokens();
   const runs = useMemo(() => (lang ? highlightRuns(lang, text) : null), [text, lang]);
   const tokens = runs?.filter((r) => r.tone).length ?? 0;
   return (
-    <RNText testID="tool-pre" dataSet={{ tokens }} style={[codeStyle, { color: color ?? t.text }]}>
+    <RNText testID="tool-pre" dataSet={{ tokens }} style={[codeStyle, size ? { fontSize: size, lineHeight: size * CODE_LINE } : null, { color: color ?? t.text }]}>
       {runs
         ? runs.map((r, i) => (r.tone || r.italic || r.bold
           ? <RNText key={i} style={{ color: r.tone ? t[r.tone] : undefined, fontStyle: r.italic ? "italic" : undefined, fontWeight: r.bold ? "700" : undefined }}>{r.v}</RNText>

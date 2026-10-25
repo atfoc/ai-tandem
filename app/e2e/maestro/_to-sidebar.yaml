@@ -1,14 +1,18 @@
-# Shared by `storage-picker-permission`: from a chat back to the sidebar (nothing to do when the sidebar is there).
+# Shared by `storage-picker-permission` and the voice flows: from a chat, a board or a group's screen back to Home (phone) or the sidebar (tablet): `nav-back` is pressed
+# until `home` or `side-tree` is visible (nothing to do when one is there; a grouped item needs two backs, notes-foundation F2). The name stays: other packages' flows call it.
 appId: ${APP_ID}
 ---
-- runFlow:
-    when:
-      visible:
-        id: "chat-head"
+- repeat:
+    times: 3
+    while:
+      notVisible:
+        id: "home|side-tree"
     commands:
       - tapOn:
           id: "nav-back"
+      - waitForAnimationToEnd:
+          timeout: 2000
 - extendedWaitUntil:
     visible:
-      id: "side-tree"
+      id: "home|side-tree"
     timeout: 30000

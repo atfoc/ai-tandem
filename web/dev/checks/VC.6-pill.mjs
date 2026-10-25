@@ -25,6 +25,12 @@
 //   hold Space     (P15b, desktop and tablet: a keyboard) a tap of Space is a tap on the orb (listens, a second tap ends); holding it listens while it is down
 //                  (`pill` data-held), keeps Auto-send's countdown from sending, and the release sends the turn; a release with no words shuts the microphone
 //                  and sends nothing; Space does nothing while the focus is in a text box or in the board's canvas (there it pans)
+// The phone (package V1; goal 4.9, 6.4) has no pill: the board's bottom row holds the docked orb (`voice-orb` in `board-orb-slot`, the same states and taps),
+// and while a session runs one voice card (`voice-card`, data-phase listening | waiting | countdown | thinking | speaking | paused) with "To:" and the chat's
+// chip (`voice-card-to`, which opens the board's Chats sheet), the live wave, the words heard, the selection chip, Cancel and Send, and Open chat / Interrupt
+// for the reply. It has no Auto-send switch (Settings has it), no ↑ badge, no captions, no collapse, no "+ New chat" (the Chats sheet's `chats-new` makes one
+// and opens it), no list of chats in a chip (the Chats sheet) and no hold Space. Each part of the pill's proof that the phone draws differently is proved
+// below on the card and the sheet; a part the phone has not is left to the wide halves, which are as they were.
 // OUT=/tmp/x keeps a screenshot of the pill in each state there, for a person's look.
 import fs from "node:fs";
 import path from "node:path";
@@ -48,7 +54,9 @@ await check("VC.6 the board's voice pill: states, sizes, the target chat, + New 
   const gone = (loc) => until(async () => (await loc.count()) === 0);
   const textOf = async (loc) => ((await loc.first().textContent().catch(() => "")) ?? "").replace(/\s+/g, " ").trim();
   const attr = (loc, a) => loc.first().getAttribute(a).catch(() => null);
-  const orbState = (p) => attr(byTid(p, "pill-orb"), "data-state");
+  const ORB = wide ? "pill-orb" : "voice-orb";
+  const orbState = (p) => attr(byTid(p, ORB), "data-state");
+  const cardPhase = (p) => attr(byTid(p, "voice-card"), "data-phase");
   const pillSize = (p) => attr(byTid(p, "pill"), "data-size");
   const inState = (p, s, ms = 15000) => until(async () => (await orbState(p)) === s, ms);
   const settings = (p) => p.evaluate(() => window.__aiwbVoice.settings());
@@ -58,7 +66,7 @@ await check("VC.6 the board's voice pill: states, sizes, the target chat, + New 
   const reply = (text = "Sure. I drew it. Anything else?", pace = 300, parts = 6) => mockEval(`flags.reply = { text: ${JSON.stringify(text)}, parts: ${parts}, pace: ${pace} }; return 1;`, url);
   const J = JSON.stringify;
   /** Presses the orb until the session is over (a speaking orb is interrupted by the first press, a listening one ended by the next). */
-  const endTurn = async (p) => { for (let i = 0; i < 4 && await orbState(p) !== "idle"; i++) { await press(p, byTid(p, "pill-orb")); await sleep(300); } return inState(p, "idle", 8000); };
+  const endTurn = async (p) => { for (let i = 0; i < 4 && await orbState(p) !== "idle"; i++) { await press(p, byTid(p, ORB)); await sleep(300); } return inState(p, "idle", 8000); };
   const lsSettings = (o) => JSON.stringify({ autoSend: true, pauseMs: 600, ...o });
   const messages = (calls) => calls.filter((c) => c.method === "POST" && /\/chats\/[^/]+\/(branches\/[^/]+\/)?messages/.test(c.path));
   /** A microphone that is a tone from the page's own audio context: the pill's states do not depend on real capture (VC.3 and VC.4 prove it), and
@@ -76,9 +84,17 @@ await check("VC.6 the board's voice pill: states, sizes, the target chat, + New 
     const calls = callsOf(page);
     await toneMic(page);
     if (o.key !== false) await page.evaluate((k) => window.__aiwbVoice.setKey(k), KEY);
-    if (!await shown(byTid(page, "pill-orb"))) throw new Error("the board shows no pill");
+    if (!await shown(byTid(page, ORB))) throw new Error(wide ? "the board shows no pill" : "the board shows no orb");
     return { ctx, page, calls };
   };
+
+  /** The phone's Chats sheet closed by its backdrop (pressed again until it is gone: a sheet that has just risen takes the first press for a drag). */
+  const closeSheet = (p) => until(async () => {
+    if (!await byTid(p, "chats-sheet").count()) return true;
+    await press(p, byTid(p, "overlay-backdrop").last(), { position: { x: 4, y: 4 } }).catch(() => {});
+    await sleep(300);
+    return !await byTid(p, "chats-sheet").count();
+  }, 8000);
 
   await seed(url, "A2");
   await mockEval(`boards.${EMPTY} = { id: ${JSON.stringify(EMPTY)}, name: "Empty", group: boards.${BOARD}.group, created: new Date().toISOString() }; scenes.${EMPTY} = JSON.parse(JSON.stringify(scenes.${BOARD})); return 1;`, url);
@@ -86,16 +102,29 @@ await check("VC.6 the board's voice pill: states, sizes, the target chat, + New 
   await mockEval(`boards.b_vc6_arch = { id: "b_vc6_arch", name: "Old board", group: boards.${BOARD}.group, created: new Date().toISOString(), archived: true, archiveOp: "op_vc6b" }; scenes.b_vc6_arch = JSON.parse(JSON.stringify(scenes.${BOARD})); return 1;`, url);
   await mockEval(`const a = JSON.parse(JSON.stringify(chats.${CHAT})); a.id = "c_vc6_old"; a.name = "Old sketch chat"; a.archived = true; a.archiveOp = "op_vc6"; chats.c_vc6_old = a; return 1;`, url);
   /** Records the orb's states from now on (every 20 ms, each change once), in window.__orbStates. */
-  const record = (p) => p.evaluate(() => {
+  const record = (p) => p.evaluate((orb) => {
     window.__orbStates = [];
     clearInterval(window.__orbTimer);
-    window.__orbTimer = setInterval(() => { const s = document.querySelector('[data-testid="pill-orb"]')?.getAttribute("data-state") ?? "none"; const l = window.__orbStates; if (l[l.length - 1] !== s) l.push(s); }, 20);
-  });
+    window.__orbTimer = setInterval(() => { const s = document.querySelector(`[data-testid="${orb}"]`)?.getAttribute("data-state") ?? "none"; const l = window.__orbStates; if (l[l.length - 1] !== s) l.push(s); }, 20);
+  }, ORB);
   const recorded = (p) => p.evaluate(() => window.__orbStates);
 
   // ---- the shell
   {
     const { ctx, page } = await start({ key: false });
+    if (!wide) {
+      // the phone: at rest nothing but the docked orb (52 pt, in the bottom row's slot, inside the window); no pill, no card
+      const dock = byTid(page, "board-orb-slot").locator(tidSel("voice-orb")), disc = await dock.first().boundingBox().catch(() => null), win = page.viewportSize();
+      if (!await dock.count()) fail("the board's orb slot holds no voice-orb");
+      if (await byTid(page, "pill").count()) fail("the phone draws the pill");
+      if (await byTid(page, "voice-card").count()) fail("the phone draws the voice card at rest");
+      if (await orbState(page) !== "idle") fail(`the orb starts ${await orbState(page)}, not idle`);
+      if (!disc || disc.width < 44 || disc.height < 44) fail(`the orb is ${disc && Math.round(disc.width)}x${disc && Math.round(disc.height)} pt, under 44`);
+      else if (disc.x < 0 || disc.x + disc.width > win.width + 1 || disc.y + disc.height > win.height + 1) fail(`the orb is not inside the window: ${JSON.stringify(disc)} in ${win.width}x${win.height}`);
+      if (await byTid(page, "voice-orb-badge").count()) fail("the idle orb has a badge");
+      await shot(page, "1-idle");
+      await ctx.close();
+    } else {
     const pill = byTid(page, "pill").first(), orb = byTid(page, "pill-orb").first();
     if (await pillSize(page) !== "compact" || await orbState(page) !== "idle") fail(`the pill starts ${await pillSize(page)} / ${await orbState(page)}, not compact / idle`);
     for (const id of ["pill-chip", "pill-new", "pill-collapse"]) if (!await byTid(page, id).count()) fail(`the compact pill has no ${id}`);
@@ -110,12 +139,13 @@ await check("VC.6 the board's voice pill: states, sizes, the target chat, + New 
     }
     await shot(page, "1-idle");
     await ctx.close();
+    }
   }
 
   // ---- no key: the orb shows the problem popover and nothing else happens
   {
     const { ctx, page } = await start({ key: false });
-    await press(page, byTid(page, "pill-orb"));
+    await press(page, byTid(page, ORB));
     if (!await shown(byTid(page, "voice-problem"))) fail("the orb with no key shows no popover");
     else {
       if (await attr(byTid(page, "voice-problem"), "data-kind") !== "no_key") fail("the popover is not the no-key one");
@@ -128,12 +158,13 @@ await check("VC.6 the board's voice pill: states, sizes, the target chat, + New 
       if (!await gone(byTid(page, "voice-problem"))) fail("Not now leaves the popover");
     }
     if (await orbState(page) !== "idle") fail("the pill is not idle after the no-key popover");
+    if (!wide && await byTid(page, "voice-card").count()) fail("the no-key problem opened the voice card");
     if ((await log()).some((e) => e.kind === "stt")) fail("a socket to the voice service was opened with no key");
     await ctx.close();
   }
 
   // ---- a turn with Auto-send: listening, countdown, Cancel, the ↑ badge, thinking, speaking, interrupt
-  {
+  if (wide) {
     await mockEval("voice.reset(); return 1;", url);
     const { ctx, page, calls } = await start({ settings: { pauseMs: 3000 } });
     await script();
@@ -200,20 +231,105 @@ await check("VC.6 the board's voice pill: states, sizes, the target chat, + New 
     await ctx.close();
   }
 
+  // ---- the phone's turn with Auto-send: listening, countdown, Cancel (the words wait), Send, thinking, speaking, Interrupt, on the card
+  if (!wide) {
+    await mockEval("voice.reset(); return 1;", url);
+    const { ctx, page, calls } = await start({ settings: { pauseMs: 3000 } });
+    await script();
+    await reply("I drew the red box for you. It sits on the left of the board. Tell me if you want more.", 300);
+    await record(page);
+    await press(page, byTid(page, ORB));
+    if (!await inState(page, "listening")) fail(`the orb is ${await orbState(page)} after a tap, not listening`);
+    if (!await shown(byTid(page, "voice-card"))) fail("the voice card did not come up when the orb was tapped");
+    if (!await until(async () => (await cardPhase(page)) === "listening", 5000)) fail(`the card is ${await cardPhase(page)} while listening`);
+    if (!await shown(byTid(page, "voice-card-wave"))) fail("the card has no waveform while listening");
+    if (!await shown(byTid(page, "voice-orb-ring"))) fail("the listening orb has no ring");
+    const to = byTid(page, "voice-card-to");
+    if (await attr(to, "data-chat") !== CHAT || !(await textOf(to)).includes("On the sketch")) fail(`the card says To: "${await textOf(to)}" (chat ${await attr(to, "data-chat")}), not the board's chat ${CHAT}`);
+    for (const id of ["voice-card-cancel", "voice-card-send"]) if (!await byTid(page, id).count()) fail(`the listening card has no ${id}`);
+    for (const id of ["pill", "pill-chip", "pill-new", "pill-autosend", "pill-collapse"]) if (await byTid(page, id).count()) fail(`the phone draws ${id}, a part of the wide pill`);
+    if (await byTid(page, "chat-head").count()) fail("the chat view opened for a spoken turn");
+    await shot(page, "3-listening", false);
+    if (!await until(async () => (await textOf(byTid(page, "voice-card-words"))).includes(SAID))) fail(`the card shows "${await textOf(byTid(page, "voice-card-words"))}", not the words said`);
+    if (!await inState(page, "countdown")) fail("Auto-send showed no countdown");
+    else {
+      if (!await until(async () => (await cardPhase(page)) === "countdown", 3000)) fail(`the card is ${await cardPhase(page)} in the countdown`);
+      const frac = () => attr(byTid(page, "voice-card-countdown"), "data-frac").then(Number);
+      const a = await frac(); await sleep(500); const b = await frac();
+      if (!(b > a)) fail(`the line does not fill: ${a} then ${b}`);
+      if (!/^Sending in \d s$/.test(await textOf(byTid(page, "voice-card-state")))) fail(`the countdown reads "${await textOf(byTid(page, "voice-card-state"))}"`);
+      await shot(page, "4-countdown", false);
+      await press(page, byTid(page, "voice-card-cancel"));
+      if (!await inState(page, "waiting")) fail(`Cancel leaves the orb ${await orbState(page)}, not waiting`);
+      if (await byTid(page, "voice-card-countdown").count()) fail("the countdown stays after Cancel");
+      if (!(await textOf(byTid(page, "voice-card-words"))).includes(SAID)) fail("Cancel does not keep the words");
+      if (await byTid(page, "voice-card-send").first().isDisabled()) fail("Send is off while words wait");
+      await sleep(1500);
+      if (messages(calls).length) fail("a turn was sent after Cancel");
+      if (await orbState(page) !== "waiting" || await cardPhase(page) !== "waiting") fail("the card left waiting by itself after Cancel");
+      await shot(page, "5-waiting");
+      await press(page, byTid(page, "voice-card-send"));
+      if (!await until(() => messages(calls).length === 1)) fail("Send sent no message");
+      else {
+        const m = messages(calls)[0];
+        if (!m.path.includes(CHAT)) fail(`the turn went to ${m.path}, not to chat ${CHAT}`);
+        if (m.body?.text !== SAID) fail(`the message says ${J(m.body?.text)}, not ${J(SAID)}`);
+      }
+    }
+    if (!await until(async () => (await recorded(page)).includes("speaking"), 30000)) fail(`the orb was ${J(await recorded(page))}: it never spoke`);
+    else {
+      const seen = (await recorded(page)).join(",");
+      if (!/thinking.*speaking/.test(seen)) fail(`the orb went ${seen}: thinking did not come before speaking`);
+      if (!await until(async () => (await cardPhase(page)) === "speaking", 5000)) fail(`the card is ${await cardPhase(page)} while the reply is spoken`);
+      if (!await shown(byTid(page, "voice-card-words"), 8000)) fail("the sentence being spoken is not on the card");
+      else {
+        const said = await textOf(byTid(page, "voice-card-words"));
+        if (!"I drew the red box for you. It sits on the left of the board. Tell me if you want more.".includes(said) || said.length < 8) fail(`the card's spoken line reads "${said}", not a sentence of the reply`);
+      }
+      for (const id of ["voice-card-open", "voice-card-interrupt"]) if (!await byTid(page, id).count()) fail(`the speaking card has no ${id}`);
+      await shot(page, "6-speaking", false);
+      await press(page, byTid(page, "voice-card-interrupt"));
+      if (!await until(async () => (await orbState(page)) !== "speaking")) fail("Interrupt does not cut the reply");
+      else {
+        const tts = async () => (await log()).filter((e) => e.kind === "tts").length;
+        const w0 = await page.evaluate(() => window.__aiwbVoice.player().writes), n0 = await tts();
+        await sleep(1200);
+        if ((await page.evaluate(() => window.__aiwbVoice.player().writes)) !== w0) fail("sound was still written to the player after Interrupt");
+        if (await tts() !== n0) fail("a sentence was asked for after Interrupt");
+        if (await orbState(page) !== "listening") fail(`after Interrupt the orb is ${await orbState(page)}, not listening again`);
+      }
+    }
+    if (await byTid(page, "chat-head").count()) fail("the chat view opened for a spoken turn");
+    await press(page, byTid(page, ORB));
+    if (!await inState(page, "idle") || !await gone(byTid(page, "voice-card"))) fail("a tap on the listening orb does not end the session and take the card away");
+    await ctx.close();
+  }
+
   // ---- the pill is the canvas's: a chat alone and an archived board have none
   {
     const plain = await open({ sel: { chat: "c_plain" }, wait: tidSel("chat-head") });
     await sleep(500);
-    if (await byTid(plain.page, "pill").count()) fail("a chat with no board shows the pill");
+    if (await byTid(plain.page, "pill").count() || await byTid(plain.page, "voice-orb").count() || await byTid(plain.page, "voice-card").count()) fail("a chat with no board shows the pill, the orb or the card");
     await plain.ctx.close();
     const old = await open({ sel: { board: "b_vc6_arch", chat: null }, wait: tidSel("board-canvas", { board: "b_vc6_arch" }) });
     await sleep(500);
-    if (await byTid(old.page, "pill").count()) fail("an archived board shows the pill");
+    if (await byTid(old.page, "pill").count() || await byTid(old.page, "voice-orb").count() || await byTid(old.page, "voice-card").count()) fail("an archived board shows the pill, the orb or the card");
     await old.ctx.close();
   }
 
   // ---- Auto-send is one setting: the pill's toggle, the speech bar's and Settings' (the speech bar's is P13b's: the seam and Settings stand for it)
-  {
+  if (!wide) {
+    // the phone's card has no switch (Settings › Voice has it; UX.S3 proves it): it is on by default and the card only shows what it does
+    await mockEval("voice.reset(); return 1;", url);
+    const { ctx, page } = await start();
+    await press(page, byTid(page, ORB));
+    if (!await until(async () => (await cardPhase(page)) === "listening")) fail("the card did not come up");
+    if (await byTid(page, "pill-autosend").count() || await byTid(page, "voice-card").locator('[role="switch"]').count()) fail("the phone's card has an Auto-send switch");
+    if ((await settings(page)).autoSend !== true) fail("Auto-send is not on by default");
+    await press(page, byTid(page, ORB));
+    await inState(page, "idle");
+    await ctx.close();
+  } else {
     await mockEval("voice.reset(); return 1;", url);
     const { ctx, page } = await start();
     await press(page, byTid(page, "pill-orb"));
@@ -246,22 +362,23 @@ await check("VC.6 the board's voice pill: states, sizes, the target chat, + New 
     const { ctx, page, calls } = await start({ settings: { autoSend: false } });
     await script("move it left");
     await reply("Done. It is on the left now. Anything else?", 300);
-    await press(page, byTid(page, "pill-orb"));
+    await press(page, byTid(page, ORB));
     if (!await inState(page, "waiting")) fail(`Tap to send: the orb is ${await orbState(page)}, not waiting`);
-    if (!await shown(byTid(page, "pill-badge"))) fail("Tap to send shows no ↑ badge");
+    if (wide && !await shown(byTid(page, "pill-badge"))) fail("Tap to send shows no ↑ badge");
+    if (!wide && (await cardPhase(page) !== "waiting" || !(await textOf(byTid(page, "voice-card-words"))).includes("move it left"))) fail(`Tap to send: the card is ${await cardPhase(page)} and says "${await textOf(byTid(page, "voice-card-words"))}", not waiting with the words`);
     await sleep(1500);
     if (messages(calls).length) fail("Tap to send sent the turn by itself");
-    const send = byTid(page, "pill-send");
+    const send = byTid(page, wide ? "pill-send" : "voice-card-send");
     if (await send.isDisabled()) fail("Send is off while words wait");
     await press(page, send);
     if (!await until(() => messages(calls).length === 1)) fail("Send sent no message");
     else if (messages(calls)[0].body?.text !== "move it left") fail(`Send sent ${JSON.stringify(messages(calls)[0].body?.text)}`);
-    await press(page, byTid(page, "pill-orb")).catch(() => {});
+    await press(page, byTid(page, ORB)).catch(() => {});
     await ctx.close();
   }
 
-  // ---- collapsed to the orb alone: still shows its ring and its badge; kept over a reload
-  {
+  // ---- collapsed to the orb alone: still shows its ring and its badge; kept over a reload (the phone's orb is docked and has no collapse)
+  if (wide) {
     await mockEval("voice.reset(); return 1;", url);
     const { ctx, page, calls } = await start({ settings: { autoSend: false }, ls: { "aiwb.voice.pill": "orb" } });
     if (await pillSize(page) !== "orb") fail(`the pill was kept as ${await pillSize(page)}, not collapsed`);
@@ -307,19 +424,49 @@ await check("VC.6 the board's voice pill: states, sizes, the target chat, + New 
   {
     const { ctx, page } = await start();
     await page.evaluate(() => window.__aiwbVoice.denyMic(true));
-    await press(page, byTid(page, "pill-orb"));
+    await press(page, byTid(page, ORB));
     if (!await shown(byTid(page, "voice-problem"))) fail("a blocked microphone shows no popover on the orb");
     else {
       if (await attr(byTid(page, "voice-problem"), "data-kind") !== "mic_blocked") fail("the popover is not the blocked-microphone one");
       await shot(page, "10-micblocked");
       await press(page, byTid(page, "voice-problem-dismiss"));
     }
-    if (await orbState(page) !== "idle" || await pillSize(page) !== "compact") fail("the pill is not idle and compact after the problem");
+    if (await orbState(page) !== "idle" || (wide ? await pillSize(page) !== "compact" : await byTid(page, "voice-card").count())) fail("the pill is not idle and compact (the phone: the card gone) after the problem");
+    await ctx.close();
+  }
+
+  // ---- the phone: "To:" opens the board's Chats sheet, which lists the board's chats (the sidebar's) and marks the one voice talks to
+  if (!wide) {
+    await mockEval("voice.reset(); return 1;", url);
+    const { ctx, page } = await start();
+    if (await byTid(page, "voice-card-to").count()) fail("the chat's chip is drawn at rest");
+    await press(page, byTid(page, ORB));
+    const to = byTid(page, "voice-card-to");
+    if (!await shown(to)) fail("the card has no To: chip");
+    else {
+      if ((await textOf(to)) !== "On the sketch") fail(`the chip names "${await textOf(to)}", not the board's chat`);
+      await press(page, to);
+      if (!await shown(byTid(page, "chats-sheet"))) fail("To: opens no Chats sheet");
+      else {
+        await sleep(500); // (the sheet rises)
+        const rows = byTid(page, "chats-row");
+        const ids = await rows.evaluateAll((es) => es.map((e) => e.dataset.chat));
+        const want = await mockEval(`return Object.values(chats).filter((c) => c.board === ${J(BOARD)} && !c.archived).map((c) => c.id);`, url);
+        if (ids.slice().sort().join() !== want.slice().sort().join()) fail(`the sheet lists ${ids.join()}, the board has ${want.join()}`);
+        if (ids.includes("c_vc6_old")) fail("the sheet lists an archived chat");
+        if (await attr(byTid(page, "chats-row", { chat: CHAT }), "data-voice") !== "1") fail("the sheet does not mark the chat voice talks to");
+        if (!await byTid(page, "chats-new").count()) fail("the sheet has no New chat on this board");
+        await shot(page, "11-sheet");
+        await closeSheet(page);
+      }
+    }
+    await press(page, byTid(page, ORB));
+    await inState(page, "idle");
     await ctx.close();
   }
 
   // ---- the chip lists the sidebar's chats, with Show all for the archived ones
-  {
+  if (wide) {
     const { ctx, page } = await start();
     const chip = byTid(page, "pill-chip");
     if ((await textOf(byTid(page, "pill-chip-name"))) !== "On the sketch") fail(`the chip names "${await textOf(byTid(page, "pill-chip-name"))}", not the board's chat`);
@@ -353,7 +500,37 @@ await check("VC.6 the board's voice pill: states, sizes, the target chat, + New 
     await mockEval("voice.reset(); return 1;", url);
     const { ctx, page, calls } = await start({ board: EMPTY, settings: { pauseMs: 600 } });
     const boardChats = () => mockEval(`return Object.values(chats).filter((c) => c.board === ${JSON.stringify(EMPTY)} && !c.archived).map((c) => c.id);`, url);
-    const chipChat = () => attr(byTid(page, "pill-chip"), "data-chat");
+    /** The chat the next turn goes to: the chip's. The phone's chip is on the card, which only a session draws: one is started and ended for the look. */
+    const chipChat = async () => {
+      if (wide) return attr(byTid(page, "pill-chip"), "data-chat");
+      await press(page, byTid(page, ORB));
+      const to = byTid(page, "voice-card-to");
+      const chat = (await shown(to)) ? await attr(to, "data-chat") : null;
+      await shot(page, "13-to");
+      await press(page, byTid(page, "voice-card-cancel")).catch(() => {});
+      await inState(page, "idle", 8000);
+      return chat;
+    };
+    /** The phone's Chats sheet: opened by the bar's button, the chats it lists read, closed. */
+    const sheetChats = async () => {
+      await press(page, byTid(page, "board-chats"));
+      await byTid(page, "chats-sheet").waitFor({ state: "visible", timeout: 15000 });
+      await sleep(500);
+      const ids = await byTid(page, "chats-row").evaluateAll((es) => es.map((e) => e.dataset.chat));
+      await closeSheet(page);
+      return ids;
+    };
+    /** The phone's "New chat on this board" (the sheet's first row): makes a chat and opens it over the board; back to the board. */
+    const newOnPhone = async () => {
+      await press(page, byTid(page, "board-chats"));
+      await byTid(page, "chats-new").waitFor({ state: "visible", timeout: 15000 });
+      await sleep(500);
+      await press(page, byTid(page, "chats-new"));
+      const opened = await shown(byTid(page, "chat-head"));
+      if (!opened) fail("the sheet's New chat on this board did not open the chat");
+      await back(page);
+      await shown(byTid(page, ORB));
+    };
     const made = () => calls.filter((c) => c.method === "POST" && /^\/api\/chats(\?|$)/.test(c.path));
     /** The chats under the board's row of the sidebar. On the phone the sidebar is the screen before: go back to it and return. */
     const sidebar = async () => {
@@ -363,32 +540,33 @@ await check("VC.6 the board's voice pill: states, sizes, the target chat, + New 
       return rows;
     };
     const same = (a, b) => [...a].sort().join() === [...b].sort().join();
-    if (await textOf(byTid(page, "pill-chip-name")) !== "No chat yet" || await chipChat() !== "") fail(`a board with no chat shows the chip "${await textOf(byTid(page, "pill-chip-name"))}"`);
+    if (wide ? await textOf(byTid(page, "pill-chip-name")) !== "No chat yet" || await chipChat() !== "" : await chipChat() !== "") fail(`a board with no chat shows the chip "${wide ? await textOf(byTid(page, "pill-chip-name")) : ""}" (chat ${J(await chipChat())})`);
     await shot(page, "13-nochat");
     await script();
     await reply("Done. The box is red now. Anything else?", 300);
-    await press(page, byTid(page, "pill-orb"));
+    await press(page, byTid(page, ORB));
     if (!await until(() => messages(calls).length === 1, 30000)) fail("the first spoken turn on an empty board sent no message");
     const first = (await boardChats())[0];
     if ((await boardChats()).length !== 1 || made().length !== 1) fail(`the first turn made ${(await boardChats()).length} chats by ${made().length} calls, not one`);
     else {
       if (!messages(calls)[0].path.includes(first)) fail(`the first turn went to ${messages(calls)[0].path}, not to the chat it made (${first})`);
-      if (!await until(async () => (await chipChat()) === first)) fail("the chip does not name the chat the first turn made");
+      if (wide && !await until(async () => (await chipChat()) === first)) fail("the chip does not name the chat the first turn made");
       if (await byTid(page, "chat-head").count()) fail("the chat view opened for the chat the first turn made");
-      await press(page, byTid(page, "pill-orb"));
-      await inState(page, "idle");
-      if (!same(await sidebar(), [first])) fail("the chat the first turn made is not under the board's row in the sidebar");
+      await endTurn(page);
+      if (wide ? !same(await sidebar(), [first]) : !same(await sheetChats(), [first])) fail(`the chat the first turn made is not under the board's row in the sidebar${wide ? "" : " nor in the board's Chats sheet"}`);
+      if (!wide && await chipChat() !== first) fail(`the card's To: does not name the chat the first turn made (${J(await chipChat())})`);
     }
 
     // + New chat: a fresh chat, the target at once, shown in the sidebar; no message, no chat view
+    // (the phone has no + New chat in the pill: the Chats sheet's New chat on this board makes the chat and opens it, and the card's To: is that chat)
     const before = await boardChats();
-    await press(page, byTid(page, "pill-new"));
+    if (wide) await press(page, byTid(page, "pill-new")); else await newOnPhone();
     if (!await until(async () => (await boardChats()).length === before.length + 1)) fail("+ New chat made no chat");
     const second = (await boardChats()).find((id) => !before.includes(id));
     if (second && !await until(async () => (await chipChat()) === second)) fail("the chat + New chat made is not the target at once");
     if (messages(calls).length !== 1) fail("+ New chat sent a message");
-    if (await byTid(page, "chat-head").count()) fail("+ New chat opened the chat view");
-    if (!same(await sidebar(), await boardChats())) fail("the chat + New chat made is not under the board's row in the sidebar");
+    if (wide && await byTid(page, "chat-head").count()) fail("+ New chat opened the chat view");
+    if (wide ? !same(await sidebar(), await boardChats()) : !same(await sheetChats(), await boardChats())) fail("the chat + New chat made is not under the board's row in the sidebar (the phone: in the Chats sheet)");
 
     // the sidebar's +: the same action, and it opens the chat as it does today
     if (wide) {
@@ -401,28 +579,36 @@ await check("VC.6 the board's voice pill: states, sizes, the target chat, + New 
       if (third && !await until(async () => (await chipChat()) === third)) fail("the chat the sidebar's + made is not the target");
       if (!await shown(byTid(page, "chat-head"))) fail("the sidebar's + does not open the chat as before");
     } else {
-      await press(page, byTid(page, "pill-new"));
+      await newOnPhone();
     }
 
     // the chip lists them as the sidebar does, and a pick is the new target
     const ids = await boardChats();
-    await press(page, byTid(page, "pill-chip"));
-    if (!await shown(byTid(page, "pill-chat"))) fail("the chip opens no list");
+    if (wide) await press(page, byTid(page, "pill-chip"));
+    else { await press(page, byTid(page, ORB)); await press(page, byTid(page, "voice-card-to")); } // (To: opens the Chats sheet from the card)
+    if (!await shown(byTid(page, wide ? "pill-chat" : "chats-row"))) fail(wide ? "the chip opens no list" : "To: opens no list of chats");
     else {
-      const listed = await byTid(page, "pill-chat").evaluateAll((es) => es.map((e) => e.dataset.chat));
+      if (!wide) await sleep(500);
+      const listed = await byTid(page, wide ? "pill-chat" : "chats-row").evaluateAll((es) => es.map((e) => e.dataset.chat));
       if (!same(listed, ids)) fail(`the chip lists ${listed.join()}, the board has ${ids.join()}`);
       await shot(page, "14-chip-chats");
-      const now = await chipChat();
+      const now = wide ? await chipChat() : await attr(byTid(page, "chats-row", { voice: "1" }), "data-chat");
       const other = ids.find((id) => id !== now) ?? first;
-      await press(page, byTid(page, "pill-chat", { chat: other }));
+      await press(page, byTid(page, wide ? "pill-chat" : "chats-row", { chat: other }));
+      if (!wide) { // (a row of the sheet opens that chat over the board: back to the board, where the card's To: is the chat picked)
+        if (!await shown(byTid(page, "chat-head"))) fail("a row of the sheet opened no chat");
+        await back(page);
+        await shown(byTid(page, ORB));
+        await endTurn(page); // (a session the card started is over or still on: idle either way)
+      }
       if (!await until(async () => (await chipChat()) === other)) fail("a pick in the chip is not the new target");
       if (await page.evaluate((b) => JSON.parse(localStorage.getItem("aiwb.lastChat") ?? "{}")[b], EMPTY) !== other) fail("a pick in the chip is not the board's last chat");
       await script("one more thing");
       await reply("Yes. Tell me. I am listening.", 300);
-      await press(page, byTid(page, "pill-orb"));
+      await press(page, byTid(page, ORB));
       if (!await until(() => messages(calls).length === 2, 30000)) fail("the turn after a pick sent no message");
       else if (!messages(calls)[1].path.includes(other)) fail(`the turn went to ${messages(calls)[1].path}, not to the picked chat ${other}`);
-      await press(page, byTid(page, "pill-orb")).catch(() => {});
+      await press(page, byTid(page, ORB)).catch(() => {});
     }
     await ctx.close();
   }
@@ -431,22 +617,32 @@ await check("VC.6 the board's voice pill: states, sizes, the target chat, + New 
   {
     await mockEval("voice.reset(); return 1;", url);
     const { ctx, page, calls } = await start({ settings: { autoSend: false } });
-    if (await byTid(page, "pill-selection").count()) fail("the pill has a selection chip with nothing selected");
+    // (the phone: the selection chip is the card's, drawn only in a session, with a count on the orb's badge; at rest neither is drawn)
+    const chip = byTid(page, wide ? "pill-selection" : "voice-card-selection");
+    if (await chip.count() || await byTid(page, "voice-orb-badge").count()) fail("the pill has a selection chip with nothing selected");
     await editHere(page); // (a board opens as a reader's: the button makes the window its writer)
     await act(page, "select");
-    const chip = byTid(page, "pill-selection");
+    if (!wide && (await byTid(page, "voice-orb-badge").count() || await byTid(page, "voice-card").count())) fail("the phone's orb or card shows the selection with no session");
+    if (!wide) await press(page, byTid(page, ORB)); // (a session, for the card's chip)
     if (!await shown(chip)) fail("three shapes are selected on the board and the pill has no selection chip");
     else {
-      if (await attr(chip, "data-count") !== "3" || !/^3 selected/.test(await textOf(chip))) fail(`the selection chip reads "${await textOf(chip)}", not "3 selected"`);
+      if (await attr(chip, "data-count") !== "3" || !/^(With )?3 selected/.test(await textOf(chip))) fail(`the selection chip reads "${await textOf(chip)}", not "3 selected"`);
+      if (!wide && await attr(byTid(page, "voice-orb-badge"), "data-count") !== "3") fail(`the orb's badge counts ${await attr(byTid(page, "voice-orb-badge"), "data-count")}, not 3`);
       await shot(page, "18-selection");
+      if (!wide) { await press(page, byTid(page, "voice-card-cancel")); await inState(page, "idle", 8000); }
       const tag = /^<selection ids="[^"]+" label="[^"]*">[^<]*<\/selection> /;
-      const speak = async (words, n) => {
+      const speak = async (words, n, { leave = false } = {}) => {
         await mockEval("voice.reset(); return 1;", url);
         await script(words);
         await reply("Done. Anything else?", 300);
-        await press(page, byTid(page, "pill-orb"));
+        await press(page, byTid(page, ORB));
         if (!await inState(page, "waiting")) return fail(`selection: the orb is ${await orbState(page)} after "${words}", not waiting`);
-        await press(page, byTid(page, "pill-send"));
+        if (!wide && !leave && !await shown(chip)) return fail(`selection: the card has no selection chip in the turn "${words}"`);
+        if (!wide && leave) { // (× on the card, in the session: this turn goes without the selection)
+          await press(page, byTid(page, "voice-card-selection-x"));
+          if (!await until(async () => !(await chip.count()))) return fail("× does not take the chip away");
+        }
+        await press(page, byTid(page, wide ? "pill-send" : "voice-card-send"));
         if (!await until(() => messages(calls).length === n, 20000)) return fail(`selection: "${words}" sent no message`);
         return messages(calls)[n - 1].body?.text;
       };
@@ -454,14 +650,22 @@ await check("VC.6 the board's voice pill: states, sizes, the target chat, + New 
       if (typeof one === "string" && !(tag.test(one) && one.replace(tag, "") === "make them blue")) fail(`the spoken turn is ${J(one)}, not the selection's tag and the words`);
       if (typeof one === "string" && tag.test(one) && !/\bdraw|rect|3|element|shape/i.test(one.slice(0, 400))) note("the tag's text does not name the shapes");
       await endTurn(page);
-      if (!await shown(chip)) fail("the selection chip is gone after a turn that carried it");
+      if (wide && !await shown(chip)) fail("the selection chip is gone after a turn that carried it");
       // × leaves the selection out of this turn
-      await press(page, byTid(page, "pill-selection-remove"));
-      if (!await until(async () => !(await chip.count()))) fail("× does not take the chip away");
-      const two = await speak("never mind", 2);
+      if (wide) {
+        await press(page, byTid(page, "pill-selection-remove"));
+        if (!await until(async () => !(await chip.count()))) fail("× does not take the chip away");
+      }
+      const two = await speak("never mind", 2, { leave: true });
       if (typeof two === "string" && two !== "never mind") fail(`the turn sent after × is ${J(two)}, not the words alone`);
       await endTurn(page);
-      if (!await shown(chip)) fail("the selection chip did not come back for the next turn");
+      if (wide ? !await shown(chip) : false) fail("the selection chip did not come back for the next turn");
+      if (!wide) { // (the next session's card has it again)
+        await press(page, byTid(page, ORB));
+        if (!await shown(chip)) fail("the selection chip did not come back for the next turn");
+        await press(page, byTid(page, "voice-card-cancel")).catch(() => {});
+        await inState(page, "idle", 8000);
+      }
     }
     await ctx.close();
   }
@@ -473,15 +677,24 @@ await check("VC.6 the board's voice pill: states, sizes, the target chat, + New 
     await script();
     // (one update of the whole reply after 5.5 s: the turn is "thinking" for longer than a caption's 4 s)
     await reply("I drew the red box. It sits on the left. Tell me if you want more.", 5500, 1);
-    await press(page, byTid(page, "pill-orb"));
+    await press(page, byTid(page, ORB));
     if (!await inState(page, "listening")) fail("Thinking: the orb did not listen");
-    if (!await until(async () => (await pillSize(page)) === "listening")) fail("Thinking: no listening bar");
+    if (!await until(async () => wide ? (await pillSize(page)) === "listening" : (await cardPhase(page)) === "listening")) fail("Thinking: no listening bar (the phone: no listening card)");
     if (await byTid(page, "caption-said").count()) fail("the listening bar has a caption of the words it shows itself");
     if (!await inState(page, "thinking", 30000)) fail(`Thinking: the orb is ${await orbState(page)} after the turn, not thinking`);
     else {
       const t0 = Date.now();
-      if (await pillSize(page) !== "compact") fail(`Thinking: the pill is ${await pillSize(page)}, not the compact pill`);
-      if (!await shown(byTid(page, "caption-said"), 5000) || !(await textOf(byTid(page, "caption-said"))).includes(SAID)) fail(`Thinking: the caption reads "${await textOf(byTid(page, "caption-said"))}", not the words sent`);
+      if (wide && await pillSize(page) !== "compact") fail(`Thinking: the pill is ${await pillSize(page)}, not the compact pill`);
+      if (wide && (!await shown(byTid(page, "caption-said"), 5000) || !(await textOf(byTid(page, "caption-said"))).includes(SAID))) fail(`Thinking: the caption reads "${await textOf(byTid(page, "caption-said"))}", not the words sent`);
+      // (the phone has no caption: the card says the agent is thinking, and in which chat, and offers Open chat)
+      if (!wide) {
+        if (!await until(async () => (await cardPhase(page)) === "thinking", 5000)) fail(`Thinking: the card is ${await cardPhase(page)}, not thinking`);
+        else {
+          if (!/thinking…$/.test(await textOf(byTid(page, "voice-card-state")))) fail(`Thinking: the card says "${await textOf(byTid(page, "voice-card-state"))}"`);
+          if (!(await textOf(byTid(page, "voice-card-in"))).includes("On the sketch")) fail(`Thinking: the card names the chat "${await textOf(byTid(page, "voice-card-in"))}"`);
+          if (!await byTid(page, "voice-card-open").count()) fail("Thinking: the card has no Open chat");
+        }
+      }
       await shot(page, "15-thinking-said", false);
       // the agent edits the board while the orb is thinking
       const made = await mockEval(`return await rpc(${J({ chat: CHAT, board: BOARD, target: BOARD, name: "apply", args: { create: [{ type: "rectangle", key: "vc6", x: 60, y: 380, width: 150, height: 90, strokeColor: "#00c800", backgroundColor: "transparent" }] } })});`, url);
@@ -492,15 +705,20 @@ await check("VC.6 the board's voice pill: states, sizes, the target chat, + New 
         await shot(page, "16-thinking-edit", false);
         if (!await until(() => mockEval(`return scenes.${BOARD}.scene.elements.some((e) => e.strokeColor === "#00c800");`, url), 15000)) fail("Thinking: the agent's shape did not reach the board's stored scene");
       }
-      // still there after 4 s: the words are kept until the reply starts
+      // still there after 4 s: the words are kept until the reply starts (the phone: the thinking card stays)
       await sleep(Math.max(0, 4800 - (Date.now() - t0)));
-      if (await orbState(page) === "thinking") {
+      if (!wide && await orbState(page) === "thinking" && await cardPhase(page) !== "thinking") fail(`Thinking: the card went to ${await cardPhase(page)} before the reply started`);
+      if (wide && await orbState(page) === "thinking") {
         const c = byTid(page, "caption-said");
         if (!await c.count() || await attr(c, "data-fading") === "true") fail("Thinking: the caption of the words faded before the reply started");
       }
     }
     if (!await inState(page, "speaking", 40000)) fail("Thinking: the reply was never spoken");
-    else {
+    else if (!wide) {
+      if (!await until(async () => (await cardPhase(page)) === "speaking", 5000)) fail(`Thinking ended with the card ${await cardPhase(page)}, not speaking`);
+      else if (!await shown(byTid(page, "voice-card-words"), 5000) || !/^I drew the red box\.|^It sits on the left\.|^Tell me if you want more\./.test(await textOf(byTid(page, "voice-card-words")))) fail(`the card's spoken line reads "${await textOf(byTid(page, "voice-card-words"))}"`);
+      await shot(page, "17-spoken", false);
+    } else {
       if (!await until(async () => !(await byTid(page, "caption-said").count()), 4000)) fail("the words of the turn are still a caption when the reply starts");
       if (!await shown(byTid(page, "caption-spoken"), 5000)) fail("Thinking ended with no caption of the sentence spoken");
       else if (!/^I drew the red box\.|^It sits on the left\.|^Tell me if you want more\./.test(await textOf(byTid(page, "caption-spoken")))) fail(`the spoken caption reads "${await textOf(byTid(page, "caption-spoken"))}"`);
@@ -508,8 +726,9 @@ await check("VC.6 the board's voice pill: states, sizes, the target chat, + New 
     }
     // the reply ends, the session listens again; the last sentence stays a while and then fades
     if (await until(async () => (await orbState(page)) === "listening", 40000)) {
-      if (!await byTid(page, "caption-spoken").count()) fail("the last sentence went the moment the reply ended: it stays for 4 s");
-      if (!await until(async () => !(await byTid(page, "caption-spoken").count()), 10000)) fail("the spoken caption never faded");
+      if (wide && !await byTid(page, "caption-spoken").count()) fail("the last sentence went the moment the reply ended: it stays for 4 s");
+      if (wide && !await until(async () => !(await byTid(page, "caption-spoken").count()), 10000)) fail("the spoken caption never faded");
+      if (!wide && await cardPhase(page) !== "listening") fail(`the card is ${await cardPhase(page)} when the session listens again`);
     } else fail(`the pill did not listen again after the reply (${await orbState(page)})`);
     if (messages(calls).length !== 1) fail(`the turn sent ${messages(calls).length} messages`);
     await endTurn(page);
@@ -583,4 +802,5 @@ await check("VC.6 the board's voice pill: states, sizes, the target chat, + New 
     await page.evaluate(() => document.activeElement?.blur());
     await ctx.close();
   }
+  if (!wide) note("phone: the docked orb alone at rest (none on a chat alone or an archived board); no key: the problem popover; a turn on the card (listening, countdown, Cancel keeps the words, Send, thinking, speaking, Interrupt); Tap to send; the mic blocked; To: opens the Chats sheet that lists the board's chats and marks the voice one; the first turn on an empty board makes a chat (in the sheet), New chat on this board is the next target, a pick in the sheet is the next target; the selection chip and the orb's badge only in a session, × leaves it out of one turn; Thinking with the agent's edit on the board");
 }, { viewports, page: false });

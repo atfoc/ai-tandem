@@ -2,7 +2,7 @@
 # voice-mic (voice chats, package P17, goal 6.6, architecture §14.4): the microphone's permission and the audio session of the app's own native
 # audio module (`aiwb-audio`) on the real stack of the simulator, against a stand-in voice service on this computer (no ElevenLabs, no key of value).
 # On the phone layout: the scratch server is added and holds a chat with a message and the stand-in agent's answer; Settings > Voice takes the key
-# `sk_test_…` and Test key finds the stand-in's voices; "Dictate" on the chat puts up the system's microphone alert with the app's own words, Allow,
+# `sk_test_…` in Add key (the pushed Voice screen, Settings › Voice) and Test key finds the stand-in's voices; "Dictate" on the chat puts up the system's microphone alert with the app's own words, Allow,
 # the microphone runs, the stand-in's log shows 16 kHz chunks of 100 ms (the runner checks it at the end) and the words the stand-in's script
 # answers by chunk count come into the box (the simulator's microphone is silence or the Mac's input: nothing is recognised here, the stand-in says
 # what it was told to); "Read aloud" on the answer streams the stand-in's speech to the native player, which plays it to its end (the dev line
@@ -20,41 +20,20 @@ appId: ${APP_ID}
 - runFlow: _add-server.yaml
 - takeScreenshot: p17-00-sidebar
 
-# ---- Settings > Voice: the key, and Test key against the stand-in
-- tapOn:
-    id: "settings-btn"
-- extendedWaitUntil:
-    visible:
-      id: "vs-page"
-    timeout: 30000
-- tapOn:
-    id: "vs-key"
-- inputText: "sk_test_p17devicekey"
-- tapOn:
-    id: "vs-key-test"
-- extendedWaitUntil:
-    visible:
-      id: "vs-key-result"
-      text: "Works: 6 voices found."
-    timeout: 60000
-- tapOn:
-    id: "vs-key-save"
-- extendedWaitUntil:
-    visible: "Key saved on this device."
-    timeout: 30000
-- takeScreenshot: p17-01-key-saved
-- tapOn:
-    id: "vs-close"
-- extendedWaitUntil:
-    notVisible:
-      id: "vs-page"
-    timeout: 30000
+# ---- Settings > Voice (the pushed screen): the key in Add key, and Test key against the stand-in
+- runFlow: _voice-open.yaml
+- runFlow:
+    file: _voice-add-key.yaml
+    env:
+      KEY: "sk_test_p17devicekey"
+      SHOT: p17-01-key-saved
+- runFlow: _voice-back.yaml
 
 # ---- the chat, with its message and the answer
 - extendedWaitUntil:
-    visible: "Voice-chat"
+    visible: "Voice-chat.*"
     timeout: 90000
-- tapOn: "Voice-chat"
+- tapOn: "Voice-chat.*"
 - extendedWaitUntil:
     visible:
       id: "composer-input"
@@ -111,34 +90,19 @@ appId: ${APP_ID}
 - assertVisible: "hello there"
 
 # ---- Read aloud on the answer: the stand-in's speech, played to its end by the native player
-# (the "⋯" of the answer, the second message: a tap on the element by its id does not open the menu on the device, a tap on its place does, the place being the iPhone 17's;
-# a first tap just after the chat has opened is sometimes lost, so the tap is repeated until the menu shows)
+# (the phone's message sheet, T1: a long press on the answer lifts it over the dimmed thread and opens `msg-sheet`, whose quick row has "Read aloud";
+# a first press just after the chat has opened is sometimes lost, so the press is repeated until the sheet shows)
 - waitForAnimationToEnd
-- runFlow:
-    when:
-      platform: iOS
+- retry:
+    maxRetries: 4
     commands:
-      - retry:
-          maxRetries: 4
-          commands:
-            - tapOn:
-                point: "92%,20%"
-            - extendedWaitUntil:
-                visible: "Read aloud"
-                timeout: 5000
-# (the emulator's layout puts the answer's "⋯" higher: about 15% of the screen's height, 92% across)
-- runFlow:
-    when:
-      platform: Android
-    commands:
-      - retry:
-          maxRetries: 4
-          commands:
-            - tapOn:
-                point: "92%,15%"
-            - extendedWaitUntil:
-                visible: "Read aloud"
-                timeout: 5000
+      - longPressOn:
+          text: "FAKE.*Say one short sentence."
+      - extendedWaitUntil:
+          visible:
+            id: "msg-sheet"
+          timeout: 5000
+- takeScreenshot: p17-03b-message-sheet
 - tapOn:
     text: "Read aloud"
 - extendedWaitUntil:
@@ -160,14 +124,14 @@ appId: ${APP_ID}
     env:
       METHOD: POST
       ROUTE: /voice/relaunch
-# (it opens on the chat it had open; if it opens on the sidebar the chat is opened)
+# (it opens on the chat it had open; if it opens on Home or the sidebar the chat is opened)
 - runFlow: _dismiss.yaml
 - runFlow:
     when:
       visible:
-        id: "side-tree"
+        id: "home|side-tree"
     commands:
-      - tapOn: "Voice-chat"
+      - tapOn: "Voice-chat.*"
 - extendedWaitUntil:
     visible:
       id: "composer-input"
@@ -198,19 +162,8 @@ appId: ${APP_ID}
 
 # ---- the key is removed from this device
 - runFlow: _to-sidebar.yaml
-- tapOn:
-    id: "settings-btn"
-- extendedWaitUntil:
-    visible:
-      id: "vs-key-remove"
-    timeout: 30000
-- tapOn:
-    id: "vs-key-remove"
-- tapOn:
-    text: "Remove key"
-- extendedWaitUntil:
-    visible: "Key removed from this device."
-    timeout: 30000
+- runFlow: _voice-open.yaml
+- runFlow: _voice-remove-key.yaml
 - assertNotVisible:
     id: "vs-key-remove"
 - takeScreenshot: p17-06-key-removed

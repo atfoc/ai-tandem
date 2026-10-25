@@ -31,6 +31,67 @@ export const TID = {
   menuSep: "menu-sep",
   resizer: "resizer",
   picture: "picture",
+  // the phone's parts (ux-improvements, package F1/F2: plans/ux-improvements/PLAN.md)
+  sheetHead: "sheet-head",
+  sheetTitle: "sheet-title",
+  sheetSub: "sheet-sub",
+  sheetLeft: "sheet-left",
+  sheetRight: "sheet-right",
+  actionSheet: "action-sheet",
+  actionRow: "action-row",
+  pickerSheet: "picker-sheet",
+  pickerRow: "picker-row",
+  formSheet: "form-sheet",
+  confirmSheet: "confirm-sheet",
+  confirmGo: "confirm-go",
+  confirmCancel: "confirm-cancel",
+  confirmAlt: "confirm-alt",
+  cellGroup: "cell-group",
+  cell: "cell",
+  placeBar: "place-bar",
+  contentBar: "content-bar",
+  barTitle: "bar-title",
+  barSub: "bar-sub",
+  largeTitle: "large-title",
+  navBack: "nav-back",
+  stackSheet: "stack-sheet",
+  toast: "toast",
+  toastAction: "toast-action",
+  swipeRow: "swipe-row",
+  swipeAction: "swipe-action",
+  searchField: "search-field",
+  stateWord: "state-word",
+  // F1's parts, finished (package F1). One block per part, so that its chunks append without touching each other: add a part's
+  // ids at the end of its own block.
+  // - controls (Button, IconButton, Switch, SecretInput, DialogActions, SearchField)
+  searchClear: "search-clear",
+  searchCancel: "search-cancel",
+  switch: "switch",
+  switchKnob: "switch-knob",
+  // - sheets (Sheet, SheetHead, ActionSheet, Menu in a sheet)
+  sheetBody: "sheet-body",
+  actionQuick: "action-quick",
+  actionSection: "action-section",
+  // - picker (PickerSheet)
+  pickerEmpty: "picker-empty",
+  pickerCheck: "picker-check",
+  pickerExtra: "picker-extra",
+  pickerFoot: "picker-foot",
+  // - forms (FormSheet, ConfirmSheet)
+  formError: "form-error",
+  confirmTile: "confirm-tile",
+  confirmTitle: "confirm-title",
+  confirmBody: "confirm-body",
+  confirmError: "confirm-error",
+  // - cells and bars (Cells, Bars)
+  cellValue: "cell-value",
+  cellSeparator: "cell-separator",
+  barTitleFade: "bar-title-fade",
+  // - toast (Toast)
+  toastText: "toast-text",
+  // - swipe (SwipeRow)
+  swipeFront: "swipe-front",
+  // (end of F1's blocks)
 } as const;
 
 /** `{testID, dataSet}` for a component to spread: tid("side-row", { server: id }). The dataSet is left out when empty. */

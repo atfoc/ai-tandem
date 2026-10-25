@@ -9,15 +9,23 @@
 // (side-archived, servers-btn, library-btn, theme-btn), the parts "from before this computer was a section" by the words they had
 // ("Reconnecting…", "New group" outside a menu), and what the Servers button opens is S3's dialog (`servers-dialog`, which lists every entry; Esc
 // closes it).
+// The phone (package H1) has no sidebar: Home shows one server at a time, chosen by its chip, and the foot is behind Home's gear (Settings' rows)
+// (plans/ux-improvements/h1-design.md §2, §6). Its half (`onPhone` below) proves the same of Home: this computer's alone with no chips and no
+// other server; with servers one chip per entry in the list's order, this computer's Home what it was and holding no row of another, a row
+// naming no server, one Servers behind the gear that lists every entry, the chips following the list; the phone has no "Show archived": Home
+// lists nothing archived, and Settings › Archived (H2's own screen, `archived-screen`) lists each server's archived chats under its heading.
 import { check, mockEval, seed, until } from "../shot.mjs";
-import { byTid, press } from "./sel.mjs";
-import { footOf, sectionsSeen, sideSeen } from "./side.mjs";
+import { byTid, openFoot, press, showHome } from "./sel.mjs";
+import { archivedSeen } from "./rows.mjs";
+import { openServersScreen } from "./srv.mjs";
+import { footOf, homeOf, sectionsSeen, sideSeen } from "./side.mjs";
 
 export const viewports = ["desktop", "tablet", "phone"];
 
 const J = JSON.stringify;
 
-await check("SEC.1 the sidebar: sections only, this computer's first, then one per server of the list, and one foot", async ({ url, open, fail, note }) => {
+await check("SEC.1 the sidebar: sections only, this computer's first, then one per server of the list, and one foot", async ({ url, open, fail, note, layout }) => {
+  if (layout === "phone") return onPhone({ url, open, fail, note });
   // ---- no other server: this computer's section alone
   await mockEval('chats.c_old_experiment = chat("c_old_experiment", { name: "Old experiment", group: UNGROUPED, archived: true, archiveOp: "op_arch1" }); items.c_old_experiment = [];', url);
   const bare = await open({ wait: '[data-testid="side-tree"]' });
@@ -119,3 +127,78 @@ await check("SEC.1 the sidebar: sections only, this computer's first, then one p
   await ctx.close();
   note(`this computer's section alone without servers; ${list.length} more in the list's order, scrolling with the tree; this computer's unchanged; no row names a server; one foot, one Servers, one switch`);
 }, { viewports, page: false });
+
+/** The phone's half: Home in the sidebar's place (see the head of the file). */
+async function onPhone({ url, open, fail, note }) {
+  const chipsOf = async (page) => (await homeOf(page)).chips.map((c) => c.server);
+  // ---- no other server: this computer's Home alone, no chips
+  await mockEval('chats.c_old_experiment = chat("c_old_experiment", { name: "Old experiment", group: UNGROUPED, archived: true, archiveOp: "op_arch1" }); items.c_old_experiment = [];', url);
+  const bare = await open({ wait: '[data-testid="home"]' });
+  const bp = bare.page;
+  if (!await until(async () => (await homeOf(bp)).rows.length, 10000)) fail("this computer's Home of the unseeded mock has no row");
+  const lb = await homeOf(bp);
+  if (lb.server !== "local" || lb.chips.length || lb.name !== "This computer" || lb.word !== "connected" || !lb.newEnabled) fail(`with no other server Home is not this computer's alone: ${J({ server: lb.server, chips: lb.chips.length, name: lb.name, word: lb.word, new: lb.newEnabled })}`);
+  if (await byTid(bp, "side-tree").count() || await byTid(bp, "side-section").count()) fail("the phone draws the sidebar's tree or a section");
+  const outlineBefore = lb.outline;
+  await bare.ctx.close();
+
+  // ---- with servers: one chip per entry, in the list's order
+  await seed(url, "SEC");
+  const list = await mockEval("return extra.servers.filter((x) => !x.local).map((x) => ({ id: x.id, name: x.name }));", url);
+  const { page, ctx } = await open({ wait: '[data-testid="home"]' });
+  const ids = list.map((x) => x.id), want = ["local", ...ids];
+  if (!await until(async () => J(await chipsOf(page)) === J(want), 10000)) fail(`Home has the chips ${J(await chipsOf(page))} for the list ${J(want)}`);
+  for (const v of list) { const c = (await homeOf(page)).chips.find((x) => x.server === v.id); if (c?.name !== v.name) fail(`the chip of ${v.id} is named "${c?.name}", the list's entry "${v.name}"`); }
+
+  // this computer's Home is what it was without servers, and holds no row of another; Studio Mac's holds none of this computer's
+  await showHome(page, "local");
+  if (!await until(async () => J((await homeOf(page)).outline) === J(outlineBefore), 10000)) fail(`this computer's Home changed with the servers: ${J((await homeOf(page)).outline)}, before ${J(outlineBefore)}`);
+  const local = await homeOf(page);
+  if (local.rows.some((r) => r.server !== "local")) fail(`this computer's Home has rows of another server: ${J(local.rows.filter((r) => r.server !== "local"))}`);
+  await showHome(page, "s_studio");
+  if (!await until(async () => (await homeOf(page)).rows.length, 10000)) fail("Studio Mac's Home has no row");
+  const studio = await homeOf(page);
+  if (studio.rows.some((r) => r.server !== "s_studio")) fail(`Studio Mac's Home has rows of another server: ${J(studio.rows.filter((r) => r.server !== "s_studio"))}`);
+  // (the seeded pair: the chat c_plain of this computer, in its group Shop, and the chat c_plain of Studio Mac, on its Home: each once, in its own)
+  if (studio.rows.filter((r) => r.name === "Render queue is stuck").length !== 1 || studio.rows.some((r) => r.name === "Why is the build slow")) fail(`the two chats with the id c_plain are not one row each in their own Home: ${J(studio.outline)}`);
+
+  // a row names no server
+  const names = list.map((x) => x.name);
+  const said = studio.rows.flatMap((r) => [r.name, r.sub]).filter((t) => names.some((n) => t.includes(n)));
+  if (said.length) fail(`a row of Studio Mac's Home names a server: ${J(said)}`);
+
+  // one Servers, behind Home's gear (Settings' Servers row: S2's list, a screen pushed on the stack), and it lists every entry
+  await openServersScreen(page);
+  const listScreen = byTid(page, "srv-list").last();
+  const listed = await listScreen.textContent();
+  for (const n of names) if (!listed.includes(n)) fail(`the Servers list does not list ${n}`);
+  if (await byTid(page, "servers-dialog").count()) fail("Settings' Servers opened the old dialog");
+  await showHome(page);
+  if (!await until(async () => !await byTid(page, "srv-list").count(), 10000)) fail("back did not leave the Servers list");
+
+  // the order of the list is the order of the chips after this computer's, also when the list changes
+  await mockEval('extra.servers = [extra.servers[0], ...extra.servers.slice(1).reverse()]; resync();', url);
+  const turned = ["local", ...ids.slice().reverse()];
+  if (!await until(async () => J(await chipsOf(page)) === J(turned), 10000)) fail(`the list turned round, the chips are ${J(await chipsOf(page))}, not ${J(turned)}`);
+
+  // archived things are not on Home (no "Show archived" on the phone) and are listed in Settings › Archived, each under its own server (H2-7)
+  for (const id of ["local", "s_studio"]) {
+    await showHome(page, id);
+    await page.waitForTimeout(300);
+    const o = (await homeOf(page)).outline;
+    if (o.some((x) => /Old experiment|Put away there/.test(x))) fail(`${id}'s Home lists an archived thing: ${J(o)}`);
+  }
+  await showHome(page);
+  const screen = await openFoot(page, "side-archived"); // (Settings › the Archived row: the screen itself)
+  if (!await byTid(page, "archived-screen").last().isVisible()) fail("Settings' Archived row did not push the Archived screen");
+  if (await screen.locator('[role="switch"]').count()) fail(`Settings' Archived has ${await screen.locator('[role="switch"]').count()} switches: the phone has no "Show archived"`);
+  const seen = await until(async () => { const r = (await archivedSeen(page)).rows; return r.length >= 2 && r; }, 10000);
+  const rows = seen || (await archivedSeen(page)).rows;
+  const where = (name) => rows.find((r) => r.name === name);
+  if (where("Old experiment")?.server !== "local" || where("Put away there")?.server !== "s_studio") fail(`Archived does not list each archived chat under its server: ${J(rows.map((r) => [r.name, r.server]))}`);
+  if (rows.some((r) => !r.archived)) fail(`Archived has a row that is not marked archived: ${J(rows)}`);
+  for (const id of ["local", "s_studio"]) if (!(await archivedSeen(page)).servers.some((x) => x.server === id)) fail(`Archived has no heading for ${id}: ${J((await archivedSeen(page)).servers)}`);
+
+  await ctx.close();
+  note(`this computer's Home alone without servers; ${list.length} more chips in the list's order; this computer's Home unchanged; no row names a server; one Servers behind the gear; Home lists nothing archived, Settings › Archived lists it under each server`);
+}

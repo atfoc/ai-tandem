@@ -1313,7 +1313,7 @@ test("a file that passes is uploaded at once: its thumbnail is busy, Send waits,
 
   await u.answer(img(1, "a.png"));
   assert.deepEqual(box!.held, held("look", [], [img(1, "a.png")]));
-  assert.deepEqual(box!.slot, { uploads: [], error: "" });
+  assert.deepEqual(box!.slot, { uploads: [], error: "", refused: [], said: "" });
   assert.equal(s().waits.c_1, undefined);
   assert.deepEqual(taken("main"), { text: "look", images: [img(1, "a.png")] });
   assert.deepEqual(draftOn("main"), { text: "look", images: [img(1, "a.png")] });
@@ -1775,7 +1775,7 @@ test("a refused Send that names images the chat no longer holds: they leave what
   assert.deepEqual(taken("main"), { text: "see", images: [img(1, "kept.png")] });
   // the line goes with the composer
   uploads.setImageError("c_1", "main", "");
-  assert.deepEqual(box!.slot, { uploads: [], error: "" });
+  assert.deepEqual(box!.slot, { uploads: [], error: "", refused: [], said: "" });
 });
 
 test("the thumbnail kept of an uploaded picture is its own chat's: the same picture in the chat of the same id on this computer and in a section", async () => {

@@ -15,7 +15,7 @@ import { boardApp } from "../shell/boardside.ts";
 import { EDIT_HERE, roleBar } from "./rolebar.ts";
 
 /** "Edit here": the board is taken, from the window or the agent that holds it. What the bar said of a dropped change is seen by then. */
-function editHere(board: string) {
+export function editHere(board: string) {
   setDropped(board, false);
   void boardApp.takeBoard(board);
 }

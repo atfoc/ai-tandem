@@ -12,9 +12,14 @@ import { Overlay } from "../../ui/Overlay.tsx";
 import { Text } from "../../ui/Text.tsx";
 import { useTheme } from "../../ui/theme.tsx";
 import { tid } from "../../ui/tid.ts";
+import { usePhone } from "../../ui/useLayout.ts";
 import { usePointer } from "../../ui/usePointer";
 import { webStyle } from "../../ui/webstyle.ts";
-import { countTitle, countWord, listHint, NARROW_COUNT } from "./model.ts";
+import { chipWord, countTitle, countWord, listHint, NARROW_COUNT } from "./model.ts";
+
+/** The phone's chip: 34 pt high, 15 pt text (goal 3.6, mockup co-05a). */
+const CHIP_HEIGHT = 34;
+const CHIP_TEXT = 15;
 
 export function QuoteCount({ quotes, open, width, onOpen, onClose, onPick, onRemove }: {
   quotes: Reference[]; open: boolean;
@@ -23,8 +28,11 @@ export function QuoteCount({ quotes, open, width, onOpen, onClose, onPick, onRem
   onOpen(): void; onClose(): void; onPick(q: Reference): void; onRemove?: (q: Reference) => void;
 }) {
   const { tokens: t } = useTheme();
+  const phone = usePhone();
   const n = quotes.length, anchor = useRef<View>(null);
   const word = width <= 0 || width > NARROW_COUNT;
+  // the phone's chip of the context row: a press opens the sheet "Quoted in this message" (QuotesSheet, drawn by useQuotes), not the list
+  if (phone) return <PhoneChip n={n} open={open} onOpen={onOpen} onClose={onClose} />;
   return (
     <View style={styles.wrap}>
       <Pressable ref={anchor} {...tid("qcount", { n, stack: n > 1, on: open })} role="button" accessibilityLabel={countTitle(n)} accessibilityState={{ expanded: open }}
@@ -37,6 +45,24 @@ export function QuoteCount({ quotes, open, width, onOpen, onClose, onPick, onRem
       </Pressable>
       <QuoteList open={open} anchor={anchor} quotes={quotes} onClose={onClose} onPick={onPick} onRemove={onRemove} />
     </View>
+  );
+}
+
+/** The soft yellow of a quoted passage in the thread (platform/quote.web.ts `aiwb-pending`), for the chip and the sheet's cards. */
+export function quoteYellow(theme: "light" | "dark"): string {
+  return theme === "dark" ? "rgba(255, 204, 0, 0.14)" : "rgba(255, 214, 10, 0.2)";
+}
+
+function PhoneChip({ n, open, onOpen, onClose }: { n: number; open: boolean; onOpen(): void; onClose(): void }) {
+  const { tokens: t, theme } = useTheme();
+  return (
+    <Pressable {...tid("qcount", { n, stack: n > 1, on: open })} role="button" accessibilityLabel={countTitle(n)} accessibilityState={{ expanded: open }}
+      hitSlop={{ top: (44 - CHIP_HEIGHT) / 2, bottom: (44 - CHIP_HEIGHT) / 2 }} onPress={() => (open ? onClose() : onOpen())}
+      style={[styles.chip, { borderColor: t.warn, backgroundColor: quoteYellow(theme) }, webStyle({ cursor: "pointer" })]}>
+      <Text {...tid("qcount-label")} size={CHIP_TEXT} weight="500" numberOfLines={1}>
+        <Text size={CHIP_TEXT} style={[styles.mark, { color: t.warnText }]}>❝</Text> {chipWord(n)}
+      </Text>
+    </Pressable>
   );
 }
 
@@ -76,6 +102,7 @@ function QuoteList({ open, anchor, quotes, onClose, onPick, onRemove }: {
 
 const styles = StyleSheet.create({
   wrap: { flexDirection: "row" },
+  chip: { flexDirection: "row", alignItems: "center", alignSelf: "center", height: CHIP_HEIGHT, paddingHorizontal: 10, borderRadius: 8, borderWidth: 1 },
   count: { flexDirection: "row", alignItems: "center", height: 22, paddingHorizontal: 8, borderRadius: 6, borderWidth: 1 },
   mark: { fontFamily: "Georgia, serif" },
   chev: { opacity: 0.7 },

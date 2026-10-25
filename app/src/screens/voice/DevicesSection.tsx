@@ -10,7 +10,7 @@ import { StyleSheet, View } from "react-native";
 
 import { setVoiceSettings, useDeviceChoices, useMicTest, voice } from "../../voice/index.ts";
 import type { DeviceChoices } from "../../voice/index.ts";
-import { DEVICES_HIDDEN_NOTE, DEVICES_NO_KEY, DEVICES_LINKED_NOTE, DEVICES_MIC, DEVICES_SPEAKER, DEVICES_TITLE, MIC_TEST, MIC_TEST_BUSY, MIC_TEST_STOP, SPEAKER_TEST } from "../../voice/words.ts";
+import { DEVICES_HIDDEN_NOTE, DEVICES_NO_KEY, DEVICES_LINKED_NOTE, DEVICES_MIC, DEVICES_SPEAKER, DEVICES_TITLE, MIC_TEST, MIC_TEST_BUSY, MIC_TEST_END, SPEAKER_TEST } from "../../voice/words.ts";
 import { Button } from "../../ui/Button.tsx";
 import { Text } from "../../ui/Text.tsx";
 import { tid } from "../../ui/tid.ts";
@@ -102,7 +102,7 @@ function MicTest() {
   return (
     <View style={styles.test}>
       <View ref={ref} collapsable={false}>
-        <Button size="sm" label={test.on ? MIC_TEST_STOP : MIC_TEST} accessibilityLabel={test.on ? MIC_TEST_STOP : MIC_TEST} title={busy ? MIC_TEST_BUSY : undefined}
+        <Button size="sm" label={test.on ? MIC_TEST_END : MIC_TEST} accessibilityLabel={test.on ? MIC_TEST_END : MIC_TEST} title={busy ? MIC_TEST_BUSY : undefined}
           {...tid("vs-mic-test", { on: test.on, busy })} aria-pressed={test.on} disabled={busy}
           onPress={() => { if (test.on) voice.stopMicTest(); else void voice.startMicTest(MIC_TEST_ANCHOR); }} />
         <ProblemPopover anchor={MIC_TEST_ANCHOR} target={ref} align="left" />

@@ -128,9 +128,35 @@ export type EngineValues = {
   snapshot: SnapshotValue;
 };
 
-/** App → board view. */
+/** The phone's chrome of the board view (B1): Excalidraw's menu trimmed and headed by the board's name, and its footer made
+ *  one band of BAND_HEIGHT px across the view with a right inset where the app puts Edit here and the orb. */
+export type PhoneChromeMsg = {
+  /** The board's name, heads the menu (at most 200 characters). */
+  title: string;
+  /** Pixels kept free at the band's right end (0 to 400). */
+  inset: number;
+  /** `#rrggbb`: the band's ground (the app's bar ground). */
+  band: string;
+  /** `#rrggbb`: the hairline above the band. */
+  line: string;
+  /** "Share image…" is offered (false where the platform cannot share a picture). */
+  share: boolean;
+};
+
+/** The height of the phone's band (px). */
+export const BAND_HEIGHT = 64;
+
+/** How a board opens on the phone (B1): fitted (`fit` px of margin on each side, inside what is visible), or a view kept from before. */
+export type OpenView = { fit: number } | { scrollX: number; scrollY: number; zoom: number };
+
+/** App → board view. `phone` sets the phone's chrome (null: Excalidraw's own, as the wide layouts have it); `topInset` keeps `px`
+ *  pixels (an integer, 0 to 200; 0 = none) free along the top edge, below the app's floating controls in landscape: Excalidraw's top
+ *  bar starts below them, the canvas is not moved; it holds until changed; `load`'s `open` says how the board opens (absent: the
+ *  scene's own appState). */
 export type ToBoard =
-  | { t: "load"; board: string; scene: SceneMsg; viewMode: boolean; theme: ThemeMsg; style: CurrentItemStyle }
+  | { t: "load"; board: string; scene: SceneMsg; viewMode: boolean; theme: ThemeMsg; style: CurrentItemStyle; open?: OpenView }
+  | { t: "phone"; chrome: PhoneChromeMsg | null }
+  | { t: "topInset"; px: number }
   | { t: "unload" }
   | { t: "viewMode"; on: boolean }
   | { t: "theme"; theme: ThemeMsg }
@@ -138,7 +164,7 @@ export type ToBoard =
   | { t: "scrollTo"; ids: string[]; animate: boolean }
   | { t: "req"; id: number; op: EngineOp };
 
-/** Board view → app. `changed` is a **delta** (AD-50; `delta.ts` makes and applies it): `elements` are those whose version
+/** Board view → app. `menu` tells which item of the phone's menu the person pressed (the app carries it out). `changed` is a **delta** (AD-50; `delta.ts` makes and applies it): `elements` are those whose version
  *  differs from what the app last heard for this board (new ones, and deleted ones, which Excalidraw keeps with
  *  `isDeleted: true`), `order` is every element id in scene order, sent when the order or the set of ids changed, `files`
  *  are the files added since the last `changed` (files are never changed in place). The baseline is what `load` gave, or the
@@ -149,12 +175,13 @@ export type FromBoard =
   | { t: "changed"; board: string; elements: El[]; order?: string[]; files?: Files; appState: SavedAppState; style: CurrentItemStyle }
   | { t: "view"; board: string; scrollX: number; scrollY: number; zoom: number; width: number; height: number }
   | { t: "selection"; board: string; ids: string[] }
+  | { t: "menu"; board: string; item: "share" | "clear" }
   | { t: "res"; id: number; ok: true; value: unknown }
   | { t: "res"; id: number; ok: false; code: string; message: string }
   | { t: "error"; message: string };
 
 /** The `t` of every message each way. */
-export const TO_BOARD_TYPES = ["load", "unload", "viewMode", "theme", "select", "scrollTo", "req"] as const;
-export const FROM_BOARD_TYPES = ["ready", "loaded", "changed", "view", "selection", "res", "error"] as const;
+export const TO_BOARD_TYPES = ["load", "phone", "topInset", "unload", "viewMode", "theme", "select", "scrollTo", "req"] as const;
+export const FROM_BOARD_TYPES = ["ready", "loaded", "changed", "view", "selection", "menu", "res", "error"] as const;
 /** The `op` of every request. */
 export const ENGINE_OPS = ["apply", "delete", "restore", "export", "snapshot"] as const;

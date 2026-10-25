@@ -19,6 +19,17 @@
 #     when the keyboard's LayoutAnimation was still running as its rise ended; the old code lost it at 180 and 300 ms every time and at 450 ms one time in nine
 #     (iPhone simulator), so 300 ms puts the end of the rise in the middle of that window (toppop, topdlg and topkb: 5 of 5 each).
 #     Run on a phone and on a tablet.
+#  7. (ux-improvements package F1, the phone kit; the kit page of the self-test, `sheets-kit-open`):
+#     a. detents: a `fit` ActionSheet (head, 4 rows, a destructive row) is at most half the window and a `large` Sheet starts at the safe area's top + 8 pt (within 2 pt);
+#        both end at the window's bottom. The screen measures the sheet's surface and writes `fit ok: …` / `large ok: …` in the sheet's sub-line and, after it closed,
+#        in `sheets-detent-fit` / `sheets-detent-large`; a row of the action sheet is pressed (it closes; `sheets-action` says which);
+#     b. a FormSheet (P3) with two boxes rides the keyboard: with the second box focused and typed in, the box and the head's Save are above the keyboard's top
+#        (`form ok`), and Save is pressed with the keyboard up (a press under it would hit a key); a dirty form's Cancel opens "Discard changes" over the form
+#        (both on screen), its Cancel keeps the form and its text, and Discard changes closes both;
+#     c. swipe rows: a finger swipe from the middle of row a shows Archive and Delete, Delete runs (`delete a`); a swipe to the left edge on row b runs the full
+#        action (`archive b`); a long press runs the haptic (`long a`, `sheets-haptics: 1`; the simulator has no haptic engine, so what it shows is that expo-haptics
+#        is linked: `haptics native: ok`, no red box); a swipe that starts inside the 20 pt edge opens nothing, the same swipe from 10 % of the width runs row c's
+#        full action (`unarchive c`).
 appId: ${APP_ID}
 ---
 - runFlow: _open.yaml
@@ -262,3 +273,189 @@ appId: ${APP_ID}
 - assertVisible: "log:.*topkb row 1 picked.*"
 - assertNotVisible:
     id: "sheets-topkb-input"
+
+# ---- 7: the kit page (the phone kit of ux-improvements package F1)
+- tapOn:
+    id: "sheets-kit-open"
+- extendedWaitUntil:
+    visible:
+      id: "sheets-kit-root"
+    timeout: 10000
+- assertVisible: "haptics native: ok"
+- assertVisible: "sheets-haptics: 0"
+
+# ---- 7a: a fit sheet (an ActionSheet) and a large sheet measure themselves
+- tapOn:
+    id: "sheets-fit-open"
+- extendedWaitUntil:
+    visible: "Rename…"
+    timeout: 10000
+- extendedWaitUntil:
+    visible: "fit (ok|FAILED).*"
+    timeout: 15000
+- assertVisible: "fit ok.*"
+- takeScreenshot: f1-01-fit
+- tapOn: "Rename…"
+- extendedWaitUntil:
+    visible:
+      id: "sheets-action"
+      text: "action: rename"
+    timeout: 10000
+- assertNotVisible: "Rename…"
+- assertVisible:
+    id: "sheets-detent-fit"
+    text: "fit ok.*"
+- tapOn:
+    id: "sheets-large-open"
+- extendedWaitUntil:
+    visible:
+      id: "sheets-large-done"
+    timeout: 10000
+- extendedWaitUntil:
+    visible: "large (ok|FAILED).*"
+    timeout: 15000
+- assertVisible: "large ok.*"
+- takeScreenshot: f1-02-large
+- tapOn:
+    id: "sheets-large-done"
+- extendedWaitUntil:
+    visible:
+      id: "sheets-detent-large"
+      text: "large ok.*"
+    timeout: 10000
+
+# ---- 7b: a form sheet (P3) rides the keyboard, saves with it up, and guards a dirty close
+- tapOn:
+    id: "sheets-form-open"
+- extendedWaitUntil:
+    visible:
+      id: "sheets-form-two"
+    timeout: 10000
+- assertVisible:
+    id: "sheet-right"
+    enabled: false
+- tapOn:
+    id: "sheets-form-two"
+- inputText: "Second text"
+- extendedWaitUntil:
+    visible: "form (ok|FAILED).*"
+    timeout: 15000
+- assertVisible: "form ok.*"
+- assertVisible:
+    id: "sheet-right"
+    enabled: true
+- takeScreenshot: f1-03-form-keyboard
+- tapOn:
+    id: "sheet-right"
+- extendedWaitUntil:
+    visible:
+      id: "sheets-form-state"
+      text: "form: saved \\|Second text"
+    timeout: 10000
+- assertNotVisible:
+    id: "sheet-right"
+- tapOn:
+    id: "sheets-form-open"
+- extendedWaitUntil:
+    visible:
+      id: "sheets-form-one"
+    timeout: 10000
+- tapOn:
+    id: "sheets-form-one"
+- inputText: "draft"
+- tapOn:
+    id: "sheet-left"
+- extendedWaitUntil:
+    visible:
+      id: "confirm-go"
+    timeout: 10000
+- assertVisible: "Discard changes"
+# the form stays drawn under the confirm (the screenshot shows both); a modal layer hides what is under it from the accessibility tree, so it cannot be asserted
+- takeScreenshot: f1-04-discard-over-form
+- tapOn:
+    id: "confirm-cancel"
+- extendedWaitUntil:
+    notVisible:
+      id: "confirm-go"
+    timeout: 10000
+- assertVisible:
+    id: "sheets-form-one"
+    text: "draft"
+- tapOn:
+    id: "sheet-left"
+- extendedWaitUntil:
+    visible:
+      id: "confirm-go"
+    timeout: 10000
+- tapOn:
+    id: "confirm-go"
+- extendedWaitUntil:
+    visible:
+      id: "sheets-form-state"
+      text: "form: discarded"
+    timeout: 10000
+- assertNotVisible:
+    id: "sheet-left"
+- assertNotVisible:
+    id: "confirm-go"
+
+# ---- 7c: swipe rows (the rows are at 50 %, 57 % and 64 % of the window's height) and a long press
+- takeScreenshot: f1-05-rows
+- swipe:
+    start: "50%, 50%"
+    end: "10%, 50%"
+    duration: 400
+- extendedWaitUntil:
+    visible: "Delete"
+    timeout: 10000
+- assertVisible: "Archive"
+- takeScreenshot: f1-06-row-a-open
+- tapOn: "Delete"
+- extendedWaitUntil:
+    visible:
+      id: "sheets-swipe-last"
+      text: "delete a"
+    timeout: 10000
+- extendedWaitUntil:
+    notVisible: "Delete"
+    timeout: 10000
+- swipe:
+    start: "90%, 57%"
+    end: "2%, 57%"
+    duration: 400
+- extendedWaitUntil:
+    visible:
+      id: "sheets-swipe-last"
+      text: "archive b"
+    timeout: 10000
+- extendedWaitUntil:
+    notVisible: "Archive"
+    timeout: 10000
+- longPressOn:
+    id: "sheets-row-a"
+- extendedWaitUntil:
+    visible:
+      id: "sheets-swipe-last"
+      text: "long a"
+    timeout: 10000
+- assertVisible: "sheets-haptics: 1"
+- assertVisible: "haptics native: ok"
+# a swipe that starts inside the 20 pt edge opens nothing; from 10 % of the width the same swipe runs the full action
+- swipe:
+    start: "2%, 64%"
+    end: "90%, 64%"
+    duration: 400
+- assertVisible:
+    id: "sheets-swipe-last"
+    text: "long a"
+- assertNotVisible: "Unarchive"
+- swipe:
+    start: "10%, 64%"
+    end: "90%, 64%"
+    duration: 400
+- extendedWaitUntil:
+    visible:
+      id: "sheets-swipe-last"
+      text: "unarchive c"
+    timeout: 10000
+- takeScreenshot: f1-07-end

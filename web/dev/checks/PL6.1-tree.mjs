@@ -27,13 +27,26 @@
 //   cannot be dragged and its menu makes nothing, and says why.
 // The menu key itself is not pressed (a headless Chromium on macOS has none): the event a browser makes of it, a
 // contextmenu with no pointer, is sent to the focused row.
+// At the phone (ux-improvements S4) the popup is gone: the Library screen and the group screens are pushed screens, and the rule above is proved through them (`phoneHalf`).
+//   A new item is made where the screen says: "+" on the Library screen at the top level; "New prompt here" / "New group here" of a group's "⋯" sheet and its "+ New prompt here" row in that group;
+//   a nested group is one more push and its "here" is the nested group; the editor's and the group form's Group row says that place before the save; with unsaved changes in an open editor a press on the
+//   page behind only asks (a sheet at a time). A move is the Move picker (from a swipe's Move, a row's long-press sheet, a group's "Move group…" and the editor's Group row): "Top level" first, then the
+//   groups depth-first, each in by more than its parent (the icons' offsets are measured, also 16 deep), the current place tinted and checked with "Now here", a group's own subtree not offered; a pick moves
+//   the prompt or group (the mock's parent, and the lists: it leaves this screen and is on the target's), the current place does nothing, the editor's Group row changes the place only on Save (Discard leaves it).
+//   What the server refuses (a name taken at the new place, groups too deep) is said in the server's sentence, in the toast of a move and in the form's error of a save, nothing has moved and what was typed stays.
+//   With another server's library: its places are dimmed with "A prompt stays in its own server's library" and cannot be picked, a new item made in its section or at its top is that server's, and while it is
+//   away its rows have no swipe actions, its sheets' change rows wait with the reason and the picker's rows say "<name> is not connected".
+//   No phone counterpart: the indent lines, the menu key, the drag with its lit places and bar, Tab and the arrows of "Move…" (a finger has no hover, no key and no drag over rows; the picker is the one way to move).
 // Ports dev/checks/PL6.1-tree.mjs (S11) to the new build, at the three viewports (C-PL-10, 12 to 15, 17). What changed: the selectors (testIDs; `library.mjs` reads the popup and how the tree is set in),
 // the presses, the right click (a long press with a finger: the row's menu), the drag (a pointer gesture: a mouse drags at once, a finger is held first, then moves; the pointer's route is `pointerDragger`),
 // and the list's height and scroll, which are the scroll view's.
 
+import fs from "node:fs";
 import { callOfRequest, check, mockEval, seed, until } from "../shot.mjs";
-import { byTid, longPress, pointerDragger, press, showList, tidSel } from "./sel.mjs";
+import { byTid, longPress, pointerDragger, press, showList, tidSel, touchDrag } from "./sel.mjs";
 import { misshapen, seen, shape } from "./library.mjs";
+import { barOf, holdOpen, openGroup, openLibrary, pressSheetRow, rowsOf, sectionsOf, sheetOf, topScreen } from "./libphone.mjs";
+import { atRest } from "./settings.mjs";
 
 export const viewports = ["desktop", "tablet", "phone"];
 
@@ -43,9 +56,399 @@ const LIB = { groups: [g("g_git", "git"), g("g_hooks", "hooks", "g_git"), g("g_m
 const TREE = ["git", "  hooks", "    pre-commit", "  commit message", "  review", "misc", "  git commit style", "scratch", "todo"];
 const STUDIO = { id: "s_studio", name: "Studio", address: "https://studio.example:4790", state: "connected", version: "dev" };
 const THEIRS = { groups: [g("g_team", "team")], prompts: [p("p_stand", "standup", "g_team"), p("p_retro", "retro", "")] };
+const mkG = g, mkP = p;
 const TOP = "At the top level", TO_TOP = "Move to the top level", ITEMS = ["New prompt", "New group"];
 
+// ---- the phone's half (ux-improvements S4): the Library screen and the group screens, the editor, the group form and the Move picker
+const WAIT = 15000, J = JSON.stringify;
+const SENTENCE_TAKEN = 'There is already a prompt called "todo" at the top of the library.';
+
+async function phoneHalf({ url, open, fail, note }) {
+  const { page } = await open();
+  const OUT = process.env.OUT; // (set: the picker, the editor and the refusal are shot, light and dark)
+  const shoot = async (name) => { if (!OUT) return; fs.mkdirSync(OUT, { recursive: true }); await page.waitForTimeout(450); await page.screenshot({ path: `${OUT}/pl61-${name}.png` }); };
+  await byTid(page, "home").first().waitFor({ state: "visible", timeout: WAIT });
+  const calls = []; // the calls that change a library
+  page.on("request", (r) => { const c = callOfRequest(r); if (c && c.method !== "GET" && c.path.includes("/api/library/")) calls.push(c.method); });
+  const lib = (server = "local") => mockEval(`return libraries[${J(server)}] ?? null;`, url);
+  const item = async (name, server = "local") => { const l = await lib(server); return [...l.prompts, ...l.groups].find((x) => x.name === name) ?? null; };
+  const reset = async ({ studio = false } = {}) => {
+    await page.evaluate(() => window.__aiwbLibrary.closeAllSheets());
+    await mockEval(`setServers(${studio ? J([STUDIO]) : "[]"}); setLibrary("local", ${J(LIB)});${studio ? ` setLibrary(${J(STUDIO.id)}, ${J(THEIRS)}); setServerState(${J(STUDIO.id)}, "connected", { version: "dev" });` : ""}`, url);
+  };
+  const shows = async (what, want) => { if (!await until(async () => Boolean(await want()), WAIT)) fail(`${what}: not so after ${WAIT} ms`); };
+  const sheets = () => page.evaluate(() => window.__aiwbLibrary.sheets());
+  const names = async () => (await rowsOf(page)).map((r) => r.name);
+  const tx = async (id) => ((await byTid(page, id).last().innerText().catch(() => "")) || "").replace(/\s+/g, " ").trim();
+  const gone = (id) => until(async () => (await byTid(page, id).count()) === 0, WAIT);
+  const field = (id) => byTid(page, id).last();
+  const barIs = async (back, title, what) => { const b = await barOf(page); if (b.back !== back || b.title !== title) fail(`${what}: the bar says back ${J(b.back)}, title ${J(b.title)}; wanted ${J(back)}, ${J(title)}`); };
+
+  /** The Library screen on top: the group screens above it are popped by their back. */
+  const toLibrary = async () => {
+    await page.evaluate(() => window.__aiwbLibrary.closeAllSheets());
+    for (let i = 0; i < 20; i++) {
+      const top = (await topScreen(page)).testId;
+      if (top === "lib-screen") break;
+      if (top === null) { await openLibrary(page); break; }
+      await press(page, byTid(page, "nav-back").last());
+      await page.waitForTimeout(250);
+    }
+    await atRest(page, "lib-screen");
+  };
+  const groupIn = async (ids) => { for (const id of ids) await openGroup(page, id); };
+
+  // ---- sheets: the action sheet (P1), the swipe, the Move picker
+  const sheetOpen = async (id = "action-sheet") => {
+    await byTid(page, id).last().waitFor({ state: "visible", timeout: WAIT });
+    await atRest(page, id === "action-sheet" ? "action-row" : "confirm-go");
+    await page.waitForFunction((id) => { const s = [...document.querySelectorAll(`[data-testid="${id}"]`)].pop(), last = [...s.querySelectorAll('[data-testid="action-row"], [data-testid="confirm-go"]')].pop(); return !!last && last.getBoundingClientRect().bottom <= innerHeight; }, id, { timeout: WAIT });
+    return sheetOf(page, id);
+  };
+  const sheetGone = () => until(async () => (await byTid(page, "action-sheet").count()) === 0 || !(await byTid(page, "action-sheet").last().isVisible().catch(() => false)), WAIT);
+  const closeP1 = async () => { await page.keyboard.press("Escape"); await sheetGone(); };
+  const swipeRow = (id) => `[data-testid="swipe-row"][data-id=${J(id)}]`;
+  const actionsOf = (id) => page.evaluate((sel) => [...document.querySelectorAll(`${sel} [data-testid="swipe-action"]`)].map((e) => ({ action: e.dataset.action, label: e.textContent.trim() })), swipeRow(id));
+  const swipe = async (id) => {
+    await until(async () => (await actionsOf(id)).length === 0, WAIT);
+    const l = page.locator(swipeRow(id)).first();
+    await l.scrollIntoViewIfNeeded();
+    const b = await l.boundingBox();
+    await touchDrag(page, { x: b.x + b.width * 0.7, y: b.y + b.height / 2 }, { x: b.x + b.width * 0.3, y: b.y + b.height / 2 }, { hold: 0 });
+  };
+  /** The picker opened by the row's swipe (Move). */
+  const moveBySwipe = async (id) => {
+    await swipe(id);
+    if (!await until(async () => (await actionsOf(id)).length === 2, WAIT)) fail(`a swipe on ${id} did not open its actions`);
+    await press(page, page.locator(`${swipeRow(id)} [data-testid="swipe-action"][data-action="move"]`).first());
+    await atRest(page, "move-picker");
+  };
+  /** The picker opened by a row's long-press sheet. */
+  const moveByRow = async (kind, id) => {
+    await holdOpen(page, byTid(page, kind === "group" ? "lib-group-row" : "lib-prompt-row", { id }).last());
+    await sheetOpen();
+    await pressSheetRow(page, "action-sheet", "move");
+    await atRest(page, "move-picker");
+  };
+  /** The picker opened by "Move group…" of the "⋯" sheet of the group screen on top. */
+  const moveByMore = async () => {
+    await press(page, byTid(page, "lib-more").last());
+    await sheetOpen();
+    await pressSheetRow(page, "action-sheet", "move");
+    await atRest(page, "move-picker");
+  };
+  const pickerRows = () => page.evaluate(() => {
+    const root = [...document.querySelectorAll('[data-testid="move-picker"]')].pop();
+    const rows = [...root.querySelectorAll('[data-testid="picker-row"]')];
+    const heads = [...root.querySelectorAll('[data-testid="menu-head"]')].map((e) => e.textContent.trim().toLowerCase());
+    const sectionOf = (row) => { let s = ""; for (const h of root.querySelectorAll('[data-testid="menu-head"]')) if (h.compareDocumentPosition(row) & Node.DOCUMENT_POSITION_FOLLOWING) s = h.textContent.trim().toLowerCase(); return s; };
+    return { title: root.querySelector('[data-testid="sheet-title"]')?.innerText.trim(), sub: root.querySelector('[data-testid="sheet-sub"]')?.innerText.trim(), heads, rows: rows.map((r) => {
+      const lines = r.innerText.split("\n").map((s) => s.trim()).filter(Boolean), svg = r.querySelector("svg")?.getBoundingClientRect();
+      return { value: r.dataset.value, label: lines[0], note: lines.find((l, i) => i && l !== "✓") ?? "", checked: r.getAttribute("aria-checked") === "true", off: r.getAttribute("aria-disabled") === "true", tick: lines.includes("✓"), glyph: svg ? Math.round(svg.left) : null, section: sectionOf(r) };
+    }) };
+  });
+  const pickerRow = (value) => byTid(page, "move-picker").last().locator(tidSel("picker-row", { value }));
+  const closePicker = async () => { await page.keyboard.press("Escape"); await gone("move-picker"); };
+  const labels = (p, section) => p.rows.filter((r) => section === undefined || r.section === section).map((r) => r.label).join("|");
+  /** The indents of the rows given (by label): the left of each row's icon. */
+  const glyphs = (p, wanted) => wanted.map((l) => p.rows.find((r) => r.label === l)?.glyph);
+
+  // ---- the editor and the group form
+  const rowText = (id) => tx(id);
+  const saveIt = async (id) => { await press(page, byTid(page, "sheet-right").last()); if (!await gone(id)) fail(`${id} stays after Save`); };
+  const discard = async (id) => { await press(page, byTid(page, "sheet-left").last()); await atRest(page, "confirm-sheet"); await press(page, byTid(page, "confirm-go").last()); if (!await gone(id)) fail(`${id} stays after Discard`); };
+  const tapOn = async (id, data) => { await press(page, byTid(page, id, data).last()); };
+  const toastIs = async (what, sentence) => {
+    if (!await until(async () => (await byTid(page, "toast").count()) > 0 && (await tx("toast")).includes(sentence), WAIT)) fail(`${what}: the toast says ${J(await tx("toast"))}, not ${J(sentence)}`);
+    else if ((await byTid(page, "toast").last().getAttribute("data-kind")) !== "error") fail(`${what}: the toast is not an error`);
+  };
+
+  try {
+    // ================================================================ a new item is made where the screen says
+    await reset();
+    await openLibrary(page);
+    await toLibrary();
+    // "+" on the Library screen: the top level
+    await press(page, byTid(page, "lib-plus").last());
+    let sh = await sheetOpen();
+    if (sh.sub !== "At the top level") fail(`the "+" sheet says ${J(sh.sub)}, not "At the top level"`);
+    await pressSheetRow(page, "action-sheet", "new-prompt");
+    await atRest(page, "prompt-editor");
+    if (await rowText("editor-group-row") !== "Group Top level") fail(`"+" › New prompt: the Group row says ${J(await rowText("editor-group-row"))} before the save, not "Group Top level"`);
+    await field("editor-name").fill("zeta");
+    await saveIt("prompt-editor");
+    await shows("the prompt made by \"+\" at the top", async () => (await item("zeta"))?.parent === "");
+    await shows("its row on the Library screen", async () => (await names()).includes("zeta"));
+    await press(page, byTid(page, "lib-plus").last());
+    await sheetOpen();
+    await pressSheetRow(page, "action-sheet", "new-group");
+    await atRest(page, "group-form");
+    if (await tx("group-form-where") !== "In Top level") fail(`"+" › New group: the In row says ${J(await tx("group-form-where"))} before the save`);
+    await field("group-form-name").fill("ci");
+    await saveIt("group-form");
+    await shows("the group made by \"+\" at the top", async () => (await item("ci"))?.parent === "");
+    await shows("its row on the Library screen", async () => (await rowsOf(page)).some((r) => r.kind === "group" && r.name === "ci"));
+
+    // a group's screen: its "⋯" sheet and its "+ New prompt here" row make the item in that group
+    await groupIn(["g_git", "g_hooks"]);
+    await barIs("git", "hooks", "the nested group screen");
+    await press(page, byTid(page, "lib-more").last());
+    sh = await sheetOpen();
+    if (sh.title !== "hooks" || sh.sub !== "Group in git · 1 prompt") fail(`hooks' sheet head is ${J([sh.title, sh.sub])}`);
+    await pressSheetRow(page, "action-sheet", "new-prompt");
+    await atRest(page, "prompt-editor");
+    if (await rowText("editor-group-row") !== "Group git › hooks") fail(`"New prompt here" of hooks' sheet: the Group row says ${J(await rowText("editor-group-row"))} before the save`);
+    await field("editor-name").fill("lint");
+    await saveIt("prompt-editor");
+    await shows("the prompt made by hooks' sheet", async () => (await item("lint"))?.parent === "g_hooks");
+    await shows("its row on hooks' screen", async () => (await rowsOf(page)).some((r) => r.kind === "prompt" && r.name === "lint"));
+    await tapOn("lib-new-here");
+    await atRest(page, "prompt-editor");
+    if (await rowText("editor-group-row") !== "Group git › hooks") fail(`"+ New prompt here" of hooks: the Group row says ${J(await rowText("editor-group-row"))}`);
+    await field("editor-name").fill("fmt");
+    await saveIt("prompt-editor");
+    await shows("the prompt made by hooks' New prompt here row", async () => (await item("fmt"))?.parent === "g_hooks");
+    await press(page, byTid(page, "lib-more").last());
+    await sheetOpen();
+    await pressSheetRow(page, "action-sheet", "new-group");
+    await atRest(page, "group-form");
+    if (await tx("group-form-where") !== "In git › hooks") fail(`hooks' "New group here": the In row says ${J(await tx("group-form-where"))}`);
+    await field("group-form-name").fill("deep");
+    await saveIt("group-form");
+    await shows("the group made by hooks' sheet", async () => (await item("deep"))?.parent === "g_hooks");
+    // a nested group is one more push, and its "here" is the nested group
+    const deep = await item("deep");
+    await shows("the nested group's row", async () => (await rowsOf(page)).some((r) => r.id === deep.id));
+    await openGroup(page, deep.id);
+    await barIs("hooks", "deep", "the nested group's screen");
+    await tapOn("lib-new-here");
+    await atRest(page, "prompt-editor");
+    if (await rowText("editor-group-row") !== "Group git › hooks › deep") fail(`the nested group's "New prompt here": the Group row says ${J(await rowText("editor-group-row"))}`);
+    // with unsaved changes nothing else opens over the editor: a press on the page behind asks first (a sheet at a time)
+    await field("editor-name").fill("half");
+    await shoot("editor-new-light");
+    await page.mouse.click(10, 6);
+    await atRest(page, "confirm-sheet");
+    if (await tx("confirm-title") !== "Discard the new prompt?") fail(`a press behind an unsaved editor asks ${J(await tx("confirm-title"))}`);
+    if ((await byTid(page, "action-sheet").count()) || (await byTid(page, "move-picker").count()) || (await byTid(page, "group-form").count())) fail("a sheet opened over the unsaved editor");
+    await press(page, byTid(page, "confirm-cancel").last());
+    await gone("confirm-sheet");
+    const s = await sheets();
+    if (s.editor?.mode !== "new" || s.move || s.groupForm || (await field("editor-name").inputValue()) !== "half") fail(`after Keep editing the sheets are ${J(s)} and the name ${J(await field("editor-name").inputValue())}`);
+    await discard("prompt-editor");
+    if (await item("half")) fail("Discard saved the new prompt");
+    await press(page, byTid(page, "lib-more").last());
+    await sheetOpen();
+    await pressSheetRow(page, "action-sheet", "new-group");
+    await atRest(page, "group-form");
+    if (await tx("group-form-where") !== "In git › hooks › deep") fail(`the nested group's "New group here": the In row says ${J(await tx("group-form-where"))}`);
+    await press(page, byTid(page, "sheet-left").last());
+    if (!await gone("group-form")) fail("an unchanged group form stays after Cancel");
+    note("a new item is made where the screen says: \"+\" at the top, a group's \"⋯\" sheet and its New prompt here row in that group, a nested group is one more push; the Group row says the place before the save; an unsaved editor asks before anything else");
+
+    // ================================================================ the Move picker
+    await reset();
+    await toLibrary();
+    calls.length = 0;
+    // from a swipe: "Top level" first, then the groups depth-first, each in by more than its parent; the current place tinted and checked
+    await moveBySwipe("p_scratch");
+    let p = await pickerRows();
+    if (p.title !== "Move “scratch” to…" || p.sub !== "Choose its new group") fail(`the picker says ${J([p.title, p.sub])}`);
+    if (labels(p) !== "Top level|git|hooks|misc") fail(`the picker lists ${labels(p)}, not Top level|git|hooks|misc`);
+    let [gTop, gGit, gHooks, gMisc] = glyphs(p, ["Top level", "git", "hooks", "misc"]);
+    if (!(gHooks > gGit) || gMisc !== gGit || gGit < gTop) fail(`the icons of Top level, git, hooks, misc are at ${gTop}, ${gGit}, ${gHooks}, ${gMisc}: hooks must be in by more than git`);
+    await shoot("picker-light");
+    await page.emulateMedia({ colorScheme: "dark" });
+    await shoot("picker-dark");
+    await page.emulateMedia({ colorScheme: "light" });
+    const here = p.rows.filter((r) => r.checked);
+    if (here.length !== 1 || here[0].label !== "Top level" || !here[0].tick || here[0].note !== "Now here") fail(`the current place is ${J(here)}, not Top level ✓ Now here`);
+    await pickerRow("local|g_hooks").evaluate((e) => e.scrollIntoView({ block: "center" }));
+    await press(page, pickerRow("local|g_hooks"));
+    if (!await gone("move-picker")) fail("the picker stays after a pick");
+    await shows("the prompt moved by the swipe's Move", async () => (await item("scratch"))?.parent === "g_hooks");
+    await shows("it left the Library screen", async () => !(await names()).includes("scratch"));
+    if (calls.join() !== "PATCH") fail(`a move made the calls ${J(calls)}`);
+    await groupIn(["g_git", "g_hooks"]);
+    await shows("it is on hooks' screen", async () => (await rowsOf(page)).some((r) => r.kind === "prompt" && r.name === "scratch"));
+    // from the row's long-press sheet: picking the current place does nothing
+    calls.length = 0;
+    await moveByRow("prompt", "p_scratch");
+    p = await pickerRows();
+    const cur = p.rows.filter((r) => r.checked);
+    if (cur.length !== 1 || cur[0].label !== "hooks" || cur[0].note !== "Now here") fail(`the current place of "scratch" is ${J(cur)}, not hooks ✓ Now here`);
+    await press(page, pickerRow("local|g_hooks"));
+    await gone("move-picker");
+    await page.waitForTimeout(500);
+    if (calls.length || (await item("scratch")).parent !== "g_hooks") fail(`a pick of the current place made the calls ${J(calls)} or moved the prompt`);
+    // a group: not into itself or below itself (from its row's sheet), a pick moves it (from the "⋯" sheet)
+    await toLibrary();
+    await moveByRow("group", "g_git");
+    p = await pickerRows();
+    if (p.title !== "Move “git” to…" || labels(p) !== "Top level|misc") fail(`git's picker lists ${J(labels(p))} under ${J(p.title)}: its own subtree must not be offered`);
+    if (p.rows.find((r) => r.checked)?.label !== "Top level") fail("git's current place is not Top level");
+    await closePicker();
+    await sheetGone();
+    await groupIn(["g_misc"]);
+    await moveByMore();
+    p = await pickerRows();
+    if (p.title !== "Move “misc” to…" || labels(p) !== "Top level|git|hooks") fail(`misc's picker lists ${J(labels(p))} under ${J(p.title)}`);
+    calls.length = 0;
+    await press(page, pickerRow("local|g_hooks"));
+    if (!await gone("move-picker")) fail("the group picker stays after a pick");
+    await shows("the group moved by its \"⋯\" sheet", async () => (await item("misc"))?.parent === "g_hooks");
+    await press(page, byTid(page, "nav-back").last());
+    await atRest(page, "lib-screen");
+    await shows("the group left the Library screen", async () => !(await names()).includes("misc"));
+    await groupIn(["g_git", "g_hooks"]);
+    await shows("the group is on hooks' screen", async () => (await rowsOf(page)).some((r) => r.kind === "group" && r.name === "misc"));
+    if (calls.join() !== "PATCH") fail(`the group's move made the calls ${J(calls)}`);
+    // the editor's Group row changes the place only on Save
+    await reset();
+    await toLibrary();
+    await groupIn(["g_git"]);
+    await tapOn("lib-prompt-row", { id: "p_review" });
+    await atRest(page, "prompt-editor");
+    if (await rowText("editor-group-row") !== "Group git") fail(`the Group row of "review" says ${J(await rowText("editor-group-row"))}`);
+    await tapOn("editor-group-row");
+    await atRest(page, "move-picker");
+    p = await pickerRows();
+    if (p.rows.find((r) => r.checked)?.label !== "git" || p.rows.find((r) => r.checked)?.note !== "Now here") fail(`the editor's picker has the current place ${J(p.rows.find((r) => r.checked))}`);
+    await press(page, pickerRow("local|g_misc"));
+    await gone("move-picker");
+    if (await rowText("editor-group-row") !== "Group misc") fail(`after a pick the Group row says ${J(await rowText("editor-group-row"))}`);
+    if ((await item("review")).parent !== "g_git") fail("a pick in the editor moved the prompt before Save");
+    await discard("prompt-editor");
+    if ((await item("review")).parent !== "g_git") fail("Discard moved the prompt");
+    await tapOn("lib-prompt-row", { id: "p_review" });
+    await atRest(page, "prompt-editor");
+    if (await rowText("editor-group-row") !== "Group git") fail(`reopened, the Group row says ${J(await rowText("editor-group-row"))}, not "Group git"`);
+    await tapOn("editor-group-row");
+    await atRest(page, "move-picker");
+    await press(page, pickerRow("local|g_misc"));
+    await gone("move-picker");
+    await saveIt("prompt-editor");
+    await shows("the prompt moved by the editor's Save", async () => (await item("review"))?.parent === "g_misc");
+    await shows("it left git's screen", async () => !(await names()).includes("review"));
+    note("the Move picker (swipe, row sheet, \"Move group…\", the editor's Group row): Top level first, then the groups depth-first, each in by more than its parent, the current place ✓ Now here; a group is not offered its own subtree; a pick moves, the current place does nothing; the editor moves only on Save");
+
+    // ================================================================ what the server refuses
+    await reset();
+    await mockEval(`libraries.local.prompts.push(${J(mkP("p_todo2", "TODO", "g_misc"))}); sendLibrary("local");`, url);
+    await toLibrary();
+    await groupIn(["g_misc"]);
+    await shows("the prompt of a taken name in misc", async () => (await names()).includes("TODO"));
+    await moveBySwipe("p_todo2");
+    await press(page, pickerRow("local|"));
+    await gone("move-picker");
+    await toastIs("a move to a taken name", SENTENCE_TAKEN);
+    await shoot("refused-toast-light");
+    await page.waitForTimeout(400);
+    if ((await item("TODO")).parent !== "g_misc") fail("a refused move moved the prompt");
+    // the editor: the refusal is the form's error, what was typed stays
+    await tapOn("lib-prompt-row", { id: "p_todo2" });
+    await atRest(page, "prompt-editor");
+    await field("editor-text").fill("Typed text that must stay.");
+    await tapOn("editor-group-row");
+    await atRest(page, "move-picker");
+    await press(page, pickerRow("local|"));
+    await gone("move-picker");
+    await press(page, byTid(page, "sheet-right").last());
+    if (!await until(async () => (await byTid(page, "form-error").count()) === 1, WAIT)) fail("a refused save shows no error in the form");
+    else if (await tx("form-error") !== SENTENCE_TAKEN) fail(`the refusal in the form reads ${J(await tx("form-error"))}`);
+    if ((await field("editor-text").inputValue()) !== "Typed text that must stay." || (await field("editor-name").inputValue()) !== "TODO" || await rowText("editor-group-row") !== "Group Top level") fail("a refused save lost what was typed");
+    if (!(await byTid(page, "prompt-editor").count())) fail("a refused save closed the editor");
+    if ((await item("TODO")).parent !== "g_misc") fail("a refused save moved the prompt");
+    await discard("prompt-editor");
+    // too deep: a chain of 16 groups takes a prompt and no group
+    await toLibrary();
+    const chain = Array.from({ length: 16 }, (_, i) => mkG(`g_d${i + 1}`, `d${i + 1}`, i ? `g_d${i}` : ""));
+    await mockEval(`libraries.local.groups.push(${J(mkG("g_ci", "ci", ""))}, ...${J(chain)}); sendLibrary("local");`, url);
+    await shows("the chain and ci on the Library screen", async () => (await names()).includes("ci"));
+    await moveBySwipe("g_ci");
+    p = await pickerRows();
+    const ds = glyphs(p, chain.map((x) => x.name));
+    if (ds.some((x, i) => x == null || (i && x <= ds[i - 1]))) fail(`the 16 nested places are not each in by more than the one above: ${J(ds)}`);
+    await press(page, pickerRow("local|g_d16"));
+    await gone("move-picker");
+    await toastIs("a move too deep", "Groups can be at most 16 deep.");
+    await page.waitForTimeout(400);
+    if ((await item("ci")).parent !== "") fail("a refused move too deep moved the group");
+    note("what the server refuses is said in its sentence (the toast of a move, the form's error of a save) and nothing has moved; what was typed stays; 16 nested places are each in by more than the one above");
+
+    // ================================================================ another server's library
+    await reset({ studio: true });
+    await toLibrary();
+    await shows("two sections", async () => (await sectionsOf(page)).length === 2);
+    calls.length = 0;
+    await moveBySwipe("p_scratch");
+    p = await pickerRows();
+    if (p.heads.join("|") !== "this computer|studio") fail(`the picker's sections are ${J(p.heads)}`);
+    const theirs = p.rows.filter((r) => r.section === "studio");
+    if (!theirs.length || theirs.some((r) => !r.off || r.note !== "A prompt stays in its own server's library")) fail(`Studio's places are ${J(theirs)}, not dimmed with the reason`);
+    if (p.rows.filter((r) => r.section === "this computer").some((r) => r.off)) fail("this computer's places are dimmed for its own prompt");
+    await shoot("picker-two-servers-light");
+    await page.emulateMedia({ colorScheme: "dark" });
+    await shoot("picker-two-servers-dark");
+    await page.emulateMedia({ colorScheme: "light" });
+    await pickerRow("s_studio|g_team").evaluate((e) => e.scrollIntoView({ block: "center" }));
+    await page.touchscreen.tap(...(await (async () => { const b = await pickerRow("s_studio|g_team").boundingBox(); return [b.x + b.width / 2, b.y + b.height / 2]; })()));
+    await page.waitForTimeout(500);
+    if (calls.length || (await item("scratch")).parent !== "") fail(`a dimmed place of another server could be picked: calls ${J(calls)}`);
+    await closePicker();
+    // a prompt of the other server: its own places are open, this computer's are dimmed
+    await moveBySwipe("p_retro");
+    p = await pickerRows();
+    if (p.rows.filter((r) => r.section === "studio").some((r) => r.off) || p.rows.filter((r) => r.section === "this computer").some((r) => !r.off)) fail(`the picker for Studio's prompt is ${J(p.rows.map((r) => [r.section, r.label, r.off]))}`);
+    await press(page, pickerRow("s_studio|g_team"));
+    await gone("move-picker");
+    await shows("Studio's prompt moved in its own library", async () => (await item("retro", "s_studio"))?.parent === "g_team");
+    // a new item made in the server's section is that server's
+    await openGroup(page, "g_team");
+    await tapOn("lib-new-here");
+    await atRest(page, "prompt-editor");
+    if (await rowText("editor-group-row") !== "Group Studio › team") fail(`in Studio's group the Group row says ${J(await rowText("editor-group-row"))}`);
+    await field("editor-name").fill("newbie");
+    await saveIt("prompt-editor");
+    await shows("the new prompt is Studio's", async () => (await item("newbie", "s_studio"))?.parent === "g_team" && !(await item("newbie")));
+    // at the top of the server's library, chosen with the Group row
+    await toLibrary();
+    await press(page, byTid(page, "lib-plus").last());
+    await sheetOpen();
+    await pressSheetRow(page, "action-sheet", "new-prompt");
+    await atRest(page, "prompt-editor");
+    await tapOn("editor-group-row");
+    await atRest(page, "move-picker");
+    p = await pickerRows();
+    if (p.rows.some((r) => r.off)) fail(`a new prompt cannot be put in every connected library: ${J(p.rows.filter((r) => r.off))}`);
+    await pickerRow("s_studio|").evaluate((e) => e.scrollIntoView({ block: "center" }));
+    await press(page, pickerRow("s_studio|"));
+    await gone("move-picker");
+    if (await rowText("editor-group-row") !== "Group Studio › Top level") fail(`after the pick the Group row says ${J(await rowText("editor-group-row"))}`);
+    await field("editor-name").fill("toplevel");
+    await saveIt("prompt-editor");
+    await shows("the prompt at Studio's top is Studio's", async () => (await item("toplevel", "s_studio"))?.parent === "" && !(await item("toplevel")));
+    // the server is away
+    await mockEval(`setServerState(${J(STUDIO.id)}, "unreachable", { detail: "connection refused" });`, url);
+    await shows("a notice for Studio", async () => (await sectionsOf(page)).some((x) => x.notice.length));
+    await swipe("g_team");
+    await page.waitForTimeout(500);
+    if ((await actionsOf("g_team")).length) fail("a swipe on a row of the server that is away shows actions");
+    await holdOpen(page, byTid(page, "lib-group-row", { id: "g_team" }).last());
+    sh = await sheetOpen();
+    if (sh.rows.some((r) => !r.disabled || r.note !== "Studio is not connected")) fail(`the sheet of a row of the server that is away has the rows ${J(sh.rows)}`);
+    await closeP1();
+    await moveBySwipe("p_scratch");
+    p = await pickerRows();
+    const away = p.rows.filter((r) => r.section === "studio");
+    if (!away.length || away.some((r) => !r.off || r.note !== "Studio is not connected")) fail(`Studio's places while it is away are ${J(away)}, not "Studio is not connected"`);
+    await closePicker();
+    note("another server's places are dimmed with the reason and cannot be picked; a new item made in its section or at its top is that server's; while it is away its rows have no swipe actions, its sheets wait and its places say it is not connected");
+  } catch (e) { fail(`${String(e.message ?? e).split("\n")[0]} (${(String(e.stack).match(/PL6\.1-tree\.mjs:\d+/g) ?? ["?"]).join(" < ")})`); }
+}
+
 await check("PL6.1 the library's tree: how it is set in, the menu of a right click, the buttons, and moves by a drag and by the keys", async ({ url, open, fail, note, touch, layout }) => {
+  if (layout === "phone") return phoneHalf({ url, open, fail, note });
   const seeded = await seed(url, "A2");
   const sel = seeded.find((s) => s.id === "plain-started")?.sel ?? fail("the seed has no state plain-started");
   const lib = (server = "local") => mockEval(`return libraries[${JSON.stringify(server)}] ?? null;`, url);

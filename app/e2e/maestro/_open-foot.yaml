@@ -1,0 +1,72 @@
+# Shared by the flows of the app: presses a control of the sidebar's foot (param `ID`: `servers-btn`, `settings-btn`; the others, `library-btn`, `theme-btn`, `side-archived`, have a
+# row of Settings too, below).
+# On the phone the foot is behind Home's gear, in Settings (S1): the gear is pressed, then Settings' row for the control (`settings-row`, found by its text: Servers, Prompt
+# library, Voice, Archived, Appearance), then the cell of the row's placeholder screen that does what the foot's control did ("Open servers", "Open voice settings", "Open
+# prompt library"; the switch of Archived is pressed by the flow itself). Once a package registers its own screen for a row, the cell is gone: that step is optional.
+# On the tablet the sidebar's foot is on the screen and the control is pressed directly. Needs Home (phone) or the sidebar (tablet) on the screen.
+appId: ${APP_ID}
+---
+- runFlow:
+    when:
+      visible:
+        id: "home"
+    commands:
+      - tapOn:
+          id: "home-gear"
+      - extendedWaitUntil:
+          visible:
+            id: "settings-row"
+          timeout: 30000
+      - runFlow:
+          when:
+            true: ${ID == 'servers-btn'}
+          commands:
+            - tapOn:
+                id: "settings-row"
+                text: "Servers.*"
+            - tapOn:
+                text: "Open servers"
+                optional: true
+      - runFlow:
+          when:
+            true: ${ID == 'settings-btn'}
+          commands:
+            - tapOn:
+                id: "settings-row"
+                text: "Voice.*"
+            - tapOn:
+                text: "Open voice settings"
+                optional: true
+      - runFlow:
+          when:
+            true: ${ID == 'library-btn'}
+          commands:
+            - tapOn:
+                id: "settings-row"
+                text: "Prompt library.*"
+            - tapOn:
+                text: "Open prompt library"
+                optional: true
+      - runFlow:
+          when:
+            true: ${ID == 'side-archived'}
+          commands:
+            - tapOn:
+                id: "settings-row"
+                text: "Archived.*"
+            - tapOn:
+                text: "Show archived chats in the list"
+      - runFlow:
+          when:
+            true: ${ID == 'theme-btn'}
+          commands:
+            - tapOn:
+                id: "settings-row"
+                text: "Appearance.*"
+- runFlow:
+    when:
+      visible:
+        id: "side-tree"
+    commands:
+      - tapOn:
+          id: "${ID}"

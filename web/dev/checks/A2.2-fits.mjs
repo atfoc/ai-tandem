@@ -16,27 +16,34 @@
 //    is read at rest at that width (the toolbar's fit, "more" open and closed), and a load is sampled from the first frame;
 //  - the "more" popup is a sheet or a popover over a backdrop (ui/Overlay), where the old one had none: Send is not within reach in a frame
 //    in which it is open, as in one in which a picker's list is (the probe's `list` is any overlay);
+//  - at the phone (ux-improvements C1: the phone viewport, and any window under 700 px, so the desktop's page widths 300 to 560) the composer is the
+//    phone's: no toolbar of chips, no "more" chip or popup, no Stop and Send of 28 px. There the same fit is held for its parts: "+" and the
+//    primary (Talk, Send or Stop) are 44 pt targets inside the box and the elements at their own centres, the context ring is drawn, nothing ends past
+//    the box, the choices stand in a row that scrolls sideways and is no wider than its pane (none in a started chat), and the document does not
+//    scroll sideways; in every frame of a load, of a chip's arrival and of a branch change. The "more" variants and ⌘B are the wide layouts';
 //  - the states with a pending move (`act` "move") are played with S8's Branch action (`acts.move` of sel.mjs); the other
 //    branch's alert is the header's `fk-alert` (S8), and the branch change is made by pressing it.
 import { check, dragResizer, mockEval, sampleFrames, seed, until } from "../shot.mjs";
-import { HEIGHT, MORE, POP, RAIL, SIDE, SEES, countOf, fitProbe, frame, measureComposer, openState, pageWindow, playable, rowOf } from "./composer.mjs";
+import { HEIGHT, MORE, blockHeld, blocked, isNarrow, POP, RAIL, SIDE, countOf, fitProbe, frame, measureComposer, openState, pageWindow, phoneFitOf, playable, rowOf, seesOf } from "./composer.mjs";
 import { back as _back, byTid, press, tidSel } from "./sel.mjs";
 
 export const viewports = ["desktop", "tablet", "phone"];
 
 const WIDTHS = { panel: [300, 340, 400, 480, 760], page: [300, 340, 400, 480, 560, 900] };
 const SEND = 28; // px: Stop and Send (G1 §Q2), which never shrink
+const TOUCH = 44; // pt: the phone's buttons (the primary, "+", the ring)
 
 await check("A2.2 the composer fits its box, at rest and in every frame", async ({ url, layout, open, fail, note }) => {
   const wide = layout === "desktop";
   const states = (await seed(url, "A2")).filter((s) => playable(s, layout));
   const state = (id) => states.find((s) => s.id === id) ?? (() => { throw new Error(`the seed has no state ${id}`); })();
   const close = async ({ ctx }) => { await ctx.close(); };
+  const onPhone = (page) => page.evaluate(() => !!document.querySelector('[data-testid="composer-phone-tools"]'));
   /** The state is drawn: what its entry names is on the page, in the toolbar or, when it is a chip the toolbar has no room for, in the "more" popup. */
   const drawn = async (page, s, name) => {
-    const parts = SEES[s.id] ?? [{ tid: "composer-box" }];
+    const phone = await onPhone(page), parts = seesOf(s.id, phone);
     const here = async () => (await Promise.all(parts.map((p) => countOf(page, p)))).every((n) => n > 0);
-    const chips = parts.some((p) => p.tid === "tchip"); // (only a chip can be in the popup)
+    const chips = !phone && parts.some((p) => p.tid === "tchip"); // (only a chip can be in the popup; the phone has none)
     if (!await until(async () => await here() || (chips && await page.locator(MORE).count()), 10000)) return fail(`${name}: nothing matches ${JSON.stringify(parts)}${chips ? ', and the toolbar has no "more"' : ""}`);
     if (await here()) return;
     await press(page, page.locator(MORE));
@@ -59,8 +66,23 @@ await check("A2.2 the composer fits its box, at rest and in every frame", async 
     const row = await rowOf(page);
     if (row && row.lines > 4) fail(`${name}: the toolbar's controls are not on one line: their centres are ${row.lines} px apart`);
     if (row && row.out > 0.5) fail(`${name}: a control of the toolbar ends ${row.out} px past its row`);
-    if (row && (!row.send.length || row.send.some((w) => Math.abs(w - SEND) > 0.5))) fail(`${name}: Stop and Send are ${row.send.join(" and ") || "not in the row"} px wide, not ${SEND} each`);
+    if (row && !row.phone && (!row.send.length || row.send.some((w) => Math.abs(w - SEND) > 0.5))) fail(`${name}: Stop and Send are ${row.send.join(" and ") || "not in the row"} px wide, not ${SEND} each`);
+    const ph = await phoneFitOf(page);
+    if (ph) phoneHeld(ph, name);
     return m;
+  };
+  /** The phone's composer against its box and its pane (composer.mjs phoneFitOf). */
+  const phoneHeld = (ph, name) => {
+    if (!ph.plus || !ph.main) return fail(`${name}: the phone's toolbar has no ${ph.plus ? "primary (Talk, Send or Stop)" : '"+"'}`);
+    if (!ph.plus.ok) fail(`${name}: "+" is not the element at its own centre`);
+    if (!ph.main.ok) fail(`${name}: the primary (${ph.main.id}) is not the element at its own centre`);
+    if (ph.plus.left < ph.boxLeft - 0.5 || ph.main.right > ph.boxRight + 0.5) fail(`${name}: "+" (${ph.plus.left}) or the primary (to ${ph.main.right}) is outside the box (${ph.boxLeft} to ${ph.boxRight})`);
+    if (ph.ends > 0.5 || ph.starts < -0.5) fail(`${name}: a control of the phone's row is ${ph.ends > 0.5 ? ph.ends + " px past the box's right edge" : -ph.starts + " px past its left edge"}`);
+    if (ph.targetW < TOUCH - 0.5 || ph.targetH < TOUCH - 0.5) fail(`${name}: a button of the phone's row is ${ph.targetW} by ${ph.targetH} px, under the ${TOUCH} pt target`);
+    if (!ph.ring) fail(`${name}: the phone's row has no context ring`);
+    if (ph.more) fail(`${name}: the phone has a "more" chip or popup`);
+    if (ph.boxRight > ph.innerWidth + 0.5) fail(`${name}: the box ends at ${ph.boxRight}, past the window (${ph.innerWidth})`);
+    if (ph.chipRow && ph.chipRow.width > ph.paneW + 0.5) fail(`${name}: the row of choices is ${ph.chipRow.width} px wide in a pane of ${ph.paneW}`);
   };
   const paneWidth = (page, kind) => page.evaluate((id) => document.querySelector(`[data-testid="${id}"]`)?.getBoundingClientRect().width, kind === "panel" ? "board-panel" : "chat-page");
   const PANEL_RESIZER = `${tidSel("board-panel")} ${tidSel("resizer")}`;
@@ -79,11 +101,19 @@ await check("A2.2 the composer fits its box, at rest and in every frame", async 
     const [kind] = s.pane, widths = WIDTHS[kind], at = wide ? `${widths[0]} px` : `${layout}'s own width`;
     const p = await openState(open, s, layout, widths[0]);
     try {
-      await drawn(p.page, s, `${s.id} at ${at}`);
-      if (!wide) { if (await fits(p.page, `${s.id} at ${at}`)) measured++; } else {
+      // (a state whose composer is V1's block in the phone layout, goal 3.7 (composer.mjs BLOCKED: no agent installed, the server offline), has no toolbar to measure: the block
+      // is held instead. A window from 700 px has the wide composer, and is measured as the others)
+      let seen = false;
+      const measure = async (name) => {
+        const b = blocked(s, isNarrow(p.page.viewportSize().width));
+        if (b) { if (await blockHeld(p.page, fail, name, b)) measured++; return; }
+        if (!seen) { seen = true; await drawn(p.page, s, name); }
+        if (await fits(p.page, name)) measured++;
+      };
+      if (!wide) await measure(`${s.id} at ${at}`); else {
         for (const w of widths) {
           if (w !== widths[0]) await widen(p.page, kind, w, `${s.id} at ${w} px`);
-          if (await fits(p.page, `${s.id} at ${w} px`)) measured++;
+          await measure(`${s.id} at ${w} px`);
         }
       }
     } catch (e) { fail(`${s.id}: ${e.message.split("\n")[0]}`); }
@@ -92,7 +122,9 @@ await check("A2.2 the composer fits its box, at rest and in every frame", async 
   { // another branch's alert in the header, a state the seed has not
     const s = state("plain-branches"), p = await openState(open, s, layout, WIDTHS.page[0]);
     await mockEval(`setSession(${JSON.stringify(s.sel.chat)}, "alt", { status: "approval" });`, url);
-    if (!await until(() => byTid(p.page, "fk-alert", { kind: "asks" }).count(), 10000)) fail("another branch's alert: the header does not show it");
+    // (the phone's header, T1's, says it in the Tree button's name instead of an alert of its own)
+    const alerted = async () => (await onPhone(p.page)) ? /a branch needs your approval/.test(await byTid(p.page, "chat-tree").first().getAttribute("aria-label").catch(() => "") ?? "") : !!(await byTid(p.page, "fk-alert", { kind: "asks" }).count());
+    if (!await until(alerted, 10000)) fail("another branch's alert: the header does not show it");
     for (const w of wide ? WIDTHS.page : [0]) {
       const name = `another branch's alert at ${wide ? w + " px" : layout + "'s own width"}`;
       if (wide) await widen(p.page, "page", w, name);
@@ -108,7 +140,8 @@ await check("A2.2 the composer fits its box, at rest and in every frame", async 
   const sampled = async (page, name, body, o) => {
     const sampler = await sampleFrames(page, fitProbe, o);
     try { await body(); await page.waitForFunction(() => window.__frames?.values.length > 3, null, { timeout: 15000 }); await frame(page); } catch (e) { fail(`${name}: ${e.message.split("\n")[0]}`); }
-    const r = await sampler.stop(), bad = r.values.filter((v) => (v.bad && (v.past > 0 || v.scroll > 0 || !v.list)) || v.out > 0.5 || Math.abs(v.send - SEND) > 0.5);
+    const r = await sampler.stop(), bad = r.values.filter((v) => (v.bad && (v.past > 0 || v.scroll > 0 || !v.list)) || v.out > 0.5 || (!v.phone && Math.abs(v.send - SEND) > 0.5)
+      || (v.phone && (!v.plus || !v.main || v.plus.left < v.room.left - 0.5 || v.main.right > v.room.right + 0.5 || v.main.width < TOUCH - 0.5 || v.plus.width < TOUCH - 0.5)));
     if (bad.length) fail(`${name}: ${bad.length} of ${r.values.length} frames are not fitted, the first ${JSON.stringify(bad[0])}`);
     return r;
   };
@@ -158,9 +191,12 @@ await check("A2.2 the composer fits its box, at rest and in every frame", async 
   { // a branch change: the chat gets the composer of the other branch, whose toolbar is another. By the header's alert, which shows the branch that
     // asks (the tree is a dialog over the page, Send under it).
     const s = state("plain-branches"), chat = JSON.stringify(s.sel.chat);
-    for (const width of wide ? [300, 400] : [0]) {
+    // (by the header's alert, which only the wide layouts' header has: a window of the phone's width is skipped, and a started chat's phone composer
+    // has no chips for another branch to change; the desktop adds a page of 900 px, which is the wide layout)
+    for (const width of wide ? [300, 400, 900] : [0]) {
       await seed(url, "A2");
       const p = await openState(open, s, layout, width), name = `a branch change at ${wide ? width + " px" : layout + "'s own width"}`;
+      if (await onPhone(p.page)) { note(`${name}: the phone's layout, no header alert to press: skipped`); await close(p); continue; }
       const go = async (branch, text) => {
         await mockEval(`setSession(${chat}, ${JSON.stringify(branch)}, { status: "approval" });`, url);
         await press(p.page, byTid(p.page, "chat-head").locator(tidSel("fk-alert", { kind: "asks" })).first());
@@ -180,10 +216,11 @@ await check("A2.2 the composer fits its box, at rest and in every frame", async 
         if (!await until(async () => !await p.page.locator(POP).count(), 5000)) fail(`${name}: Esc did not close the "more" popup`);
         return `${inMore ?? "?"} (in more)`;
       };
-      const before = await model();
+      const phone = await onPhone(p.page); // (the phone's started chat has no chip for the model: its settings are in Chat info)
+      const before = phone ? null : await model();
       const r = await sampled(p.page, name, async () => {
         await go("alt", "Is there a faster way?");
-        if (await model() === before) fail(`${name}: on the other branch the model's chip says "${before}" as on main`);
+        if (!phone && await model() === before) fail(`${name}: on the other branch the model's chip says "${before}" as on main`);
         await go("main", "Fix it.");
       });
       if (r.values.length < 10) fail(`${name}: the sampler read ${r.values.length} frames`);
@@ -196,7 +233,9 @@ await check("A2.2 the composer fits its box, at rest and in every frame", async 
   // a chip's arrival: the server's Cursor catalog comes, and "Loading models…" becomes the model and effort choices (the chat is the lab
   // box's: its change is made on that machine, and reaches the page as that server's event)
   const arrival = `extra.lists.s_lab.catalogs.cursor = cursor; onServer("s_lab", () => { Object.assign(chats.c_A2_loading, cursor.default); send({ type: "chat", chat: chats.c_A2_loading }); send({ type: "catalog", agent: "cursor", catalog: cursor }); });`;
+  // ("more" is a wide layout's popup: the plain-loading chat is a page, which a window under 700 px draws as the phone's)
   for (const [width, more] of wide ? [[300, false], [400, false], [560, false], [300, true], [400, true], [480, true]] : [[0, false], [0, true]]) {
+    if (more && (layout === "phone" || (wide && isNarrow(pageWindow(width))))) continue;
     await seed(url, "A2");
     const s = state("plain-loading"), p = await openState(open, s, layout, width), name = `a chip's arrival at ${wide ? width + " px" : layout + "'s own width"}${more ? ', "more" open' : ""}`;
     await drawn(p.page, s, name);
@@ -215,29 +254,31 @@ await check("A2.2 the composer fits its box, at rest and in every frame", async 
   note("a chip's arrival, the popup closed and open: every frame fitted");
 
   if (wide) {
-    { // the window narrowed and widened with "more" open: the toolbar gives to the popup, and gets nothing back until it closes. (A window under
-      // 700 px is the phone layout, whose chat screen is as wide as the window and whose popup is a sheet: the box is 24 px less than the window.)
-      const s = state("plain-new"), p = await openState(open, s, layout, 560), name = 'the window narrowed with "more" open';
-      const size = async (w) => { await p.page.setViewportSize({ width: w + 24, height: HEIGHT }); await p.page.evaluate(() => new Promise((ok) => requestAnimationFrame(ok))); };
-      await size(520);
+    { // the window widened and narrowed with "more" open: the toolbar gets nothing back until the popup closes. (In the desktop layout a page beside the
+      // sidebar is no narrower than some 540 px, the window of 824 px: under about 800 px the sidebar goes to its rail and the page grows, under 700 px it
+      // is the phone layout, which has no "more"; the board's panel keeps its width. So the window goes from 824 up to 1100 px, where the page's column
+      // stops at its 780 px, and back; the narrowing that sends controls to an open popup is the phone's and A2.3's.)
+      const s = state("plain-new"), p = await openState(open, s, layout, 560, { size: [SIDE + 560, HEIGHT] }), name = 'the window widened with "more" open'; // (a window of 824 px: pageWindow(560) is 560, the phone's)
+      const size = async (w) => { await p.page.setViewportSize({ width: w, height: HEIGHT }); await p.page.evaluate(() => new Promise((ok) => requestAnimationFrame(ok))); };
+      const bottom = p.page.viewportSize().width, top = 1100; // (the window of a page of 560 px, and a window at which the column has its most)
       await drawn(p.page, s, name);
       const held = await openMore(p.page, name), row = () => p.page.locator(`${tidSel("composer-tools")} ${tidSel("tchip")}:not([data-kind="more"])`).count(), before = await row();
       const r = await sampled(p.page, name, async () => {
-        for (let w = 520; w >= 260; w -= 4) await size(w);
-        for (let w = 260; w <= 520; w += 4) await size(w);
-        for (const w of [508, 456, 404, 352, 300, 430, 520]) await size(w); // (and in steps of 52 px and more)
+        for (let w = bottom; w <= top; w += 4) await size(w);
+        for (let w = top; w >= bottom; w -= 4) await size(w);
+        for (const w of [bottom + 8, bottom + 100, top, bottom + 30, top - 60, bottom]) await size(w); // (and in steps of 100 px and more)
       });
       kept(r, name);
       const [least, most] = range(r, "box"), last = r.values.at(-1);
-      if (least !== 260 || most !== 520) fail(`${name}: the box went from ${most} to ${least} px, not from 520 to 260`);
-      if (range(r, "held")[1] <= held) fail(`${name}: the popup held ${held} controls at 520 px and no more at 260`);
-      if (last.held !== range(r, "held")[1] || last.chips >= before) fail(`${name}: widened again with the popup open, it holds ${last.held} controls and the row ${last.chips} chips: something returned`);
+      if (most - least < 100) fail(`${name}: the box went from ${least} to ${most} px: not from some 536 to 756`);
+      if (range(r, "held")[0] !== held || range(r, "held")[1] !== held) fail(`${name}: the popup held ${held} controls, then ${range(r, "held")}: with it open, something left it or came into it`);
+      if (r.values.some((v) => v.chips !== before)) fail(`${name}: with the popup open the row had ${before} chips, then ${range(r, "chips")}: something returned to it`);
       // closed, what fits returns
       await page_escape(p.page);
       if (!await until(async () => !await byTid(p.page, "more-pop").count() && await row() === before, 5000)) fail(`${name}: after the popup closed the row has not its ${before} chips again`);
       await fits(p.page, `${name}, closed again`);
       await close(p);
-      note(`the window narrowed from 520 to 260 px and widened again with "more" open: it held ${held}, then ${last.held} controls, all until it closed; every frame fitted`);
+      note(`the window widened from ${bottom} to ${top} px and narrowed again with "more" open: it held ${held} controls throughout and the row ${before} chips; every frame fitted`);
     }
 
     // ⌘B: the page beside the sidebar gets wider by the sidebar less the rail, and narrower again, and a panel keeps its width. (A chat

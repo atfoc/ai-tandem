@@ -1,11 +1,12 @@
-# Shared by `storage-picker-permission`: opens the chat "Pic-chat" from the sidebar and waits for its composer's attach button.
+# Shared by `storage-picker-permission`: opens the chat "Pic-chat" from Home (phone) or the sidebar (tablet) and waits for its composer's "+" (the phone
+# composer's; `composer-plus`). "Pic-chat" is a top-level chat of the server, so it is a row of Home (`home-row`); its label there is "Pic-chat, <sub-line>", hence the pattern.
 appId: ${APP_ID}
 ---
 - extendedWaitUntil:
-    visible: "Pic-chat"
+    visible: "Pic-chat.*"
     timeout: 90000
-- tapOn: "Pic-chat"
+- tapOn: "Pic-chat.*"
 - extendedWaitUntil:
     visible:
-      id: "attach-btn"
+      id: "composer-plus"
     timeout: 60000

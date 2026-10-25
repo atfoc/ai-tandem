@@ -1,7 +1,7 @@
 # aiwb-e2e: needs=server,agent,control app=1
 # Package V1 (AD-83 flow 1, goal 7.4 and 4.6): the pinned certificate and the stream, against a real Go server, through the real app on the
-# phone layout. Maestro adds the scratch server in the Servers dialog by pasting what a server prints, the fingerprint it presents is set
-# against the printed one, the person accepts it and the section goes to Connected; a change made on the server through the client API
+# phone layout. Maestro adds the scratch server in the Servers screens (the list, "Add server", "Paste setup text") by pasting what a server prints, the fingerprint it presents is set
+# against the printed one, the person trusts it ("Trust and save") and the section goes to Connected; a change made on the server through the client API
 # (the runner's control API, lib/serverctl.mjs) appears without a reload; the server is stopped and the app says it is not connected, and
 # says Connected again when it returns; a server that comes back with another certificate is refused ("Certificate changed"); then the same
 # server is added again by the dotted name localtest.me (typed, not pasted), which resolves to 127.0.0.1 and is on the certificate.
@@ -17,72 +17,75 @@ appId: ${APP_ID}
       ROUTE: /board?name=Seed-board
 - takeScreenshot: v1-00-start
 
-# ---- a pasted text whose fingerprint is not the server's: the app says so and does not accept it for the person
-- tapOn:
-    id: "servers-btn"
-- tapOn:
-    id: "servers-add"
-- waitForAnimationToEnd
-- tapOn:
-    id: "servers-input-code"
-- inputText: "https://${SERVER_HOST}:${SERVER_PORT}"
-- pressKey: Enter
-- inputText: "Fingerprint: ${SERVER_FINGERPRINT.replace(/^../, SERVER_FINGERPRINT.slice(0, 2) == '00' ? '01' : '00')}"
-- pressKey: Enter
-- inputText: "Secret: ${SERVER_SECRET}"
-- runFlow: _blur.yaml
-- tapOn:
-    id: "addserver-read"
-- assertVisible:
-    id: "addserver-note"
-    text: "Filled in the address and the secret from the text. Now test the connection."
-- tapOn:
-    id: "servers-form-test"
+# ---- a pasted text whose fingerprint is not the server's: the app says so, sends no secret and gives no way to trust it
+- runFlow:
+    file: _open-foot.yaml
+    env:
+      ID: "servers-btn"
 - extendedWaitUntil:
-    visible: "It is NOT the fingerprint the pasted text printed. Do not accept it: this may not be your server."
+    visible:
+      id: "srv-add"
+    timeout: 30000
+- runFlow:
+    file: _add-paste-code.yaml
+    env:
+      ADDRESS: "https://${SERVER_HOST}:${SERVER_PORT}"
+      FINGERPRINT: "${SERVER_FINGERPRINT.replace(/^../, SERVER_FINGERPRINT.slice(0, 2) == '00' ? '01' : '00')}"
+      SECRET: "${SERVER_SECRET}"
+- tapOn:
+    id: "add-test"
+- extendedWaitUntil:
+    visible: "✗ Does NOT match the code — do not trust it"
     timeout: 60000
+- assertNotVisible:
+    id: "add-trust"
 - takeScreenshot: v1-01-fingerprint-differs
-- tapOn: "Cancel"
-
-# ---- the real text: the fingerprint matches, the person accepts it, the section appears and is Connected
 - tapOn:
-    id: "servers-add"
-- waitForAnimationToEnd
-- tapOn:
-    id: "servers-input-code"
-- inputText: "https://${SERVER_HOST}:${SERVER_PORT}"
-- pressKey: Enter
-- inputText: "Fingerprint: ${SERVER_FINGERPRINT}"
-- pressKey: Enter
-- inputText: "Secret: ${SERVER_SECRET}"
-- tapOn:
-    id: "addserver-read"
-- tapOn:
-    id: "servers-form-test"
+    id: "add-cancel"
 - extendedWaitUntil:
-    visible: "It is the fingerprint the pasted text printed."
+    visible:
+      id: "srv-add"
+    timeout: 30000
+
+# ---- the real text: the fingerprint matches the code's, the person trusts it, the row appears and is Connected
+- runFlow:
+    file: _add-paste-code.yaml
+    env:
+      ADDRESS: "https://${SERVER_HOST}:${SERVER_PORT}"
+      FINGERPRINT: "${SERVER_FINGERPRINT}"
+      SECRET: "${SERVER_SECRET}"
+- tapOn:
+    id: "add-test"
+- extendedWaitUntil:
+    visible:
+      id: "add-trust"
     timeout: 60000
-- assertVisible: ".*${SERVER_FINGERPRINT}.*"
+- assertVisible: ".*Matches the fingerprint in the code.*"
+- assertVisible: "(?i).*${SERVER_FINGERPRINT.replace(/:/g, '').slice(0, 4)}.*"
 - takeScreenshot: v1-02-fingerprint-matches
 - tapOn:
-    id: "servers-form-accept"
-- extendedWaitUntil:
-    visible: "Connected"
-    timeout: 60000
-- tapOn:
-    id: "servers-save"
+    id: "add-trust"
 # (a form with a secret box that closes must not make the system offer to save it as a password: P1)
 - assertNotVisible: "Not Now"
 - extendedWaitUntil:
-    visible: "Connected"
+    visible:
+      id: "srv-row"
+    timeout: 60000
+- extendedWaitUntil:
+    visible: ".*Connected.*"
     timeout: 60000
 - takeScreenshot: v1-03-connected
-- tapOn:
-    id: "servers-close"
+- runFlow: _to-sidebar.yaml
 - extendedWaitUntil:
     visible: "Seed-board"
     timeout: 60000
-- assertVisible: "${SERVER_HOST} — Connected"
+# (the sidebar's section says it; on the phone Home has no such line)
+- runFlow:
+    when:
+      visible:
+        id: "side-tree"
+    commands:
+      - assertVisible: "${SERVER_HOST} — Connected"
 - takeScreenshot: v1-04-section-filled
 
 # ---- the stream: a change made on the server appears without a reload
@@ -119,12 +122,7 @@ appId: ${APP_ID}
     visible: "FAKE.*hello from the phone.*"
     timeout: 60000
 - takeScreenshot: v1-05b-answer-streamed
-- tapOn:
-    id: "nav-back"
-- extendedWaitUntil:
-    visible:
-      id: "side-tree"
-    timeout: 60000
+- runFlow: _to-sidebar.yaml
 
 # ---- the server stops: the app says it is not connected; it returns: the app says Connected and the stream goes on
 - runScript:
@@ -132,30 +130,46 @@ appId: ${APP_ID}
     env:
       METHOD: POST
       ROUTE: /stop
+# (phone: Home's line says "Unreachable" and its problem card shows (H1); tablet: the sidebar's section)
+- runFlow:
+    when:
+      visible:
+        id: "home"
+    commands:
+      - extendedWaitUntil:
+          visible:
+            id: "problem-card"
+          timeout: 120000
+      - assertVisible:
+          id: "state-word"
+          text: "Unreachable"
+- runFlow:
+    when:
+      visible:
+        id: "side-tree"
+    commands:
+      - extendedWaitUntil:
+          visible: "${SERVER_HOST} — Unreachable"
+          timeout: 120000
+- runFlow:
+    file: _open-foot.yaml
+    env:
+      ID: "servers-btn"
 - extendedWaitUntil:
-    visible: "Servers: one is not connected"
-    timeout: 120000
-- assertVisible: "${SERVER_HOST} — Unreachable"
-- assertVisible: "Its chats show when the server is back."
-- tapOn:
-    id: "servers-btn"
-- extendedWaitUntil:
-    visible: "Unreachable"
+    visible: ".*Unreachable.*"
     timeout: 60000
 - takeScreenshot: v1-06-not-connected
-- tapOn:
-    id: "servers-close"
+- runFlow: _to-sidebar.yaml
 - runScript:
     file: _ctl.js
     env:
       METHOD: POST
       ROUTE: /start
 - extendedWaitUntil:
-    notVisible: "Servers: one is not connected"
+    notVisible:
+      id: "problem-card"
     timeout: 180000
-- extendedWaitUntil:
-    visible: "${SERVER_HOST} — Connected"
-    timeout: 60000
+- runFlow: _home-connected.yaml
 - runScript:
     file: _ctl.js
     env:
@@ -172,66 +186,108 @@ appId: ${APP_ID}
     env:
       METHOD: POST
       ROUTE: /new-cert
-- tapOn:
-    id: "servers-btn"
+- runFlow:
+    file: _open-foot.yaml
+    env:
+      ID: "servers-btn"
 - extendedWaitUntil:
-    visible: "Certificate changed"
+    visible: ".*Certificate changed.*"
     timeout: 180000
-- assertVisible: ".*${output.ctl.fingerprint}.*"
-- assertVisible: ".*${SERVER_FINGERPRINT}.*"
 - takeScreenshot: v1-08-certificate-changed
+# the row pushes the server's detail, whose danger notice names it; "Compare fingerprints" pushes the certificate screen with both prints (16 blocks of 4 digits each,
+# so the first block of each is what is looked for)
 - tapOn:
-    id: "servers-remove"
+    id: "srv-row"
+- extendedWaitUntil:
+    visible:
+      id: "srv-cert-notice"
+    timeout: 30000
 - tapOn:
-    text: "Remove"
+    id: "srv-compare"
+- extendedWaitUntil:
+    visible:
+      id: "srv-fp-now"
+    timeout: 30000
+- assertVisible: "(?i).*${output.ctl.fingerprint.replace(/:/g, '').slice(0, 4)}.*"
+- assertVisible: "(?i).*${SERVER_FINGERPRINT.replace(/:/g, '').slice(0, 4)}.*"
+- takeScreenshot: v1-08b-fingerprints-compared
+- tapOn:
+    id: "nav-back"
+- extendedWaitUntil:
+    visible:
+      id: "srv-cert-notice"
+    timeout: 30000
+- scrollUntilVisible:
+    element:
+      id: "srv-remove"
+    timeout: 20000
+- tapOn:
+    id: "srv-remove"
+- extendedWaitUntil:
+    visible:
+      id: "confirm-go"
+    timeout: 30000
+- tapOn:
+    id: "confirm-go"
+- extendedWaitUntil:
+    visible:
+      id: "srv-add"
+    timeout: 30000
 - extendedWaitUntil:
     notVisible:
-      id: "servers-row"
+      id: "srv-row"
     timeout: 30000
 
-# ---- the dotted name, typed: the same server by localtest.me, on the new certificate
+# ---- the dotted name, typed: the same server by localtest.me, on the new certificate (no code, so the person compares the print with what the server printed)
 - tapOn:
-    id: "servers-add"
-- waitForAnimationToEnd
-# (the form opens with its Name box focused and the keyboard up: the sheet rises over it, so every box and button below is pressed with the keyboard still up: P1)
+    id: "srv-add"
+- extendedWaitUntil:
+    visible: "Enter address manually.*"
+    timeout: 30000
+- runFlow: _add-manual.yaml
 - tapOn:
-    id: "servers-input-name"
+    id: "add-field-name"
 - inputText: "dotted"
 - tapOn:
-    id: "servers-input-address"
+    id: "add-field-address"
 - inputText: "https://${SERVER_DOTTED}:${SERVER_PORT}"
 - tapOn:
-    id: "servers-input-secret"
+    id: "add-field-secret"
 - inputText: "${SERVER_SECRET}"
 - tapOn:
-    id: "servers-selfsigned"
+    id: "add-selfsigned"
 - tapOn:
-    id: "servers-form-test"
+    id: "add-test"
 - extendedWaitUntil:
-    visible: "Compare this fingerprint with the one shown on the other machine, then accept it"
+    visible:
+      id: "add-compare"
     timeout: 60000
-- assertVisible: ".*${output.ctl.fingerprint}.*"
+- assertVisible: "(?i).*${output.ctl.fingerprint.replace(/:/g, '').slice(0, 4)}.*"
 - takeScreenshot: v1-09-dotted-fingerprint
 - tapOn:
-    id: "servers-form-accept"
-- extendedWaitUntil:
-    visible: "Connected"
-    timeout: 60000
-- tapOn:
-    id: "servers-save"
+    id: "add-trust"
 # (a form with a secret box that closes must not make the system offer to save it as a password: P1)
 - assertNotVisible: "Not Now"
 - extendedWaitUntil:
-    visible: "Connected"
+    visible:
+      id: "srv-row"
     timeout: 60000
-- assertVisible: ".*${SERVER_DOTTED}.*"
+- extendedWaitUntil:
+    visible: ".*Connected.*"
+    timeout: 60000
+- assertVisible: ".*dotted.*"
 - takeScreenshot: v1-10-dotted-connected
-- tapOn:
-    id: "servers-close"
+- runFlow: _to-sidebar.yaml
 - extendedWaitUntil:
     visible: "Seed-board"
     timeout: 60000
-- assertVisible: "dotted — Connected"
+# (the sidebar's section says it; on the phone Home has no such line)
+- runFlow:
+    when:
+      visible:
+        id: "side-tree"
+    commands:
+      - assertVisible: "dotted — Connected"
 - runScript:
     file: _ctl.js
     env:

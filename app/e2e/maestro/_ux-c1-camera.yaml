@@ -1,0 +1,81 @@
+# Part of `storage-picker-permission` (package C1), iOS only (Android: not run in C1): "+" > Take photo (`takePhotoWith`, platform/imagepickcore.ts: the permission is asked first, a
+# refusal is an Error that says how to allow the camera, then the camera's own screen). The system's prompt carries the app's words; refused, the composer says "The files could not be
+# picked: The camera is off for AI Whiteboard. Allow it in Settings, under AI Whiteboard, then try again." and nothing is added; allowed, the simulator's own camera opens (this iOS 26.3
+# simulator has one: a grey viewfinder) and is left by its ×: the composer is back with nothing added and no error. Both times the "Add to message" sheet is closed. Starts with the chat "Pic-chat" open.
+appId: ${APP_ID}
+---
+# ---- the camera's answer is forgotten: Take photo asks, with the app's words in the system's prompt; refused, the composer says how to allow it
+- runScript:
+    file: _ctl.js
+    env:
+      METHOD: POST
+      ROUTE: /device/privacy?service=camera&action=reset
+- runScript:
+    file: _ctl.js
+    env:
+      METHOD: POST
+      ROUTE: /device/relaunch
+- runFlow: _open-sidebar.yaml
+- runFlow: _open-chat.yaml
+- runFlow:
+    file: _ux-c1-plus.yaml
+    env:
+      ROW: "Take photo"
+- extendedWaitUntil:
+    visible: ".*would like to access the Camera.*"
+    timeout: 30000
+- takeScreenshot: c1-20-camera-prompt
+- tapOn: "Don.t Allow"
+- extendedWaitUntil:
+    visible:
+      id: "composer-images-line"
+      text: "The files could not be picked: The camera is off for AI Whiteboard\\. Allow it in Settings, under AI Whiteboard, then try again\\."
+    timeout: 30000
+- assertNotVisible:
+    id: "plus-sheet"
+- assertNotVisible:
+    id: "image-thumb-remove"
+- assertVisible:
+    id: "composer-plus"
+- takeScreenshot: c1-21-camera-refused
+
+# ---- the camera is allowed: this simulator (iOS 26.3) has a simulated camera, a grey viewfinder with the shutter, in the system's own screen (another process: the shutter and
+#      "Use Photo" are touched at their places, and the app's own screen is gone from the accessibility tree while it is up). The photo comes back as a 72 pt thumbnail with its ×.
+- runScript:
+    file: _ctl.js
+    env:
+      METHOD: POST
+      ROUTE: /device/privacy?service=camera&action=grant
+- runScript:
+    file: _ctl.js
+    env:
+      METHOD: POST
+      ROUTE: /device/relaunch
+- runFlow: _open-sidebar.yaml
+- runFlow: _open-chat.yaml
+- runFlow:
+    file: _ux-c1-plus.yaml
+    env:
+      ROW: "Take photo"
+- extendedWaitUntil:
+    notVisible:
+      id: "composer-plus"
+    timeout: 30000
+- waitForAnimationToEnd
+- takeScreenshot: c1-22-camera-open
+# (a press of the shutter at 50%,82% did not bring the photo's review screen in an earlier attempt, so no photo is taken: the camera is left by its ×, as a person does who changes
+#  their mind: the composer is back, nothing was added and no error is said. A photo taken is by hand.)
+- tapOn:
+    point: "14%,93%"
+- extendedWaitUntil:
+    visible:
+      id: "composer-plus"
+    timeout: 30000
+- waitForAnimationToEnd
+- assertNotVisible:
+    id: "plus-sheet"
+- assertNotVisible:
+    id: "image-thumb-remove"
+- assertNotVisible:
+    id: "composer-images-line"
+- takeScreenshot: c1-23-camera-cancelled

@@ -1,0 +1,124 @@
+# aiwb-e2e: needs=server,agent,control app=1
+# ux-composer (ux-improvements package C1, "the phone's composer"; goal 3.6 "The keyboard", PLAN §3 C1 Device): what only a device shows of the composer and the soft
+# keyboard. A plain chat "Kbd-chat" (a new chat: no message) on a scratch server with the stand-in agent; the app is given the server and opens the chat.
+#   opening         a new chat opens with its box unfocused (package C2: the keyboard down, its chip row in sight; `hasChipRow` in composer/index.ts): no "return" key, the row shown
+#   keyboard up     a tap on the box raises the soft keyboard (its "return" key is in the accessibility tree); the composer's box stands
+#                   above it, the primary button (Talk while the box is empty, then Send) is still on the screen; a new chat's chip row (`composer-chip-row`) is hidden
+#                   while the keyboard is up (`useKeyboardUp`, PhoneComposer.tsx) and back when it is lowered: both asserted (required steps)
+#   drag down       with the box focused, a drag down on the thread (the new chat's, and then the started chat's) lowers the keyboard (X1: `keyboardDismissMode`
+#                   on the phone's thread lists): both drags are required steps; `_ux-c1-lower.yaml` after them only makes sure the keyboard is down
+#   Return          the keyboard's return key adds a line and sends nothing (the control API: no message of the user on the server); the Send button sends (the server holds the
+#                   message, "line one" and "two" on two lines)
+# ASSERTED by this flow: the keyboard is up / gone (its "return" key is / is not there); `composer-input` is above the "return" key; `composer-talk` / `send` visible (so Send never
+# leaves the screen); the chip row of a new chat not visible while the keyboard is up and visible again after it goes down; a drag down on the thread lowers the keyboard (both chats); the message count and text on the server. SHOWN ONLY BY THE SCREENSHOTS (Maestro reads no sizes): the box's bottom edge 6 pt above
+# the keyboard's top, with no home gap (kbd-02-up, kbd-05-typed), and the thread keeping its last message just above the box (kbd-07-started-up). iOS only; Android: not run in C1.
+# Last (package D1): the chat tree's sheet stepping aside for a row's actions and Label form (T3; `_ux-t3-tree-aside.yaml` says what it asserts).
+appId: ${APP_ID}
+---
+- runFlow: _open-app.yaml
+- runFlow: _forget-servers.yaml
+- runScript:
+    file: _ctl.js
+    env:
+      METHOD: POST
+      ROUTE: /chat?name=Kbd-chat
+- evalScript: ${output.chat = output.ctl.id}
+- runFlow: _add-server.yaml
+- extendedWaitUntil:
+    visible: "Kbd-chat"
+    timeout: 90000
+- tapOn: "Kbd-chat"
+- extendedWaitUntil:
+    visible:
+      id: "composer-input"
+    timeout: 60000
+- waitForAnimationToEnd
+# ---- a new chat opens with the keyboard down and its chip row in sight (C2)
+- assertNotVisible: "(?i)return"
+- assertVisible:
+    id: "composer-chip-row"
+- takeScreenshot: kbd-01-opened
+# ---- a tap on the box: the keyboard is up. The box is above it, the primary button (Talk: the box is empty) is on the screen
+- tapOn:
+    id: "composer-input"
+- extendedWaitUntil:
+    visible: "(?i)return"
+    timeout: 30000
+- waitForAnimationToEnd
+- assertVisible:
+    id: "composer-input"
+    above: "(?i)return"
+- assertVisible:
+    id: "composer-talk"
+- takeScreenshot: kbd-02-up
+# the chip row hides while the keyboard is up (goal 3.6; `useKeyboardUp` in PhoneComposer.tsx): required
+- runFlow: _ux-c1-chips-hidden.yaml
+
+# ---- a drag down on the thread lowers the keyboard and the chip row is back
+- runFlow: _ux-c1-drag-lower.yaml
+- takeScreenshot: kbd-025-after-drag
+- runFlow: _ux-c1-lower.yaml
+- assertVisible:
+    id: "composer-chip-row"
+- assertVisible:
+    id: "composer-talk"
+- takeScreenshot: kbd-03-lowered
+
+# ---- Return adds a line and sends nothing; Send sends
+- tapOn:
+    id: "composer-input"
+- extendedWaitUntil:
+    visible: "(?i)return"
+    timeout: 20000
+- inputText: "line one"
+- pressKey: Enter
+- inputText: "two"
+- waitForAnimationToEnd
+- assertVisible:
+    id: "send"
+- assertVisible: "(?i)return"
+- runScript:
+    file: _ux-c1-sent.js
+    env:
+      CHAT: ${output.chat}
+      N: "0"
+- takeScreenshot: kbd-05-typed
+- tapOn:
+    id: "send"
+- extendedWaitUntil:
+    visible: "FAKE.*line one.*"
+    timeout: 90000
+- runScript:
+    file: _ux-c1-sent.js
+    env:
+      CHAT: ${output.chat}
+      N: "1"
+      LINES: "line one|two"
+- waitForAnimationToEnd
+- takeScreenshot: kbd-06-sent
+
+# ---- the started chat: no chip row (its settings are in Chat info); the box focused, a drag down on the thread lowers the keyboard
+- assertNotVisible:
+    id: "composer-chip-row"
+- tapOn:
+    id: "composer-input"
+- extendedWaitUntil:
+    visible: "(?i)return"
+    timeout: 20000
+- waitForAnimationToEnd
+- assertVisible:
+    id: "composer-input"
+    above: "(?i)return"
+- assertVisible:
+    id: "composer-talk"
+- takeScreenshot: kbd-07-started-up
+- runFlow: _ux-c1-drag-lower.yaml
+- takeScreenshot: kbd-075-after-drag
+- runFlow: _ux-c1-lower.yaml
+- assertVisible:
+    id: "composer-talk"
+- takeScreenshot: kbd-08-started-lowered
+
+# ---- T3: the chat tree's sheet steps aside for a row's actions and its Label form, and comes back (`_ux-t3-tree-aside.yaml`; package D1)
+- runFlow: _ux-t3-tree-aside.yaml
+- takeScreenshot: kbd-09-tree-done

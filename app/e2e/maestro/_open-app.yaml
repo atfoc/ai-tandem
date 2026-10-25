@@ -1,10 +1,10 @@
 # Shared by the flows of the app itself (header `app=1`): gets past what the system and the development client put in front of it and
-# waits for the app's first screen, which on the phone is the sidebar (`side-tree`).
+# waits for the app's first screen, which is Home on the phone (`home`) and the sidebar on the tablet (`side-tree`).
 appId: ${APP_ID}
 ---
 - runFlow: _dismiss.yaml
 # The first run of the bundle is built by Metro on demand: minutes on a loaded machine.
 - extendedWaitUntil:
     visible:
-      id: "side-tree"
+      id: "home|side-tree"
     timeout: 300000

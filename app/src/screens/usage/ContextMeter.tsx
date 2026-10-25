@@ -1,7 +1,7 @@
 // The composer's context meter (the old page's Composer.tsx ContextMeter): the ring with "used / window pct%" for the branch a chat shows, and under a
-// press its popup (Popup.tsx: the context and the plan's limits). A popover hung above the ring on the wide layouts and a sheet on the phone
-// (ui/Overlay); Esc closes it before the composer sees it (the overlay stack). When the context is not known the meter is a warning icon with
-// "Context unavailable" and the reason as its title, and nothing opens.
+// press its popup (Popup.tsx: the context and the plan's limits). A popover hung above the ring on the wide layouts (ui/Overlay) and, on the phone,
+// the "Context and usage" sheet (UsageSheet, opened through open.ts); Esc closes the popover before the composer sees it (the overlay stack). When
+// the context is not known the meter is a warning icon with "Context unavailable" and the reason as its title, and nothing opens.
 //
 // K3 places it in the toolbar: `<ContextMeter chat={chatId} compact={f.meter === "ring"} />` (compact: the toolbar has no room for its text, which
 // is then drawn and not seen: the ring alone shows, or the icon of the meter that says why).
@@ -14,24 +14,29 @@ import { shownView } from "@aiwb/core/state/store.ts";
 
 import { useStore } from "../../state/useStore.ts";
 import { Overlay } from "../../ui/Overlay.tsx";
+import { usePhone } from "../../ui/useLayout.ts";
 import { useWhere } from "../chat/hooks.ts";
 import { CtxError, CtxRing } from "./CtxRing.tsx";
 import { contextLines, contextOf } from "./meter.ts";
+import { openUsage, useUsageOpen } from "./open.ts";
 import { UsageBody } from "./Popup.tsx";
 
-export function ContextMeter({ chat, compact = false }: { chat: string; compact?: boolean }) {
+/** size="touch": the phone's ring (CtxRing.tsx): no text, 20 points in a 44-point target, amber from 80%. */
+export function ContextMeter({ chat, compact = false, size }: { chat: string; compact?: boolean; size?: "touch" }) {
   const c = useStore((s) => shownView(s, chat));
   const cat = useStore((s) => (c ? catalogFor(s, serverOf(c), c.agent) : undefined));
   const where = useWhere(c);
   const [open, setOpen] = useState(false);
+  const phone = usePhone();
+  const sheet = useUsageOpen() === chat; // the phone's sheet (UsageSheet) is open for this chat
   const anchor = useRef<View>(null);
   if (!c) return null;
   const { used, win, error } = contextOf(c, cat);
   if (error) return <CtxError reason={error} ringOnly={compact} />;
   return (
     <View ref={anchor} collapsable={false}>
-      <CtxRing used={used} win={win} open={open} onPress={() => setOpen(!open)} ringOnly={compact} />
-      {open && (
+      <CtxRing used={used} win={win} open={phone ? sheet : open} onPress={() => (phone ? openUsage(chat) : setOpen(!open))} ringOnly={compact || size === "touch"} size={size} />
+      {open && !phone && (
         <Overlay open onClose={() => setOpen(false)} label="Context and plan usage" kind="popover" anchor={anchor} up testID="usage-pop">
           <UsageBody c={c} lines={contextLines({ used, win })} where={where} />
         </Overlay>

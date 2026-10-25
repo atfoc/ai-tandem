@@ -15,3 +15,5 @@ app/e2e/.state/
 app/e2e/out/
 app/modules/*/android/build/
 packages/board-engine/out/
+packages/board-view/out/
+web/out/

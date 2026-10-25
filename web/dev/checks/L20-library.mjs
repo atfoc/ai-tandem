@@ -7,9 +7,17 @@
 //   Both popups are readable in each theme and each Catppuccin flavour (C-PL-33, the library's part of the old A6.3): every text and icon has 3:1 against what is behind it, or no less than the same
 //   element has in the theme the flavour is laid over (a faint hint, a "not connected" mark are as they are today), as A6.3-markdown holds the chat to.
 import { atRest, check, contrastAudit, mockEval, seed, until } from "../shot.mjs";
-import { byTid, press, tidSel } from "./sel.mjs";
+import { back, byTid, press, tidSel } from "./sel.mjs";
 import { seen, insertSeen } from "./library.mjs";
+import { barOf, openGroup, openLibrary, rowsOf, sectionsOf, texts } from "./libphone.mjs";
+import { atRest as atRestId } from "./settings.mjs";
 
+// At the phone (ux-improvements S4) the two popups are the pushed Library and group screens, the editor sheet and the Prompt sheet, and this check proves the same through them. What a library says is the
+//   characters it is on the Library screen, a group's screen (its bar's title too), the editor (the values of its Name and text fields) and the Prompt sheet (its folder heads, names and lines, the server's name
+//   among them): with no element made of it. The notice of a library file that was set aside (`lib-file-notice`, one per library that has one, at the top of the Library screen under the search) is plain too and names
+//   its server when there are several ("This computer: …", "<u>Studio</u>: …"). The ⌘P line of the wide head has no phone counterpart (the phone shows no key), and Tab is kept inside the wide dialog only: the
+//   phone's sheets are the kit's, whose trap UX.F1 proves. Each theme and flavour: the Library screen, a group screen, the editor sheet and the Prompt sheet pass the same rule (3:1, or no less than the
+//   same element has in the theme the flavour is laid over).
 export const viewports = ["desktop", "tablet", "phone"];
 
 const MARKUP = { groups: [{ id: "g_b", name: "<b>bold</b>", parent: "" }], prompts: [{ id: "p_i", name: "<img src=x onerror=alert(1)>", parent: "g_b", text: "<script>alert(1)</script> & <i>text</i>" }, { id: "p_t", name: "plain", parent: "", text: "Plain." }] };
@@ -19,11 +27,13 @@ const LIBRARIES = `setServers([${JSON.stringify(STUDIO)}]);
   setLibrary("local", { groups: [{ id: "g_git", name: "git", parent: "" }], prompts: [{ id: "p_review", name: "review", parent: "g_git", text: "Review this change.\\n\\n- say what is wrong" }, { id: "p_todo", name: "todo", parent: "", text: "" }] });
   setLibrary("s_studio", { groups: [], prompts: [{ id: "p_rules", name: "rules", parent: "", text: "Be kind." }] });
   setServerState("s_studio", "unreachable");`;
+const PHONE_LIBRARIES = `${LIBRARIES}
+  setLibrary("local", { groups: [{ id: "g_git", name: "git", parent: "" }], prompts: [{ id: "p_review", name: "review", parent: "g_git", text: "Review this change.\\n\\n- say what is wrong" }, { id: "p_todo", name: "todo", parent: "", text: "" }], notice: ${JSON.stringify(NOTICE)} });`;
 const FLAVOURS = { latte: "light", frappe: "dark", macchiato: "dark", mocha: "dark" };
 const FLOOR = 3;
 const CLAUDE = "#d97757";
 
-await check("L20 the prompt library's popups: the head's key, what a library says as text, Tab, and each flavour", async ({ url, open, fail, note, touch }) => {
+await check("L20 the prompt library's popups: the head's key, what a library says as text, Tab, and each flavour", async ({ url, open, fail, note, touch, layout }) => {
   const seeded = await seed(url, "A2");
   const sel = seeded.find((s) => s.id === "plain-started")?.sel ?? fail("the seed has no state plain-started");
   const servers = (list) => mockEval(`setServers(${JSON.stringify(list)});`, url);
@@ -32,7 +42,74 @@ await check("L20 the prompt library's popups: the head's key, what a library say
   // ---- the head's key, and what a library says
   await servers([]);
   await mockEval(`setLibrary("local", ${JSON.stringify({ ...MARKUP, notice: NOTICE })});`, url);
-  {
+  if (layout === "phone") {
+    // (the screens of the stack, the bar, the editor and the sheet: the places a library's words are drawn)
+    const parts = '[data-testid="pushed-screen"], [data-testid="place-bar"], [data-testid="prompt-editor"], [data-testid="insert-popup"]';
+    const made = (page) => page.evaluate((parts) => [...document.querySelectorAll(parts)].reduce((n, r) => n + r.querySelectorAll("b, i, u, img, script, a").length, 0), parts);
+    const J = JSON.stringify;
+    // (the names are the library's own words as the server keeps them: a name has no "/", which the library's paths are joined with, so the closing tags of the wide seed are left out)
+    const STUDIO_P = { ...STUDIO, name: "<u>Studio" };
+    await mockEval(`setLibrary("local", ${J({ groups: [{ id: "g_b", name: "<b>bold", parent: "" }], prompts: MARKUP.prompts, notice: NOTICE })});`, url);
+    const { page, ctx } = await open({ sel, wait: tidSel("composer-input") });
+    const shows = async (what, read, want) => { let s; if (!await until(async () => want((s = await read())), 10000)) fail(`${what}: the page shows ${J(s)}`); return s; };
+    // the Library screen: the names, the notice
+    await openLibrary(page);
+    let rows = await shows("the Library screen with markup for names", () => rowsOf(page), (r) => r.length === 2);
+    if (rows.map((r) => r.name).join("|") !== "<b>bold|plain") fail(`the Library screen shows ${J(rows.map((r) => r.name))}: the names are not the characters they are`);
+    let notices = await texts(page, "lib-file-notice");
+    if (notices.length !== 1 || notices[0] !== NOTICE) fail(`the notice of a library set aside is ${J(notices)} on the Library screen, not ${J([NOTICE])}`);
+    if (await made(page)) fail(`the Library screen has ${await made(page)} elements made of what the library says`);
+    // a group's screen: the prompt, its first line, the bar's title
+    await openGroup(page, "g_b");
+    rows = await shows("the group screen", () => rowsOf(page), (r) => r.length === 1);
+    if (rows[0].name !== "<img src=x onerror=alert(1)>" || rows[0].sub !== "<script>alert(1)</script> & <i>text</i>") fail(`the group's screen shows ${J([rows[0].name, rows[0].sub])}`);
+    const bar = await barOf(page);
+    if (bar.title !== "<b>bold") fail(`the group screen's bar is titled ${J(bar.title)}`);
+    if (await made(page)) fail(`the group screen has ${await made(page)} elements made of what the library says`);
+    // the editor: the values of its fields
+    await press(page, byTid(page, "lib-prompt-row").last());
+    await atRestId(page, "prompt-editor");
+    const field = (id) => byTid(page, id).last().inputValue();
+    if (await field("editor-name") !== "<img src=x onerror=alert(1)>") fail(`the editor's Name field holds ${J(await field("editor-name"))}`);
+    if (await field("editor-text") !== "<script>alert(1)</script> & <i>text</i>") fail(`the editor's text field holds ${J(await field("editor-text"))}`);
+    if (await made(page)) fail(`the editor has ${await made(page)} elements made of what the library says`);
+    await press(page, byTid(page, "sheet-left").last());
+    await until(async () => (await byTid(page, "prompt-editor").count()) === 0, 10000) || fail("Cancel did not close the editor");
+    // a second library whose notice and name are markup: the notices name their servers
+    await back(page);
+    await servers([STUDIO_P]);
+    await mockEval(`setLibrary("s_studio", { groups: [], prompts: [], notice: "Set aside." }); setServerState("s_studio", "unreachable"); setServerState("s_studio", "connected");`, url); // (the notice comes with the server's snapshot: it joins again)
+    await shows("a second library with a notice", () => sectionsOf(page), (x) => x.some((c) => c.title.includes("Studio")));
+    const both = await texts(page, "lib-file-notice");
+    if (both.join("|") !== `This computer: ${NOTICE}|<u>Studio: Set aside.`) fail(`with two libraries the notices are ${J(both)}`);
+    const titles = (await sectionsOf(page)).map((c) => c.title);
+    if (!titles.includes("<u>Studio")) fail(`the Library screen's cards are titled ${J(titles)}, not with the server's name as characters`);
+    if (await made(page)) fail(`with a server named by markup the Library screen has ${await made(page)} elements made of it`);
+    await ctx.close(); // (the mock has one stream: two pages open take it from each other)
+    // the Prompt sheet shows the same as text, with one library and with two
+    await servers([]);
+    await mockEval(`setLibrary("local", ${J({ groups: [{ id: "g_b", name: "<b>bold", parent: "" }], prompts: MARKUP.prompts })}); setLibrary("s_studio", null);`, url);
+    {
+      const { page: chat, ctx: chatCtx } = await open({ sel, wait: tidSel("composer-input") });
+      const sheet = () => chat.evaluate(() => {
+        const pop = document.querySelector('[data-testid="insert-popup"]'), t = (e) => e?.textContent.trim() ?? "", q = (id) => [...(pop?.querySelectorAll(`[data-testid="${id}"]`) ?? [])].map(t);
+        return pop && { heads: q("insert-section"), names: q("lib-pname"), lines: q("insert-text") };
+      });
+      await press(chat, byTid(chat, "composer-input").first());
+      await chat.keyboard.press("ControlOrMeta+p");
+      let r = await shows("the Prompt sheet", sheet, (x) => x && x.names.length === 2);
+      if (J(r) !== J({ heads: ["<b>bold", "Top level"], names: ["<img src=x onerror=alert(1)>", "plain"], lines: ["<script>alert(1)</script> & <i>text</i>", "Plain."] })) fail(`the Prompt sheet shows ${J(r)}`);
+      if (await made(chat)) fail(`the Prompt sheet has ${await made(chat)} elements made of what the library says`);
+      await servers([STUDIO_P]); // (joins while the sheet is open)
+      await mockEval(`setLibrary("s_studio", { groups: [], prompts: [{ id: "p_rules", name: "rules", parent: "", text: "Be kind." }] });`, url);
+      r = await shows("the Prompt sheet with a second library", sheet, (x) => x && x.names.length === 3);
+      if (J(r.heads) !== J(["This computer › <b>bold", "This computer", "<u>Studio"])) fail(`with two libraries the Prompt sheet's heads are ${J(r.heads)}`);
+      if (await made(chat)) fail(`with a server named by markup the Prompt sheet has ${await made(chat)} elements made of it`);
+      await chat.keyboard.press("Escape");
+      await chatCtx.close();
+    }
+    note("the names, texts, a server's name and the notices are text on the Library screen, a group's screen, the editor and the Prompt sheet; the notice names its server when there are several; the ⌘P line and Tab are the wide popups' (the phone shows no key; its sheets are the kit's)");
+  } else {
     const { page, ctx } = await open({ sel, wait: tidSel("composer-input") });
     const platform = await page.evaluate(() => navigator.platform), key = /Mac|iPhone|iPad/.test(platform) ? "⌘P" : "Ctrl+P";
     await (await import("./sel.mjs")).showList(page);
@@ -86,8 +163,21 @@ await check("L20 the prompt library's popups: the head's key, what a library say
 
   // ---- each theme and flavour: both popups readable
   await servers([]);
-  await mockEval(LIBRARIES, url);
-  const STAGES = [
+  await mockEval(layout === "phone" ? PHONE_LIBRARIES : LIBRARIES, url);
+  const STAGES = layout === "phone" ? [
+    { name: "the Library screen", part: tidSel("lib-screen"), min: 10, async show(page) { await openLibrary(page); await byTid(page, "lib-file-notice").first().waitFor({ state: "visible", timeout: 15000 }); } },
+    { name: "a group screen", part: tidSel("lib-group-screen"), min: 4, async show(page) { await openLibrary(page); await openGroup(page, "g_git"); } },
+    { name: "the editor sheet", part: tidSel("prompt-editor"), min: 6, async show(page) {
+      await openLibrary(page); await openGroup(page, "g_git");
+      await press(page, byTid(page, "lib-prompt-row").last());
+      await atRestId(page, "prompt-editor");
+    } },
+    { name: "the Prompt sheet", part: tidSel("insert-popup"), min: 6, async show(page) {
+      await press(page, byTid(page, "composer-input").first());
+      await page.keyboard.press("ControlOrMeta+p");
+      await byTid(page, "insert-row").first().waitFor({ state: "visible", timeout: 15000 });
+    } },
+  ] : [
     { name: "the library popup", part: tidSel("library-dialog"), min: 12, async show(page) {
       await (await import("./sel.mjs")).showList(page);
       await press(page, byTid(page, "library-btn"));
@@ -106,6 +196,7 @@ await check("L20 the prompt library's popups: the head's key, what a library say
     try {
       await stage.show(page);
       if (!await atRest(page, 8)) fail(`${theme}, ${stage.name}: the page did not come to rest`);
+      if (process.env.OUT && layout === "phone" && stage.name === "the Library screen" && (theme === "light" || theme === "mocha")) await page.screenshot({ path: `${process.env.OUT}/library-notice-${theme}.png` }); // (OUT=/tmp/x keeps the Library screen with the file's notice, light and Mocha)
       const rows = await contrastAudit(page, { only: [stage.part] });
       const least = new Map();
       for (const r of rows) { const key = `${r.kind} "${r.what}" (${r.where})`, was = least.get(key); if (!was || r.ratio < was.ratio) least.set(key, r); }
@@ -136,6 +227,6 @@ await check("L20 the prompt library's popups: the head's key, what a library say
       }
     }
     const list = (m) => [...m].map(([k, v]) => `${k} ${v}`).join(", ") || "nothing";
-    note(`${flavour}: ${audited} texts in ${STAGES.length} popups; the weakest ${least?.ratio}:1; under ${FLOOR}:1 and no weaker than in ${over}: ${list(asToday)}; accepted by the goal: ${list(accepted)}`);
+    note(`${flavour}: ${audited} texts in ${STAGES.length} ${layout === "phone" ? "screens and sheets" : "popups"}; the weakest ${least?.ratio}:1; under ${FLOOR}:1 and no weaker than in ${over}: ${list(asToday)}; accepted by the goal: ${list(accepted)}`);
   }
 }, { viewports, page: false });

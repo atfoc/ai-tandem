@@ -147,6 +147,26 @@ function resultOf(item: Item): string | undefined {
   try { return JSON.stringify(r) ?? ""; } catch { return ""; }
 }
 
+/** One edit of a file as the full diff reads it: its old text and its new one. */
+export type FileEdit = { old: string; next: string; all: boolean };
+/** The change a file call makes, as the full diff screen draws it (ux T2): an edit's texts (one pair or a list), a write's content as
+ *  all added, a delete's text as all removed. path is the call's own, to be shortened with shownPath. omitted: the texts were too
+ *  large for the server to keep. null for a call that changes no file, or whose input does not say which. */
+export type FileChange = { kind: "edit" | "write" | "delete"; path: string; edits: FileEdit[]; omitted: boolean };
+
+export function changeOf(item: Item): FileChange | null {
+  const r = read(nameOf(item), inputOf(item).input);
+  switch (r.kind) {
+    case "edit": return { kind: "edit", path: r.path, edits: r.edits, omitted: r.omitted };
+    case "write": return { kind: "write", path: r.path, edits: r.content ? [{ old: "", next: r.content, all: false }] : [], omitted: false };
+    case "delete": return { kind: "delete", path: r.path, edits: r.content ? [{ old: r.content, next: "", all: false }] : [], omitted: r.omitted };
+    default: return null;
+  }
+}
+
+/** The result of an item as a text; undefined while there is none. */
+export const resultText = (item: Item): string | undefined => resultOf(item);
+
 export function cardState(item: Item, live: boolean): CardState {
   if (item.denied) return "denied";
   return item.result === undefined ? (live ? "running" : "stopped") : "done";

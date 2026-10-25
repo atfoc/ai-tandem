@@ -30,11 +30,18 @@ import {
 import { useCountdown } from "./pill/Orb.tsx";
 import { barHeights } from "./pill/logic.ts";
 import { Switch } from "./pill/Switch.tsx";
+import { PhoneSpeechBar } from "./PhoneSpeechBar.tsx";
+import { usePhone } from "../../ui/useLayout.ts";
 
 const BARS = 28;
 const HEIGHT = 30;
 
-export function SpeechBar({ chatId, branch }: { chatId: string; branch: string }) {
+/** The phone draws its own bar (PhoneSpeechBar.tsx, ux-improvements goal 3.7.3); the wide layouts keep this one, with its Auto-send switch. */
+export function SpeechBar(p: { chatId: string; branch: string }) {
+  return usePhone() ? <PhoneSpeechBar {...p} /> : <WideSpeechBar {...p} />;
+}
+
+function WideSpeechBar({ chatId, branch }: { chatId: string; branch: string }) {
   const { tokens: t } = useTheme();
   const own = (s: { owner: { kind: string; chat?: string; branch?: string } | null }) => s.owner?.kind === "speech" && s.owner.chat === chatId && s.owner.branch === branch;
   const phase = useVoiceSession((s) => (own(s) ? s.phase : "idle"));

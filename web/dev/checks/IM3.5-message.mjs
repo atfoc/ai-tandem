@@ -6,6 +6,10 @@
 // cannot be fetched says so there), a message's only image has no steps, and Escape, the close button and a press beside the picture close it,
 // Escape with the focus back on the thumbnail; the chat whose first message is images alone is titled "Image" in its header and in the
 // sidebar. On touch a swipe sideways steps and a swipe down closes (the large view is a full-screen sheet on the phone).
+// The phone's half describes the phone's own screens (ux-improvements goal 3.5, mockup 09 `ch-09b`): the thumbnails are 116 x 140 pt with an 8 pt gap; the viewer
+// is black in both themes with the name and "Image 1 of 2 · your message" beside a 44 pt close, no arrow buttons (swipes and keys step), page dots (not for one
+// image), and a bottom row of Share (only where the browser shares files), Save (a download) and Ask about it (puts the image in the composer, closes the view
+// and focuses the composer); a pinch zooms, a pan of a zoomed picture moves it and neither changes the image nor closes the view.
 // Ports dev/checks/IM3.5-message.mjs with the same seed (the chat c_img, one image held by two messages and one that cannot be fetched), the
 // same PNGs and the same assertions; only the selectors change (testIDs of screens/images). The mock serves no images: the check answers the
 // image address itself, with PNGs for three ids and 404 for a fourth.
@@ -58,13 +62,26 @@ const SEED = `chats.c_img = chat("c_img", { group: "g_shop", created: iso(T0 - M
 const THUMB = '[data-testid="image-thumb"]', BROKEN = '[data-testid="picture"][data-state="broken"]', LARGE = '[data-testid="image-large"]';
 const msg = (item) => `[data-testid="msg"][data-role="user"][data-item="${item}"]`;
 const first = msg(0), second = msg(3), third = msg(6);
-const caption = (page) => page.evaluate(() => document.querySelector('[data-testid="image-large-name"]')?.textContent ?? null);
+// (the wide view's name element holds "name · 2 of 3"; the phone's holds the name, and the dialog's dataSet says which of how many)
+const caption = (page) => page.evaluate(() => {
+  const name = document.querySelector('[data-testid="image-large-name"]')?.textContent ?? null, L = document.querySelector('[data-testid="image-large"]');
+  return name && L && document.querySelector('[data-testid="image-large-sub"]') && +L.dataset.count > 1 ? `${name} · ${+L.dataset.at + 1} of ${L.dataset.count}` : name;
+});
 const closed = (page) => until(() => page.evaluate((s) => !document.querySelector(s), LARGE));
 /** Answers a context's image fetches: the PNG of an id that has one, 404 for any other. */
 const serve = (ctx) => ctx.route("**/host/picture/local/*/*", (route) => {
   const bytes = BYTES[route.request().url().split("/").pop()];
   return bytes ? route.fulfill({ status: 200, contentType: "image/png", body: bytes }) : route.fulfill({ status: 404, contentType: "application/json", body: '{"error":"not found"}' });
 });
+/** A pinch of two fingers around (x, y), from `from` points apart to `to` (the DevTools session again). */
+async function pinch(page, x, y, from, to) {
+  const c = await page.context().newCDPSession(page), a = ++fingers, b = ++fingers;
+  const at = (i) => { const d = (from + ((to - from) * i) / 8) / 2; return [{ x: x - d, y, id: a }, { x: x + d, y, id: b }]; };
+  await c.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: at(0) });
+  for (let i = 1; i <= 8; i++) await c.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: at(i) });
+  await c.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  await c.detach();
+}
 /** A swipe of a finger from (x, y) by (dx, dy), through the DevTools session (Playwright's touchscreen has a tap only). */
 let fingers = 0;
 async function swipe(page, x, y, dx, dy) {
@@ -73,6 +90,99 @@ async function swipe(page, x, y, dx, dy) {
   for (let i = 1; i <= 8; i++) await c.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: at(i) });
   await c.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
   await c.detach();
+}
+
+const tidOf = (id) => `[data-testid="${id}"]`;
+/** What the phone's viewer shows now: its lines, dots and actions (with their sizes and labels), and the zoom the picture is at. */
+const viewerNow = (page) => page.evaluate(() => {
+  const q = (id) => document.querySelector(`[data-testid="${id}"]`), R = (e) => { const r = e.getBoundingClientRect(); return { w: Math.round(r.width), h: Math.round(r.height), top: Math.round(r.top), left: Math.round(r.left) }; };
+  const dots = q("image-large-dots");
+  return {
+    name: q("image-large-name")?.textContent, sub: q("image-large-sub")?.textContent, close: q("image-large-close") && { ...R(q("image-large-close")), label: q("image-large-close").getAttribute("aria-label") },
+    dots: dots && { at: dots.dataset.at, count: dots.dataset.count, paints: [...dots.children].map((d) => getComputedStyle(d).backgroundColor), size: R(dots.children[0]) },
+    actions: ["share", "save", "ask"].filter((a) => q(`image-large-${a}`)).map((a) => ({ a, ...R(q(`image-large-${a}`)), text: q(`image-large-${a}`).textContent, label: q(`image-large-${a}`).getAttribute("aria-label"), off: q(`image-large-${a}`).getAttribute("aria-disabled") })),
+    zoom: +(q("image-large-zoom")?.dataset.zoom ?? 0),
+    prev: !!q("image-large-prev") || !!q("image-large-next"),
+  };
+});
+
+/** The phone's viewer on the first of three images: what it draws, the three actions, the pinch and the pan of a zoomed picture. */
+async function phoneViewer(page, bad, theme) {
+  const w = page.viewportSize().width, h = page.viewportSize().height;
+  let v = await viewerNow(page);
+  if (v.name !== "one.png" || v.sub !== "Image 1 of 3 · your message") bad(`${theme}: the viewer's lines are ${JSON.stringify([v.name, v.sub])}; they are “one.png” and “Image 1 of 3 · your message”`);
+  if (!v.close || v.close.w < 44 || v.close.h < 44 || v.close.label !== "Close") bad(`${theme}: the viewer's close is ${JSON.stringify(v.close)}; it is a 44 pt target labelled Close`);
+  if (v.prev) bad(`${theme}: the phone's viewer has arrow buttons`);
+  if (!v.dots || v.dots.at !== "0" || v.dots.count !== "3" || v.dots.paints.length !== 3 || v.dots.paints[0] !== "rgb(255, 255, 255)" || !v.dots.paints.slice(1).every((c) => c === "rgba(255, 255, 255, 0.4)")) bad(`${theme}: the page dots are ${JSON.stringify(v.dots)}; three, the shown one white and the others at 40 %`);
+  await swipe(page, w * 0.75, h * 0.5, -w * 0.5, 0);
+  if (!await until(async () => (await viewerNow(page)).dots?.paints[1] === "rgb(255, 255, 255)")) bad(`${theme}: after a swipe the second dot is not the white one: ${JSON.stringify((await viewerNow(page)).dots)}`);
+  await swipe(page, w * 0.25, h * 0.5, w * 0.5, 0);
+  await until(async () => (await viewerNow(page)).dots?.paints[0] === "rgb(255, 255, 255)");
+
+  // ---- the pinch zooms, a pan of a zoomed picture moves it and neither steps nor closes
+  await pinch(page, w / 2, h / 2, 60, 220);
+  if (!await until(async () => (await viewerNow(page)).zoom > 1.5)) bad(`${theme}: a pinch outwards left the picture at zoom ${(await viewerNow(page)).zoom}; it is zoomed`);
+  const was = await page.evaluate(() => document.querySelector('[data-testid="image-large-zoom"]').getBoundingClientRect().left);
+  await swipe(page, w * 0.8, h * 0.5, -w * 0.5, 0);
+  await new Promise((r) => setTimeout(r, 300));
+  const moved = await page.evaluate(() => document.querySelector('[data-testid="image-large-zoom"]').getBoundingClientRect().left);
+  if (await caption(page) !== "one.png · 1 of 3") bad(`${theme}: a sideways pan of a zoomed picture left the viewer at “${await caption(page)}”; it moves the picture and stays at “one.png · 1 of 3”`);
+  if (!(moved < was - 20)) bad(`${theme}: a sideways pan of a zoomed picture did not move it (${was} → ${moved})`);
+  await swipe(page, w * 0.5, h * 0.3, 0, h * 0.35);
+  await new Promise((r) => setTimeout(r, 300));
+  if (!await page.evaluate((L) => !!document.querySelector(L), LARGE)) bad(`${theme}: a swipe down on a zoomed picture closed the viewer; it pans the picture`);
+  await pinch(page, w / 2, h / 2, 240, 40);
+  if (!await until(async () => (await viewerNow(page)).zoom === 1)) bad(`${theme}: pinching back did not bring the picture to rest: zoom ${(await viewerNow(page)).zoom}`);
+  await swipe(page, w * 0.75, h * 0.5, -w * 0.5, 0);
+  if (!await until(async () => await caption(page) === "two.png · 2 of 3")) bad(`${theme}: at rest a swipe does not step again: “${await caption(page)}”`);
+  await swipe(page, w * 0.25, h * 0.5, w * 0.5, 0);
+  await until(async () => await caption(page) === "one.png · 1 of 3");
+
+  // ---- the bottom row: Share only where the browser shares files, Save, Ask about it (44 pt at least, an icon over its label)
+  const stub = (can) => page.evaluate((can) => {
+    Object.defineProperty(navigator, "canShare", { configurable: true, value: () => can });
+    Object.defineProperty(navigator, "share", { configurable: true, value: async (d) => { (window.__shared ??= []).push(`${d.files[0].name}:${d.files[0].type}`); } });
+  }, can);
+  const reopen = async () => {
+    await press(page, byTid(page, "image-large-close"));
+    await closed(page);
+    await press(page, byTid(page, "msg", { role: "user", item: 3 }).locator('[data-testid="image-thumb-open"]').nth(0));
+    await page.waitForSelector(LARGE);
+  };
+  await stub(false);
+  await reopen();
+  v = await viewerNow(page);
+  if (String(v.actions.map((a) => a.a)) !== "save,ask") bad(`${theme}: where the browser shares no files the row has ${v.actions.map((a) => a.a)}; it is save,ask`);
+  await stub(true);
+  await reopen();
+  v = await viewerNow(page);
+  if (String(v.actions.map((a) => a.a)) !== "share,save,ask") bad(`${theme}: the row has ${v.actions.map((a) => a.a)}; it is share,save,ask`);
+  const labels = { share: "Share", save: "Save", ask: "Ask about it" };
+  for (const a of v.actions) if (a.h < 44 || a.w < 44 || a.text !== labels[a.a] || a.label !== labels[a.a] || a.off === "true") bad(`${theme}: the ${a.a} action is ${JSON.stringify(a)}; it is 44 pt at least, labelled “${labels[a.a]}”, and on`);
+  if (OUT) { // (the viewer with its three actions, on image 1 and on image 2)
+    await page.screenshot({ path: path.join(OUT, `IM3.5-phone-${theme}-viewer1.png`) });
+    await swipe(page, w * 0.75, h * 0.5, -w * 0.5, 0);
+    if (await until(async () => await caption(page) === "two.png · 2 of 3")) await page.screenshot({ path: path.join(OUT, `IM3.5-phone-${theme}-viewer2.png`) });
+    await swipe(page, w * 0.25, h * 0.5, w * 0.5, 0);
+    await until(async () => await caption(page) === "one.png · 1 of 3");
+  }
+  await press(page, byTid(page, "image-large-share"));
+  if (!await until(() => page.evaluate(() => (window.__shared ?? []).join() === "one.png:image/png"))) bad(`${theme}: Share did not hand the picture to the browser's share: ${await page.evaluate(() => JSON.stringify(window.__shared ?? null))}`);
+  const download = page.waitForEvent("download", { timeout: 10000 }).catch(() => null);
+  await press(page, byTid(page, "image-large-save"));
+  const got = await download;
+  if (got?.suggestedFilename() !== "one.png") bad(`${theme}: Save did not download the picture as one.png: ${got?.suggestedFilename() ?? "no download"}`);
+}
+
+/** "Ask about it": the picture goes into the chat's composer, the viewer closes and the composer has the focus. */
+async function askAbout(page, bad, thumb) {
+  await press(page, thumb);
+  await page.waitForSelector(LARGE);
+  await press(page, byTid(page, "image-large-ask"));
+  if (!await until(() => page.evaluate((L) => !document.querySelector(L), LARGE))) bad("Ask about it did not close the viewer");
+  const held = () => page.evaluate(() => [...document.querySelectorAll('[data-testid="composer-images"] [data-testid="image-thumb"]')].map((e) => e.getAttribute("aria-label")));
+  if (!await until(async () => (await held()).includes("one.png"))) bad(`Ask about it did not put the image in the composer: ${JSON.stringify(await held())}`);
+  if (!await until(() => page.evaluate(() => !!document.activeElement?.closest('[data-testid="composer"]')))) bad("Ask about it did not focus the composer");
 }
 
 await check("IM3.5 a sent message's images: thumbnails, the plain tile, the large view, the name Image", async ({ url, open, viewport, fail, note }) => {
@@ -102,11 +212,16 @@ await check("IM3.5 a sent message's images: thumbnails, the plain tile, the larg
         plain: { text: name.dataset.text, shown: getComputedStyle(name, "::before").content, opens: !!tile.closest(THUMB).querySelector('[data-testid="image-thumb-open"]'), over: Math.round(Math.max(R(name).bottom - R(tile).bottom, R(tile).top - R(name).top, R(name).right - R(tile).right)) },
         withText: { tiles: two.querySelectorAll(THUMB).length, above: R(two.querySelector('[data-testid="msg-images"]')).bottom <= R(words(two)[0]).top, words: words(two).map((e) => e.textContent).join(""), marked: two.querySelector('[data-testid="msg-images"]').dataset.alone === "true" },
         head: document.querySelector('[data-testid="chat-head-name"]')?.textContent ?? null,
+        // (the gaps inside a row: three of 116 pt do not fit one row of the phone, and the third wraps)
+        gaps: [...two.querySelectorAll(THUMB)].slice(1).flatMap((t, i) => { const a = R(two.querySelectorAll(THUMB)[i]); return Math.abs(R(t).top - a.top) < 1 ? [Math.round(R(t).left - a.right)] : []; }),
+        rows: new Set([...two.querySelectorAll(THUMB)].map((t) => Math.round(R(t).top))).size,
       };
     }, [first, second, THUMB, BROKEN]);
     if (seen.alone.md || !seen.alone.marked || seen.alone.tiles !== 2) bad(`the message of images alone: ${JSON.stringify(seen.alone)}; it shows its two images and no words`);
     if (seen.alone.texts) bad(`the message of images alone has ${seen.alone.texts} text nodes; it has none`);
-    if (seen.sizes.some((s) => s !== "88x88")) bad(`the thumbnails of a message are 88 px squares; they are ${seen.sizes.join(", ")}`);
+    const phone = viewport === "phone", tile = phone ? "116x140" : "88x88";
+    if (seen.sizes.some((s) => s !== tile)) bad(`the thumbnails of a message are ${tile}${phone ? " pt" : " px squares"}; they are ${seen.sizes.join(", ")}`);
+    if (phone && (seen.rows !== 2 || !seen.gaps.length || seen.gaps.some((g) => g !== 8))) bad(`the thumbnails of a message have gaps of ${seen.gaps} pt in ${seen.rows} rows; the phone's are 8, and three of them wrap into two rows`);
     if (seen.plain.text !== LONG || !seen.plain.shown.includes("Screenshot 2026-10-12")) bad(`the plain tile names its image: ${JSON.stringify(seen.plain)}`);
     if (seen.plain.opens) bad("the plain tile has something to open; an image that cannot be fetched has nothing to open");
     if (seen.plain.over > 0) bad(`the plain tile's name passes its tile by ${seen.plain.over} px`);
@@ -129,25 +244,33 @@ await check("IM3.5 a sent message's images: thumbnails, the plain tile, the larg
     await page.keyboard.press("ArrowRight"); // (the last one: it stays)
     if (!await until(async () => await caption(page) === "wide.png · 3 of 3")) bad(`after two steps right the large view says “${await caption(page)}”; it stops at “wide.png · 3 of 3”`);
     const off = () => page.evaluate(() => ["image-large-prev", "image-large-next"].map((t) => document.querySelector(`[data-testid="${t}"]`).getAttribute("aria-disabled") === "true"));
-    if (String(await off()) !== "false,true") bad(`at the last image the steps that are off are ${await off()} (back, on); it is the one on`);
+    if (phone) {
+      if (await page.evaluate(() => !!document.querySelector('[data-testid="image-large-prev"], [data-testid="image-large-next"]'))) bad("the phone's viewer has arrow buttons; it steps by swipes (and keys)");
+    } else if (String(await off()) !== "false,true") bad(`at the last image the steps that are off are ${await off()} (back, on); it is the one on`);
     for (let i = 0; i < 3; i++) await page.keyboard.press("ArrowLeft");
     if (!await until(async () => await caption(page) === "one.png · 1 of 3")) bad(`after three steps left the large view says “${await caption(page)}”; it stops at “one.png · 1 of 3”`);
-    // the two buttons step as the keys do, and the keys still work with the focus on a button that has come to its end
-    for (let i = 0; i < 2; i++) await press(page, byTid(page, "image-large-next"));
-    if (!await until(async () => await caption(page) === "wide.png · 3 of 3")) bad(`after two presses of Next the large view says “${await caption(page)}”; it is at “wide.png · 3 of 3”`);
-    await page.keyboard.press("ArrowLeft");
-    await press(page, byTid(page, "image-large-prev"));
-    if (!await until(async () => await caption(page) === "one.png · 1 of 3")) bad(`after a step left by the key and one by the button the large view says “${await caption(page)}”; it is at “one.png · 1 of 3”`);
+    // the two buttons step as the keys do, and the keys still work with the focus on a button that has come to its end (the phone has no buttons)
+    if (!phone) {
+      for (let i = 0; i < 2; i++) await press(page, byTid(page, "image-large-next"));
+      if (!await until(async () => await caption(page) === "wide.png · 3 of 3")) bad(`after two presses of Next the large view says “${await caption(page)}”; it is at “wide.png · 3 of 3”`);
+      await page.keyboard.press("ArrowLeft");
+      await press(page, byTid(page, "image-large-prev"));
+      if (!await until(async () => await caption(page) === "one.png · 1 of 3")) bad(`after a step left by the key and one by the button the large view says “${await caption(page)}”; it is at “one.png · 1 of 3”`);
+    }
     // the picture that is larger than the window is drawn inside it, whole
     const fit = await until(() => page.evaluate((L) => {
       const p = document.querySelector(`${L} img[data-testid="picture"]`);
       if (!p || !(p.naturalWidth > 0)) return null;
       const r = p.getBoundingClientRect(), name = document.querySelector('[data-testid="image-large-name"]').getBoundingClientRect();
       if (getComputedStyle(p).opacity !== "1") return null; // (until its size is measured it is drawn invisibly)
-      return { natural: p.naturalWidth, inside: r.left >= 0 && r.top >= 0 && r.right <= innerWidth && r.bottom <= name.top + 1 && name.bottom <= innerHeight, ratio: Math.round(100 * r.width / r.height) / 100, width: Math.round(r.width) };
+      // (the phone: between the bar, whose lines are the name and the sub-line, and the page dots)
+      const sub = document.querySelector('[data-testid="image-large-sub"]')?.getBoundingClientRect(), dots = document.querySelector('[data-testid="image-large-dots"]')?.getBoundingClientRect();
+      const inside = sub ? r.left >= 0 && r.right <= innerWidth && r.top >= sub.bottom - 1 && r.bottom <= (dots?.top ?? innerHeight) + 1 : r.left >= 0 && r.top >= 0 && r.right <= innerWidth && r.bottom <= name.top + 1 && name.bottom <= innerHeight;
+      return { natural: p.naturalWidth, inside, ratio: Math.round(100 * r.width / r.height) / 100, width: Math.round(r.width) };
     }, LARGE));
-    if (!fit || fit.natural !== 2400 || !fit.inside || Math.abs(fit.ratio - 2400 / 1800) > 0.02 || fit.width < 300) bad(`the picture of 2400x1800 in the large view: ${JSON.stringify(fit)}; it is whole, in its own shape, inside the window above its name`);
+    if (!fit || fit.natural !== 2400 || !fit.inside || Math.abs(fit.ratio - 2400 / 1800) > 0.02 || fit.width < 300) bad(`the picture of 2400x1800 in the large view: ${JSON.stringify(fit)}; it is whole, in its own shape, inside the window ${phone ? "between its bars" : "above its name"}`);
     if (OUT) await page.screenshot({ path: path.join(OUT, `IM3.5-${viewport}-${theme}-large.png`) });
+    if (phone) await phoneViewer(page, bad, theme);
     // on touch: a swipe sideways goes to the next image and back, a swipe down closes
     if (touch) {
       const w = page.viewportSize().width, h = page.viewportSize().height;
@@ -163,13 +286,18 @@ await check("IM3.5 a sent message's images: thumbnails, the plain tile, the larg
     await page.keyboard.press("Escape");
     if (!await closed(page)) bad("Escape did not close the large view");
     if (!await page.evaluate((s) => document.activeElement === document.querySelectorAll(s)[1], `${second} [data-testid="image-thumb-open"]`)) bad("after Escape the focus is not back on the thumbnail that was pressed");
+    if (phone) await askAbout(page, bad, opens(3).nth(0));
     await press(page, opens(3).nth(0));
     await page.waitForSelector(LARGE);
     await press(page, byTid(page, "image-large-close"));
     if (!await closed(page)) bad("the close button did not close the large view");
     await press(page, opens(3).nth(0));
     await page.waitForSelector(LARGE);
-    if (touch) await page.touchscreen.tap(6, 300); else await page.mouse.click(6, 300); // beside the picture
+    if (phone) { // (the picture fills the width: beside it is the black above it)
+      const g = await page.evaluate(() => { const a = document.querySelector('[data-testid="image-large-backdrop"]').getBoundingClientRect(), z = document.querySelector('[data-testid="image-large-zoom"]').getBoundingClientRect(); return { x: innerWidth / 2, y: (a.top + z.top) / 2, room: z.top - a.top }; });
+      if (g.room < 20) bad(`there is no room above the picture to press beside it (${g.room} pt)`);
+      await page.touchscreen.tap(g.x, g.y);
+    } else if (touch) await page.touchscreen.tap(6, 300); else await page.mouse.click(6, 300); // beside the picture
     if (!await closed(page)) bad("a press beside the picture did not close the large view");
     // a step to an image that cannot be fetched: the view says so, by the image's name
     await press(page, opens(0).first());
@@ -188,8 +316,9 @@ await check("IM3.5 a sent message's images: thumbnails, the plain tile, the larg
     const small = await until(() => page.evaluate((L) => { const p = document.querySelector(`${L} img[data-testid="picture"]`), r = p?.getBoundingClientRect(); return r && getComputedStyle(p).opacity === "1" ? `${Math.round(r.width)}x${Math.round(r.height)}` : null; }, LARGE));
     if (small !== "120x90") bad(`the picture of 120x90 is drawn ${small} in the large view; it keeps its size`);
     // (the scrim is dark and the texts light in every theme: B-IM-11)
-    const scrim = await colourOf(page, '[data-testid="image-large-backdrop"]', "backgroundColor"), words = await colourOf(page, '[data-testid="image-large-name"]', "color");
-    if (!scrim || !words || contrastOf(words, scrim) < FLOOR || Math.max(...scrim) > 60) bad(`the large view is ${JSON.stringify(scrim)} with texts ${JSON.stringify(words)}; it is a dark scrim with light texts`);
+    const scrim = await colourOf(page, phone ? '[data-testid="image-large"]' : '[data-testid="image-large-backdrop"]', "backgroundColor"), words = await colourOf(page, '[data-testid="image-large-name"]', "color");
+    if (!scrim || !words || contrastOf(words, scrim) < FLOOR || Math.max(...scrim) > (phone ? 0 : 60)) bad(`the large view is ${JSON.stringify(scrim)} with texts ${JSON.stringify(words)}; it is ${phone ? "black" : "a dark scrim"} with light texts`);
+    if (phone && await page.evaluate(() => !!document.querySelector('[data-testid="image-large-dots"]'))) bad("the viewer of a message's only image has page dots");
     await page.keyboard.press("Escape");
     if (!await closed(page)) bad("Escape did not close the large view of a message's only image");
 
@@ -198,6 +327,7 @@ await check("IM3.5 a sent message's images: thumbnails, the plain tile, the larg
     const rows = await page.evaluate(() => [...document.querySelectorAll('[data-testid="fk-nav"] [data-testid="fk-text"]')].map((e) => e.textContent));
     if (rows[0] !== "Image" || rows.includes("(empty)")) bad(`the tree's rows are ${JSON.stringify(rows)}; the message of images alone is “Image”`);
     await closeTree(page);
+    if (phone) { await ctx.close(); continue; } // (the phone's Home lists a group, not the chat: its titles are Home's check; the header's "Image" is asserted above)
     await showList(page);
     const side = await byTid(page, "side-row", { kind: "chat", key: "c_img" }).first().locator('[data-testid="side-name"]').textContent();
     if (side !== "Image") bad(`the sidebar titles the chat “${side}”; it is “Image”`);

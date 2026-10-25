@@ -35,6 +35,9 @@ let scroller: ((dy: number) => void) | null = null;
 /** The way the sidebar's list is scrolled by a drag held near its edge (set by the sidebar while it is drawn). */
 export function setScroller(f: ((dy: number) => void) | null): void { scroller = f; }
 
+/** The box the places are seen through, when it is not the sidebar's (Home's and a group screen's list set theirs while they are the screen on top). */
+export function setClip(el: Measurable | null): void { clip = el; }
+
 /** The ref of a place that takes a drop: a group's (or a server's ungrouped area's) box, or a group's header. */
 export function usePlace(kind: "zone" | "head", group: string): RefCallback<any> {
   const book = kind === "zone" ? zones : heads;
@@ -91,38 +94,84 @@ export const LOCK_SCROLL = Platform.OS !== "web";
 
 // ---------------------------------------------------------------- the gesture
 
+/** A finger that holds first (the phone's Home: ux-improvements goal 3.3). With `holdMs` a finger's Pan activates after that long (`onHold`: the
+ *  haptic); the drag starts only once the finger has moved `moveFirst` points from where it was held; a release before that is `onHoldRelease`
+ *  (the row's sheet) and starts no drag. A mouse has no hold: the gesture is off (the row's own long press stays). Without options the gesture is
+ *  the sidebar's (a finger held 300 ms drags at once, a mouse moves 5 px). */
+export type HoldOpts = { holdMs?: number; moveFirst?: number; onHold?(): void; onHoldRelease?(): void };
+
+const holdSet = new Set<() => void>();
+let holding = false;
+const setHolding = (on: boolean): void => { if (on !== holding) { holding = on; for (const f of [...holdSet]) f(); } };
+
+/** Whether a finger is held on a row (before or after the drag started) or a drag goes on: the lists that scroll hold still. */
+export const scrollLocked = {
+  subscribe: (f: () => void): (() => void) => { holdSet.add(f); const off = drag.source.subscribe(f); return () => { holdSet.delete(f); off(); }; },
+  get: (): boolean => holding || drag.active,
+};
+export const useScrollLocked = (): boolean => useSyncExternalStore(scrollLocked.subscribe, scrollLocked.get);
+
+/** Runs `f` once the click that follows a finger's release has passed (on the web a sheet that opens on the release would be pressed through: the
+ *  click lands on its backdrop and closes it); at once on the native platforms, which make no click, and after 400 ms where none comes. */
+function afterRelease(f: () => void): void {
+  if (Platform.OS !== "web" || typeof window === "undefined") return f();
+  let done = false;
+  const run = () => { if (done) return; done = true; clearTimeout(late); window.removeEventListener("click", run, true); f(); };
+  const late = setTimeout(run, 400);
+  window.addEventListener("click", run, true);
+}
+
 /** The Pan gesture of a row or header, or an off one when it cannot be dragged (a row in rename mode, an archived or nested row). `make` says
  *  what is dragged; it is read when the drag starts. A drag removed with its row (the thing deleted meanwhile) ends with no move. */
-export function useDragGesture(enabled: boolean, make: () => Dragged) {
+export function useDragGesture(enabled: boolean, make: () => Dragged, opts?: HoldOpts) {
   const pointer = usePointer();
   const latest = useRef(make), allowed = useRef(enabled);
   latest.current = make;
   allowed.current = enabled;
   const mine = useRef(false);
-  useEffect(() => () => { if (mine.current) { mine.current = false; drag.cancel(); dragging(false); scrollGuard.hold(false); } }, []);
+  const hold = useRef<{ from: Point; started: boolean } | null>(null), hopts = useRef(opts);
+  hopts.current = opts;
+  const release = () => { mine.current = false; hold.current = null; setHolding(false); dragging(false); scrollGuard.hold(false); };
+  useEffect(() => () => { if (mine.current) { if (hold.current?.started !== false) drag.cancel(); release(); } }, []);
   return useMemo(() => {
     // (always on: switching a gesture off and on makes the detector update its handler again, and the web detector then updates one it has
     // dropped; a row that cannot be dragged now starts none)
+    const held = !!opts?.holdMs;
     const pan = Gesture.Pan().runOnJS(true).shouldCancelWhenOutside(false)
       .onStart((e) => {
         if (!allowed.current) return;
         mine.current = true;
         dragging(true);
         scrollGuard.hold(true);
+        if (held) { hold.current = { from: { x: e.absoluteX, y: e.absoluteY }, started: false }; setHolding(true); hopts.current?.onHold?.(); return; }
         drag.start(latest.current(), { x: e.absoluteX, y: e.absoluteY });
       })
-      .onUpdate((e) => { if (mine.current) drag.move(dragPointer.now() ?? { x: e.absoluteX, y: e.absoluteY }); })
-      .onEnd((e, ok) => { if (mine.current && ok) void drag.end({ x: e.absoluteX, y: e.absoluteY }); })
+      .onUpdate((e) => {
+        if (!mine.current) return;
+        const h = hold.current, at = { x: e.absoluteX, y: e.absoluteY };
+        if (h && !h.started) {
+          if (Math.hypot(at.x - h.from.x, at.y - h.from.y) < (hopts.current?.moveFirst ?? 10)) return;
+          h.started = true;
+          drag.start(latest.current(), at);
+          return;
+        }
+        drag.move(dragPointer.now() ?? at);
+      })
+      .onEnd((e, ok) => {
+        if (!mine.current || !ok) return;
+        if (hold.current && !hold.current.started) { afterRelease(() => hopts.current?.onHoldRelease?.()); return; }
+        void drag.end({ x: e.absoluteX, y: e.absoluteY });
+      })
       .onFinalize((_e, ok) => {
         if (!mine.current) return;
-        mine.current = false;
-        if (!ok) drag.cancel();
-        dragging(false);
-        scrollGuard.hold(false);
+        const started = hold.current ? hold.current.started : true;
+        release();
+        if (!ok && started) drag.cancel();
       });
     // (a mouse drags at once, past a few pixels, so a click that moves a little is still a click; a finger is held first, and moving earlier is a scroll)
-    return pointer === "touch" ? pan.activateAfterLongPress(300) : pan.minDistance(5);
-  }, [pointer]);
+    if (pointer === "touch") return pan.activateAfterLongPress(opts?.holdMs ?? 300);
+    return held ? pan.enabled(false) : pan.minDistance(5);
+  }, [pointer, !!opts?.holdMs]);
 }
 
 // ---------------------------------------------------------------- the label

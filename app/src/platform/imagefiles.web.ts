@@ -11,6 +11,9 @@ export async function pickImageFiles(): Promise<{ files: Picked[]; skipped: Refu
   return { files: (await browserPick()).map((f) => ({ file: f, name: f.name })), skipped: [] };
 }
 
+/** No camera in the web build: the browser's file input is the one picker (the composer part `takePhoto` is null there). */
+export const takePhotoFiles = null;
+
 /** The browser's own picker, for several files of the types a chat takes. */
 function browserPick(): Promise<File[]> {
   return new Promise((resolve) => {

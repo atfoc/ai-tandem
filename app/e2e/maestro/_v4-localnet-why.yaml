@@ -1,6 +1,7 @@
 # Part 3a of `storage-picker-permission`: why the system will ask to reach the local network, said by the add form before the first connection (AD-34; iOS only: Android has no
-# such permission, and the form says nothing there). Starts on the sidebar with no server added (so the app has made no connection yet since it was opened: it is
-# opened again here, as the module's answer, `granted`, is kept for as long as the process lives).
+# such permission, and the form says nothing there). Phone layout: "Add server" › "Enter address manually" opens "New server", whose blue notice "iOS will ask about your local
+# network" (`add-localnet`) says it above "Test connection". Starts on the sidebar with no server added (so the app has made no connection yet since it was opened: it is
+# opened again here, as the module's answer, `granted`, is kept for as long as the process lives). Leaves the sidebar.
 appId: ${APP_ID}
 ---
 - runScript:
@@ -9,25 +10,27 @@ appId: ${APP_ID}
       METHOD: POST
       ROUTE: /device/relaunch
 - runFlow: _open-sidebar.yaml
-- tapOn:
-    id: "servers-btn"
-- tapOn:
-    id: "servers-add"
-- waitForAnimationToEnd
+- runFlow: _add-choose.yaml
+- runFlow: _add-manual.yaml
 - runFlow:
     when:
       platform: iOS
     commands:
       - assertVisible:
-          id: "addserver-localnet"
-          text: "The first time, your phone may ask to let AI Whiteboard reach devices on your local network. Allow it: a server on your home or office network is one of them."
+          id: "add-localnet"
+      - assertVisible: "iOS will ask about your local network"
+      - assertVisible: "When you test, iOS asks to let AI Whiteboard find devices on your local network. Choose Allow: the server is on it."
       - takeScreenshot: v4-30-localnet-why
 - runFlow:
     when:
       platform: Android
     commands:
       - assertNotVisible:
-          id: "addserver-localnet"
+          id: "add-localnet"
 - tapOn: "Cancel"
-- tapOn:
-    id: "servers-close"
+# (nothing was typed: the form closes at once, the list is under it)
+- extendedWaitUntil:
+    visible:
+      id: "srv-add"
+    timeout: 30000
+- runFlow: _to-sidebar.yaml

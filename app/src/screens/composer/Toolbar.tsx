@@ -18,7 +18,7 @@
 // while the controls and the meter's text give way, and only where even the narrowest row has no room are they two entries of the popup, after the insert
 // entry (fitWithTail brings the "more" chip if the row had none).
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { StyleSheet, View } from "react-native";
+import { ScrollView, StyleSheet, View } from "react-native";
 
 import { api } from "@aiwb/core/api.ts";
 import { agentOpen, catalogFor, usableAgents } from "@aiwb/core/logic/agentlist.ts";
@@ -50,6 +50,7 @@ import { base, useWhere } from "../chat/hooks.ts";
 import { AgentPick, AgentReason, ServerChip, useAgentChip, useServerChip } from "./ChatChoices.tsx";
 import { ChipName, LockMark, MODEL_CAP, TChip } from "./Chip.tsx";
 import { DirPicker } from "./Folder.tsx";
+import { PHONE_IDS } from "./phone/ids.ts";
 import { Measure, MeasureEpoch, MeasuringLayer, widths } from "./measure.tsx";
 import { effortLabel, modelLabel, modelOf, subline } from "./model.ts";
 import { Picker } from "./Picker.tsx";
@@ -64,15 +65,20 @@ const MORE = widthKey("more"), INSERT = widthKey("insert"), VOICE = widthKey("vo
 /** What the toolbar draws after its spacer, from the composer: the attach button (K4's), Stop while the agent works, Send. */
 export type Tail = { attach: ReactNode; stop: ReactNode; send: ReactNode };
 
-export type ToolbarProps = {
+type Common = {
   chatId: string;
   /** The branch the composer is of (voice's controls dictate and speak for it). */
   branch: string;
   onError(msg: string): void;
-  /** Opens the insert popup for the box (⌘P in it does the same). */
-  onInsert(): void;
   /** The composer sends a message. */
   sending: boolean;
+};
+
+/** The wide layouts' toolbar: the choices, the meter, the insert button, voice and the tail. */
+type Wide = Common & {
+  only?: undefined;
+  /** Opens the insert popup for the box (⌘P in it does the same). */
+  onInsert(): void;
   /** The row has Stop beside Send. */
   stop: boolean;
   tail: Tail;
@@ -80,12 +86,22 @@ export type ToolbarProps = {
   insertKey: string;
 };
 
+/** The phone's chip row (ChipRow.tsx): only the controls that are still choices, in a row that scrolls sideways (no fit, no "more" chip, no
+ *  meter, no insert button, no voice, no tail); nothing at all when the chat has none. The choices, their state and their lists are the same. */
+type Choices = Common & { only: "choices" };
+
+export type ToolbarProps = Wide | Choices;
+
+const NO_TAIL: Omit<Wide, keyof Common | "only"> = { onInsert: () => {}, stop: false, tail: { attach: null, stop: null, send: null }, insertKey: "" };
+
 export function Toolbar({ chatId, ...p }: ToolbarProps) {
   const c = useStore((s) => shownView(s, chatId));
   return c ? <Tools c={c} chatId={chatId} {...p} /> : null;
 }
 
-function Tools({ c, chatId, branch, onError, onInsert, sending, stop, tail, insertKey }: ToolbarProps & { c: ChatView }) {
+function Tools({ c, chatId, ...p }: ToolbarProps & { c: ChatView }) {
+  const { branch, onError, sending, only } = p;
+  const { onInsert, stop, tail, insertKey } = p.only ? NO_TAIL : p;
   const { tokens: t } = useTheme();
   const parts = useComposerParts();
   const move = useStore((s) => s.moves[chatId]);
@@ -173,7 +189,7 @@ function Tools({ c, chatId, branch, onError, onInsert, sending, stop, tail, inse
   // A control that changes place has no open list: it is made anew where it goes, and its list would open there by itself, at once or, for
   // one that went into the popup, when the popup is opened next.
   const placeOf = (x: { fit: Fit; more: boolean }, id: Control) => (x.fit.toolbar.includes(id) ? "row" : x.fit.popup.includes(id) && x.more ? "popup" : "");
-  const open = openPicker && drawn.current && (!placeOf({ fit: f, more }, openPicker) || placeOf(drawn.current, openPicker) !== placeOf({ fit: f, more }, openPicker)) ? null : openPicker;
+  const open = only ? openPicker : openPicker && drawn.current && (!placeOf({ fit: f, more }, openPicker) || placeOf(drawn.current, openPicker) !== placeOf({ fit: f, more }, openPicker)) ? null : openPicker;
   const opens = (id: Control) => ({ open: open === id, onOpenChange: (o: boolean) => setOpenPicker(o ? id : null) });
 
   useLayoutEffect(() => {
@@ -216,6 +232,24 @@ function Tools({ c, chatId, branch, onError, onInsert, sending, stop, tail, inse
       {(colour) => <InsertIcon color={colour} />}
     </IconButton>
   );
+
+  if (only) {
+    // The phone's chip row: the controls that are still choices, each as it is in the wide row (a fork's pick in progress keeps its model chip: the
+    // fixed one that names the choice), in a row that scrolls sideways. A started chat, a chat that is frozen or gone: none, and no strip.
+    const asked = frozen ? "fixed" : pickerMode(c, !!move);
+    const isChoice = (id: Control) => id === "agent" ? agentPick : id === "folder" ? folderOpen : id === "model" ? asked !== "fixed" && !!c.agent
+      : id === "effort" ? choices && !!cat && !!m?.efforts?.length : id === "subagents" && subs.kind === "open";
+    const ids = CONTROLS.filter((id) => isChoice(id) && chips[id] !== null);
+    if (!ids.length) return null;
+    return (
+      <View style={styles.wrap}>
+        <ScrollView {...tid(PHONE_IDS.chipRow)} horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={styles.scroller}>
+          {ids.map((id) => <View key={id} style={styles.control} {...tid("tool", { control: id })}>{chips[id]}</View>)}
+        </ScrollView>
+        {reason ? <AgentReason c={c} /> : null}
+      </View>
+    );
+  }
 
   return (
     <MeasureEpoch.Provider value={epoch.current.n}>
@@ -296,6 +330,7 @@ const styles = StyleSheet.create({
   wrap: { position: "relative", alignSelf: "stretch" },
   row: { flexDirection: "row", alignItems: "center", columnGap: 4, rowGap: 0, marginTop: 4, alignSelf: "stretch" },
   control: { flexDirection: "row", alignItems: "center", gap: 4, flexShrink: 0 },
+  scroller: { alignItems: "center", columnGap: 8, paddingVertical: 4 },
   grow: { flexGrow: 1, flexShrink: 1, flexBasis: 0, minWidth: 0 },
   popup: { alignItems: "flex-start", gap: 4, padding: 2 },
   moreRow: { flexDirection: "row", alignItems: "center", gap: 4 },

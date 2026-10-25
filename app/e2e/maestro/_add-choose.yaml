@@ -1,0 +1,18 @@
+# Shared by the phone flows that look at the add flow (`_v4-localnet-why`, `_v4-localnet`, `_v4-scan`): from Home (Settings' Servers row, `_open-foot.yaml`) or the sidebar, the Servers button pushes the list, "Add server" opens
+# "Choose how" (rows "Scan QR code" where the phone has a camera, "Paste setup text", "Enter address manually"). Ends with that sheet on the screen. Phone layout only.
+appId: ${APP_ID}
+---
+- runFlow:
+    file: _open-foot.yaml
+    env:
+      ID: "servers-btn"
+- extendedWaitUntil:
+    visible:
+      id: "srv-add"
+    timeout: 30000
+- tapOn:
+    id: "srv-add"
+- extendedWaitUntil:
+    visible: "Paste setup text.*"
+    timeout: 30000
+- waitForAnimationToEnd

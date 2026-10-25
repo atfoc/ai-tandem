@@ -22,6 +22,7 @@ import { MicIcon } from "../../ui/icons.tsx";
 import { Overlay } from "../../ui/Overlay.tsx";
 import { SecretInput } from "../../ui/SecretInput.tsx";
 import { Text } from "../../ui/Text.tsx";
+import { usePhone } from "../../ui/useLayout.ts";
 import { useTheme } from "../../ui/theme.tsx";
 import { tid } from "../../ui/tid.ts";
 import { webStyle } from "../../ui/webstyle.ts";
@@ -30,12 +31,17 @@ import { SECRET_INPUT } from "../servers/parts.tsx";
 import { Choice, Disclosure, Picker, Row, Section, SwitchRow, type Option } from "./SettingsParts.tsx";
 import { DevicesSection } from "./DevicesSection.tsx";
 import { VoiceChoice } from "./VoiceChoice.tsx";
+import { openVoicePhone, voiceScreenShown } from "./open.ts";
 
 export const SETTINGS_DIALOG_ID = "settings-dialog";
 
 export function SettingsDialog() {
   const open = useVoiceSettingsOpen();
-  if (!open) return null;
+  const phone = usePhone();
+  // On the phone Settings > Voice is the pushed screen `voice-settings` (S3); no dialog is drawn. A request to open it (the flag set while the
+  // screen is not shown) clears the flag and pushes the screen, which then holds the flag itself while it is mounted (open.ts).
+  useEffect(() => { if (open && phone && !voiceScreenShown()) { closeVoiceSettings(); openVoicePhone(); } }, [open, phone]);
+  if (!open || phone) return null;
   return (
     <Overlay open kind="dialog" label={SETTINGS_TITLE} width={600} testID={SETTINGS_DIALOG_ID} onClose={closeVoiceSettings}>
       <SettingsPage />

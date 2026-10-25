@@ -3,9 +3,8 @@
 // page it is in the row: a pick is saved, the list stays open, the chip says the new settings and stays in the row though it is wider now (the
 // others leave before it), and Esc closes the list alone. In a narrow page it is in the "more" popup: the list opens from there inside the
 // window, a pick is saved with the list and the popup still open, Esc closes the list first and the popup next. On a started chat the chip is
-// fixed and opens nothing; in the default panel beside a board, where the row has no room for it, a fixed chip on the default settings is not
-// drawn at all, and the toolbar has no "more" chip for it. Nor does it take the meter's text: in a panel of 430 px, where the row is whole with
-// that text (in the default one the attach button takes the room of it), the chip is not drawn either.
+// fixed and opens nothing; in a panel of 400 or 430 px beside a board, where the row keeps voice's pair longest (core's composerfit), the controls
+// leave for the "more" popup and the fixed chip on the default settings is drawn there, not in the row.
 // Ports dev/checks/S1.1-subagents.mjs: its states, widths, picks and assertions, at the three viewports. Deviations, each from the layout:
 //   - the pages are the pane's width as K3's ports open them (composer.mjs openAt): a window under 700 px is the phone layout (AD-72), so the
 //     narrow page of 400 px is a phone-layout chat at every viewport, where the list is a sheet over the "more" popup's sheet; the popover
@@ -14,7 +13,7 @@
 //   - new, no old check proved them: a press outside closes the list, the focus is on the current depth as the list opens, the arrows go
 //     through the rows that take a pick, and the focus returns to the chip as the list closes (C-SS-03, C-SS-06, C-CH-20).
 import { check, mockEval, seed, until } from "../shot.mjs";
-import { MORE, POP, chip, frame, openAt, playable } from "./composer.mjs";
+import { MORE, POP, chip, closeChoice, frame, openAt, openChoice, phoneChip, pickCapPhone, pickDepthPhone, playable } from "./composer.mjs";
 import { byTid, press, tidSel } from "./sel.mjs";
 
 export const viewports = ["desktop", "tablet", "phone"];
@@ -97,28 +96,38 @@ await check("S1.1 the Subagents chip in the toolbar's row and in the \"more\" po
     note("in the row: two picks saved with the list open, the focus on the current depth, the wider chip still in the row, the arrows, Off greys the cap, Esc and a press outside close the list and the focus returns to the chip");
   }
   await seed(url, "A2");
-  { // in the "more" popup of a narrow page
+  // (a page under 700 px is the phone layout at every viewport, and the phone's chips are in its chip row with no "more" popup (package C2): the
+  // narrow page is read at the phone viewport alone, and the popup's popover form is read below in the panel beside a board)
+  if (layout === "phone") { // in the chip row of a narrow page: the chip opens the sheet "Subagents"
     const p = await openAt(open, state("plain-new"), layout, 400), name = "a new chat in a 400 px page";
-    if (await CHIP(p.page).count()) fail(`${name}: the chip is drawn with the popup closed`);
-    await press(p.page, p.page.locator(MORE));
-    if (!await until(async () => (await at(p.page)).where === "popup", 5000)) fail(`${name}: the chip is not in the "more" popup: ${JSON.stringify(await at(p.page))}`);
-    await press(p.page, CHIP(p.page));
-    if (!await until(async () => (await at(p.page)).open, 5000)) fail(`${name}: a press on the chip in the popup opened no list`);
-    if (!(await settled(p.page)).inside) fail(`${name}: the list is not inside the window`);
-    await pick(p.page, "depth", 2, fail, name);
-    if (!await saved('return chats.c_A2_new.subDepth === 2;')) fail(`${name}: the depth was not saved`);
-    await pick(p.page, "cap", 10, fail, name);
-    if (!await saved('return chats.c_A2_new.subCap === 10;')) fail(`${name}: the cap was not saved`);
-    if (!await until(async () => (await at(p.page)).says === "Subagents2 levels · 10 at once", 5000)) fail(`${name}: the chip says "${(await at(p.page)).says}"`);
-    await frame(p.page);
-    const now = await at(p.page);
-    if (!now.open || !now.more || now.where !== "popup" || now.marked !== "2 levels,10") fail(`${name}: after two picks: ${JSON.stringify(now)}`);
-    await p.page.keyboard.press("Escape");
-    if (!await until(async () => { const x = await at(p.page); return !x.open && x.more; }, 5000)) fail(`${name}: the first Esc did not close the list alone: ${JSON.stringify(await at(p.page))}`);
-    await p.page.keyboard.press("Escape");
-    if (!await until(async () => !(await at(p.page)).more, 5000)) fail(`${name}: the second Esc did not close the "more" popup`);
+    const chipSays = async () => ((await phoneChip(p.page, "subagents").textContent()) ?? "").replace(/⌄/g, "").trim();
+    if (await p.page.locator(MORE).count() || await p.page.locator(POP).count()) fail(`${name}: the phone has a "more" chip or popup`);
+    if (!await phoneChip(p.page, "subagents").count()) fail(`${name}: the chip row has no Subagents chip`);
+    else {
+      if (await chipSays() !== "Subagents · 1 level") fail(`${name}: the chip says "${await chipSays()}", not "Subagents · 1 level"`);
+      await openChoice(p.page, "subagents");
+      const sheet = byTid(p.page, "sub-sheet");
+      if (await byTid(p.page, "sub-pop").count()) fail(`${name}: the popover form of the list is drawn at the phone layout`);
+      const marked = async () => (await sheet.locator(`${tidSel("sub-opt")}[data-on="true"]`).evaluateAll((es) => es.map((e) => `${e.dataset.section}:${e.dataset.value}`))).join(",");
+      if (await marked() !== "depth:1,cap:100") fail(`${name}: the sheet marks ${await marked()}, not depth:1,cap:100`);
+      await pickDepthPhone(p.page, 2);
+      if (!await saved('return chats.c_A2_new.subDepth === 2;')) fail(`${name}: the depth was not saved`);
+      await pickCapPhone(p.page, 25);
+      if (!await saved('return chats.c_A2_new.subCap === 25;')) fail(`${name}: the cap was not saved`);
+      if (!await until(async () => (await chipSays()) === "Subagents · 2 levels · 25 at once", 5000)) fail(`${name}: the chip says "${await chipSays()}", not "Subagents · 2 levels · 25 at once"`);
+      await frame(p.page);
+      if (!await byTid(p.page, "sub-sheet").count() || await marked() !== "depth:2,cap:25") fail(`${name}: after two picks the sheet is ${await byTid(p.page, "sub-sheet").count() ? "open" : "closed"} and marks ${await marked()}`);
+      // Off greys the cap (its rows take no pick)
+      await pickDepthPhone(p.page, 0);
+      if (!await saved('return chats.c_A2_new.subOff === true;')) fail(`${name}: Off was not saved`);
+      if (!await until(() => byTid(p.page, "sub-cap", { disabled: "true" }).count(), 5000)) fail(`${name}: with depth Off the "Running at once" control is not greyed`);
+      // Done closes the sheet, and the chip stays in the row with the saved words
+      await closeChoice(p.page);
+      if (await byTid(p.page, "sub-sheet").count()) fail(`${name}: Done did not close the sheet`);
+      if (!await until(async () => /^Subagents · Off/.test(await chipSays()), 5000)) fail(`${name}: after Done the chip says "${await chipSays()}"`);
+    }
     await close(p);
-    note(`in the "more" popup${layout === "desktop" ? "" : " (a sheet)"}: the list opens inside the window, two picks saved with list and popup open, Esc closes the list, then the popup`);
+    note("at the phone layout: the Subagents chip is in the chip row (no \"more\" popup), its sheet opens inside the window, two picks saved with the sheet open and the chip following, Off greys the cap, Done closes it");
   }
   if (layout === "desktop") { // the popover form of the list, from the popup of a panel beside a board
     await seed(url, "A2");
@@ -145,33 +154,34 @@ await check("S1.1 the Subagents chip in the toolbar's row and in the \"more\" po
     // (the phone's window holds no room for a fixed chip on the default settings, which the row leaves out: that chat has other settings)
     if (!wide) await mockEval("chats.c_plain.subDepth = 2; chats.c_plain.subCap = 25;", url);
     const p = await openAt(open, state("plain-started"), layout, wide ? WIDE[layout] : 400), name = `a started chat in a ${wide ? WIDE[layout] + " px " + (layout === "desktop" ? "page" : "window") : "400 px page"}`;
-    if (!wide && await p.page.locator(MORE).count()) await press(p.page, p.page.locator(MORE)); // (the chip is in the "more" popup of the narrow page)
-    const now = await at(p.page);
-    if ((wide && now.where !== "row") || !now.fixed || (!wide && now.says !== "Subagents2 levels · 25 at once")) fail(`${name}: the chip is ${JSON.stringify(now)}`);
+    // (the phone: a started chat has no chip row at all, so no Subagents chip, fixed or not, and no "more" chip)
+    if (!wide && (await byTid(p.page, "composer-chip-row").count() || await byTid(p.page, "tchip").count() || await p.page.locator(MORE).count())) fail(`${name}: a started chat has a chip row (${await byTid(p.page, "composer-chip-row").count()}), ${await byTid(p.page, "tchip").count()} chips and ${await p.page.locator(MORE).count()} "more" chips at the phone layout: it has none`);
+    const now = wide ? await at(p.page) : { fixed: false };
+    if (wide && (now.where !== "row" || !now.fixed)) fail(`${name}: the chip is ${JSON.stringify(now)}`);
     if (now.fixed) {
       await press(p.page, CHIP(p.page)).catch(() => {}); // (a fixed chip is no button: a press on it reaches nothing)
       await frame(p.page);
       if ((await at(p.page)).open) fail(`${name}: the fixed chip opened a list`);
     }
     await close(p);
-    // (400 px is the default panel, where the attach button has the room of the meter's text and voice's pair has room beside the controls; at
-    // 430 px the row has all of its controls and that text, with less to spare than the pair is wide: the pair goes into the "more" popup, which
-    // brings the chip, the meter's text gives its room to the chip, and the fixed chip on the default settings is in the popup with the pair)
-    for (const [width, panel, pair] of [[400, "a started chat in the default panel beside a board", false], [430, "a started chat in a 430 px panel beside a board", true]]) {
+    // (the panel beside a board is the desktop's alone: a window of 400 px is the phone layout at the other viewports. Since the composer keeps
+    // voice's pair longest (core's composerfit), the pair stays in the row beside the attach button at both widths, and what leaves for the "more"
+    // popup are the controls: the fixed chip on the default settings is among them, drawn in the popup with the folder and the model)
+    for (const [width, panel] of layout === "desktop" ? [[400, "a started chat in the default panel beside a board"], [430, "a started chat in a 430 px panel beside a board"]] : []) {
       const q = await openAt(open, state("board-started"), layout, width);
       const chips = await CHIP(q.page).count(), mores = await q.page.locator(MORE).count();
-      if (chips || mores !== (pair ? 1 : 0)) fail(`${panel}: ${chips} Subagents chips in the row and ${mores} "more" chips`);
-      if (pair) {
-        await press(q.page, q.page.locator(MORE));
-        if (!await until(() => q.page.locator(POP).count(), 5000)) fail(`${panel}: the "more" chip opens no popup`);
-        else {
-          const rows = await byTid(q.page.locator(POP), "more-row").evaluateAll((es) => es.map((e) => e.dataset.control));
-          if (!rows.includes("dictate") || !rows.includes("speech")) fail(`${panel}: the popup holds ${rows}, not the pair`);
-          if (!await CHIP(q.page.locator(POP)).count()) fail(`${panel}: the fixed Subagents chip is not in the popup with the pair`);
-        }
+      if (chips || mores !== 1) fail(`${panel}: ${chips} Subagents chips in the row and ${mores} "more" chips`);
+      const pair = await q.page.locator(`${tidSel("voice-dictate")}, ${tidSel("voice-speech")}`).count();
+      if (pair !== 2) fail(`${panel}: ${pair} of voice's pair in the row, not two`);
+      await press(q.page, q.page.locator(MORE));
+      if (!await until(() => q.page.locator(POP).count(), 5000)) fail(`${panel}: the "more" chip opens no popup`);
+      else {
+        const rows = await byTid(q.page.locator(POP), "more-row").evaluateAll((es) => es.map((e) => e.dataset.control));
+        if (rows.includes("dictate") || rows.includes("speech")) fail(`${panel}: the popup holds ${rows}: voice's pair left the row`);
+        if (!await CHIP(q.page.locator(POP)).count()) fail(`${panel}: the fixed Subagents chip is not in the popup`);
       }
       await close(q);
     }
-    note("a started chat: the chip is fixed and opens nothing; in the default panel a fixed chip on the default settings is not drawn, and costs no \"more\" chip; where voice's pair has no room beside the controls it is in the popup, with the chip");
+    note("a started chat: the chip is fixed and opens nothing; in a panel beside a board (the desktop's) voice's pair stays in the row and the fixed chip on the default settings is in the \"more\" popup");
   }
 }, { viewports, page: false });

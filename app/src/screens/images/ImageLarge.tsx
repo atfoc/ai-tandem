@@ -3,6 +3,8 @@
 // two buttons at the sides and (touch) a swipe sideways go from one to the next, and stop at both ends. It is a full-screen sheet: a Modal on
 // a dark scrim in every theme, light texts on it, the picture whole and in its own shape, never drawn larger than it is, above its name.
 //
+// On the phone the view is ImageViewer.tsx's (black, pinch to zoom, page dots, Share / Save / Ask about it); this file draws the wide layouts' own.
+//
 // testIDs: `image-large` (dialog; dataSet `at`, `count`), `image-large-pic`, `image-large-off`, `image-large-name`, `image-large-close`,
 // `image-large-prev` and `image-large-next` (at an end the button is marked `aria-disabled`, not removed: a disabled button that has the focus
 // would take the keys with it), `image-large-backdrop` (a press on it, beside the picture, closes).
@@ -23,6 +25,7 @@ import { useLayout } from "../../ui/useLayout.ts";
 import { useOverlayClose } from "../../ui/useOverlayClose";
 import { webStyle } from "../../ui/webstyle.ts";
 import { ArrowGlyph, CloseGlyph } from "./glyphs.tsx";
+import { ImageViewer, type ImageViewerProps } from "./ImageViewer.tsx";
 import { fitInside, swipeOf, type ShownPicture, type Size } from "./shown.ts";
 
 
@@ -30,10 +33,12 @@ const noop = () => {};
 const INK = "#f1f1f4", INK_SOFT = "rgba(255, 255, 255, 0.8)", SCRIM = "rgba(14, 14, 18, 0.88)";
 const CHEQUER = "repeating-conic-gradient(#e3e3e8 0 25%, #ffffff 0 50%) 0 0 / 16px 16px";
 
-/** at: which of images is shown; onAt: another one is asked for. */
-export function ImageLarge({ images, at, onAt, onClose }: { images: readonly ShownPicture[]; at: number; onAt: (at: number) => void; onClose: () => void }) {
-  const layout = useLayout();
-  const phone = layout === "phone";
+/** at: which of images is shown; onAt: another one is asked for. The phone's view also takes from, onAsk and askOff (ImageViewer.tsx). */
+export function ImageLarge(props: ImageViewerProps) {
+  return useLayout() === "phone" ? <ImageViewer {...props} /> : <ImageLargeWide {...props} />;
+}
+
+function ImageLargeWide({ images, at, onAt, onClose }: { images: readonly ShownPicture[]; at: number; onAt: (at: number) => void; onClose: () => void }) {
   const insets = useContext(SafeAreaInsetsContext);
   const onRequestClose = useOverlayClose(true, onClose);
   const image = images[at], count = images.length;
@@ -64,9 +69,9 @@ export function ImageLarge({ images, at, onAt, onClose }: { images: readonly Sho
   const off = failed === place;
   const fit = loaded?.place === place && box ? fitInside(loaded.size, box) : null;
   const pic = Platform.OS === "web" ? webStyle({ backgroundImage: CHEQUER, boxShadow: "0 18px 48px rgba(0, 0, 0, 0.55)" }) : { backgroundColor: "#ececf0" };
-  const pad = { paddingTop: (phone ? 52 : 48) + (insets?.top ?? 0), paddingBottom: 16 + (insets?.bottom ?? 0), paddingHorizontal: phone ? 16 : 60 };
+  const pad = { paddingTop: 48 + (insets?.top ?? 0), paddingBottom: 16 + (insets?.bottom ?? 0), paddingHorizontal: 60 };
   return (
-    <Modal visible transparent animationType={Platform.OS === "web" ? "none" : phone ? "slide" : "fade"} onRequestClose={onRequestClose} statusBarTranslucent
+    <Modal visible transparent animationType={Platform.OS === "web" ? "none" : "fade"} onRequestClose={onRequestClose} statusBarTranslucent
       {...({ "aria-label": image.name } as object)}>
       <GestureHandlerRootView style={StyleSheet.absoluteFill}>
         <View {...tid("image-large", { at, count })} role="dialog" aria-modal accessibilityLabel={image.name} accessibilityViewIsModal style={styles.root}>
@@ -93,8 +98,8 @@ export function ImageLarge({ images, at, onAt, onClose }: { images: readonly Sho
           <LargeButton id="image-large-close" title="Close (Esc)" label="Close" autoFocus onPress={onClose} style={{ top: 10 + (insets?.top ?? 0), right: 12 }}><CloseGlyph color={INK} /></LargeButton>
           {count > 1 && (
             <>
-              <LargeButton id="image-large-prev" title="Previous (←)" label="Previous image" off={at <= 0} onPress={() => step.current(-1)} style={[styles.prev, { left: phone ? 6 : 12 }]}><ArrowGlyph back color={INK} /></LargeButton>
-              <LargeButton id="image-large-next" title="Next (→)" label="Next image" off={at >= count - 1} onPress={() => step.current(1)} style={[styles.next, { right: phone ? 6 : 12 }]}><ArrowGlyph color={INK} /></LargeButton>
+              <LargeButton id="image-large-prev" title="Previous (←)" label="Previous image" off={at <= 0} onPress={() => step.current(-1)} style={[styles.prev, { left: 12 }]}><ArrowGlyph back color={INK} /></LargeButton>
+              <LargeButton id="image-large-next" title="Next (→)" label="Next image" off={at >= count - 1} onPress={() => step.current(1)} style={[styles.next, { right: 12 }]}><ArrowGlyph color={INK} /></LargeButton>
             </>
           )}
         </View>

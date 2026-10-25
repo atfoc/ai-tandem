@@ -4,7 +4,7 @@
 // reach a canvas that no mouse clicked) and drags. It first waits for the screen's sign that the view has drawn the board (`board-canvas`
 // in the state `ready`): until then the app covers the stage (`canvas-empty`, so no other board's drawing shows) and a press at the
 // canvas lands on the cover, so a drawing made at once is lost whole. The canvas of Excalidraw is there (LIVE) a few ms before that.
-import { byTid, press, touchDrag, touchNow } from "./sel.mjs";
+import { byTid, layoutNow, press, touchDrag, touchNow } from "./sel.mjs";
 
 export const LIVE = ".excalidraw:not(.excalidraw--view-mode) canvas.interactive";
 const DRAWN = '[data-testid="board-canvas"][data-state="ready"]';
@@ -32,11 +32,17 @@ export function drawer(page) {
 }
 
 /** The reader's button, pressed (headless-board W11): a board opens as a reader's, in view mode, and only "Edit here" makes the window its writer.
- *  Waits for the button (the bar of a reader), presses it, and waits for the writer's signs: the "Editing" mark and the canvas that can be drawn on. */
+ *  Waits for the button (the bar of a reader), presses it, and waits for the writer's signs: the "Editing" mark and the canvas that can be drawn on.
+ *  A no-op when the canvas is live already (the window is the writer). The phone (B1) has no "Editing" mark: its writer's sign is that the button (in the bottom row) is gone, besides the canvas. */
 export async function editHere(page, { timeout = 20000 } = {}) {
   const take = byTid(page, "board-take").first();
+  // (the window is the writer already — a live canvas and no button: a check that takes the board before a stage that needs it may be followed by an
+  // act that does the same. A live canvas with the button shown is a reader holding its unsaved drawing after an outage: the press saves it)
+  if (await page.locator(LIVE).count() && !await take.isVisible().catch(() => false)) return;
   await take.waitFor({ state: "visible", timeout });
-  await press(page, take);
+  // (the button goes as the board is taken: a press that misses it because the window became the writer meanwhile is a take all the same)
+  await press(page, take).catch(async (e) => { if (!await page.locator(LIVE).count()) throw e; });
   await page.waitForSelector(LIVE, { timeout });
-  await byTid(page, "board-editing").first().waitFor({ state: "attached", timeout });
+  if (layoutNow(page) === "phone") await take.waitFor({ state: "detached", timeout });
+  else await byTid(page, "board-editing").first().waitFor({ state: "attached", timeout });
 }

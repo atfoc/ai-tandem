@@ -3,6 +3,7 @@
 import * as FileSystem from "expo-file-system";
 import * as ImagePicker from "expo-image-picker";
 
-import { pickImagesWith, type ImagePickerPort, type PickFs } from "./imagepickcore.ts";
+import { pickImagesWith, takePhotoWith, type CameraPort, type ImagePickerPort, type PickFs } from "./imagepickcore.ts";
 
 export const pickImages = () => pickImagesWith(ImagePicker as unknown as ImagePickerPort, FileSystem as unknown as PickFs);
+export const takePhoto = () => takePhotoWith(ImagePicker as unknown as CameraPort, FileSystem as unknown as PickFs);

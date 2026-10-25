@@ -6,6 +6,8 @@
 //   side-section-extra  side-section-reason  side-loose {group}  side-group {group, depth, archived}  side-group-head {group, depth}
 //   side-group-name  side-group-body  side-board {board, archived}  side-board-chats  side-row {kind, key, archived}  side-name  side-sub
 //   draft-tag  archived-tag  name-input  side-foot  side-archived (role switch)  servers-btn  library-btn  settings-btn  theme-btn
+// The phone has no sidebar (package H1: Home, plans/ux-improvements/h1-design.md §8): there the sidebar's readers answer "none" (sideSeen
+// { there: false }, sectionsSeen [], footOf null), and `homeOf` reads Home or a group's screen in their place.
 import { byTid, hover, openMenu, press, tidSel } from "./sel.mjs";
 
 /** In the page: one section of the sidebar as it is drawn. id: the entry id of the section's server, "local" for this computer's.
@@ -22,7 +24,8 @@ import { byTid, hover, openMenu, press, tidSel } from "./sel.mjs";
 function sidePartInPage(id) {
   const T = (t) => `[data-testid="${t}"]`;
   const root = [...document.querySelectorAll(T("side-section"))].find((s) => s.dataset.server === id);
-  if (!root) return { there: false };
+  // (not drawn yet: empty lists, so a check that waits on its rows retries instead of throwing; a row's tap is deferred a little since D1)
+  if (!root) return { there: false, rows: [], outline: [], chips: [], sections: [] };
   const text = (e) => (e?.textContent ?? "").replace(/\s+/g, " ").trim();
   // (a row or a header that can be dragged stands in a `display: contents` div on web: the gesture detector's, S2. A walk goes through it.)
   const flat = (el) => [...(el?.children ?? [])].flatMap((c) => (!c.dataset.testid && c.style.display === "contents" ? flat(c) : [c]));
@@ -95,8 +98,52 @@ export async function sideMenu(page, root, button, ...items) {
 /** The foot's controls, each by its testID and what it says (the Servers button without its title, which tells of an entry that is not
  *  connected), and the foot's box. */
 export const footOf = (page) => page.evaluate(() => {
-  const foot = document.querySelector('[data-testid="side-foot"]'), r = foot.getBoundingClientRect();
+  const foot = document.querySelector('[data-testid="side-foot"]');
+  if (!foot) return null; // (the phone: the foot is in the sheet of Home's gear, read where it is opened)
+  const r = foot.getBoundingClientRect();
   const ids = ["side-archived", "servers-btn", "library-btn", "settings-btn", "theme-btn"];
   return { controls: ids.map((id) => { const e = foot.querySelector(`[data-testid="${id}"]`); return `${id} ${e && id !== "servers-btn" && id !== "theme-btn" ? e.getAttribute("title") ?? "" : ""} ${e?.textContent.trim() ?? "MISSING"}`; }),
     box: [r.left, r.width, r.height, innerHeight - r.bottom].map(Math.round), inTree: !!foot.closest('[data-testid="side-tree"]') };
 });
+
+// ---- the phone's Home (package H1)
+
+/** In the page: Home (`group` null) or the screen of the group `group`, as it is drawn (the last of them: a screen under another stays
+ *  drawn in the stack). */
+function homePartInPage(group) {
+  const T = (t) => `[data-testid="${t}"]`;
+  const all = [...document.querySelectorAll(group === null ? T("home") : `${T("group-screen")}[data-key="${group}"]`)];
+  const root = all.at(-1);
+  // (not drawn yet: empty lists, so a check that waits on its rows retries instead of throwing; a row's tap is deferred a little since D1)
+  if (!root) return { there: false, rows: [], outline: [], chips: [], sections: [] };
+  const text = (e) => (e?.textContent ?? "").replace(/\s+/g, " ").trim();
+  const mine = (sel) => [...root.querySelectorAll(sel)];
+  const rows = mine(T("home-row")).map((r) => ({ kind: r.dataset.kind, key: r.dataset.key, server: r.dataset.server, name: text(r.querySelector(T("home-row-name"))),
+    sub: text(r.querySelector(T("home-row-sub"))), attention: r.dataset.attention, count: r.dataset.count ?? "" }));
+  const chips = mine(T("server-chip")).map((c) => ({ server: c.dataset.server, name: text(c), word: c.dataset.word, selected: c.dataset.selected === "true", label: c.getAttribute("aria-label") ?? "" }));
+  const card = root.querySelector(T("problem-card"));
+  const sub = root.querySelector(T("home-sub")), word = (sub ?? card)?.querySelector(T("state-word"));
+  const neu = root.querySelector(group === null ? T("home-new") : T("group-new"));
+  const sel = chips.find((c) => c.selected);
+  return { there: true, state: root.dataset.state ?? "", server: root.dataset.server ?? "",
+    name: sel ? sel.name : sub ? text(sub).replace(/\s*·.*$/, "") : "",
+    word: sel ? sel.word : word?.dataset.word ?? "", wordText: sel ? sel.label.replace(/^.*?, /, "") : word ? word.getAttribute("aria-label") ?? text(word) : "",
+    chips, sections: mine(T("home-section")).map((h) => ({ section: h.dataset.section, count: Number(h.dataset.count) })), rows,
+    outline: rows.map((r) => `${r.kind} ${r.name}`), stale: root.querySelector(T("home-list"))?.dataset.stale === "true",
+    card: card ? { server: card.dataset.server, word: card.dataset.word, text: text(card) } : null,
+    placeholders: mine(T("home-placeholder")).length, firstRun: !!root.querySelector(T("first-run")), empty: !!root.querySelector(T("home-empty")),
+    newShown: !!neu, newEnabled: !!neu && neu.getAttribute("aria-disabled") !== "true" && !neu.hasAttribute("disabled"),
+    title: text(root.querySelector(T("large-title"))?.children[0]), place: text(root.querySelector(T("large-title"))?.children[1]) };
+}
+
+/** What the phone's Home shows (`group` left out), or the screen of the group `group` (its key):
+ *    there      it is drawn
+ *    state      Home's state ("first-run" | "connecting" | "trouble" | "empty" | "list"); server: the entry id it shows
+ *    name, word, wordText   the shown server's name, its state word's key ("connected", "unreachable", …) and its words
+ *    chips      [{ server, name, word, selected, label }] (none with one entry)
+ *    sections   [{ section: "groups" | "boards" | "chats", count }]; rows: [{ kind, key, server, name, sub, attention, count }]
+ *    outline    the rows as "<kind> <name>", top to bottom (groups, then boards, then chats: Home lists no board's chats)
+ *    stale      the list is the last sync's, faded; card: the problem card { server, word, text } or null
+ *    placeholders  the number of placeholder rows; firstRun, empty: those states' bodies are drawn
+ *    newShown, newEnabled   "+ New"; title: the large title, place: the line under it (a group's place line) */
+export const homeOf = (page, group = null) => page.evaluate(homePartInPage, group);

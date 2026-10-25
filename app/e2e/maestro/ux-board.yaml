@@ -1,0 +1,183 @@
+# aiwb-e2e: needs=server,agent,control app=1
+# ux-board (ux-improvements package B1, "the board on the phone"; PLAN §2 B1 Device; plans/ux-improvements/b1-design.md §4, §6): what only a device shows of
+# the phone's board screen. On a scratch server a board "Device-board" holds three shapes far apart (the control API, scene=spread) and one chat; the app is
+# given the server and opens the board from the sidebar.
+#   fitted     the board opens fitted: the bar (back, name, "View only"), the bottom row (Edit here, the orb's slot) and the three shapes in the canvas (screenshot)
+#   inset      Excalidraw's menu button (at the left of the footer band) is tappable and opens the trimmed menu; after Edit here the holder's footer
+#              (undo, redo) does not lie under the orb's slot (open question 1: screenshots, the web view's text is not always in the accessibility tree)
+#   chats      the Chats button opens the sheet, its row opens the chat full screen, back returns to the board
+#   landscape  the floating controls take the place of the bar and the row (iOS: the simulator is rotated)
+appId: ${APP_ID}
+---
+# (a run that failed in landscape left the simulator rotated)
+- setOrientation: PORTRAIT
+- runFlow: _open-app.yaml
+- runFlow: _forget-servers.yaml
+- runScript:
+    file: _ctl.js
+    env:
+      METHOD: POST
+      ROUTE: /board?name=Device-board&scene=spread
+- evalScript: ${output.board = output.ctl.id}
+- runScript:
+    file: _ctl.js
+    env:
+      METHOD: POST
+      ROUTE: /chat?name=Board-chat&board=${output.board}
+- runFlow: _add-server.yaml
+- extendedWaitUntil:
+    visible: "Device-board"
+    timeout: 60000
+- takeScreenshot: ux-board-00-home
+
+# ---- a: the board opens fitted, as a reader
+- tapOn: "Device-board"
+- extendedWaitUntil:
+    visible:
+      id: "board-stage"
+    timeout: 120000
+- extendedWaitUntil:
+    visible:
+      id: "board-bar"
+    timeout: 30000
+- assertVisible: "Device-board"
+- assertVisible: "View only"
+- assertVisible:
+    id: "board-chats"
+- assertVisible:
+    id: "board-row"
+- assertVisible:
+    id: "board-take"
+- assertVisible:
+    id: "board-orb-slot"
+- assertNotVisible:
+    id: "board-float"
+# (the page loads the board and fits it after its first layout: a moment for it; "wait" is a text that is never there)
+- takeScreenshot: ux-board-01-opened
+- extendedWaitUntil:
+    visible: "never-there-wait"
+    timeout: 10000
+    optional: true
+- takeScreenshot: ux-board-01-fitted
+
+# ---- b: the inset. Excalidraw's menu button, at the left end of the footer band, opens the trimmed menu (the page's text, when the accessibility
+# tree shows it; the screenshot is the evidence either way)
+- tapOn:
+    point: "6%, 92%"
+- extendedWaitUntil:
+    visible: "Find on the board"
+    timeout: 15000
+    optional: true
+- waitForAnimationToEnd
+- takeScreenshot: ux-board-02-menu
+- assertVisible: "Find on the board"
+- assertVisible: "Fit the whole board"
+- assertVisible: "Export image…"
+# (a tap on the menu button again closes it)
+- tapOn:
+    point: "6%, 92%"
+- waitForAnimationToEnd
+- assertNotVisible: "Fit the whole board"
+- tapOn:
+    id: "board-take"
+- extendedWaitUntil:
+    visible: "Editing"
+    timeout: 60000
+- assertNotVisible:
+    id: "board-take"
+- assertVisible:
+    id: "board-orb-slot"
+# (the web view's own controls, not RN's: Excalidraw's toolbar at the top and the footer's Undo come once the page has drawn the editing state;
+# the flow waits for them in the web view's accessibility tree and only then takes the screenshot)
+- extendedWaitUntil:
+    visible: "Rectangle.*"
+    timeout: 30000
+- extendedWaitUntil:
+    visible: "Undo"
+    timeout: 30000
+- waitForAnimationToEnd
+- takeScreenshot: ux-board-03-editing
+
+# ---- c: the Chats button opens the sheet, its row opens the chat full screen, back returns to the board
+- tapOn:
+    id: "board-chats"
+- extendedWaitUntil:
+    visible:
+      id: "chats-sheet"
+    timeout: 15000
+# (a row is read as one: "<name>, <agent · model>[, Voice]", V1's mark of the chat voice speaks to)
+- assertVisible:
+    id: "chats-row"
+    text: "Board-chat.*"
+- waitForAnimationToEnd
+- takeScreenshot: ux-board-04-chats-sheet
+- tapOn:
+    id: "chats-row"
+- extendedWaitUntil:
+    visible:
+      id: "chat-head"
+    timeout: 60000
+- assertNotVisible:
+    id: "chats-sheet"
+- assertNotVisible:
+    id: "board-bar"
+- waitForAnimationToEnd
+- takeScreenshot: ux-board-05-chat
+- tapOn:
+    id: "nav-back"
+- extendedWaitUntil:
+    visible:
+      id: "board-bar"
+    timeout: 30000
+- assertNotVisible:
+    id: "chat-head"
+- assertVisible: "Device-board"
+- takeScreenshot: ux-board-06-back
+
+# ---- d: landscape: the floating controls take the place of the bar and the row; portrait again brings them back
+- setOrientation: LANDSCAPE_LEFT
+- extendedWaitUntil:
+    visible:
+      id: "board-float"
+    timeout: 30000
+- assertVisible:
+    id: "board-chats"
+- assertVisible: "Device-board"
+- assertNotVisible:
+    id: "board-bar"
+- assertNotVisible:
+    id: "board-row"
+# (B's inset: Excalidraw's top toolbar starts below the floating controls: a tool is visible and a tap on it lands on the page, not on the
+# controls)
+- extendedWaitUntil:
+    visible: "Rectangle.*"
+    timeout: 30000
+- waitForAnimationToEnd
+- tapOn: "Rectangle.*"
+- waitForAnimationToEnd
+# (the web view does not expose which tool is selected: a tap that hit the controls instead would have left the board (back) or opened the
+# sheet (Chats), so the board and its controls are still there; the screenshot shows the selected tool)
+- assertVisible:
+    id: "board-float"
+- assertNotVisible:
+    id: "chats-sheet"
+- assertVisible: "Rectangle.*"
+- takeScreenshot: ux-board-07-landscape
+- setOrientation: PORTRAIT
+- extendedWaitUntil:
+    visible:
+      id: "board-bar"
+    timeout: 30000
+- assertNotVisible:
+    id: "board-float"
+- assertVisible:
+    id: "board-row"
+# (the web view repaints after the rotation: its footer's Undo is back, and so is the toolbar)
+- extendedWaitUntil:
+    visible: "Undo"
+    timeout: 30000
+- extendedWaitUntil:
+    visible: "Rectangle.*"
+    timeout: 30000
+- waitForAnimationToEnd
+- takeScreenshot: ux-board-08-portrait

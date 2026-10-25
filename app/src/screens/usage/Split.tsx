@@ -20,7 +20,7 @@ import { webStyle } from "../../ui/webstyle.ts";
 const TABULAR: TextStyle = { fontVariant: ["tabular-nums"] };
 
 /** The colour of a segment's slot: 0 an unknown category (neutral), 1…8 the chart colours; the buffer is hatched, free space the line's colour. */
-function fillOf(g: Segment, t: Tokens): object {
+export function fillOf(g: Segment, t: Tokens): object {
   if (g.cat.kind === "buffer") return webStyle({ backgroundImage: `repeating-linear-gradient(45deg, ${t.faint} 0 1.5px, ${t.line} 1.5px 4px)` }) ?? { backgroundColor: t.faint, opacity: 0.6 };
   if (g.cat.kind === "free") return { backgroundColor: t.line };
   if (g.cat.kind === "deferred") return {};

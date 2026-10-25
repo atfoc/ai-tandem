@@ -6,7 +6,7 @@ import { describe, it } from "node:test";
 import { quoteKey } from "@aiwb/core/logic/quotes.ts";
 import type { Reference } from "@aiwb/core/types.ts";
 import { registerTaker, takerOf } from "../src/screens/quotes/bus.ts";
-import { countTitle, countWord, listHint, referenceFor, whyNotQuotable, wholeReference, withFloat } from "../src/screens/quotes/model.ts";
+import { chipWord, countTitle, countWord, listHint, quoteSource, sheetSub, referenceFor, whyNotQuotable, wholeReference, withFloat } from "../src/screens/quotes/model.ts";
 import { holdEnded, inGrace, openPick, pickNow, closePick, subscribePick } from "../src/screens/quotes/sheetstore.ts";
 
 const ref = (start: number, end: number, comment?: string): Reference => ({ quote: "q", item: 1, start, end, ...(comment === undefined ? {} : { comment }) });
@@ -90,7 +90,7 @@ describe("the Quote sheet's store (sheetstore.ts)", () => {
     let told = 0;
     const off = subscribePick(() => { told++; });
     openPick("c1", 3);
-    assert.deepEqual(pickNow(), { chat: "c1", index: 3 });
+    assert.deepEqual(pickNow(), { chat: "c1", index: 3, mode: "quote" });
     assert.equal(inGrace(), true);
     closePick();
     assert.equal(pickNow(), null);
@@ -98,5 +98,23 @@ describe("the Quote sheet's store (sheetstore.ts)", () => {
     off();
     holdEnded();
     assert.equal(inGrace(), true);
+  });
+});
+
+describe("the phone's chip and sheet (QuoteCount.tsx, QuotesSheet.tsx)", () => {
+  it("says how many quotes and passages", () => {
+    assert.equal(chipWord(1), "1 quote");
+    assert.equal(chipWord(2), "2 quotes");
+    assert.equal(sheetSub(1), "1 passage from this chat");
+    assert.equal(sheetSub(2), "2 passages from this chat");
+  });
+  it("says where a quote is from: the agent and which reply, counted from the last", () => {
+    const items = [{ kind: "user" }, { kind: "text" }, { kind: "tool" }, { kind: "text" }] as const;
+    assert.equal(quoteSource(items, "claude", { item: 3 }), "Claude Code · the last reply");
+    assert.equal(quoteSource(items, "claude", { item: 1 }), "Claude Code · 2 replies up");
+    assert.equal(quoteSource(items, "cursor", { item: 0 }), "Your message");
+    assert.equal(quoteSource(items, "", { item: 3 }), "The agent · the last reply");
+    assert.equal(quoteSource(items, "claude", { item: 9 }), "No longer in this chat");
+    assert.equal(quoteSource(undefined, "claude", { item: 0 }), "No longer in this chat");
   });
 });

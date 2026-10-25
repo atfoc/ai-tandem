@@ -74,3 +74,18 @@ test("isShort: the empty state, a fork's note and the lines are a plain view; a 
   assert.equal(isShort(threadRows({ ...base, items: [user("a")] })), false);
   assert.equal(isShort(threadRows({ ...base, sent: { text: "a" } as never })), false);
 });
+
+test("the phone folds two or more reads in a row into one row, and each run of subagent calls into a card; never across the mark (ux T2)", () => {
+  const read = (id: string): Item => ({ kind: "tool", toolId: id, name: "Read", input: {}, result: "ok" });
+  const task = (id: string): Item => ({ kind: "tool", toolId: id, name: "Task", input: {} });
+  const fold = (it: Item) => (it.kind !== "tool" ? null : it.name === "Task" ? "subagents" as const : "steps" as const);
+  const items = [user("a"), read("r1"), read("r2"), read("r3"), said("b"), read("r4"), task("t1"), task("t2"), said("c"), task("t3")];
+  const rows = threadRows({ ...base, items, fold });
+  assert.deepEqual(rows.map((r) => r.kind === "group" ? `${r.group}:${r.items.map((x) => x.index).join(",")}` : r.kind), ["item", "steps:1,2,3", "item", "item", "subagents:6,7", "item", "subagents:9"]);
+  assert.equal(rows[1].key, "main:1");
+  // without fold (the wide layouts) every item is its own row
+  assert.equal(threadRows({ ...base, items }).length, items.length);
+  // the mark of a fork's copied part cuts a run; the part before it is read-only
+  const cut = threadRows({ ...base, items: [read("r1"), read("r2"), read("r3"), read("r4")], end: 2, fold });
+  assert.deepEqual(cut.map((r) => r.kind === "group" ? `${r.items.length}:${r.readOnly}` : r.kind), ["2:true", "mark", "2:false"]);
+});

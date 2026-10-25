@@ -13,7 +13,12 @@
 // library (the prompt library's package) and the picker's menu (S1). The Excalidraw of a touch viewport is its own layout, so what differs is
 // what the body does to reach each part, not what it asserts:
 //   - the properties panel of the tablet and the phone is behind the bottom bar's Edit button (as P7.5 reads the picks), which is pressed;
-//   - the context menu is opened by a right click of the mouse on every viewport (Excalidraw takes it from a pointer of any kind).
+//   - the context menu is opened by a right click of the mouse on every viewport (Excalidraw takes it from a pointer of any kind);
+//   - on the phone (B1) Excalidraw's menu is trimmed (Find on the board, Fit the whole board, Export image…, Share image…, Clear the board…): the export
+//     dialog is opened by its item "Export image…" and not by the button `image-export-button` of the wide layouts, and the help dialog, which the menu
+//     no longer has, is opened by Excalidraw's own key "?" (the dialog's colours are still read).
+// Opens as a reader's since the headless-board work (W12): the body presses Edit here (boarddraw.mjs `editHere`) before the toolbar is read, at every
+// viewport; on the phone (B1) that is the bottom row's `board-take`, and Excalidraw's footer is the 64 px band with its right inset.
 // Deviations from the old check: the page is the board alone (`chat: null`, as P7.5 has it), at the viewport's own window. The flavours are put on a
 // page each by the choice stored under "aiwb.theme", as the old check did: it never switched a flavour on an open page (its picker stage only read the
 // picker's menu, which A6.1 and L11 read here), so there is no live switch to port. The live switch of the open canvas by the picker of the sidebar's foot,
@@ -21,7 +26,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { atRest, check, colourOf, contrastAudit, seed } from "../shot.mjs";
-import { press } from "./sel.mjs";
+import { press, tidSel } from "./sel.mjs";
+import { editHere } from "./boarddraw.mjs";
 
 export const viewports = ["desktop", "tablet", "phone"];
 
@@ -54,17 +60,25 @@ const STAGES = [
   { name: "a board's menu", see: ".excalidraw .dropdown-menu .dropdown-menu-container", chrome: [".excalidraw .dropdown-menu .dropdown-menu-container", ".excalidraw .dropdown-menu .dropdown-menu-item"],
     do: async (page) => { await page.keyboard.press("Escape"); await press(page, page.locator('.excalidraw [data-testid="main-menu-trigger"]')); } },
   { name: "a board's export dialog", see: ".excalidraw .ImageExportModal", chrome: [".excalidraw .Modal__content", ".excalidraw .ImageExportModal h3"],
-    do: (page) => press(page, page.locator('.excalidraw [data-testid="image-export-button"]')) },
+    // (the phone taps the item's left end: the "N selected" pill of the chat's pick lies over the middle of the row, where the properties stage left the selection)
+    do: (page, viewport) => viewport === "phone" ? press(page, page.locator(".excalidraw .dropdown-menu-item", { hasText: "Export image" }), { position: { x: 30, y: 12 } }) : press(page, page.locator('.excalidraw [data-testid="image-export-button"]')) },
   // (two more of the canvas's own, which the goal does not name: they are coloured by the same variables)
   { name: "a board's context menu", see: ".excalidraw .context-menu", chrome: [".excalidraw .context-menu", ".excalidraw .context-menu .context-menu-item__label"],
-    do: async (page) => {
+    do: async (page, viewport) => {
       await page.keyboard.press("Escape"); await page.waitForSelector(".excalidraw .ImageExportModal", { state: "detached" });
       const b = await page.locator(".excalidraw canvas.interactive").boundingBox();
-      await page.mouse.click(b.x + b.width * 0.6, b.y + b.height * 0.8, { button: "right" });
+      // (the phone clicks higher: at 0.8 of the canvas the "N selected" pill and the voice card of the board lie over it)
+      await page.mouse.click(b.x + b.width * 0.6, b.y + b.height * (viewport === "phone" ? 0.5 : 0.8), { button: "right" });
     } },
   { name: "a board's help dialog", see: ".excalidraw .HelpDialog", chrome: [".excalidraw .Modal__content", ".excalidraw .HelpDialog h3"],
-    do: async (page) => {
+    do: async (page, viewport) => {
       await page.keyboard.press("Escape");
+      if (viewport === "phone") { // (a click on an empty place of the canvas gives it the keys)
+        const b = await page.locator(".excalidraw canvas.interactive").boundingBox();
+        await page.mouse.click(b.x + b.width * 0.5, b.y + b.height * 0.15);
+        await page.keyboard.press("?");
+        return;
+      }
       await press(page, page.locator('.excalidraw [data-testid="main-menu-trigger"]'));
       await press(page, page.locator('.excalidraw [data-testid="help-menu-item"]'));
     } },
@@ -76,12 +90,15 @@ await check("A6.3 the board's parts are readable in each flavour", async ({ url,
   /** Every stage in one theme: { [stage]: Map(element → its least ratio) }. */
   const walk = async (theme, P) => {
     const dark = (P?.under ?? theme) === "dark", found = {};
-    const { ctx, page } = await open({ sel: BOARD, ls: { "aiwb.theme": theme }, wait: EDIT, still: true });
+    let stageName = "";
+    const { ctx, page } = await open({ sel: BOARD, ls: { "aiwb.theme": theme }, wait: tidSel("board-canvas", { board: "b_ui", state: "ready" }), still: true });
     try {
+      await editHere(page); // (a board opens as a reader's, in view mode with no toolbar: the button makes the window its writer, whose toolbar is read; the phone's button is `board-take` of the bottom row)
       const mobile = await page.locator(".excalidraw .App-toolbar--mobile").count() > 0;
       for (const stage of STAGES) {
         const st = { ...stage, ...(mobile ? stage.mobile : {}) };
-        await st.do?.(page);
+        stageName = st.name;
+        await st.do?.(page, viewport);
         await page.waitForSelector(st.see, { timeout: 15000 });
         // (a part is read once it is still: a popup that opens takes its place over some frames)
         if (!await atRest(page, 8)) fail(`${theme}, ${st.name}: the page did not come to rest`);
@@ -101,7 +118,7 @@ await check("A6.3 the board's parts are readable in each flavour", async ({ url,
         if (c.dark !== dark) fail(`${theme}: the canvas has ${c.dark ? "the dark" : "the light"} theme of Excalidraw under a flavour laid over ${P.under}`);
         if (c.filter !== `url("#aiwb-canvas-${theme}")`) fail(`${theme}: the drawing's filter is "${c.filter}", not the flavour's`);
       }
-    } catch (e) { fail(`${theme}: ${e.message.split("\n")[0]}`); }
+    } catch (e) { fail(`${theme}: ${stageName}: ${e.message.split("\n")[0]}`); }
     finally { await ctx.close(); }
     return found;
   };

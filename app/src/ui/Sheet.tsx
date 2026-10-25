@@ -2,8 +2,14 @@
 // phone layout. A press on the dimmed page, a swipe down on its handle, Esc (web) and the back button (Android) close it. On a phone it rises
 // over the on-screen keyboard (the box that has the focus and the buttons below it stay in sight); opened over another overlay it is drawn
 // inside it (overlayhost.tsx).
-import { useContext, useEffect, useRef, useState, type ReactNode } from "react";
-import { Animated, Easing, Platform, Pressable, ScrollView, StyleSheet, useWindowDimensions, View } from "react-native";
+//
+// Its height (ux-improvements goal 3.1, package F1): by default the content's, up to 85 % of the window; `detent="fit"` caps it at
+// half the window (the content scrolls past that: an action sheet, a short list); `detent="large"` pins it from just under the top
+// safe area down to the bottom whatever the content (a form, a search picker). A `head` is drawn above the scroll view and stays put.
+// A sheet over another sheet is for a picker or a confirm over a form only: it says so with `over="form"`, and in development any
+// other one warns.
+import { useContext, useEffect, useRef, useState, type MutableRefObject, type ReactNode } from "react";
+import { Animated, Easing, Platform, Pressable, ScrollView, StyleSheet, useWindowDimensions, View, type NativeScrollEvent, type NativeSyntheticEvent } from "react-native";
 import { Gesture, GestureDetector, GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaInsetsContext } from "react-native-safe-area-context";
 
@@ -12,7 +18,7 @@ import { InTopOverlay, OverlayHost } from "./overlayhost.tsx";
 import { OverlayKindProvider } from "./overlaykind.ts";
 import { SheetFooterProvider } from "./sheetfooter.tsx";
 import { useTheme } from "./theme.tsx";
-import { TID } from "./tid.ts";
+import { TID, type DataSet } from "./tid.ts";
 import { useKeyboardAvoid } from "./useKeyboardAvoid";
 import { useOverlayClose } from "./useOverlayClose";
 
@@ -22,8 +28,23 @@ export type SheetProps = {
   /** Its name, for a screen reader. */
   label: string;
   testID?: string;
+  /** What a check reads from the sheet: `data-<key>` on the element that carries the testID. */
+  dataSet?: DataSet;
   /** A press on the dimmed page closes it (default); false for a sheet that holds a form (a swipe, Esc and the back button still close). */
   closeOnBackdrop?: boolean;
+  /** The height: none = the content's, up to 85 % of the window; "fit" = the content's, up to 50 % (scrolls past); "large" = down from the top safe area + 8 pt, always. */
+  detent?: "fit" | "large";
+  /** Drawn between the handle and the scrolling content, and kept there while the content scrolls (a SheetHead). */
+  head?: ReactNode;
+  /** A node drawn over the dimmed page and under the sheet's surface, not touchable: a message lifted out of the thread. The caller places it
+   *  (absolutely, in window coordinates: the sheet's modal fills the window). */
+  lift?: ReactNode;
+  /** This sheet opens over a form sheet (a picker or a confirm over a P3): the one sheet over a sheet that is allowed. */
+  over?: "form";
+  /** The content's scroll view, for a caller that scrolls it to a row (the chat tree) and gives it back where it was (the tree steps aside for a P1 or a form). */
+  scrollRef?: MutableRefObject<ScrollView | null>;
+  /** Called as the content scrolls (with `scrollRef`, to keep the place). */
+  onScroll?(e: NativeSyntheticEvent<NativeScrollEvent>): void;
   children: ReactNode;
 };
 
@@ -33,8 +54,12 @@ export const sheetTiming = { riseMs: RISE_MS };
 /** A swipe down this far (points), or this fast (points per second), closes the sheet. */
 const CLOSE_DISTANCE = 80;
 const CLOSE_VELOCITY = 800;
+/** A `fit` sheet is at most this share of the window. */
+const FIT_SHARE = 0.5;
 
-export function Sheet({ open, onClose, label, testID = TID.sheet, closeOnBackdrop = true, children }: SheetProps) {
+let sheetsOpen = 0; // how many sheets are open, for the development warning below
+
+export function Sheet({ open, onClose, label, testID = TID.sheet, dataSet, closeOnBackdrop = true, detent, head, lift: lifted, over, scrollRef: outerRef, onScroll, children }: SheetProps) {
   const { tokens: t } = useTheme();
   const win = useWindowDimensions();
   const insets = useContext(SafeAreaInsetsContext);
@@ -52,6 +77,13 @@ export function Sheet({ open, onClose, label, testID = TID.sheet, closeOnBackdro
     Animated.timing(rise, { toValue: 1, duration: sheetTiming.riseMs, easing: Easing.out(Easing.cubic), useNativeDriver: Platform.OS !== "web" }).start();
   }, [open, rise, drag]);
 
+  useEffect(() => {
+    if (!open) return;
+    if (__DEV__ && sheetsOpen > 0 && over !== "form") console.warn(`Sheet "${label}" opens over another sheet: only a picker or a confirm over a form may (over="form").`);
+    sheetsOpen++;
+    return () => { sheetsOpen--; };
+  }, [open, over, label]);
+
   const close = useRef(onClose);
   close.current = onClose;
   const pull = Gesture.Pan().runOnJS(true).activeOffsetY(6)
@@ -63,6 +95,7 @@ export function Sheet({ open, onClose, label, testID = TID.sheet, closeOnBackdro
 
   const lift = Animated.add(Animated.multiply(Animated.subtract(1, rise), win.height), drag);
   const room = win.height - inset - (insets?.top ?? 0) - 8; // what the keyboard leaves
+  const size = detent === "large" ? { height: room } : { maxHeight: Math.min(Math.round(win.height * (detent === "fit" ? FIT_SHARE : 0.85)), room) };
   return (
     <InTopOverlay open={open}>
       <Modal visible={open} transparent animationType="none" onRequestClose={onRequestClose} statusBarTranslucent
@@ -72,16 +105,20 @@ export function Sheet({ open, onClose, label, testID = TID.sheet, closeOnBackdro
             <Animated.View style={[StyleSheet.absoluteFill, { backgroundColor: t.backdrop, opacity: rise }]}>
               <Pressable testID={TID.backdrop} style={StyleSheet.absoluteFill} onPress={closeOnBackdrop ? onClose : undefined} focusable={false} tabIndex={-1} accessible={false} />
             </Animated.View>
+            {lifted ? <View style={StyleSheet.absoluteFill} pointerEvents="none">{lifted}</View> : null}
             <View ref={rootRef} style={[styles.bottom, { paddingBottom: inset }]} pointerEvents="box-none">
-              <Animated.View testID={testID} accessibilityLabel={label}
-                style={[styles.surface, { maxHeight: Math.min(Math.round(win.height * 0.85), room), backgroundColor: t.bg, borderColor: t.line, boxShadow: t.shadowLg, transform: [{ translateY: lift }] }]}>
+              <Animated.View testID={testID} dataSet={dataSet} accessibilityLabel={label}
+                style={[styles.surface, size, { backgroundColor: t.bg, borderColor: t.line, boxShadow: t.shadowLg, transform: [{ translateY: lift }] }]}>
                 <GestureDetector gesture={pull}>
                   <View style={styles.handleArea} testID="sheet-handle"><View style={[styles.handle, { backgroundColor: t.line2 }]} /></View>
                 </GestureDetector>
+                {head}
                 <SheetFooterProvider value={Platform.OS === "web" ? null : setFooter}>
-                  <ScrollView ref={scrollRef} {...scrollProps} keyboardShouldPersistTaps="handled" bounces={false}
+                  <ScrollView ref={(r) => { scrollRef.current = r; if (outerRef) outerRef.current = r; }} {...scrollProps}
+                    {...(onScroll ? { onScroll: (e: NativeSyntheticEvent<NativeScrollEvent>) => { scrollProps.onScroll?.(e); onScroll(e); }, scrollEventThrottle: 16 } : null)}
+                    keyboardShouldPersistTaps="handled" bounces={false}
                     contentContainerStyle={{ paddingBottom: footer ? 0 : bottom }}>
-                    {children}
+                    <View testID={TID.sheetBody}>{children}</View>
                   </ScrollView>
                   {footer ? <View style={{ paddingTop: 8, paddingBottom: bottom }}>{footer}</View> : null}
                 </SheetFooterProvider>

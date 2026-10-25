@@ -39,6 +39,8 @@ export const checks = {
   "chip-replaced": value("ab Z cd"),
   "caret-at-an-edge": (box) => (collapsed(box) && box.chips.length === 1 && !inside(box, box.selection.start)) || `the caret is ${say(box.selection)}, chips ${say(box.chips)}`,
   message: value("Move ", REF, " to\nthanks"),
+  // the phone (B2): the box holds the plain text, the reference is a chip beside it (what the app reports is the box's own text)
+  "phone-plain": (box) => (box.text === "Move" && box.chips.length === 0) || `the phone's box should hold "Move" and no chip: ${say(box)}`,
 };
 
 /** The user messages of the chat named `name` on the scratch server, in order. */
@@ -50,10 +52,11 @@ async function sentOf(ctx, name) {
   return { chat: chat.id, sent: (items.json?.items ?? []).filter((i) => i.kind === "user").map((i) => i.text) };
 }
 
+// (the wide layouts type "Move " before the inline chip; the phone types "Move", adds the reference beside the box at that caret, then " to")
+const SENT = [["Move ", REF, " to\nthanks"], ["Move", REF, " to\nthanks"]];
 const sentIsRight = (text) => {
   const got = parseRefs(text);
-  const want = ["Move ", REF, " to\nthanks"];
-  return got.length === want.length && want.every((w, i) => (w === REF ? isRef(got[i]) : got[i] === w)) || `the server holds ${say(text)}`;
+  return SENT.some((want) => got.length === want.length && want.every((w, i) => (w === REF ? isRef(got[i]) : got[i] === w))) || `the server holds ${say(text)}`;
 };
 
 checks["server-has-message"] = Object.assign(async (_box, ctx) => {
@@ -68,7 +71,7 @@ checks["server-has-message"] = Object.assign(async (_box, ctx) => {
 export async function verify({ posts, api, say: log }) {
   const problems = [];
   const states = posts.filter((p) => p.state && p.mark === undefined).map((p) => p.state);
-  if (states.length < 20) problems.push(`the app reported only ${states.length} states of the box`);
+  if (states.length < 10) problems.push(`the app reported only ${states.length} states of the box`); // (the phone's part types less than the wide one)
   const stuck = states.filter((b) => inside(b, b.selection.start) || inside(b, b.selection.end));
   if (stuck.length) problems.push(`${stuck.length} reported states have the caret inside a chip, the first: ${say(stuck[0])}`);
   log?.(`verify: ${states.length} states of the box (${posts.filter((p) => p.raw).length} selections the platform reported before the box moved them); ${stuck.length} with the caret inside a chip`);

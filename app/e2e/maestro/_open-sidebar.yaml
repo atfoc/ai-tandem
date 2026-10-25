@@ -1,20 +1,11 @@
-# Shared by the flows of package V4: opens the app (the development client's link, as the runner does) and ends on the sidebar. The app comes back on the
-# screen it was left on (a chat, after a relaunch), so a chat that is open is left by its back button.
+# Shared by the flows of package V4: opens the app (the development client's link, as the runner does) and ends on Home (phone) or the sidebar (tablet). The app comes back on the
+# screen it was left on (a chat, a board or a group's screen, after a relaunch), so one that is open is left by its back button: `nav-back` is pressed until `home` or `side-tree`
+# is on the screen (an item in a group needs two backs, the group's screen is between: notes-foundation F2).
 appId: ${APP_ID}
 ---
 - runFlow: _dismiss.yaml
 - extendedWaitUntil:
     visible:
-      id: "side-tree|chat-head"
+      id: "home|side-tree|chat-head|board-stage|group-screen"
     timeout: 300000
-- runFlow:
-    when:
-      visible:
-        id: "chat-head"
-    commands:
-      - tapOn:
-          id: "nav-back"
-- extendedWaitUntil:
-    visible:
-      id: "side-tree"
-    timeout: 60000
+- runFlow: _to-sidebar.yaml

@@ -2,11 +2,13 @@
 # `qrencode` that keeps what it is fed, the picture read back with CoreImage). Neither the iOS simulator nor the Android emulator can be shown the picture on its screen as a
 # camera sees it (the simulator has no camera; the emulator's camera is a room it shows, and the stock walk to its poster does not move it here), so the scan itself is by hand
 # (goal 7.5). What is shown here: the scanner's screen and the camera's permission, answered both ways, on both; then the text that the picture holds, which is the text a
-# camera hands the app, is typed into the paste box (the scanner and the paste go through the same parser): the form is filled, and the server it names answers with the
-# fingerprint that text printed. Starts on the sidebar; the app has the server of the run added by then only if an earlier part left it so: nothing here depends on it.
+# camera hands the app, is typed into the paste box that "Paste text instead" opens (the scanner and the paste go through the same parser): "New server" is filled, and the server it names answers with the
+# fingerprint that text printed ("Matches the fingerprint in the code"); × closes the camera back to "Choose how". Starts on the sidebar. The servers an earlier part left are
+# removed first: the add form refuses a server that is already in the list ("Already added as …", S2), and the code names the run's server.
 appId: ${APP_ID}
 ---
 - runFlow: _to-sidebar.yaml
+- runFlow: _forget-servers.yaml
 - runScript:
     file: _ctl.js
     env:
@@ -31,13 +33,8 @@ appId: ${APP_ID}
             METHOD: POST
             ROUTE: /device/relaunch
       - runFlow: _open-sidebar.yaml
-      - tapOn:
-          id: "servers-btn"
-      - tapOn:
-          id: "servers-add"
-      - waitForAnimationToEnd
-      - tapOn:
-          id: "addserver-scan"
+      - runFlow: _add-choose.yaml
+      - tapOn: "Scan QR code.*"
       - extendedWaitUntil:
           visible:
             id: "addserver-camera-allow"
@@ -59,7 +56,10 @@ appId: ${APP_ID}
           id: "addserver-open-settings"
       - takeScreenshot: v4-42-camera-refused
       - tapOn:
-          id: "addserver-scan-cancel"
+          id: "add-scan-close"
+      - extendedWaitUntil:
+          visible: "Paste setup text.*"
+          timeout: 30000
       - runScript:
           file: _ctl.js
           env:
@@ -71,13 +71,8 @@ appId: ${APP_ID}
             METHOD: POST
             ROUTE: /device/relaunch
       - runFlow: _open-sidebar.yaml
-      - tapOn:
-          id: "servers-btn"
-      - tapOn:
-          id: "servers-add"
-      - waitForAnimationToEnd
-      - tapOn:
-          id: "addserver-scan"
+      - runFlow: _add-choose.yaml
+      - tapOn: "Scan QR code.*"
       - extendedWaitUntil:
           visible:
             id: "addserver-camera-allow"
@@ -92,7 +87,7 @@ appId: ${APP_ID}
           notVisible:
             id: "addserver-camera-allow"
           timeout: 30000
-      - assertVisible: "Point the camera at the code that scripts/server-code.sh shows on the server's screen."
+      - assertVisible: "On the server, run server-code.sh. Its code holds the address, the secret and the certificate's fingerprint."
       - takeScreenshot: v4-43-camera-allowed
 
 # ---- Android: the same. A first refusal can be asked again; a second one is for good, and the scanner then says the camera is off and gives the settings; the permission given
@@ -112,13 +107,8 @@ appId: ${APP_ID}
             METHOD: POST
             ROUTE: /device/relaunch
       - runFlow: _open-sidebar.yaml
-      - tapOn:
-          id: "servers-btn"
-      - tapOn:
-          id: "servers-add"
-      - waitForAnimationToEnd
-      - tapOn:
-          id: "addserver-scan"
+      - runFlow: _add-choose.yaml
+      - tapOn: "Scan QR code.*"
       - extendedWaitUntil:
           visible:
             id: "addserver-camera-allow"
@@ -149,7 +139,10 @@ appId: ${APP_ID}
           id: "addserver-open-settings"
       - takeScreenshot: v4-42-camera-refused
       - tapOn:
-          id: "addserver-scan-cancel"
+          id: "add-scan-close"
+      - extendedWaitUntil:
+          visible: "Paste setup text.*"
+          timeout: 30000
       - runScript:
           file: _ctl.js
           env:
@@ -161,49 +154,80 @@ appId: ${APP_ID}
             METHOD: POST
             ROUTE: /device/relaunch
       - runFlow: _open-sidebar.yaml
-      - tapOn:
-          id: "servers-btn"
-      - tapOn:
-          id: "servers-add"
-      - waitForAnimationToEnd
-      - tapOn:
-          id: "addserver-scan"
+      - runFlow: _add-choose.yaml
+      - tapOn: "Scan QR code.*"
       - extendedWaitUntil:
           visible:
             id: "addserver-scan-words"
           timeout: 30000
       - assertNotVisible:
           id: "addserver-camera-allow"
-      - assertVisible: "Point the camera at the code that scripts/server-code.sh shows on the server's screen."
+      - assertVisible: "On the server, run server-code.sh. Its code holds the address, the secret and the certificate's fingerprint."
       - takeScreenshot: v4-43-camera-allowed
+# "Paste text instead" leaves the camera for the paste step of "New server" (the clipboard is read on that press; the simulator's holds no setup text, so the box is there to paste into)
 - tapOn:
-    id: "addserver-scan-cancel"
-- waitForAnimationToEnd
-- assertVisible:
-    id: "servers-input-code"
-- takeScreenshot: v4-45-form-after-the-scanner
+    id: "add-scan-paste"
+- tapOn:
+    text: "Allow Paste"
+    optional: true
+- extendedWaitUntil:
+    visible:
+      id: "add-field-code"
+    timeout: 30000
+- assertNotVisible:
+    id: "addserver-scan-words"
+- takeScreenshot: v4-45-paste-after-the-scanner
 
 # ---- the text of the code (what the scanner hands to the form)
 - tapOn:
-    id: "servers-input-code"
+    id: "add-field-code"
 - inputText: ${output.code.lines[0]}
-- pressKey: Enter
-- inputText: ${output.code.lines[1]}
-- pressKey: Enter
-- inputText: ${output.code.lines[2]}
-- pressKey: Enter
-- inputText: ${output.code.lines[3]}
-# (a line typed in one go is a paste to the box, and the form is filled at once, as Android's keyboard types a line: the button is for the text that was not)
+# (the text is taken as soon as the lines typed so far read as a server's, and the box goes with the step: each later line is typed only while the box is there)
+- runFlow:
+    when:
+      visible:
+        id: "add-field-code"
+    commands:
+      - pressKey: Enter
+      - inputText: ${output.code.lines[1]}
+- runFlow:
+    when:
+      visible:
+        id: "add-field-code"
+    commands:
+      - pressKey: Enter
+      - inputText: ${output.code.lines[2]}
+- runFlow:
+    when:
+      visible:
+        id: "add-field-code"
+    commands:
+      - pressKey: Enter
+      - inputText: ${output.code.lines[3]}
+# (a line typed in one go is a paste to the box, and the text is taken at once, as Android's keyboard types a line: the button is for the text that was not)
 - tapOn:
-    id: "addserver-read"
+    id: "add-read"
     optional: true
-- assertVisible:
-    id: "addserver-note"
-    text: "Filled in the address and the secret from the text. Now test the connection."
-- tapOn:
-    id: "servers-form-test"
 - extendedWaitUntil:
-    visible: "It is the fingerprint the pasted text printed."
+    visible:
+      id: "add-filled"
+    timeout: 30000
+- assertVisible: "✓ Filled in from the code. Check the name, then test."
+- tapOn:
+    id: "add-test"
+- extendedWaitUntil:
+    visible:
+      id: "add-trust"
     timeout: 60000
+- assertVisible:
+    id: "add-match"
+- assertVisible: ".*Matches the fingerprint in the code.*"
 - takeScreenshot: v4-44-code-text-filled-the-form
+# the person does not save: Cancel asks to discard what was typed, and the list is under the sheet; back to the sidebar
 - tapOn: "Cancel"
+- tapOn: "Discard changes"
+- extendedWaitUntil:
+    visible:
+      id: "srv-add"
+    timeout: 30000
+- runFlow: _to-sidebar.yaml

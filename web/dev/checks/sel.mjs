@@ -9,8 +9,16 @@
 //   press(page, locator, opts?)  a click with a mouse, a tap with a finger (tap and click are the same call in a check)
 //   hover(page, locator)         the pointer over it; nothing on a touch viewport, which has no hover
 //   longPress(page, locator, { ms })   a finger held on it (a touch viewport; a mouse held on the desktop)
+//   hold(page, locator, { ms, until })   a finger held on it and taken off by a cancel, as the system does when a sheet opens under it (a
+//                                release would press the sheet's backdrop where the finger was, and close it): for a long press that opens a sheet
 //   openChat(page, key, { timeout }), openBoard(...)   open that chat or board by its key (the selection key the seeds have:
-//                                "c_plain", "s_studio~c_plain") through the path of the layout, and wait for it to show
+//                                "c_plain", "s_studio~c_plain") through the path of the layout, and wait for it to show. On the phone
+//                                that is Home's path (package H1): the thing's server chosen by its chip, its groups pushed one by
+//                                one, its row pressed; a chat on a board through its board and the board's Chats
+//   showHome(page, server?)      the phone's Home on screen (back through the stack), showing `server` (an entry id) when given
+//   openFoot(page, id)           a control of the sidebar's foot ("servers-btn", "library-btn", "settings-btn", "theme-btn",
+//                                "side-archived"): pressed in the foot on the wide layouts, through Home's gear and
+//                                Settings' row for it on the phone (Servers, Library, Voice, Archived; Appearance for "theme-btn")
 //   back(page)                   the stack's back on the phone (true when there was one); nothing on the wide layouts (false)
 //   openMenu(page, target, ...items)   press a button (its testID, or a locator), wait for the menu it opens, press the
 //                                items named, each in the menu the one before opened; answers the menu left open, if any
@@ -27,8 +35,15 @@ import { layoutOfWidth } from "../viewports.mjs";
 
 /** The testIDs the navigation helpers use, and the `dataSet` keys they read. */
 export const IDS = {
-  tree: "side-tree",              // the sidebar's tree (on the phone it is the first screen of the stack)
+  tree: "side-tree",              // the sidebar's tree (the wide layouts; the phone has Home instead)
   row: "side-row",                // a row of a chat or a board: dataSet { kind: "chat" | "board", key }; aria-selected="true" when it is the open one (the wide layouts)
+  home: "home",                   // the phone's Home (H1): dataSet { server: the entry id it shows, state: "first-run" | "connecting" | "trouble" | "empty" | "list" }
+  homeRow: "home-row",            // a row of Home or a group screen: dataSet { kind: "group" | "board" | "chat", key, server, attention, count }
+  chip: "server-chip",            // a server chip of Home: dataSet { server, word, selected: "true" | "false" }
+  groupScreen: "group-screen",    // a group pushed as a screen: dataSet { key }
+  gear: "home-gear",              // Home's gear (Settings)
+  chatsSheet: "chats-sheet",      // a board's Chats sheet (B1): rows "chats-row" with dataSet { chat, voice }
+  chatsSheetRow: "chats-row",
   show: "side-show",              // the control that shows a hidden sidebar (the wide layouts)
   back: "nav-back",               // the stack's back button (the phone)
   chatHead: "chat-head",          // the header of an open chat (all layouts)
@@ -107,6 +122,16 @@ export async function longPress(page, locator, { ms = 700 } = {}) {
   }
 }
 
+/** A finger held on the element for `ms`, then (after `until`, a locator, is visible, if given) taken off by a touchCancel: what the hold
+ *  opened stays (a sheet that opened under the finger is not pressed through by a release). A touch viewport only. */
+export async function hold(page, locator, { ms = 800, until: shown } = {}) {
+  const p = await pointOf(locator), c = await cdp(page);
+  await c.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: p.x, y: p.y, id: 1 }] });
+  await sleep(ms);
+  if (shown) await shown.waitFor({ state: "visible", timeout: SETTLE }).catch(() => {});
+  await c.send("Input.dispatchTouchEvent", { type: "touchCancel", touchPoints: [] });
+}
+
 // ---- dragging
 
 /** A drag by the pointer of the viewport, step by step, so that a check can look at the page in the middle of it (the drop mark).
@@ -177,15 +202,139 @@ export async function dragTo(page, from, to, opts) {
 
 // ---- navigating
 
-/** Brings the list of the sidebar on screen: on the phone, back through the stack to it; on the wide layouts, the sidebar shown
- *  if it was hidden. */
+/** Brings the list on screen: on the phone, Home (back through the stack to it; the sidebar is the wide layouts'); on the wide layouts, the
+ *  sidebar shown if it was hidden. Answers the list: the sidebar's tree, or Home. */
 export async function showList(page) {
+  if (layoutNow(page) === "phone") return showHome(page);
   const tree = byTid(page, IDS.tree).first();
-  if (layoutNow(page) === "phone") {
-    for (let i = 0; i < 6 && !(await tree.isVisible()); i++) if (!(await back(page))) break;
-  } else if (!(await tree.isVisible())) await press(page, byTid(page, IDS.show).first());
+  if (!(await tree.isVisible())) await press(page, byTid(page, IDS.show).first());
   await tree.waitFor({ state: "visible", timeout: WAIT });
   return tree;
+}
+
+/** The phone's Home on screen, back through the stack to it, showing the server `server` (an entry id: "local" for this computer's, the
+ *  mock's id for another) when it is given: its chip is pressed when the chips are drawn and another is the selected one. */
+export async function showHome(page, server) {
+  const home = byTid(page, IDS.home).first();
+  for (let i = 0; i < 8 && !(await home.isVisible()); i++) if (!(await back(page))) break;
+  await home.waitFor({ state: "visible", timeout: WAIT });
+  if (server && (await home.getAttribute("data-server")) !== server) {
+    const chip = byTid(page, IDS.chip, { server }).first();
+    await chip.waitFor({ state: "visible", timeout: WAIT }).catch(() => { throw new Error(`Home has no chip of the server "${server}"`); });
+    await press(page, chip);
+    await page.waitForSelector(tidSel(IDS.home, { server }), { timeout: WAIT });
+  }
+  return home;
+}
+
+/** Where a thing sits, as the page's store has it (the seam of screens/home/seam.ts, uicheck builds): { server, groups (keys, outermost
+ *  first), board (the board a chat is on, or null) }. */
+async function pathOf(page, kind, key) {
+  await page.waitForFunction(() => !!window.__aiwbHome, null, { timeout: WAIT });
+  return page.evaluate(([kind, key]) => window.__aiwbHome.placeOf(kind, key), [kind, key]);
+}
+
+/** On the phone: Home of the thing's server, its groups pushed one by one (each row pressed, its screen waited for), then its row pressed. */
+async function openOnPhone(page, kind, key, timeout) {
+  const path = await pathOf(page, kind, key);
+  const target = path.board ? { kind: "board", key: path.board } : { kind, key };
+  // (a screen of the path may be open already: Home is shown again, from the bottom of the stack, so that the path is the one pressed)
+  await showHome(page, path.server);
+  let scope = byTid(page, IDS.home).first();
+  for (const g of path.groups) {
+    const row = byTid(scope, IDS.homeRow, { kind: "group", key: g }).first();
+    await row.waitFor({ state: "attached", timeout }).catch(() => { throw new Error(`the phone's list has no row of the group "${g}" on the way to ${kind} "${key}"`); });
+    await row.scrollIntoViewIfNeeded();
+    await press(page, row);
+    scope = byTid(page, IDS.groupScreen, { key: g }).last();
+    await scope.waitFor({ state: "visible", timeout: WAIT });
+  }
+  const row = byTid(scope, IDS.homeRow, target).first();
+  await row.waitFor({ state: "attached", timeout }).catch(() => { throw new Error(`the phone's list has no ${target.kind} row "${target.key}"`); });
+  await row.scrollIntoViewIfNeeded();
+  await press(page, row);
+  if (path.board && kind === "chat") {
+    await byTid(page, IDS.boardBar).first().waitFor({ state: "visible", timeout: WAIT });
+    await openBoardChat(page, path.board, key);
+  }
+}
+
+/** On the phone, the chat `chat` of the open board `board`: its row in the board's Chats sheet (B1) when the bar's Chats opens one;
+ *  before that sheet exists, the selection is set through the stack's seam (screens/shell/phone/seam.ts), which gives the same stack. */
+export async function openBoardChat(page, board, chat) {
+  const chats = byTid(page, "board-chats").first();
+  if (await chats.isVisible()) {
+    await press(page, chats);
+    const sheet = byTid(page, IDS.chatsSheet).last();
+    if (await sheet.waitFor({ state: "visible", timeout: SETTLE }).then(() => true, () => false)) {
+      const row = byTid(sheet, IDS.chatsSheetRow, { chat }).first();
+      if (await row.waitFor({ state: "visible", timeout: SETTLE }).then(() => true, () => false)) { await press(page, row); return; }
+      await page.keyboard.press("Escape"); // (no row for it: close the sheet and take the seam below)
+    }
+  }
+  await page.evaluate(([board, chat]) => window.__aiwbStack.select({ board, chat }), [board, chat]);
+}
+
+/** Settings' row for each foot control, and the text of the cell a placeholder screen holds for it (S1's placeholders: Servers, Library and
+ *  Voice hold a cell that opens the dialog; a package's own screen has none, and the row's screen is the destination: Archived's is H2's own
+ *  `archived-screen`, with no switch on the phone). */
+const FOOT_ROW = { "servers-btn": ["servers", "Open servers"], "library-btn": ["library", "Open prompt library"], "settings-btn": ["voice", "Open voice settings"],
+  "side-archived": ["archived", null], "theme-btn": ["appearance", null] };
+const FOOT_PLACEHOLDER = { servers: "servers", library: "library", voice: "voice-settings" }; // (a row -> the placeholder's `screen`)
+
+/** A control of the sidebar's foot (its testID: "servers-btn", "library-btn", "settings-btn", "theme-btn", "side-archived"), pressed: in
+ *  the foot on the wide layouts (the sidebar shown first). On the phone Home's gear pushes Settings and the control is reached through its
+ *  row: Servers (`servers-btn`), Library (`library-btn`), Voice (`settings-btn`), Archived (`side-archived`: H2's `archived-screen` is the destination, answered as its locator), Appearance (`theme-btn`: the
+ *  screen at rest, nothing pressed beyond it; the theme is chosen there). While the row's screen is S1's placeholder, its cell ("Open
+ *  servers", "Open prompt library", "Open voice settings") or switch is pressed, the same action as the foot's control; once a package
+ *  registers the screen, the screen is the destination. A build without S1 (the gear opens the stop-gap sheet that holds the foot) keeps
+ *  the old path. `press: false` leaves the last control (the cell, the switch, the foot's button) unpressed, for a caller that reads it first.
+ *  Answers the control's locator (the screen for `theme-btn` and `side-archived`, which has no control on the phone; the row when the destination is a screen of its own). */
+export async function openFoot(page, id, { press: pressIt = true } = {}) {
+  if (layoutNow(page) !== "phone") {
+    await showList(page);
+    const control = byTid(page, id).last();
+    await control.waitFor({ state: "visible", timeout: WAIT });
+    if (pressIt) await press(page, control);
+    return control;
+  }
+  await showHome(page);
+  await press(page, byTid(page, IDS.gear).first());
+  const shown = page.locator(`${tidSel("settings-screen")}, ${tidSel("home-settings-stopgap")}`).locator("visible=true").last();
+  await shown.waitFor({ state: "visible", timeout: WAIT });
+  if (!await byTid(page, "settings-screen").last().isVisible()) { // (the stop-gap sheet)
+    const control = byTid(page, id).last();
+    await control.waitFor({ state: "visible", timeout: WAIT });
+    if (pressIt) await press(page, control);
+    return control;
+  }
+  const { atRest, openRow } = await import("./settings.mjs"); // (settings.mjs imports this file)
+  await atRest(page, "settings-screen");
+  const [row, cell] = FOOT_ROW[id] ?? [];
+  if (!row) throw new Error(`openFoot: no Settings row for "${id}"`);
+  if (row === "appearance") {
+    await openRow(page, row, "appearance-screen");
+    return byTid(page, "appearance-screen").last();
+  }
+  const rowLoc = byTid(page, "settings-row", { row }).last();
+  await rowLoc.waitFor({ state: "visible", timeout: WAIT });
+  await press(page, rowLoc);
+  if (row === "archived") { // (H2's own screen: the phone has no "Show archived" switch)
+    await atRest(page, "archived-screen");
+    return byTid(page, "archived-screen").last();
+  }
+  if (row === "servers") { // (S2's list is the destination: pushed, not a placeholder)
+    await byTid(page, "srv-list").last().waitFor({ state: "visible", timeout: WAIT });
+    return rowLoc;
+  }
+  const place = byTid(page, "settings-placeholder", { screen: FOOT_PLACEHOLDER[row] }).last();
+  if (!await place.waitFor({ state: "visible", timeout: SETTLE }).then(() => true, () => false)) return rowLoc; // (a screen of its own)
+  await atRest(page, "settings-placeholder");
+  const control = cell ? place.getByText(cell, { exact: true }).first() : place.locator('[role="switch"]').first();
+  await control.waitFor({ state: "visible", timeout: WAIT });
+  // (the switch sits in a Cell with no press of its own, drawn aria-disabled: Playwright takes the switch for disabled too, so it is pressed forced, where the finger is)
+  if (pressIt) await press(page, control, cell ? undefined : { force: true });
+  return control;
 }
 
 /** The stack's back on the phone: pressed when it is there, answers true; the wide layouts have none and answer false. */
@@ -197,21 +346,26 @@ export async function back(page) {
 }
 
 async function openRow(page, kind, key, head, { timeout = WAIT } = {}) {
+  if (layoutNow(page) === "phone") {
+    await openOnPhone(page, kind, key, timeout);
+    await byTid(page, head).first().waitFor({ state: "visible", timeout: WAIT });
+    return;
+  }
   const tree = await showList(page);
   const row = byTid(tree, IDS.row, { kind, key }).first();
   await row.waitFor({ state: "attached", timeout }).catch(() => { throw new Error(`the sidebar has no ${kind} row "${key}" (a collapsed group or section keeps its rows out)`); });
   await row.scrollIntoViewIfNeeded();
   await press(page, row);
-  // (a wide layout keeps the list on screen: the row says it is the open one; the phone replaces the list by the screen)
-  if (layoutNow(page) !== "phone") await page.waitForSelector(tidSel(IDS.row, { kind, key }) + '[aria-selected="true"]', { timeout: WAIT });
+  // (a wide layout keeps the list on screen: the row says it is the open one)
+  await page.waitForSelector(tidSel(IDS.row, { kind, key }) + '[aria-selected="true"]', { timeout: WAIT });
   await byTid(page, head).first().waitFor({ state: "visible", timeout: WAIT });
 }
 
-/** Opens the chat `key` from the sidebar by the path of the layout (the list is shown, the row pressed) and waits for its header. A row that
+/** Opens the chat `key` by the path of the layout (the sidebar's row; on the phone Home's path) and waits for its header. A row that
  *  is not drawn within `timeout` ms (15 s by default: a list may draw late) is an error that names it. */
 export const openChat = (page, key, opts) => openRow(page, "chat", key, IDS.chatHead, opts);
 
-/** Opens the board `key` from the sidebar by the path of the layout and waits for its bar. */
+/** Opens the board `key` by the path of the layout and waits for its bar. */
 export const openBoard = (page, key, opts) => openRow(page, "board", key, IDS.boardBar, opts);
 
 /** Waits until a popover (`ui/Popover`) is where it hangs: it is drawn with no opacity until its anchor and its own size are measured, and a press
@@ -275,12 +429,32 @@ export const acts = {
   /** Every shape of the board's canvas (B4): a click on its empty ground gives it the keys, then select all. (Not in the corner: the
    *  help button is there, which a click opens.) */
   async select(page) {
-    await page.waitForSelector(".excalidraw:not(.excalidraw--view-mode) canvas.interactive", { timeout: WAIT });
+    // (a board opens as a reader's, in view mode, until "Edit here" (board-take): the window takes the board first, then selects on the writer's canvas)
+    const { LIVE, editHere } = await import("./boarddraw.mjs");
+    await page.waitForSelector(`${LIVE}, [data-testid="board-take"]`, { state: "attached", timeout: WAIT });
+    // (a take the check pressed itself may still be under way: give the writer's canvas a moment before pressing Edit here again)
+    if (!await page.waitForSelector(LIVE, { timeout: 5000 }).then(() => true, () => false)) await editHere(page, { timeout: WAIT });
     const box = await page.locator(".excalidraw canvas.interactive").boundingBox();
     await page.mouse.click(box.x + box.width * 0.75, box.y + box.height * 0.7);
     await page.keyboard.press("ControlOrMeta+a");
   },
+  // ---- S2 (the Servers screens of the phone): the stack pushes the registered screen, and it is drawn (the testIDs of its body are the check's)
+  "srv-list": (page) => pushS2(page, "servers", {}),
+  "srv-detail:s_build": (page) => pushS2(page, "server", { id: "s_build" }),
+  "srv-detail:s_attic": (page) => pushS2(page, "server", { id: "s_attic" }),
+  "srv-detail:s_mini": (page) => pushS2(page, "server", { id: "s_mini" }),
+  "srv-detail:s_certbox": (page) => pushS2(page, "server", { id: "s_certbox" }),
+  "srv-cert:s_certbox": (page) => pushS2(page, "server-cert", { id: "s_certbox" }),
+  /** Settings, pushed on the phone (S1, settings.mjs): Home's gear when it is there, else the uicheck build's seam; waited at rest. */
+  async openSettings(page) { await (await import("./settings.mjs")).openSettings(page); },
 };
+
+/** S2's acts: push the screen `name` (app/src/screens/servers/index.ts) by the seam of the uicheck build and wait for its place on the stack. */
+async function pushS2(page, name, params) {
+  await page.waitForFunction(() => !!window.__aiwbStack, null, { timeout: WAIT });
+  await page.evaluate(([n, p]) => window.__aiwbStack.push(n, p), [name, params]);
+  await page.waitForSelector(tidSel("pushed-screen", { screen: name }), { state: "visible", timeout: WAIT });
+}
 
 /** "drop:<entry id>": that server of the mock's list drops while the page has its chat open (a thing of a server that is not
  *  connected is on screen only so); the next page opened with openApp finds it connected again. */

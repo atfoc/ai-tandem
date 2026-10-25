@@ -3,7 +3,7 @@
 // each entry; calls go out through api.ts. Several windows work on one server at once; each board is held by one of
 // them, which hands it over after it has written its pending save (board.ts keeps the roles).
 import { api } from "../api.ts";
-import { setState, getState, applySnapshot, applySection, dropLeftBehind, dropServer, markGone, setSectionGroups, setSectionDefaults, setServers, setServerLists, setLibrary, dropLibrary, libraryAwayOf, upsertBoard, removeBoard, setWriter, clearWriters, upsertChat, removeChat, setThread, setSubs, upsertSub,
+import { setState, getState, applySnapshot, applySection, dropLeftBehind, dropServer, markGone, setSectionGroups, setSectionDefaults, setServers, withServers, setServerLists, setLibrary, dropLibrary, libraryAwayOf, upsertBoard, removeBoard, setWriter, clearWriters, upsertChat, removeChat, setThread, setSubs, upsertSub,
   upsertState, setDrawer, setShown, setThreadError, setLoading, dropLoading, threadAt, shownBranch, shownKey, currentBranch, branchState, isBusy,
   type ThreadKey } from "./store.ts";
 import { boardSide } from "./ports.ts";
@@ -48,7 +48,7 @@ function onStreamState(st: StreamState) {
   stream?.close();
   stream = null;
   const before = getState().servers;
-  setState((s) => ({ servers: s.servers.map((v) => (v.state === "connecting" ? v : { ...v, state: "connecting" as const, detail: undefined })) }));
+  setState((s) => withServers(s, s.servers.map((v) => (v.state === "connecting" ? v : { ...v, state: "connecting" as const, detail: undefined }))));
   for (const v of before) { leaves(v.id); }
   if (reopen === null) reopen = setTimeout(() => { reopen = null; connect(); }, waits.reopenMs);
 }
@@ -70,7 +70,7 @@ function onApp(e: any) {
     case "server_state": {
       const v: ServerView = e.server;
       if (!v?.id) return;
-      setState((s) => ({ servers: upsertServer(s.servers, v) }));
+      setState((s) => withServers(s, upsertServer(s.servers, v)));
       if (v.state !== "connected") leaves(v.id);
       return;
     }
@@ -230,11 +230,20 @@ function onSection(server: string, tree: SectionTree | null) {
  *  everything the page has of it goes, what is on screen too. The `section` event with no tree of the same removal
  *  comes in no fixed order with the list's: before it, it left what was on screen, which goes here; after it, it finds
  *  nothing. */
+const goneHandlers = new Set<(server: string) => void>();
+/** Calls `fn` with each entry that leaves the server list from now on, after the store has dropped what it had of it: what the app keeps
+ *  of a server outside the store (the phone's Home place, the search's opened things) forgets it too. Answers the undo. */
+export function onEntryGone(fn: (server: string) => void): () => void {
+  goneHandlers.add(fn);
+  return () => { goneHandlers.delete(fn); };
+}
+
 function dropRemoved(before: ServerView[]) {
   for (const server of entriesGone(before, getState().servers)) {
     givenUp(server);
     for (const id of dropServer(server)) forgetThing(id);
     for (const id of [...removed]) if (serverOfKey(id) === server) removed.delete(id);
+    for (const fn of goneHandlers) fn(server);
   }
 }
 

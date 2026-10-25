@@ -1,0 +1,41 @@
+# Part of `composer-chips` (ux-improvements package C2, goal 3.6 "chips and pickers"), a required step on the phone: a new chat's chip row and two of its pickers. The chat is new
+# (no message yet) and its keyboard is down: the row `composer-chip-row` is on the screen; the model chip ("Model and effort: <model · effort>"; `tchip` is shared by the chips, so the
+# chip is found by its accessibility label) opens the model sheet (`model-sheet`: "Model and effort", Done at the right), Done closes it; the folder chip ("Folder: <name>") opens the
+# folder sheet (`folder-sheet`: "Start the agent in", Cancel at the left), Cancel closes it. The screenshots (ux-c2-model-sheet, ux-c2-folder-sheet) are compared with the mockup by eye.
+appId: ${APP_ID}
+---
+- extendedWaitUntil:
+    visible:
+      id: "composer-chip-row"
+    timeout: 30000
+- takeScreenshot: ux-c2-chip-row
+- tapOn: "Model and effort: .*"
+- extendedWaitUntil:
+    visible:
+      id: "model-sheet"
+    timeout: 20000
+- waitForAnimationToEnd
+- assertVisible: "Model and effort"
+- assertVisible: "Done"
+- takeScreenshot: ux-c2-model-sheet
+- tapOn: "Done"
+- extendedWaitUntil:
+    notVisible:
+      id: "model-sheet"
+    timeout: 20000
+- waitForAnimationToEnd
+- tapOn: "Folder: .*"
+- extendedWaitUntil:
+    visible:
+      id: "folder-sheet"
+    timeout: 20000
+- waitForAnimationToEnd
+- assertVisible: "Start the agent in"
+- assertVisible: "Cancel"
+- takeScreenshot: ux-c2-folder-sheet
+- tapOn: "Cancel"
+- extendedWaitUntil:
+    notVisible:
+      id: "folder-sheet"
+    timeout: 20000
+- waitForAnimationToEnd

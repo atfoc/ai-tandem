@@ -828,6 +828,288 @@ async function behaviours(p, ctx) {
     assert.equal(again.m.board, "rd");
     t("a reader's board follows a load in place, keeps its scroll");
   }
+
+  // ---- the phone's chrome (B1, plans/ux-improvements/b1-design.md section 2): a 393 x 760 page, the `phone` message: Excalidraw's menu trimmed and headed by the
+  // board's name, its footer one band of 64 px with nothing in the right 64 px, a board that opens fitted or at a kept view, the `menu` message
+  {
+    const shots = path.join(pkg, "out/b1");
+    fs.mkdirSync(shots, { recursive: true });
+    const shot = (name) => p.page.screenshot({ path: path.join(shots, `${p.name}-${name}.png`) });
+    await p.page.setViewportSize({ width: 393, height: 760 });
+    const chrome = { title: "Checkout flow", inset: 64, band: "#eff1f5", line: "#ccd0da", share: true };
+    const raw = [box("c1", -300, 100, 200, 90), box("c2", 40, 380, 160, 80), box("c3", 420, 120, 120, 120), box("c4", 900, 700, 240, 100), box("c5", 1500, 40, 80, 80), box("c6", 600, 900, 180, 60)];
+    const elements = (await p.ok({ op: "restore", elements: raw })).value.elements;
+    const onLoaded = (id, from) => p.until((m) => m.t === "loaded" && m.board === id, `loaded ${id}`, { from });
+    const load = async (id, { viewMode = false, open, els = elements } = {}) => {
+      const mark = await p.mark();
+      await p.send({ t: "load", board: id, viewMode, theme: { mode: "light", filter: null }, style: {}, scene: { elements: els, files: {}, appState: { scrollX: 0, scrollY: 0, zoom: { value: 1 } } }, ...(open ? { open } : {}) });
+      const { out } = await onLoaded(id, mark);
+      await p.page.waitForTimeout(300);
+      return { mark, out };
+    };
+    const geometry = () => p.page.evaluate(() => {
+      const rect = (el) => { const r = el.getBoundingClientRect(); return { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height }; };
+      const root = document.querySelector(".aiwb-board .excalidraw");
+      const band = document.querySelector(".aiwb-board .App-bottom-bar .App-toolbar");
+      const bar = document.querySelector(".aiwb-board .App-toolbar-container");
+      const visible = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== "hidden"; };
+      return {
+        phoneClass: !!document.querySelector(".aiwb-board.aiwb-phone"),
+        root: rect(root), band: band && rect(band), bar: bar && rect(bar),
+        bandStyle: band && (({ backgroundColor, borderTopColor, borderTopWidth, borderRadius, boxShadow }) => ({ backgroundColor, borderTopColor, borderTopWidth, borderRadius, boxShadow }))(getComputedStyle(band)),
+        controls: band ? [...band.querySelectorAll("button, input, label, [role=button]")].filter(visible).map((el) => ({ what: el.getAttribute("aria-label") || el.dataset.testid || el.className, ...rect(el) })) : [],
+        panel: (() => { const m = document.querySelector(".aiwb-board .App-mobile-menu"); return m && rect(m); })(),
+      };
+    });
+    const menuItems = () => p.page.evaluate(() => [...document.querySelectorAll(".dropdown-menu .dropdown-menu-item")].map((b) => b.textContent.trim()));
+    const openMenu = async () => { await p.page.click('[data-testid="main-menu-trigger"]'); await p.page.waitForSelector(".dropdown-menu .dropdown-menu-item"); };
+    const closeMenu = async () => { await p.page.click('[data-testid="main-menu-trigger"]'); await p.page.waitForSelector(".dropdown-menu", { state: "detached" }); };
+    const rgb = (hex) => `rgb(${[1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)).join(", ")})`;
+    const lastView = async (from) => (await p.out()).slice(from).filter((m) => m.t === "view").at(-1);
+    const MENU = ["Find on the board", "Fit the whole board", "Export image…", "Share image…", "Clear the board…"];
+
+    // the board opens: the phone's chrome is set first, the load says how
+    await p.send({ t: "phone", chrome });
+    let g, mark;
+    ({ mark } = await load("ph-edit", { open: { fit: 16 } }));
+    g = await geometry();
+    assert.equal(g.phoneClass, true, "the wrapper carries the phone's class");
+
+    // the band: 64 px, the width of the view, flush with its bottom, the ground and the hairline of the message, no radius, no shadow
+    const bandBox = (g) => assert.ok(g.band.height === 64 && Math.abs(g.band.left - g.root.left) < 0.5 && Math.abs(g.band.right - g.root.right) < 0.5 && Math.abs(g.band.bottom - g.root.bottom) < 0.5,
+      `the band is 64 px tall and across the view, flush with its bottom: ${JSON.stringify(g.band)} in ${JSON.stringify(g.root)}`);
+    const bandLook = (g) => {
+      assert.equal(g.bandStyle.backgroundColor, rgb(chrome.band), "the band's ground");
+      assert.equal(g.bandStyle.borderTopColor, rgb(chrome.line), "the hairline");
+      assert.equal(g.bandStyle.borderTopWidth, "1px");
+      assert.equal(g.bandStyle.borderRadius, "0px");
+      assert.equal(g.bandStyle.boxShadow, "none");
+    };
+    // no control of the footer in the right 64 px
+    const clear = (g, what, least = 2) => {
+      assert.ok(g.controls.length >= least, `${what}: the footer has controls (${g.controls.length})`);
+      for (const c of g.controls) assert.ok(c.right <= g.root.right - 64 + 0.5, `${what}: "${c.what}" reaches into the right 64 px (right ${c.right}, view ${g.root.right})`);
+      for (const c of g.controls) assert.ok(c.top >= g.band.top - 0.5 && c.bottom <= g.band.bottom + 0.5, `${what}: "${c.what}" is inside the band's height`);
+    };
+    bandBox(g); bandLook(g); clear(g, "edit mode");
+    const centred = g.controls.filter((c) => c.width < 80);
+    for (const c of centred) assert.ok(Math.abs((c.top + c.bottom) / 2 - (g.band.top + g.band.bottom) / 2) <= 3, `"${c.what}" is centred in the band`);
+    await shot("band-edit");
+    t("the phone's band: 64 px across the view, the message's ground and line, nothing in the right 64 px (edit mode)");
+
+    // edit mode, a shape selected, the colours panel open: the panel stands above the band, the footer's controls stay out of the inset
+    await p.send({ t: "select", ids: ["c2"] });
+    await p.page.waitForSelector('.App-bottom-bar .App-toolbar [aria-label="Edit"], .App-bottom-bar .App-toolbar [aria-label="Colors"], .App-bottom-bar .App-toolbar .ToolIcon');
+    g = await geometry();
+    clear(g, "a shape selected");
+    await shot("band-selected");
+    const toggle = await p.page.evaluate(() => { const b = [...document.querySelectorAll(".App-bottom-bar .App-toolbar-content button")].find((x) => /edit/i.test(x.getAttribute("aria-label") ?? "")); b?.click(); return !!b; });
+    assert.ok(toggle, "the footer has the button of the selected shape's panel");
+    await p.page.waitForSelector(".App-mobile-menu");
+    g = await geometry();
+    assert.ok(g.panel && g.panel.bottom <= g.band.top + 1 && g.panel.height > 40, `the panel stands above the band: ${JSON.stringify(g.panel)} band top ${g.band.top}`);
+    bandBox(g); bandLook(g); clear(g, "a shape selected, the colours panel open");
+    await shot("band-colours");
+    await p.page.evaluate(() => [...document.querySelectorAll(".App-bottom-bar .App-toolbar-content button")].find((x) => /edit/i.test(x.getAttribute("aria-label") ?? ""))?.click());
+    await p.send({ t: "select", ids: [] });
+    t("the colours panel above the band, no footer control in the inset");
+
+    // the menu: exactly the phone's items, headed by the board's name, opening above the band with the last row uncovered
+    await openMenu();
+    assert.deepEqual(await menuItems(), MENU, "the menu of the phone, edit mode");
+    assert.equal(await p.page.evaluate(() => document.querySelector(".dropdown-menu .dropdown-menu-group-title")?.textContent), chrome.title, "headed by the board's name");
+    assert.equal(await p.page.evaluate(() => document.querySelectorAll(".dropdown-menu .dropdown-menu-item").length + document.querySelectorAll(".dropdown-menu a").length), MENU.length, "no link, nothing else");
+    const m = await p.page.evaluate(() => {
+      const r = (el) => { const b = el.getBoundingClientRect(); return { top: b.top, bottom: b.bottom, left: b.left, right: b.right }; };
+      const items = [...document.querySelectorAll(".dropdown-menu .dropdown-menu-item")];
+      const last = items.at(-1), lr = r(last);
+      const at = document.elementFromPoint((lr.left + lr.right) / 2, (lr.top + lr.bottom) / 2);
+      return { menu: r(document.querySelector(".dropdown-menu")), band: r(document.querySelector(".App-bottom-bar .App-toolbar")), lastIsTop: last.contains(at), color: getComputedStyle(last).color, other: getComputedStyle(items[0]).color, first: r(items[0]) };
+    });
+    assert.ok(m.menu.bottom <= m.band.top + 0.5, `the menu opens above the band (${m.menu.bottom} <= ${m.band.top})`);
+    assert.ok(m.menu.top >= 0 && m.first.top >= 0, "and not out of the view at the top");
+    assert.ok(m.lastIsTop, "the last row is not covered by anything");
+    assert.notEqual(m.color, m.other, `Clear the board… is in another colour (${m.color}, the others ${m.other})`);
+    await shot("menu");
+    await closeMenu();
+    t("the menu: the board's name, five items, above the band, the last row uncovered, Clear in the danger colour");
+
+    // Find: Excalidraw's own search opens; Export: its own image export dialog
+    mark = await p.mark();
+    await openMenu(); await p.page.click('[data-testid="phone-menu-find"]');
+    await p.page.waitForSelector('.sidebar input[type="search"], .sidebar .layer-ui__search-input, .sidebar [class*="search"] input', { timeout: 10000 });
+    await p.page.evaluate(() => (document.querySelector('.sidebar-close, .sidebar .sidebar__close, [data-testid="sidebar-close"]'))?.click());
+    await p.page.keyboard.press("Escape");
+    await p.page.waitForTimeout(150);
+    await openMenu(); await p.page.click('[data-testid="phone-menu-export"]');
+    await p.page.waitForSelector(".ImageExportModal", { timeout: 10000 });
+    await p.page.click(".Dialog__close");
+    await p.page.waitForSelector(".ImageExportModal", { state: "detached" });
+    t("Find opens Excalidraw's search, Export image… its export dialog");
+
+    // the menu posts Share and Clear (the app carries them out) and nothing else
+    mark = await p.mark();
+    await openMenu(); await p.page.click('[data-testid="phone-menu-share"]');
+    await p.until((x) => x.t === "menu" && x.board === "ph-edit" && x.item === "share", "menu share", { from: mark });
+    await openMenu(); await p.page.click('[data-testid="phone-menu-clear"]');
+    await p.until((x) => x.t === "menu" && x.board === "ph-edit" && x.item === "clear", "menu clear", { from: mark });
+    assert.deepEqual((await p.out()).slice(mark).filter((x) => x.t === "menu").map((x) => x.item), ["share", "clear"], "one message for each");
+    assert.equal((await snap()).elements.filter((e) => !e.isDeleted).length, 6, "the view clears nothing itself: the app does");
+    t("menu: Share and Clear are posted");
+
+    // the fit: every element's screen box inside the visible rect (the view less the band and Excalidraw's toolbar), 16 px from each side
+    const screenBoxes = async () => {
+      const s = await snap();
+      const a = await p.page.evaluate(() => { const r = document.querySelector(".aiwb-board .excalidraw").getBoundingClientRect(); return { left: r.left, top: r.top }; });
+      const { scrollX, scrollY, zoom } = { scrollX: s.appState.scrollX, scrollY: s.appState.scrollY, zoom: s.appState.zoom.value };
+      return { zoom, scrollX, scrollY, boxes: s.elements.filter((e) => !e.isDeleted).map((e) => ({ id: e.id, left: a.left + (e.x + scrollX) * zoom, top: a.top + (e.y + scrollY) * zoom, right: a.left + (e.x + e.width + scrollX) * zoom, bottom: a.top + (e.y + e.height + scrollY) * zoom })) };
+    };
+    const insideVisible = async (what, margin, viewMode) => {
+      const g = await geometry(), { boxes, zoom } = await screenBoxes();
+      const rect = { left: g.root.left, right: g.root.right, top: viewMode ? g.root.top : g.bar.bottom, bottom: g.band.top };
+      for (const b of boxes) assert.ok(b.left >= rect.left + margin - 1 && b.right <= rect.right - margin + 1 && b.top >= rect.top + margin - 1 && b.bottom <= rect.bottom - margin + 1,
+        `${what}: ${b.id} ${[b.left, b.top, b.right, b.bottom].map(Math.round)} is not inside the visible rect ${JSON.stringify(rect)} with ${margin} px`);
+      const all = { left: Math.min(...boxes.map((b) => b.left)), right: Math.max(...boxes.map((b) => b.right)), top: Math.min(...boxes.map((b) => b.top)), bottom: Math.max(...boxes.map((b) => b.bottom)) };
+      assert.ok(Math.abs((all.left + all.right) / 2 - (rect.left + rect.right) / 2) < 2 && Math.abs((all.top + all.bottom) / 2 - (rect.top + rect.bottom) / 2) < 2, `${what}: centred in the visible rect`);
+      assert.ok(zoom < 1 && zoom >= 0.1, `${what}: the board is scaled down (${zoom})`);
+      return { zoom, rect, all };
+    };
+    const edit = await insideVisible("the fitted board, edit mode", 16, false);
+    assert.ok(edit.rect.top > 20, `edit mode keeps Excalidraw's toolbar out of the rect (top ${edit.rect.top})`);
+    // (the renderer draws where the numbers say: the left edge of the leftmost box is dark there)
+    const leftmost = (await screenBoxes()).boxes.reduce((a, b) => (b.left < a.left ? b : a));
+    const dark = await Promise.all([-1, 0, 1].map((dx) => pixel(p.page, Math.round(leftmost.left) + dx, Math.round((leftmost.top + leftmost.bottom) / 2))));
+    const outside = await pixel(p.page, Math.round(leftmost.left) - 6, Math.round((leftmost.top + leftmost.bottom) / 2));
+    assert.ok(dark.some(([r]) => r < 215) && outside[0] > 245, `the leftmost box is drawn where the fit says (its edge ${JSON.stringify(dark)}, 6 px outside ${outside})`); // (the stroke is thin at this zoom)
+    const fitView1 = (await lastView(mark)) ?? (await p.out()).filter((x) => x.t === "view" && x.board === "ph-edit").at(-1);
+    assert.ok(Math.abs(fitView1.zoom - edit.zoom) < 1e-6, "the `view` message tells the fitted zoom");
+    await shot("fitted");
+    t(`open { fit: 16 }: every box inside the visible rect with 16 px (zoom ${edit.zoom})`);
+
+    // the same in view mode (no toolbar at the top), with another margin
+    await load("ph-view", { viewMode: true, open: { fit: 30 } });
+    g = await geometry();
+    bandBox(g); bandLook(g); clear(g, "view mode", 1); // (the menu button alone)
+    await insideVisible("the fitted board, view mode", 30, true);
+    await shot("band-view");
+    await openMenu();
+    assert.deepEqual(await menuItems(), MENU.slice(0, 4), "the menu of the phone, view mode: no Clear");
+    await closeMenu();
+    t("view mode: the band, the fit, the menu without Clear");
+
+    // Fit the whole board (menu): the same fit, margin 16, from wherever the reader scrolled to
+    await p.page.mouse.move(150, 300); await p.page.mouse.wheel(300, 500);
+    await p.page.waitForTimeout(250);
+    mark = await p.mark();
+    await openMenu(); await p.page.click('[data-testid="phone-menu-fit"]');
+    await p.until((x) => x.t === "view" && x.board === "ph-view", "the view after Fit", { from: mark });
+    await p.page.waitForTimeout(250);
+    await insideVisible("Fit the whole board", 16, true);
+    t("Fit the whole board");
+
+    // a small board is centred at 100 %, an empty one is left as it is
+    await load("ph-small", { open: { fit: 16 }, els: elements.slice(0, 1) });
+    const small = await screenBoxes();
+    assert.equal(small.zoom, 1, "a small board stays at 100 %");
+    await load("ph-empty", { open: { fit: 16 }, els: [] });
+    const empty = await snap();
+    assert.deepEqual([empty.appState.scrollX, empty.appState.scrollY, empty.appState.zoom.value], [0, 0, 1], "an empty board keeps the scene's own view");
+    t("a small board at 100 %, an empty board untouched");
+
+    // a view kept from before is applied as given, and told by `view` before `loaded`
+    const kept = { scrollX: 123.5, scrollY: -77, zoom: 0.5 };
+    const { mark: m2, out: out2 } = await load("ph-kept", { open: kept });
+    const seen = out2.slice(m2);
+    const views = seen.filter((x) => x.t === "view");
+    assert.deepEqual([views.at(-1).scrollX, views.at(-1).scrollY, views.at(-1).zoom], [kept.scrollX, kept.scrollY, kept.zoom], "the `view` message says the given view");
+    assert.ok(seen.findIndex((x) => x.t === "view" && x.zoom === kept.zoom) < seen.findIndex((x) => x.t === "loaded"), "told before `loaded`");
+    const ks = await snap();
+    assert.deepEqual([ks.appState.scrollX, ks.appState.scrollY, ks.appState.zoom.value], [kept.scrollX, kept.scrollY, kept.zoom], "the scene has it");
+    // a load without `open` keeps the scene's own view
+    await load("ph-plain");
+    assert.deepEqual((await snap()).appState.scrollX, 0, "no `open`: the scene's own appState");
+    t("open { scrollX, scrollY, zoom }: applied as given, before loaded; no open: the scene's own");
+
+    // the chrome stays across loads, and null brings back Excalidraw's own menu and footer
+    assert.equal((await geometry()).phoneClass, true, "kept across loads");
+    // (Excalidraw cannot take its own menu back, nor drop it when ours comes: the board is shown again from its live scene)
+    const before = (await snap()).elements.map((e) => [e.id, e.version]);
+    mark = await p.mark();
+    await p.send({ t: "phone", chrome: null });
+    await onLoaded("ph-plain", mark);
+    await p.page.waitForTimeout(300);
+    assert.deepEqual((await snap()).elements.map((e) => [e.id, e.version]), before, "the scene is the same after the chrome went");
+    g = await geometry();
+    assert.equal(g.phoneClass, false, "no class without the chrome");
+    assert.notEqual(g.band.height, 64 + 0, "(Excalidraw's own footer: not the band)");
+    assert.notEqual(g.bandStyle.borderTopColor, rgb(chrome.line), "no hairline of ours");
+    await openMenu();
+    const own = await menuItems();
+    assert.ok(own.some((x) => /Help/.test(x)) && !own.includes("Find on the board") && !own.some((x) => /Share image/.test(x)), `Excalidraw's own menu is back: ${JSON.stringify(own)}`);
+    await closeMenu();
+    t("phone null: Excalidraw's own menu and footer");
+
+    // and ours again on the board that is shown: one menu, the phone's
+    mark = await p.mark();
+    await p.send({ t: "phone", chrome });
+    await onLoaded("ph-plain", mark);
+    await p.page.waitForTimeout(300);
+    assert.deepEqual((await snap()).elements.map((e) => [e.id, e.version]), before, "the scene is the same after the chrome came");
+    assert.equal(await p.page.evaluate(() => document.querySelectorAll('[data-testid="main-menu-trigger"]').length), 1, "one menu button");
+    await openMenu();
+    assert.deepEqual(await menuItems(), MENU, "the phone's menu alone");
+    await closeMenu();
+    // a chrome that only changes is drawn at once, with no new board
+    mark = await p.mark();
+    await p.send({ t: "phone", chrome: { ...chrome, title: "Renamed", share: false, inset: 100 } });
+    await p.page.waitForTimeout(300);
+    await openMenu();
+    assert.deepEqual(await menuItems(), [MENU[0], MENU[1], MENU[2], MENU[4]], "no Share image… when the message says so");
+    assert.equal(await p.page.evaluate(() => document.querySelector(".dropdown-menu .dropdown-menu-group-title")?.textContent), "Renamed");
+    await closeMenu();
+    g = await geometry();
+    clear(g, "inset 100"); assert.ok(g.controls.every((c) => c.right <= g.root.right - 100 + 0.5), "the new inset");
+    assert.equal((await p.out()).slice(mark).filter((x) => x.t === "loaded").length, 0, "no new board for a change of title or inset");
+    t("the chrome comes back on a shown board; a changed chrome is drawn in place");
+
+    // the top inset (landscape, `phone: null`: Excalidraw's own footer and menu; the app's floating controls lie along the top edge): the top bar starts below
+    // `px`, the canvas does not move; 0 puts it back; kept across a load
+    {
+      await p.send({ t: "phone", chrome: null });
+      await p.page.setViewportSize({ width: 852, height: 393 });
+      ({ mark } = await load("ph-land", { open: { scrollX: 0, scrollY: 0, zoom: 1 } }));
+      const top = () => p.page.evaluate(() => {
+        const bar = document.querySelector(".aiwb-board .App-toolbar-container");
+        const side = document.querySelector(".aiwb-board .FixedSideContainer_side_top");
+        const wrap = document.querySelector(".aiwb-board");
+        return { bar: bar ? bar.getBoundingClientRect().top : null, side: side ? side.getBoundingClientRect().top : null, wrap: wrap.getBoundingClientRect().top, inset: wrap.style.getPropertyValue("--aiwb-top-inset") };
+      });
+      const none = await top();
+      assert.ok(none.bar !== null && none.bar < 40, `the toolbar is at the top without an inset: ${JSON.stringify(none)}`);
+      assert.equal(none.inset, "", "no property without an inset");
+      const scroll = async () => { const a = (await snap()).appState; return [a.scrollX, a.scrollY, a.zoom?.value]; };
+      const view0 = await scroll();
+      await p.send({ t: "topInset", px: 60 });
+      await p.page.waitForTimeout(300);
+      const low = await top();
+      assert.equal(low.inset, "60px", "the property");
+      assert.ok(Math.abs(low.bar - none.bar - 60) < 0.5, `the toolbar starts 60 px lower: ${none.bar} -> ${low.bar}`);
+      assert.ok(low.bar >= low.wrap + 60, `the toolbar is at least 60 px below the page top: ${low.bar}`);
+      assert.deepEqual(await scroll(), view0, "the canvas is not moved");
+      await shot("top-inset");
+      mark = await p.mark();
+      await load("ph-land2", { open: { scrollX: 0, scrollY: 0, zoom: 1 } });
+      assert.ok(Math.abs((await top()).bar - low.bar) < 0.5, "kept across a load");
+      await p.send({ t: "topInset", px: 0 });
+      await p.page.waitForTimeout(300);
+      const back = await top();
+      assert.ok(Math.abs(back.bar - none.bar) < 0.5 && back.inset === "", `0 puts it back: ${JSON.stringify(back)}`);
+      t("topInset: the top bar starts below the inset, the canvas stays, kept across a load, 0 puts it back");
+    }
+
+    await p.page.setViewportSize({ width: 1024, height: 768 });
+    await p.page.waitForTimeout(200);
+  }
 }
 
 /** A text is measured with the faces it needs even in a page that has shown no board (EN2, 8.1 of plans/headless-board/engine.md): a page that
@@ -995,7 +1277,11 @@ try {
   console.log("web target (board.js, board.css, fonts/ built by `build.mjs web --out`)");
   const site = path.join(tmp, "site");
   fs.mkdirSync(site, { recursive: true });
-  execFileSync(process.execPath, [path.join(pkg, "build.mjs"), "web", "--out", path.join(site, "board")], { stdio: "inherit" });
+  // (a build that does not come back in two minutes is started again: on a loaded machine the process is sometimes never scheduled)
+  for (let attempt = 1; ; attempt++) {
+    try { execFileSync(process.execPath, [path.join(pkg, "build.mjs"), "web", "--out", path.join(site, "board")], { stdio: "inherit", timeout: 120_000, killSignal: "SIGKILL" }); break; }
+    catch (e) { if (attempt === 3 || e.code !== "ETIMEDOUT") throw e; console.log(`  the web target's build timed out (attempt ${attempt}); again`); }
+  }
   assert.deepEqual(fs.readdirSync(path.join(site, "board")).sort(), ["board.css", "board.js", "fonts"], "the web target is board.js, board.css and fonts/");
   assert.ok(!fs.existsSync(path.join(site, "board/fonts/Xiaolai")), "Xiaolai is left out");
   // (under the Content-Security-Policy of the web build itself, app/scripts/export-web.mjs: no inline script, so the driver is a file)

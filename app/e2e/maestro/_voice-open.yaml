@@ -1,0 +1,12 @@
+# Shared by `voice-mic` and `voice-devices`: from Home (phone) or the sidebar (tablet) to Settings > Voice. On the phone Home's gear pushes Settings and
+# its Voice row pushes the Voice screen (S3; `_open-foot.yaml` with `settings-btn`), so the back reads "‹ Settings".
+appId: ${APP_ID}
+---
+- runFlow:
+    file: _open-foot.yaml
+    env:
+      ID: "settings-btn"
+- extendedWaitUntil:
+    visible:
+      id: "vs-screen"
+    timeout: 30000

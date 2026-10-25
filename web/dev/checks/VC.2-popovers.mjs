@@ -10,14 +10,18 @@
 //                 open system settings: Not now alone); offline "Can't reach ElevenLabs." with Try again, which tries the same control again and listens
 //   the chat      after each, the chat still sends text: the message goes by the ordinary POST and is in the thread; no session is left over, and the
 //                 popover is gone
+// The phone (V1, goal 3.7.2) shows every problem as the one "Set up voice" sheet (`setup-voice`; `voice-problem` kind, `voice-problem-text` the body, the primary
+// then Not now; the key problems add the muted ElevenLabs note); the orb is the docked `voice-orb`, Talk is the primary of an empty box, and Read aloud is the
+// message sheet's row. The wide layouts keep the popover and the words below.
 // The words are the goal's table (3.8), written out here and not read from app/src/voice/words.ts, so that a change of a sentence fails this check.
 // The microphone is mic.mjs's where a microphone is needed (Try again). OUT=/tmp/x keeps a screenshot of the page in each state there.
 import fs from "node:fs";
 import path from "node:path";
 import { atRest, callsOf, check, mockEval, seed, until } from "../shot.mjs";
 import { useMic } from "./mic.mjs";
-import { openBoard, openChat, press, byTid } from "./sel.mjs";
-import { pressAct } from "./fork.mjs";
+import { openBoard, openChat, press, byTid, hold } from "./sel.mjs";
+import { pressAct, still } from "./fork.mjs";
+import { stackNames } from "./voicephone.mjs";
 
 export const viewports = ["desktop", "phone"];
 
@@ -34,12 +38,22 @@ const WORDS = {
   mic_blocked: { sentence: "The app can't hear you. Turn on the microphone in system settings.", action: null }, // (the web build has no system settings to open)
   offline: { sentence: "Can't reach ElevenLabs.", action: "Try again" },
 };
+// The phone's one sheet for every problem (goal 3.7.2, v1-design §3): title, body, the primary (before Not now), the muted note under the body of the two key problems.
+const SETUP_NOTE = "Voice runs on ElevenLabs, a speech service with its own account. Add your ElevenLabs API key once; it stays on this device and is sent only to elevenlabs.io.";
+const SHEET = {
+  no_key: { title: "Set up voice", body: /^Talk to .+, or dictate into the box, with your voice\.$/, note: SETUP_NOTE, action: "Open Settings › Voice" },
+  key_rejected: { title: "Set up voice", body: "ElevenLabs did not accept this key.", note: SETUP_NOTE, action: "Open Settings › Voice" },
+  no_credits: { title: "ElevenLabs", body: "Your ElevenLabs plan has no credits left.", action: "Open ElevenLabs" },
+  mic_blocked: { title: "Microphone", body: "The app can't hear you. Turn on the microphone in system settings.", action: null },
+  offline: { title: "Can't reach ElevenLabs", body: "Can't reach ElevenLabs.", action: "Try again" },
+};
 const ACCOUNT = "https://elevenlabs.io/app/subscription";
 
 await check("VC.2 the voice problems: no key, a rejected key, no credits, a rate limit, a blocked microphone, offline, on every control", async ({ url, viewport, layout, open, fail, note }) => {
   const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
   const log = () => mockEval("return voice.log();", url);
   const shot = async (p, name) => { if (OUT) { fs.mkdirSync(OUT, { recursive: true }); await atRest(p, 6).catch(() => {}); await p.screenshot({ path: path.join(OUT, `VC.2-${viewport}-${name}.png`) }); } };
+  const orbId = layout === "phone" ? "voice-orb" : "pill-orb"; // (the phone's docked orb: V1 chunk 4)
   const box = (p) => byTid(p, "composer-input").first();
   const sess = (p) => p.evaluate(() => window.__aiwbVoice.state().session);
   const textOf = async (loc) => ((await loc.first().textContent().catch(() => "")) ?? "").replace(/\s+/g, " ").trim();
@@ -62,7 +76,8 @@ await check("VC.2 the voice problems: no key, a rejected key, no credits, a rate
   const pressTool = async (p, row, more) => {
     // (a page just opened is still measuring its toolbar: the pair is drawn in the row until its width is kept, then placed. Wait for a place that stays.)
     let last = "";
-    for (let i = 0; i < 40; i++) {
+    // (the phone's toolbar has no "more" popup: Dictate and Talk are always in the row)
+    for (let i = 0; layout !== "phone" && i < 40; i++) {
       const at = await p.evaluate(() => { const t = document.querySelector('[data-testid="composer-tools"]'); return t ? `${t.dataset.voice}/${t.dataset.insert}/${t.dataset.more}` : ""; });
       if (at && at === last) break;
       last = at;
@@ -75,16 +90,34 @@ await check("VC.2 the voice problems: no key, a rejected key, no credits, a rate
   };
   const controls = {
     dictate: { name: "Dictate", press: (p) => pressTool(p, "voice-dictate", "more-dictate") },
+    // (on the phone Talk is the primary only while the box is empty: every press of it here is on an empty box)
     speech: { name: "Speech mode", press: (p) => pressTool(p, "voice-speech", "more-speech") },
-    read: { name: "Read aloud", press: async (p) => { await pressAct(p, byTid(p, "msg", { role: "assistant" }).last(), "read"); } },
-    orb: { name: "the orb", press: async (p) => { await press(p, byTid(p, "pill-orb")); } },
+    read: { name: "Read aloud", press: async (p) => {
+      const msg = byTid(p, "msg", { role: "assistant" }).last();
+      if (layout !== "phone") { await pressAct(p, msg, "read"); return; }
+      // (the phone's finger holds the message and its sheet's row "read" is tapped. A hold released over the sheet that rose under it would press a row
+      // (the thread is long here: the message lies where the sheet comes), so the finger is taken off by a cancel, as `hold` does)
+      await msg.scrollIntoViewIfNeeded();
+      const sheet = byTid(p, "msg-sheet").last();
+      await hold(p, msg, { until: sheet });
+      await still(sheet);
+      await press(p, byTid(sheet, "action-row", { action: "read" }).first());
+    } },
+    orb: { name: "the orb", press: async (p) => { await press(p, byTid(p, orbId)); } },
   };
 
   /** Waits for the popover, and reads it. */
   const popover = async (p) => {
     const pop = byTid(p, "voice-problem");
     if (!await until(() => pop.count(), 15000)) return null;
-    return { kind: await pop.first().getAttribute("data-kind"), text: await textOf(byTid(p, "voice-problem-text")), buttons: (await pop.first().getByRole("button").allTextContents()).map((s) => s.trim()) };
+    return {
+      kind: await pop.first().getAttribute("data-kind"), text: await textOf(byTid(p, "voice-problem-text")),
+      buttons: (await pop.first().getByRole("button").allTextContents()).map((s) => s.trim()).filter(Boolean),
+      // (the phone's sheet: its title, its muted note under the body, and the sheet itself, one for every kind)
+      title: layout === "phone" ? await textOf(pop.first().getByRole("heading")) : "",
+      all: layout === "phone" ? await textOf(pop.first()) : "",
+      sheets: layout === "phone" ? await byTid(p, "setup-voice").count() : 0,
+    };
   };
   /** The popover is `kind`, with its sentence and its action (and Not now), and it is dismissed or acted on afterwards by `then`. */
   const expect = async (p, what, kind) => {
@@ -92,6 +125,17 @@ await check("VC.2 the voice problems: no key, a rejected key, no credits, a rate
     const w = WORDS[kind];
     if (!got) { fail(`${what}: no popover`); return false; }
     if (got.kind !== kind) fail(`${what}: the popover is "${got.kind}" (${J(got.text)}), not "${kind}"`);
+    if (layout === "phone") {
+      // the phone: one "Set up voice" sheet whatever the control, with its title, its body (and the note), its primary and then Not now
+      const s = SHEET[kind];
+      if (got.sheets !== 1) fail(`${what}: ${got.sheets} Set up voice sheets are drawn, not one`);
+      if (got.title !== s.title) fail(`${what}: the sheet's title is ${J(got.title)}, not ${J(s.title)}`);
+      if (s.body instanceof RegExp ? !s.body.test(got.text) : got.text !== s.body) fail(`${what}: the sheet says ${J(got.text)}, not ${J(String(s.body))}`);
+      if (s.note ? !got.all.includes(s.note) : got.all.includes("Voice runs on ElevenLabs")) fail(`${what}: the sheet's note is ${s.note ? "missing" : "shown where it should not be"}: ${J(got.all)}`);
+      const want = s.action ? [s.action, "Not now"] : ["Not now"];
+      if (got.buttons.join() !== want.join()) fail(`${what}: the sheet's buttons are ${J(got.buttons)}, not ${J(want)}`);
+      return got.kind === kind;
+    }
     if (got.text !== w.sentence) fail(`${what}: the popover says ${J(got.text)}, not ${J(w.sentence)}`);
     const want = w.action ? ["Not now", w.action] : ["Not now"];
     if (got.buttons.join() !== want.join()) fail(`${what}: the popover's buttons are ${J(got.buttons)}, not ${J(want)}`);
@@ -110,8 +154,19 @@ await check("VC.2 the voice problems: no key, a rejected key, no credits, a rate
       if (await p.evaluate(() => window.__gum)) fail(`${what}: getUserMedia was called`);
     }
   };
-  /** The settings page opens on Voice; closes it. */
+  /** The settings page opens on Voice; closes it. On the phone Settings > Voice is the pushed Voice screen over Settings (the popover's action opens it
+   *  through `openVoiceSettings`): the stack is [..., settings, voice-settings], it shows the key card or the key row, and Back twice is the way out. */
   const settingsLands = async (p, what) => {
+    if (layout === "phone") {
+      const screen = byTid(p, "vs-screen");
+      if (!await until(() => screen.last().isVisible().catch(() => false), 10000)) { fail(`${what}: Open Settings opened no Voice screen`); return; }
+      const names = (await stackNames(p)).slice(-2).join();
+      if (names !== "settings,voice-settings") fail(`${what}: Open Settings pushed [..., ${names}], not [..., settings, voice-settings]`);
+      if (!await until(async () => (await byTid(p, "vs-nokey-card").count()) + (await byTid(p, "vs-key-row").count()) > 0, 5000)) fail(`${what}: the Voice screen opened, but shows neither the key card nor the key row`);
+      for (let i = 0; i < 2; i++) await press(p, byTid(p, "nav-back").last());
+      if (!await until(async () => (await screen.count()) === 0 && (await byTid(p, "settings-screen").count()) === 0, 10000)) fail(`${what}: Settings stays open after Back`);
+      return;
+    }
     const dlg = byTid(p, "settings-dialog");
     if (!await until(() => dlg.first().isVisible().catch(() => false), 10000)) { fail(`${what}: Open Settings opened no Settings page`); return; }
     if (!await until(() => byTid(p, "vs-key-section").first().isVisible().catch(() => false), 5000)) fail(`${what}: Settings opened, but not on the voice key`);
@@ -143,11 +198,16 @@ await check("VC.2 the voice problems: no key, a rejected key, no credits, a rate
   };
   /** The board's chat is open for a moment to send text, and the board is back after. */
   const sendsViaChat = async (p, what, calls) => {
-    await openChat(p, BOARD_CHAT);
+    if (layout === "phone") { // (the board's Chats button and a row of its sheet, `chats-row` of B1: sel.mjs's `openBoardChat` still looks for the sheet's old row id)
+      await press(p, byTid(p, "board-chats").first());
+      const sheet = byTid(p, "chats-sheet").last();
+      await sheet.waitFor({ state: "visible", timeout: 15000 });
+      await press(p, byTid(sheet, "chats-row", { chat: BOARD_CHAT }).first());
+    } else await openChat(p, BOARD_CHAT);
     await box(p).waitFor({ state: "visible", timeout: 15000 });
     await sends(p, what, calls, BOARD_CHAT);
     await openBoard(p, BOARD);
-    await byTid(p, "pill-orb").first().waitFor({ state: "visible", timeout: 15000 });
+    await byTid(p, orbId).first().waitFor({ state: "visible", timeout: 15000 });
   };
 
   /** Presses a control and expects a problem. `then`: "dismiss" (Not now), "settings" (Open Settings lands on Voice), "link" (Open ElevenLabs
@@ -178,7 +238,8 @@ await check("VC.2 the voice problems: no key, a rejected key, no credits, a rate
   {
     const { page, ctx } = await open({ sel: { chat: CHAT }, wait: '[data-testid="msg"]' });
     await page.waitForFunction(() => !!window.__aiwbVoice, null, { timeout: 30000 });
-    await byTid(page, "send").first().waitFor({ state: "visible", timeout: 15000 });
+    // (an empty box shows Send on the wide layouts, Talk on the phone)
+    await byTid(page, layout === "phone" ? "voice-speech" : "send").first().waitFor({ state: "visible", timeout: 15000 });
     await instrument(page);
     await mockEval("voice.reset();", url);
     const calls = callsOf(page);
@@ -245,7 +306,7 @@ await check("VC.2 the voice problems: no key, a rejected key, no credits, a rate
     await seed(url, "A2");
     const { page, ctx } = await open({ sel: { board: BOARD, chat: null }, wait: '[data-testid="board-canvas"]' });
     await page.waitForFunction(() => !!window.__aiwbVoice, null, { timeout: 30000 });
-    await byTid(page, "pill-orb").first().waitFor({ state: "visible", timeout: 30000 });
+    await byTid(page, orbId).first().waitFor({ state: "visible", timeout: 30000 });
     await instrument(page);
     await mockEval("voice.reset();", url);
     const calls = callsOf(page);

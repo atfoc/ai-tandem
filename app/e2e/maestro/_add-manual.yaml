@@ -1,0 +1,10 @@
+# Shared by `_v4-localnet-why` and `_v4-localnet`: from "Choose how", "Enter address manually" opens the "New server" form on its manual step (Name, Address, Secret, the
+# self-signed switch). Ends with `add-field-name` on the screen. Phone layout only.
+appId: ${APP_ID}
+---
+- tapOn: "Enter address manually.*"
+- extendedWaitUntil:
+    visible:
+      id: "add-field-name"
+    timeout: 30000
+- waitForAnimationToEnd

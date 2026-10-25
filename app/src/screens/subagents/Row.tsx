@@ -10,11 +10,13 @@ import { boardNames, inTurn, subsOf } from "@aiwb/core/state/store.ts";
 import type { ChatView, Item, Subagent } from "@aiwb/core/types.ts";
 
 import { useStore } from "../../state/useStore.ts";
+import { usePhone } from "../../ui/useLayout.ts";
 import { Text } from "../../ui/Text.tsx";
 import { useTokens } from "../../ui/theme.tsx";
 import { tid } from "../../ui/tid.ts";
 import { webStyle } from "../../ui/webstyle.ts";
-import { useNow, useSubNav, useSubThread } from "./hooks.ts";
+import { PhoneSubCard, PhoneSubReport } from "./Card.tsx";
+import { openSub, useNow, useSubNav, useSubThread } from "./hooks.ts";
 import { SubMark, SubName, SubStats } from "./Parts.tsx";
 
 /** How many levels of nested rows are drawn under a row: more than a chat's depth can be, a guard against a loop in the records. */
@@ -26,10 +28,12 @@ const NARROW = 400;
 /** The one-line row in the thread where the call is, and under it the rows of the subagents that one started, each with its own under it.
  *  within: the subagent whose thread the call is in (the drawer); none in the chat's thread. */
 export function SubagentRow({ item, chat, within }: { item: Item; chat: ChatView; within?: Subagent }) {
+  const phone = usePhone();
   const subs = useStore((s) => subsOf(s, chat.id));
   // a call not linked yet runs only while its caller's turn does
   const sa = subagentOf(item, subs, within ? within.status === "running" && !within.waiting : inTurn(chat.status));
-  return <SubBranch it={item} sa={sa} chat={chat} />;
+  // on the phone a row drawn on its own is the card's row, in a card of one
+  return phone ? <PhoneSubCard it={item} sa={sa} chat={chat} /> : <SubBranch it={item} sa={sa} chat={chat} />;
 }
 
 /** A subagent's row with the rows of the ones it started under it. it: the call that started it, or what is known of that call when its
@@ -83,12 +87,17 @@ function SubRow({ it, sa, chat }: { it: Item; sa: Subagent; chat: ChatView }) {
 /** The row of a subagent's result the app carried to the agent, or in a subagent's thread to that subagent: a system line, not a message.
  *  Its state is the subagent's, so it follows a later change with no change to the item. A press opens the subagent whose result it is. */
 export function SubResultRow({ item, chat }: { item: Item; chat: ChatView }) {
-  const t = useTokens();
+  const t = useTokens(), phone = usePhone();
   const sid = item.subagent ?? "";
   const sa = useStore((s) => subsOf(s, chat.id)?.[sid]);
   const { on, toggle } = useSubNav(chat.id, sid);
   const line = subResultLine(sa);
   const open = () => { if (sa) toggle(); };
+  if (phone) {
+    // the phone's row names the subagent; only a line that is not the usual state (an error, a copy that did not carry it) is added
+    const extra = line.tone === "error" || sa?.notCarried ? { text: line.text, tone: line.tone } : null;
+    return <PhoneSubReport sid={sid} chat={chat} name={line.name} line={extra} on={on} open={() => { if (sa) openSub(chat.id, sid); }} />;
+  }
   return (
     <Pressable {...tid("sub-result", { tone: line.tone, on, sub: sid })} role="button" aria-pressed={on} onPress={open} style={[styles.result, webStyle({ cursor: "pointer", userSelect: "none" })]}>
       {({ hovered }: { hovered?: boolean; pressed: boolean }) => (

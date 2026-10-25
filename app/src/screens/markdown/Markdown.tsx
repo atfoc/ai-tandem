@@ -35,14 +35,16 @@ type Props = {
   /** The size of the body text (default 13, the thread's) and its colour (default the theme's text). */
   size?: number;
   color?: string;
+  /** A chat's thread on the phone layout: the phone's look (look.ts `phone`). */
+  phone?: boolean;
 };
 
-export const Markdown = memo(function Markdown({ text, user = false, board, agent, of, streaming = false, size = 13, color }: Props) {
+export const Markdown = memo(function Markdown({ text, user = false, board, agent, of, streaming = false, size = 13, color, phone = false }: Props) {
   const t = useTokens();
   const blocks = useMemo(() => blocksOf(text, streaming), [text, streaming]);
   const server = serverOfKey(of ?? board);
-  const where = useMemo<Where>(() => ({ board, agent, server }), [board, agent, server]);
-  const look = useMemo<Look>(() => ({ size, color: color ?? t.text, user }), [size, color, t.text, user]);
+  const where = useMemo<Where>(() => ({ board, agent, server, chat: of }), [board, agent, server, of]);
+  const look = useMemo<Look>(() => ({ size, color: color ?? t.text, user, phone }), [size, color, t.text, user, phone]);
   // the tree of each block: the same object for a block whose text did not change, so its component is not rendered again
   const docs = blocks.map((b) => prepare(b, user));
   const last = docs.length - 1;

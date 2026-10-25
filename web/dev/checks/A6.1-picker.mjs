@@ -7,14 +7,22 @@
 // (200 px) and at the default one, each item under the pointer at its own centre; in a window too low for it it
 // scrolls, and its first and last item can still be picked. It closes when the sidebar is hidden by the key, and is not
 // open when the sidebar shows again. System follows the OS between light and dark, and a flavour does not.
+// On the phone there is no such button: the theme is chosen in Settings > Appearance (the page is waited for by `app-root`, the screens are pushed
+// by `openSettings` and `openAppearance` of settings.mjs, not through the sidebar's foot). A page that never chose is System (the System row
+// alone checked, the flavour row Off, nothing saved). Dark, Latte, Frappé, Macchiato, Mocha, Light and System, each picked in turn
+// (the Theme rows, the flavour sheet), put the page in that theme at once (data-theme and data-flavour on <html>, the page's background) and save it;
+// the Theme rows check only the chosen one, or none with a flavour on; the flavour row names the flavour or says Off; the flavour sheet offers
+// Latte, Frappé, Macchiato, Mocha in that order and marks the chosen flavour alone (aria-checked), none with no flavour. System follows the OS
+// between light and dark, and a flavour does not. The button, the keys, the focus, the popover and the sidebar are the wide layouts' and the desktop's.
 // P7.2 hides the sidebar with the menu open beside the other goals' controls.
 // Ports dev/checks/A6.1-picker.mjs (S1) to the new build, at the three viewports (A-TH-01 to A-TH-06, A-LY-02, A-LY-12; A-TH-03's window is the desktop's,
-// the keys are the desktop's). Deviations: the menu is a popover over a layer that a press outside closes (a sheet on the phone), so
+// the keys are the desktop's). Deviations: the menu is a popover over a layer that a press outside closes (the phone has Appearance instead), so
 // it is `theme-menu` in that layer and not in the foot, and the head's control cannot be pressed with the menu open: that press closes the menu (the
 // layer takes it) and the next one hides the sidebar; "drawn as chosen" is the tick, which the new build draws with the row's tint (the primitive's L1).
 // What the choice draws, in the page, is `data-theme` and `data-flavour` of <html> and its background, as before.
 import { check, colourOf, until } from "../shot.mjs";
 import { byTid, layoutNow, press, touchNow } from "./sel.mjs";
+import { openAppearance, pickTheme, readAppearance, themeNow } from "./settings.mjs";
 
 export const viewports = ["desktop", "tablet", "phone"];
 
@@ -102,6 +110,58 @@ await check("A6.1 the theme's picker: one button, a menu of seven with the choic
     }
     return m.items.filter((i) => i.r.t >= m.menu.t - 0.5 && i.r.b <= m.menu.b + 0.5).length;
   };
+
+  if (layout === "phone") {
+    // ---- the phone: the choice is made in Settings > Appearance, and the page is in it at once
+    const { ctx, page } = await open({ wait: '[data-testid="app-root"]' });
+    try {
+      const FLAVOURS = ["latte", "frappe", "macchiato", "mocha"];
+      /** The page is in the theme of `pref`: the attributes, the background, the saved value. */
+      const phoneShows = async (pref, tag, saved = pref) => {
+        const want = PREFS[pref], say = (line) => fail(`${tag}: ${line}`);
+        if (!await until(() => page.evaluate((t) => document.documentElement.dataset.theme === t, want.theme), 10000)) say(`<html> did not get data-theme "${want.theme}"`);
+        const m = await themeNow(page), bg = hex(await colourOf(page, "html", "backgroundColor"));
+        if (m.theme !== want.theme || m.flavour !== (want.flavour ?? null)) say(`<html> has data-theme "${m.theme}" and data-flavour ${JSON.stringify(m.flavour)}, not "${want.theme}" and ${JSON.stringify(want.flavour ?? null)}`);
+        if (m.saved !== saved) say(`the kv key "aiwb.theme" is ${JSON.stringify(m.saved)}, not ${JSON.stringify(saved)}`);
+        if (bg !== want.bg) say(`the page's background is ${bg}, not ${want.bg}`);
+      };
+      /** Appearance says `pref`: the Theme rows, the flavour row, the flavour sheet. */
+      const phoneSays = async (pref, tag) => {
+        const want = PREFS[pref], a = await readAppearance(page), say = (line) => fail(`${tag}: ${line}`);
+        if (a.themes.join() !== "light,dark,system") say(`the theme rows are ${a.themes.join(", ")}, not light, dark, system`);
+        const onRow = want.flavour ? "" : pref;
+        if (a.checkedRows.join() !== onRow) say(`the Theme rows checked are [${a.checkedRows.join(", ")}], not [${onRow}]${want.flavour ? " (a flavour is on: none)" : ""}`);
+        if (!a.ticks) say("a ✓ is drawn on a Theme row that is not checked, or missing on the one that is");
+        if (a.flavour.attr !== (want.flavour ?? "off")) say(`the flavour row has data-flavour ${JSON.stringify(a.flavour.attr)}, not ${JSON.stringify(want.flavour ?? "off")}`);
+        if (!a.flavour.text.includes(want.flavour ? want.label : "Off")) say(`the flavour row says ${JSON.stringify(a.flavour.text)}, not ${want.flavour ? want.label : "Off"}`);
+        if (a.sheet.map((r) => r.value).join() !== FLAVOURS.join()) say(`the flavour sheet offers [${a.sheet.map((r) => r.value).join(", ")}], not [${FLAVOURS.join(", ")}]`);
+        FLAVOURS.forEach((f, i) => { if (!a.sheet[i]?.text.includes(PREFS[f].label)) say(`the flavour sheet's ${i + 1}. row says ${JSON.stringify(a.sheet[i]?.text)}, not ${PREFS[f].label}`); });
+        if (a.marked.join() !== (want.flavour ?? "")) say(`the flavour sheet marks [${a.marked.join(", ")}] as chosen (aria-checked), not [${want.flavour ?? ""}]`);
+      };
+
+      await openAppearance(page);
+      await phoneShows("system", "a page that never chose", null);
+      await phoneSays("system", "a page that never chose");
+
+      for (const pref of ["dark", "latte", "frappe", "macchiato", "mocha", "light", "system"]) {
+        await pickTheme(page, pref);
+        await phoneShows(pref, `${PREFS[pref].label} picked`);
+        await phoneSays(pref, `${PREFS[pref].label} picked`);
+      }
+
+      // System follows the OS; a flavour does not
+      for (const [pref, scheme, want] of [["system", "dark", "dark"], ["system", "light", "light"], ["mocha", "light", "dark"], ["latte", "dark", "light"]]) {
+        await pickTheme(page, pref);
+        await page.emulateMedia({ colorScheme: scheme });
+        if (!await until(() => page.evaluate((t) => document.documentElement.dataset.theme === t, want), 10000)) fail(`${PREFS[pref].label} with the OS ${scheme}: data-theme did not become "${want}"`);
+        const m = await themeNow(page);
+        if (m.flavour !== (PREFS[pref].flavour ?? null) || m.saved !== pref) fail(`${PREFS[pref].label} with the OS ${scheme}: data-flavour is ${JSON.stringify(m.flavour)} and the saved choice ${JSON.stringify(m.saved)}`);
+      }
+      await page.emulateMedia({ colorScheme: "light" });
+    } finally { await ctx.close(); }
+    note("the phone's choice is Settings > Appearance: the Theme rows and the flavour sheet");
+    return;
+  }
 
   // ---- the button, the menu, a pick of each
   {

@@ -150,8 +150,9 @@ export async function startServerControl(server, { say = () => {}, hooks = {} } 
       await s.launch();
       return { fingerprint };
     },
+    "POST /group": async (q) => ({ id: (await need("POST", "/api/groups", { name: q.get("name") || "V1 group", parent: q.get("parent") || "" })).id }),
     "POST /board": async (q) => {
-      const id = (await need("POST", "/api/boards", { name: q.get("name") || "V1 board", group: "__ungrouped__", new: true })).id;
+      const id = (await need("POST", "/api/boards", { name: q.get("name") || "V1 board", group: q.get("group") || "__ungrouped__", new: true })).id;
       if (q.get("scene")) { // (the client takes the board, writes the drawing as the holder, and lets the board go; the app takes it when it opens it)
         await api.known(async (call) => {
           const ask = async (method, path, body) => {
@@ -168,7 +169,7 @@ export async function startServerControl(server, { say = () => {}, hooks = {} } 
       return { id };
     },
     "POST /chat": async (q) => {
-      const chat = await need("POST", "/api/chats", q.get("board") ? { agent: "claude", board: q.get("board") } : { agent: "claude", group: "__ungrouped__" });
+      const chat = await need("POST", "/api/chats", q.get("board") ? { agent: "claude", board: q.get("board") } : { agent: "claude", group: q.get("group") || "__ungrouped__" });
       if (q.get("name")) await need("PATCH", `/api/chats/${chat.id}`, { name: q.get("name") });
       if (q.get("text")) await need("POST", `/api/chats/${chat.id}/messages`, { text: q.get("text"), context: "" });
       return { id: chat.id };

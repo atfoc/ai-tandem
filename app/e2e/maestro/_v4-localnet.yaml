@@ -1,44 +1,41 @@
 # Part 3 of `storage-picker-permission`: the local network. The iOS simulator never asks for it (N1 found that: the system's prompt comes only on a device), so what is
 # shown here is what the app says on its own: why the system will ask, before the first connection (iOS; Android has no such permission), and, for a connection
 # that the system refused, the words and the way to the settings. The refusal is forced: the build's dev hook (src/dev/forceoutcome.ts) ends a connection to
-# the dotted name as the module ends one that iOS refused (`local_network_denied`). Starts on the sidebar; leaves the app opened again on the sidebar.
+# the dotted name as the module ends one that iOS refused (`local_network_denied`). Phone layout: the manual step of "New server" (Name, Address, Secret, Self-signed
+# certificate), "Test connection", the red words of the failed step and, under them, the refusal's sentence and "Open Settings" (`add-open-settings`).
+# Starts on the sidebar; leaves the app opened again on the sidebar.
 appId: ${APP_ID}
 ---
 - runFlow: _to-sidebar.yaml
-- tapOn:
-    id: "servers-btn"
-- tapOn:
-    id: "servers-add"
-- waitForAnimationToEnd
+- runFlow: _add-choose.yaml
+- runFlow: _add-manual.yaml
 # (the explanation of the system's question is for the first connection only: this process has connected to the scratch server, so the module says `granted` and the
 #  form no longer says it; the first connection's is shown at the start of the flow, _v4-localnet-why.yaml)
 - assertNotVisible:
-    id: "addserver-localnet"
+    id: "add-localnet"
 # the dotted name, typed: the build ends every connection to it as local_network_denied
 - tapOn:
-    id: "servers-input-name"
+    id: "add-field-name"
 - inputText: "dotted"
 - tapOn:
-    id: "servers-input-address"
+    id: "add-field-address"
 - inputText: "https://${SERVER_DOTTED}:${SERVER_PORT}"
 - tapOn:
-    id: "servers-input-secret"
+    id: "add-field-secret"
 - inputText: "${SERVER_SECRET}"
 - tapOn:
-    id: "servers-selfsigned"
+    id: "add-selfsigned"
 - tapOn:
-    id: "servers-form-test"
+    id: "add-test"
 - extendedWaitUntil:
     visible:
-      id: "addserver-localnet-denied"
+      id: "add-open-settings"
     timeout: 60000
 - assertVisible: "This phone has not let AI Whiteboard reach the local network, so no server there can answer. Allow it in the settings (Local Network), then test the connection again."
-- assertVisible:
-    id: "addserver-open-settings"
 - takeScreenshot: v4-31-local-network-denied
-# "Open settings" leaves for the system's settings (the app's own page of them)
+# "Open Settings" leaves for the system's settings (the app's own page of them)
 - tapOn:
-    id: "addserver-open-settings"
+    id: "add-open-settings"
 - waitForAnimationToEnd
 - takeScreenshot: v4-32-open-settings
 - runScript:

@@ -35,8 +35,12 @@ export type ChipInputHandle = {
   /** Replaces everything with `text` (tags become chips). Reports the new value through onChange. */
   set(text: string): void;
   /** Opens the insert popup (core logic/insert.ts) for the box, as ⌘P in it does: what the popup inserts goes where the
-   *  caret or the selection is now (or where the caret last was, or at the end). */
-  openInsert(): void;
+   *  caret or the selection is now (or where the caret last was, or at the end). `at`: a span of the value to put it in instead,
+   *  noted before something else took the focus (the phone's "+" sheet: the focus it gives back puts the caret at the start). */
+  openInsert(at?: { start: number; end: number } | null): void;
+  /** Puts the caret or the selection back at a span of the value, without taking the focus (what the phone's "+" sheet noted
+   *  before its focus, given back as it closed, put the caret at the start). */
+  select(at: { start: number; end: number }): void;
   /** Gives the box the focus. atEnd: the caret goes to the end of what it holds (the composer a sent move went to takes it so). */
   focus(atEnd?: boolean): void;
 };
@@ -64,4 +68,7 @@ export type ChipInputProps = {
   onImages?(files: Picked[]): void;
   /** The box's testID (AD-80); the chips in it are "ref-chip", each with dataSet {kind: "selection" | "point"}. */
   testID?: string;
+  /** The box's size. Unset: today's (13 pt, three lines to six, or 40% of the window on web). "phone": 17 pt text (the placeholder too), one line
+   *  high when empty, growing to six lines and then scrolling inside (ux-improvements goal 3.6). */
+  size?: "phone";
 };

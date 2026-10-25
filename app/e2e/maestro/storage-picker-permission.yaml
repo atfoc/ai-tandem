@@ -4,10 +4,11 @@
 #  1. The secure storage. A server is added; the app is stopped and opened again, and the server is there and connected; the secret is in the secure store (the
 #     dev hook of the build says so on the screen, `probe-storage`: it was set against the secret of this run) and in none of the files of the app's data,
 #     MMKV's among them (the runner reads them from the device, GET /device/storage); the server is removed and its secret is gone from the secure store.
-#  2. The images. Pictures are put into the device's photo library; the picker is opened from the composer's attach button, the pictures are picked, their
-#     thumbnails show, the message is sent and the server holds a PNG and two JPEGs (a HEIC of the library comes as a JPEG), checked through the control API; a
-#     BMP and a picture over 5 MB are refused with the words of the desktop. On iOS the picker is the system's: it asks for no permission, before an answer
-#     (reset) and after a refusal (revoke) alike, and the flow shows it.
+#  2. The images. Pictures are put into the device's photo library; the picker is opened from the phone composer's "+" (Add to message > Photo library), the pictures are picked, their
+#     thumbnails (72 pt, each with its ×) show, the message is sent and the server holds a PNG and two JPEGs (a HEIC of the library comes as a JPEG), checked through the control API; a
+#     BMP and a picture over 5 MB are refused: a marked tile in the strip and its reason in red under it. On iOS the picker is the system's: it asks for no permission,
+#     before an answer (reset) and after a refusal (revoke) alike, and the flow shows it. "+" > Take photo (iOS): the camera's permission is asked with the app's words,
+#     refused it says how to allow the camera, allowed the simulator has no camera and the app says so; the sheet is closed and nothing is added.
 #  3. The local network. The words that say why the system will ask are on the add form before the first connection (iOS); a connection that the system
 #     refused (a forced outcome of the build: the simulator never asks) shows its words and "Open settings".
 #  4. The code to scan. scripts/server-code.sh makes the code, the picture is read back, and the text it holds fills the form (the camera is the one part that
@@ -49,9 +50,7 @@ appId: ${APP_ID}
       METHOD: POST
       ROUTE: /device/relaunch
 - runFlow: _open-sidebar.yaml
-- extendedWaitUntil:
-    visible: "${SERVER_HOST} — Connected"
-    timeout: 60000
+- runFlow: _home-connected.yaml
 - extendedWaitUntil:
     visible: "Seed-board"
     timeout: 60000

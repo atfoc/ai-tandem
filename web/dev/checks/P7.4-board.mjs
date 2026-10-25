@@ -15,10 +15,13 @@
 //   while a point is waited for the board still pans and zooms, and a press that moved puts no point: a wheel and a ctrl+wheel and a drag with the
 //   mouse (desktop), a finger's drag and two fingers' pinch (tablet, phone), each read as the board's `view` (scroll, zoom: `window.__aiwbView()`
 //   of a build made for the checks), each with the wait still on and no chip added; the press that follows puts the point as before;
-//   on the phone, where the chat is a screen over the board (AD-71), the point flow of refs.ts: "Point at" (the button and ⌘⇧L) takes the user to the
-//   board with the layer and its hint (Tap a point to add it to the chat, Cancel); Cancel, the stack's back and ⌘⇧L again end the wait with the
-//   chat open again, its draft as it was and nothing added; a tap puts the reference into the chat's box, at the caret the box had when the
-//   wait began ("first second", the caret after "first": "first [chip] second").
+//   on the phone, where the chat is a screen over the board (AD-71), the point flow of refs.ts: "Point at" (the "+" sheet's `point` row and ⌘⇧L) takes the
+//   user to the board, which draws no layer or hint over the canvas (B2): the bottom row is the pick bar (`pick-bar`, kind point: "Tap a spot on the board",
+//   Cancel = `pick-cancel`), the canvas has the accent border (`pick-border`), the bar's state word reads "Picking a point" and its Chats button is off; the board
+//   still pans and zooms under the wait; Cancel, the stack's back and ⌘⇧L again end the wait with the chat open again, its draft as it was and no chip; a tap
+//   draws the pin and its label (`pick-pin`, `pick-pin-label`) and the chat opens with the box still "first second" and the point as one `ctx-chip` (kind
+//   point) of the context row; what is sent is unchanged: the tag stands where the caret was ("first <point x=".." y="..">…</point> second", the same x and y
+//   as the pin's label), read from the mock's stored message.
 // Deviations: the phone has no beside-the-board chat, so its steps are their own (the steps of the old check that read `chat-head` beside
 // the board, ⌘L and the locked shapes, are run at desktop and tablet only, as before, and ⌘L on the phone is K3's `L16`); the old page had
 // no touch step at all (its layer took every touch, so a finger could not pan under it).
@@ -32,6 +35,9 @@ export const viewports = ["desktop", "tablet", "phone"];
 const BOARD = "b_ui", CHAT = "c_A2_sketch";
 const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
 const label = /^\(-?\d+, -?\d+\)$/;
+const J = JSON.stringify;
+/** The texts of the user's messages in the board's chat, as the mock has them (what was sent). */
+const texts = (url) => mockEval(`return (items[${J(CHAT)}] ?? []).filter((x) => x.kind === "user").map((x) => x.text);`, url);
 
 /** Two fingers on the page, `from` px either side of `c` (horizontally) at the start and `to` at the end, in steps. */
 async function pinch(page, c, from, to) {
@@ -82,22 +88,24 @@ await check("P7.4 ⌘⇧L waits for a point on the board, and does not reach the
   const { page } = await open({ sel: { board: BOARD, chat: CHAT }, wait: layout === "phone" ? tidSel("composer-input") : ready });
   const key = (shift) => page.keyboard.press(shift ? "ControlOrMeta+Shift+l" : "ControlOrMeta+l");
   const frame = () => page.evaluate(() => new Promise((ok) => requestAnimationFrame(() => requestAnimationFrame(() => ok()))));
-  const picking = () => byTid(page, "pick-layer").count().then((n) => n > 0);
+  // (the phone draws no layer over the canvas: the wait is the bottom row's `pick-bar` of kind point, B2)
+  const picking = () => (layout === "phone" ? byTid(page, "pick-bar", { kind: "point" }) : byTid(page, "pick-layer")).count().then((n) => n > 0);
   const shows = async (name, on) => { if (!await until(async () => (await picking()) === on, 10000)) fail(`${name}: ${on ? "no point is waited for" : "a point is still waited for"}`); };
   const locked = () => mockEval(`return scenes.${BOARD}.scene.elements.filter((e) => e.locked && !e.isDeleted).length;`, url);
   const rev = () => mockEval(`return scenes.${BOARD}.rev;`, url);
   const view = () => page.evaluate(() => window.__aiwbView?.() ?? null);
 
   // (a board opens as a reader's: the button makes the window its writer, and only a writer's canvas has a selection to quote and a point to give. On the
-  // phone the chat is the screen over the board: back to the board, the button, and the chat again)
+  // phone the chat is the screen over the board: back to the board, the button, and the chat again by the Chats sheet's row)
   if (layout === "phone") {
     if (!await back(page)) return fail("the chat's screen has no back to the board");
     await editHere(page);
-    await press(page, byTid(page, "board-chats").first());
+    await press(page, byTid(page, "board-chats").first()); // (the bar's Chats button opens the Chats sheet; its row opens the chat)
+    await press(page, byTid(page, "chats-row", { chat: CHAT }).first());
     await byTid(page, "composer-input").first().waitFor({ state: "visible", timeout: 20000 });
   } else await editHere(page);
   await page.waitForSelector(ready, { timeout: 20000, state: "attached" });
-  if (layout === "phone") return phoneFlow({ page, touch, fail, note, key, frame, picking, view, shows });
+  if (layout === "phone") return phoneFlow({ page, touch, fail, note, key, frame, picking, view, shows, url });
   if (!await until(() => byTid(page, "chat-head").count(), 10000)) fail("the chat of the board is not beside it: the key has no chat to give a point to");
   // the composer's half (K3): the chips it holds, its note, its two buttons
   const chips = () => byTid(page, "composer-input").locator(tidSel("ref-chip")).allTextContents();
@@ -222,19 +230,30 @@ await check("P7.4 ⌘⇧L waits for a point on the board, and does not reach the
   void press;
 }, { viewports, page: false });
 
-/** The phone (D-SL-10, D-SL-11): the chat is a screen over the board, so "Point at" takes the user to the board and back (board/refs.ts). */
-async function phoneFlow({ page, touch, fail, note, key, frame, picking, view, shows }) {
+/** The phone (D-SL-10, D-SL-11, B2): the chat is a screen over the board, so "Point at" takes the user to the board and back (board/refs.ts). The board
+ *  draws no layer over the canvas while a point is waited for: the bottom row is the pick bar (title, Cancel), the canvas has the accent border, the bar
+ *  says "Picking a point" and its Chats button is off; a tap draws the pin and its label, and the chat opens 600 ms later with the point as a chip of
+ *  its context row (the box keeps the plain text, "first second"; the tag is put in the message where the caret was when it is sent). */
+async function phoneFlow({ page, touch, fail, note, key, frame, picking, view, shows, url }) {
   const box = byTid(page, "composer-input");
-  const boxText = () => box.evaluate((el) => [...(el.isContentEditable ? el : el.querySelector("[contenteditable]")).childNodes].map((n) => (n.nodeType === 3 ? n.textContent : "[chip]")).join("").replace(/[\u200b\u00a0]/g, " "));
-  const chips = () => box.locator(tidSel("ref-chip")).allTextContents();
+  const boxText = () => box.evaluate((el) => [...(el.isContentEditable ? el : el.querySelector("[contenteditable]")).childNodes].map((n) => (n.nodeType === 3 ? n.textContent : "[chip]")).join("").replace(/[​ ]/g, " "));
+  const inlineChips = () => box.locator(tidSel("ref-chip")).count();
+  const chips = () => byTid(page, "ctx-chip", { kind: "point" }).allTextContents();
   const chatShown = () => byTid(page, "chat-head").count().then((n) => n > 0);
+  const gone = async (what, id) => { if (await byTid(page, id).count()) fail(`${what}: the phone draws ${id} over the canvas: its wait has the pick bar and the canvas's border, no layer or hint`); };
   const onBoard = async (what) => {
     await shows(`${what}: a point is waited for`, true);
-    if (await chatShown()) fail(`${what}: the chat is still on screen: the board's layer is under it`);
-    const b = await byTid(page, "pick-layer").boundingBox();
-    if (!b || b.width < 200 || b.height < 200) fail(`${what}: the layer that waits for a point is not on screen (${JSON.stringify(b)})`);
-    const hint = (await byTid(page, "pick-hint").textContent()) ?? "";
-    if (!/Tap a point to add it to the chat/.test(hint) || !/Cancel/.test(hint)) fail(`${what}: the hint reads "${hint}", not "Tap a point to add it to the chat" with Cancel`);
+    if (await chatShown()) fail(`${what}: the chat is still on screen: the board is under it`);
+    const bar = byTid(page, "pick-bar", { kind: "point" }).first();
+    const title = ((await bar.innerText().catch(() => "")) ?? "").replace(/\s+/g, " ");
+    if (!/Tap a spot on the board/.test(title) || !/Cancel/.test(title)) fail(`${what}: the pick bar reads ${J(title)}, not "Tap a spot on the board" with Cancel`);
+    if (!await byTid(page, "pick-cancel").first().isVisible().catch(() => false)) fail(`${what}: the pick bar has no Cancel`);
+    const b = await byTid(page, "pick-border").first().boundingBox();
+    if (!b || b.width < 200 || b.height < 200) fail(`${what}: the canvas has no accent border (pick-border) on screen (${J(b)})`);
+    await gone(what, "pick-layer"); await gone(what, "pick-hint");
+    const word = await byTid(page, "state-word").allTextContents();
+    if (!word.some((w) => /Picking a point/.test(w))) fail(`${what}: the bar's state word reads ${J(word)}, not "Picking a point"`);
+    if (!await byTid(page, "board-chats").first().isDisabled().catch(() => false)) fail(`${what}: the bar's Chats button is not off while a point is waited for`);
     return b;
   };
   const chatBack = async (what, was) => {
@@ -243,10 +262,19 @@ async function phoneFlow({ page, touch, fail, note, key, frame, picking, view, s
     if (!await until(async () => (await box.count()) > 0, 10000)) return fail(`${what}: the chat has no message box`);
     const t = await until(async () => { const x = await boxText(); return x === was ? x : null; }, 5000);
     if (t === null) fail(`${what}: the message reads "${await boxText()}", not "${was}": the draft was lost on the way`);
+    if ((await chips()).length || await inlineChips()) fail(`${what} added ${J(await chips())} to the message`);
     return was;
   };
-  const point = () => byTid(page, "ctx-act", { kind: "point" }).first();
-  const lit = async () => (await point().getAttribute("data-on").catch(() => null)) === "true";
+  // (at the phone Point at is the "+" sheet's `point` row, not a chip of the context row: "+" opens the sheet, the row closes it and starts the wait;
+  // the phone has no lit "+ Point" chip, so the wait is read by the pick bar alone)
+  const point = async () => {
+    await press(page, byTid(page, "composer-plus").first());
+    const row = byTid(page, "action-row", { action: "point" }).first();
+    await row.waitFor({ state: "visible", timeout: 10000 });
+    return row;
+  };
+  const startPoint = async () => press(page, await point());
+  const lit = async () => (await byTid(page, "ctx-act", { kind: "point" }).count()) > 0;
 
   // a draft with the caret after its first word
   const caretAfterFirst = async () => {
@@ -260,44 +288,53 @@ async function phoneFlow({ page, touch, fail, note, key, frame, picking, view, s
   if (await boxText() !== "first second") fail(`the check could not make its draft: the message reads "${await boxText()}"`);
 
   // Cancel, the stack's back and ⌘⇧L again end the wait with the chat open again and nothing added to it
-  await press(page, point());
+  await startPoint();
   let b = await onBoard("Point at");
   await movesBoard({ page, touch, fail, view, box: b, note, waiting: async (what) => {
     await frame();
     if (!await picking()) fail(`${what} ended the wait for a point`);
     if (await chatShown()) fail(`${what} brought the chat back`);
+    if (await byTid(page, "pick-pin").count()) fail(`${what} put a point (a pin is drawn)`);
   } });
   await press(page, byTid(page, "pick-cancel"));
   await chatBack("Cancel", "first second");
-  if ((await chips()).length) fail(`Cancel added ${JSON.stringify(await chips())} to the message`);
   if (await lit()) fail('"Point" is lit after Cancel');
 
-  await press(page, point());
+  await startPoint();
   await onBoard("Point at again");
   if (!await back(page)) fail("the board's screen has no back");
   await chatBack("the stack's back", "first second");
-  if ((await chips()).length) fail(`the back added ${JSON.stringify(await chips())} to the message`);
 
   await key(true);
   await onBoard("⌘⇧L");
   await key(true);
   await chatBack("⌘⇧L again", "first second");
-  if ((await chips()).length) fail(`⌘⇧L again added ${JSON.stringify(await chips())} to the message`);
 
-  // a tap puts the point into the box, where the caret was: "first [chip] second"
+  // a tap draws the pin and its label, and 600 ms later the chat opens with the point as a chip of the context row; the box is still "first second"
   await caretAfterFirst();
-  await press(page, point());
+  await startPoint();
   b = await onBoard("Point at, for a point");
   const spot = { x: b.x + b.width / 2, y: b.y + b.height * 0.6 };
   await page.touchscreen.tap(spot.x, spot.y);
+  const pinned = await until(async () => (await byTid(page, "pick-pin").count()) && (await byTid(page, "pick-pin-label").allTextContents()).find((t) => /x -?\d+, y -?\d+/.test(t)), 10000);
+  if (!pinned) fail(`a tap on the board drew no pin with its label (pins ${await byTid(page, "pick-pin").count()}, labels ${J(await byTid(page, "pick-pin-label").allTextContents())})`);
   if (!await until(chatShown, 10000)) return fail("a tap on the board did not bring the chat back");
   await shows("a tap on the board", false);
-  const text = await until(async () => { const x = await boxText(); return /\[chip\]/.test(x) ? x : null; }, 10000);
-  if (text === null) return fail(`after a tap the message reads "${await boxText()}": the point is not in it`);
-  if (!/^first \[chip\] second$/.test(text)) fail(`after a tap the message reads "${text}", not "first [chip] second": the point is not where the caret was`);
-  const c = await chips();
-  if (c.length !== 1 || !/\(-?\d+, -?\d+\)/.test(c[0])) fail(`after a tap the message holds ${JSON.stringify(c)}, not one point`);
+  const c = await until(async () => { const x = await chips(); return x.length ? x : null; }, 10000);
+  if (!c) return fail(`after a tap the context row holds no point chip (the box reads "${await boxText()}")`);
+  if (c.length !== 1 || !/^Point (near .+|at \(-?\d+, -?\d+\))/.test(c[0].trim())) fail(`after a tap the context row holds ${J(c)}, not one point chip ("Point near …" or "Point at (x, y)")`);
+  if (await boxText() !== "first second" || await inlineChips()) fail(`after a tap the message reads "${await boxText()}" with ${await inlineChips()} inline chips, not the plain "first second"`);
   if (await lit()) fail('"Point" is lit after the point was made');
+  if (!await byTid(page, "ctx-chip-remove").first().isVisible().catch(() => false)) fail("the point chip has no × to remove it");
 
-  note("phone: Point at took the user to the board (the layer, its hint and Cancel), the board panned and zoomed under it; Cancel, the back and ⌘⇧L ended the wait with the chat open again, its draft kept and nothing added; a tap put the point into the box where the caret was");
+  // what is sent is what it was: the tag stands where the caret was ("first <point …> second")
+  const sentBefore = await texts(url);
+  await page.keyboard.press("ControlOrMeta+Enter");
+  const sent = await until(async () => { const t = await texts(url); return t.length === sentBefore.length + 1 ? t.at(-1) : null; }, 15000);
+  const x = pinned.match(/x (-?\d+), y (-?\d+)/);
+  if (sent === null) fail("the message with the point chip was not sent (Ctrl+Enter): the mock got no new message");
+  else if (!/^first <point x="-?\d+" y="-?\d+"(\/>|>[\s\S]*<\/point>) second$/.test(sent)) fail(`the message sent is ${J(sent)}, not "first <point x=".." y="..">…</point> second": the tag is not where the caret was`);
+  else if (x && !sent.includes(`<point x="${x[1]}" y="${x[2]}"`)) fail(`the pin said x ${x[1]}, y ${x[2]} and the message sent is ${J(sent)}`);
+
+  note("phone: Point at took the user to the board (the pick bar with Cancel, the canvas's border, the state word, no layer or hint), the board panned and zoomed under it; Cancel, the back and ⌘⇧L ended the wait with the chat open again, its draft kept and no chip; a tap drew the pin and its label and the chat opened with one point chip, the box still plain; the message sent had the tag where the caret was");
 }

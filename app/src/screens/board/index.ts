@@ -3,11 +3,13 @@
 import { boardApp } from "../shell/boardside.ts";
 import { setSlot } from "../shell/slots.tsx";
 import { BoardCanvas } from "./BoardCanvas.tsx";
+import { ChatsSheet } from "./ChatsSheet.tsx";
 import { engine } from "./engine.ts";
 import { EngineHost } from "./EngineHost.tsx";
 
 boardApp.setEngine(() => engine.channel());
 setSlot("Canvas", BoardCanvas);
 setSlot("Overlays", EngineHost);
+setSlot("Overlays", ChatsSheet);
 
-export { finishPick, insertRef, pickPoint, registerInserter, addSelection, startPick, SELECT_FIRST } from "./refs.ts";
+export { finishPick, finishSelect, insertRef, pickPoint, pickingFor, registerInserter, addSelection, startPick, startSelect, SELECT_FIRST } from "./refs.ts";

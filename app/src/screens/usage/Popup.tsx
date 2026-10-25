@@ -51,7 +51,7 @@ function Refresh({ title, loading, onPress, testID }: { title: string; loading: 
   );
 }
 
-function Spin({ on, children }: { on: boolean; children: React.ReactNode }) {
+export function Spin({ on, children }: { on: boolean; children: React.ReactNode }) {
   const turn = useRef(new Animated.Value(0)).current;
   useEffect(() => {
     if (!on) { turn.setValue(0); return; }

@@ -88,6 +88,8 @@ type Run = {
 let nextId = 1;
 let run: Run | null = null;
 let clip: AbortController | null = null;
+/** The clip of a preview in play (a subset of `clip`): `stopPreview` aborts this one and nothing else. */
+let previewClip: AbortController | null = null;
 
 /** `parent` aborted, or `ms` passed: the signal to give a call and the way to know which it was. `settled` stops the timer once the call
  *  has answered (the signal stays linked to `parent`, so an abort still cuts the body); `release` lets the link go. */
@@ -332,6 +334,7 @@ export async function playClipOnce(load: (signal: AbortSignal) => Promise<Uint8A
   stopAll();
   const ctl = new AbortController();
   clip = ctl;
+  previewClip = ctl;
   const route = enterRoute({ where: null, listens: false, speaks: true, onStop: stopAll }); // a lost private output stops a short clip (VD-12)
   try {
     const bytes = await load(ctl.signal);
@@ -347,7 +350,17 @@ export async function playClipOnce(load: (signal: AbortSignal) => Promise<Uint8A
   } finally {
     route.leave();
     if (clip === ctl) clip = null;
+    if (previewClip === ctl) previewClip = null;
   }
+}
+
+/** Stops the preview clip in play, if any: nothing else (a message read aloud, a session, Test speaker) is touched. */
+export function stopPreviewClip(): void {
+  const ctl = previewClip;
+  previewClip = null;
+  if (!ctl) return;
+  ctl.abort();
+  if (clip === ctl) clip = null;
 }
 
 /** Plays PCM the app made itself through the player, the path of speech (Test speaker, VD-15): stops everything else, resolves "played" when
@@ -451,5 +464,6 @@ onReset(() => {
   run = null;
   clip?.abort();
   clip = null;
+  previewClip = null;
   readSeq = 0;
 });

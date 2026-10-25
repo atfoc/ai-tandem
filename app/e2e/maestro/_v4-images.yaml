@@ -1,4 +1,5 @@
-# Part 2 of `storage-picker-permission`: the images. Starts on the sidebar with no server added; leaves the server added and a chat opened.
+# Part 2 of `storage-picker-permission`: the images. Starts on the sidebar with no server added; leaves the server added and a chat opened. The phone composer: its "+"
+# (`composer-plus`) opens "Add to message" (`_ux-c1-plus.yaml`), whose rows Photo library and Take photo reach the pickers.
 appId: ${APP_ID}
 ---
 - runFlow: _add-server.yaml
@@ -42,8 +43,10 @@ appId: ${APP_ID}
           env:
             METHOD: POST
             ROUTE: /device/library?names=v4-red.png,v4-green.jpg
-- tapOn:
-    id: "attach-btn"
+- runFlow:
+    file: _ux-c1-plus.yaml
+    env:
+      ROW: "Photo library"
 - waitForAnimationToEnd
 - takeScreenshot: v4-10-picker
 - assertNotVisible: ".*(Would Like to Access|Allow Access).*"
@@ -68,6 +71,15 @@ appId: ${APP_ID}
 - assertVisible: ".*\\.jpe?g"
 - assertNotVisible:
     id: "composer-err"
+# (the phone's strip: a thumbnail of 72 pt per picture, each with its × (`image-thumb-remove`, "Remove <name>"); the sizes are by the screenshot, Maestro reads none)
+- assertVisible:
+    id: "image-thumb"
+- assertVisible:
+    id: "image-thumb-remove"
+- assertVisible: "Remove .*\\.png"
+- assertVisible: "Remove .*\\.jpe?g"
+- assertNotVisible:
+    id: "image-refused"
 - takeScreenshot: v4-11-thumbnails
 
 # ---- sent: the message carries the three, and the server holds a PNG and two JPEGs (the HEIC came as a JPEG)
@@ -120,8 +132,10 @@ appId: ${APP_ID}
     env:
       METHOD: POST
       ROUTE: /device/library?names=v4-notpng.bmp
-- tapOn:
-    id: "attach-btn"
+- runFlow:
+    file: _ux-c1-plus.yaml
+    env:
+      ROW: "Photo library"
 - waitForAnimationToEnd
 - runFlow:
     when:
@@ -135,21 +149,29 @@ appId: ${APP_ID}
     file: _pick-android.yaml
     env:
       COUNT: 1
+# (no composer thumbnail: `image-thumb-remove` is the × of the composer's own thumbnails; `image-thumb` is also the sent message's pictures in the thread above)
+# (the phone's strip keeps the file as a marked tile ("BMP", its × `image-refused-remove`) with the reason in red under it; nothing is added: no thumbnail)
 - extendedWaitUntil:
     visible:
-      id: "composer-err"
-      text: "Not a PNG, JPEG, GIF or WebP image: .*\\.bmp\\."
+      id: "composer-images-line"
+      text: ".*\\.bmp is not added: send PNG, JPEG, GIF or WebP\\."
     timeout: 60000
+- assertVisible:
+    id: "image-refused"
+- assertVisible:
+    id: "image-refused-remove"
 - assertNotVisible:
-    id: "composer-images"
+    id: "image-thumb-remove"
 - takeScreenshot: v4-13-refused-type
 - runScript:
     file: _ctl.js
     env:
       METHOD: POST
       ROUTE: /device/library?names=v4-huge.png
-- tapOn:
-    id: "attach-btn"
+- runFlow:
+    file: _ux-c1-plus.yaml
+    env:
+      ROW: "Photo library"
 - waitForAnimationToEnd
 - runFlow:
     when:
@@ -165,9 +187,17 @@ appId: ${APP_ID}
       COUNT: 1
 - extendedWaitUntil:
     visible:
-      id: "composer-err"
-      text: "Over 5 MB: .*\\.png\\."
+      id: "composer-images-line"
+      text: ".*\\.png is not added: over 5 MB\\."
     timeout: 60000
+- assertVisible:
+    id: "image-refused"
 - assertNotVisible:
-    id: "composer-images"
+    id: "image-thumb-remove"
 - takeScreenshot: v4-14-refused-size
+
+# ---- "+" > Take photo (iOS): the camera's permission and a simulator without a camera
+- runFlow:
+    when:
+      platform: iOS
+    file: _ux-c1-camera.yaml

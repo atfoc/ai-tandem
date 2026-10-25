@@ -55,3 +55,16 @@ export function gutterCells(g: string): GutterCell[] {
 export function headSub(title: string, branches: number, forks: number): string {
   return `${title} · ${branches} ${branches === 1 ? "branch" : "branches"}${forks > 0 ? ` · ${forks} ${forks === 1 ? "fork" : "forks"}` : ""}`;
 }
+
+/** How many messages carry a label: the "Labeled · 2" of the phone sheet's filter (none: just "Labeled"). */
+export function labelCount(entries: Record<string, { label?: string }>): number {
+  let n = 0;
+  for (const k in entries) if (entries[k].label) n++;
+  return n;
+}
+
+/** The words of the phone sheet's two filters: "Messages" and "Labeled · N". */
+export const filterWords = (id: "default" | "labeled", labels: number): string => (id === "default" ? "Messages" : labels > 0 ? `Labeled · ${labels}` : "Labeled");
+
+/** The second line of a held row's action sheet: "Your message · <branch>" or "<agent>'s reply · <branch>". */
+export const rowSheetSub = (user: boolean, agent: string, branch: string): string => `${user ? "Your message" : `${agent}'s reply`} · ${branch}`;

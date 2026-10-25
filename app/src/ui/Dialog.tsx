@@ -2,7 +2,7 @@
 // (web) and the back button (Android) close it. The parts a dialog is made of (the title, the body, an error, the
 // actions) are here too, as the confirm dialog of today's Dialogs.tsx lays them out. A dialog with a text field keeps it and its actions above
 // the on-screen keyboard; opened over another overlay it is drawn inside it (overlayhost.tsx).
-import type { ReactNode } from "react";
+import { Children, type ReactNode } from "react";
 import { Pressable, ScrollView, StyleSheet, useWindowDimensions, View } from "react-native";
 
 import { Modal } from "./modal";
@@ -66,9 +66,13 @@ export function DialogError({ children }: { children: ReactNode }) {
   return <Text tone="danger" size={12} style={styles.error} accessibilityRole="alert">{children}</Text>;
 }
 
-/** The actions at the bottom right, Cancel first and the default action last (it is the one with the focus). In a sheet they are its footer. */
-export function DialogActions({ children }: { children: ReactNode }) {
-  const row = <View style={styles.actions}>{children}</View>;
+/** The actions at the bottom right, Cancel first and the default action last (it is the one with the focus). In a sheet they are its footer.
+ *  `layout="stacked"` (a phone form that stays a dialog) is a column of full-width buttons with the primary first: the callers pass the
+ *  children in the same order as for the row, Cancel first and the primary last, and they are drawn in reverse. The buttons there are `block`. */
+export function DialogActions({ children, layout = "row" }: { children: ReactNode; layout?: "row" | "stacked" }) {
+  const row = layout === "stacked"
+    ? <View style={styles.stacked}>{Children.toArray(children).reverse().map((child, i) => <View key={i} style={styles.stackedItem}>{child}</View>)}</View>
+    : <View style={styles.actions}>{children}</View>;
   return <InSheetFooter inPlace={row}>{row}</InSheetFooter>;
 }
 
@@ -77,5 +81,7 @@ const styles = StyleSheet.create({
   surface: { borderWidth: 1, borderRadius: 12, paddingTop: 18, paddingHorizontal: 18, paddingBottom: 14 },
   body: { marginTop: 6 },
   error: { marginTop: 8 },
+  stacked: { gap: 8, marginTop: 16 },
+  stackedItem: { alignSelf: "stretch" },
   actions: { flexDirection: "row", justifyContent: "flex-end", flexWrap: "wrap", gap: 8, marginTop: 16 },
 });

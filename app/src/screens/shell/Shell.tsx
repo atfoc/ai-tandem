@@ -1,6 +1,6 @@
 // The app shell: the root of what the app shows once it is bootstrapped (AD-71, AD-72, AD-76). It picks the layout by the window's
-// width, registers the shortcuts, and draws the overlays that show themselves from the store: the confirm dialog, and the
-// screens' popups (slots.tsx `Overlays`).
+// width, registers the shortcuts, and draws the overlays that show themselves from the store: the confirm dialog, the one
+// toast, and the screens' popups (slots.tsx `Overlays`).
 import { useEffect } from "react";
 import { StyleSheet } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -8,6 +8,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { markReady } from "../../platform/lifecycle";
 import { useTheme } from "../../ui/theme.tsx";
 import { tid } from "../../ui/tid.ts";
+import { ToastHost } from "../../ui/Toast.tsx";
 import { useLayout } from "../../ui/useLayout.ts";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";
 import { WideLayout } from "./Layout.tsx";
@@ -26,6 +27,7 @@ export function Shell() {
       {layout === "phone" ? <PhoneStack /> : <WideLayout layout={layout} />}
       {slots.Overlays.map((Overlay, i) => <Overlay key={i} />)}
       <ConfirmDialog />
+      <ToastHost />
     </SafeAreaView>
   );
 }

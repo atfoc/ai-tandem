@@ -22,19 +22,35 @@
 //    even then (it reads the layout, not where the view was drawn). The sheet's rise is lengthened to 300 ms for these three (`sheetTiming` of ui/Sheet.tsx): the sheet
 //    was lost when the keyboard's LayoutAnimation was still running as its rise ended; with the old code the simulator lost it at 180 and 300 ms every time and at 450 ms
 //    one time in nine, so 300 ms is the middle of that window (5 of 5 for each case with the old code, 0 of 20 with the fix).
+//  - the kit page (`sheets-kit-open`, ux-improvements package F1: plans/ux-improvements/PLAN.md): the phone kit on a device. A `fit` ActionSheet and a `large`
+//    Sheet measure themselves (`KitPage` below: the surface is found from a probe inside it through the DOM-like API of the host views, `getBoundingClientRect`)
+//    and write `sheets-detent-fit` / `sheets-detent-large` (`ok` or `FAILED`: fit is at most half the window, large starts at the safe area's top + 8 pt, both end
+//    at the window's bottom); a FormSheet (P3) with two boxes rides the keyboard (`sheets-form-geometry`, inside the form: the focused box and the head's Save are
+//    above the keyboard's top, and the test presses Save with the keyboard up) and keeps a dirty form behind a "Discard changes" sheet; three SwipeRows (a, b:
+//    Archive full + Delete on a left swipe; c: Unarchive full on a right swipe) say what ran (`sheets-swipe-last`), a long press runs `haptic("select")`
+//    (`sheets-haptics: N` counts the calls; `sheets-haptics-native` says expo-haptics answered: the simulator has no haptic engine, so what a device shows is that
+//    the native module is linked and the call does not throw). A swipe that starts inside the 20 pt edge does not open a row.
 // The screen's `sheets-log` says what happened, as words a flow waits for.
-import { createContext, useContext, useEffect, useRef, useState } from "react";
-import { Keyboard, Platform, StyleSheet, TextInput, View } from "react-native";
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import * as Haptics from "expo-haptics";
+import { Keyboard, Platform, Pressable, StyleSheet, TextInput, useWindowDimensions, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
-import { SafeAreaProvider } from "react-native-safe-area-context";
+import { SafeAreaProvider, useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { haptic } from "../platform/haptics";
 import { Field, PLAIN_INPUT, SECRET_INPUT } from "../screens/servers/parts.tsx";
+import { ActionSheet } from "../ui/ActionSheet.tsx";
 import { Button } from "../ui/Button.tsx";
 import { Dialog, DialogActions, DialogTitle } from "../ui/Dialog.tsx";
+import { FormSheet as KitFormSheet } from "../ui/FormSheet.tsx";
+import { BoardIcon, ChatIcon, Pencil, StopIcon } from "../ui/icons.tsx";
 import { Menu, MenuItem } from "../ui/Menu.tsx";
+import { LONG_PRESS_MS, PHONE, TYPE } from "../ui/metrics.ts";
 import { Overlay } from "../ui/Overlay.tsx";
 import { Popover } from "../ui/Popover.tsx";
 import { Sheet, sheetTiming } from "../ui/Sheet.tsx";
+import { SheetHead } from "../ui/SheetHead.tsx";
+import { SwipeRow, type SwipeAction } from "../ui/SwipeRow.tsx";
 import { Text } from "../ui/Text.tsx";
 import { ThemeProvider, useTheme } from "../ui/theme.tsx";
 
@@ -250,6 +266,190 @@ function FormSheet({ open, onClose, say, log }: { open: boolean; onClose(): void
   );
 }
 
+// ---- the kit page: detents, a form riding the keyboard, a swipe row with a long press haptic (package F1)
+
+/** The host views' DOM-like API (react-native 0.86: a ref of a `View` is a `ReactNativeElement`). */
+type El = { parentElement: El | null; children: ArrayLike<El>; textContent: string; getBoundingClientRect(): { top: number; bottom: number; height: number } };
+
+/** The surface of the sheet a probe View is in: of the probe's ancestors the tallest that is shorter than the window (the content container of a long
+ *  list is taller than the window and the full-screen holders around the sheet are as tall as it, the surface is neither). */
+function surfaceOf(probe: View | null, windowHeight: number): El | null {
+  let el = probe as unknown as El | null;
+  if (!el || typeof el.getBoundingClientRect !== "function") return null;
+  let best: El | null = null;
+  for (; el; el = el.parentElement) {
+    if (el.getBoundingClientRect().height < windowHeight - 4 && (!best || el.getBoundingClientRect().height > best.getBoundingClientRect().height)) best = el;
+  }
+  return best;
+}
+
+/** The text of an element by its words: the deepest element under `root` whose whole text is `text` (the Save of a head: no testID is reachable from here). */
+function byText(root: El, text: string): El | null {
+  for (let i = 0; i < root.children.length; i++) {
+    const found = byText(root.children[i], text);
+    if (found) return found;
+  }
+  return root.textContent === text ? root : null;
+}
+
+const SURFACE_WAIT_MS = 900; // the sheet has risen (180 ms) and settled
+const DETENT_TOLERANCE = 2;
+
+/** A sheet of a detent that measures its own surface once it has risen: `result` is "fit ok: …" / "large FAILED: …" (`measuring` before it, and while it is closed after
+ *  a new open). The `probe` goes inside the sheet. */
+function useDetentCheck(open: boolean, detent: "fit" | "large") {
+  const win = useWindowDimensions();
+  const insets = useSafeAreaInsets();
+  const probe = useRef<View>(null);
+  const [result, setResult] = useState(`${detent}: not opened`);
+  useEffect(() => {
+    if (!open) return;
+    setResult(`${detent}: measuring`);
+    const timer = setTimeout(() => {
+      const surface = surfaceOf(probe.current, win.height);
+      if (!surface) return setResult(`${detent} FAILED: no surface found`);
+      const box = surface.getBoundingClientRect();
+      const [top, height, bottom] = [Math.round(box.top), Math.round(box.height), Math.round(box.bottom)];
+      const atBottom = Math.abs(bottom - win.height) <= DETENT_TOLERANCE;
+      const fits = detent === "fit" ? height <= win.height / 2 + DETENT_TOLERANCE : Math.abs(top - (insets.top + 8)) <= DETENT_TOLERANCE;
+      const words = detent === "fit" ? `height ${height} of ${win.height} (${Math.round((100 * height) / win.height)} %)` : `top ${top}, safe top ${Math.round(insets.top)} + 8`;
+      setResult(`${detent} ${fits && atBottom ? "ok" : "FAILED"}: ${words}, bottom ${bottom} of ${win.height}`);
+    }, SURFACE_WAIT_MS);
+    return () => clearTimeout(timer);
+  }, [open, detent, win.height, insets.top]);
+  return { probe, result };
+}
+
+const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+const ICON = 20;
+const KIT_ROW = PHONE.listRow;
+
+function KitPage({ onBack }: { onBack(): void }) {
+  const { tokens: t } = useTheme();
+  const win = useWindowDimensions();
+  const [shown, setShown] = useState<"fit" | "large" | "form" | null>(null);
+  const close = () => setShown(null);
+  const [action, setAction] = useState("action: none");
+  const fit = useDetentCheck(shown === "fit", "fit");
+  const large = useDetentCheck(shown === "large", "large");
+
+  // P3: two boxes, a spacer between them (the second box is low in the sheet, so that it has to be scrolled up), and the keyboard's top
+  const [one, setOne] = useState("");
+  const [two, setTwo] = useState("");
+  const [form, setForm] = useState("form: closed");
+  const [focus, setFocus] = useState<1 | 2 | null>(null);
+  const [formGeometry, setFormGeometry] = useState("form: waiting");
+  const saved = useRef(false);
+  const boxTwo = useRef<TextInput>(null);
+  const keyboardTop = useRef<number | null>(null);
+  useEffect(() => {
+    const sub = Keyboard.addListener("keyboardDidShow", (e) => { keyboardTop.current = e.endCoordinates.screenY; });
+    return () => sub.remove();
+  }, []);
+  const openForm = () => { saved.current = false; setOne(""); setTwo(""); setFocus(null); setFormGeometry("form: waiting"); setForm("form: open"); setShown("form"); };
+  // 1.5 s after the last key typed into the second box: the keyboard is up and the form has settled above it
+  useEffect(() => {
+    if (shown !== "form" || focus !== 2) return;
+    const timer = setTimeout(() => {
+      const top = keyboardTop.current ?? Keyboard.metrics()?.screenY ?? null;
+      boxTwo.current?.measureInWindow((_x, y, _w, h) => {
+        const surface = surfaceOf(boxTwo.current as unknown as View, win.height);
+        const save = surface ? byText(surface, "Save") : null;
+        const boxBottom = Math.round(y + h);
+        const saveRect = save?.getBoundingClientRect();
+        const saveBottom = saveRect ? Math.round(saveRect.bottom) : null;
+        const ok = top !== null && boxBottom <= top && saveBottom !== null && saveBottom <= top && saveRect!.top >= 0;
+        setFormGeometry(`form ${ok ? "ok" : "FAILED"}: keyboard top ${top === null ? "none" : Math.round(top)}, box bottom ${boxBottom}, Save bottom ${saveBottom ?? "n/a"}`);
+      });
+    }, 1500);
+    return () => clearTimeout(timer);
+  }, [shown, focus, two, win.height]);
+
+  // the swipe rows, and the haptic of a long press: every call is counted (the simulator has no engine to feel it)
+  const [swipe, setSwipe] = useState("swipe: none");
+  const [buzzes, setBuzzes] = useState(0);
+  const [native, setNative] = useState("haptics native: waiting");
+  useEffect(() => {
+    Haptics.selectionAsync().then(() => setNative("haptics native: ok"), (e) => setNative(`haptics native: FAILED ${e}`));
+  }, []);
+  const archive = (n: string): SwipeAction => ({ id: "archive", label: "Archive", tone: "grey", full: true, onPress: () => setSwipe(`archive ${n}`) });
+  const del = (n: string): SwipeAction => ({ id: "delete", label: "Delete", tone: "danger", onPress: () => setSwipe(`delete ${n}`) });
+  const unarchive = (n: string): SwipeAction => ({ id: "unarchive", label: "Unarchive", tone: "accent", full: true, onPress: () => setSwipe(`unarchive ${n}`) });
+  const rows: { n: string; name: string; right?: SwipeAction[]; left?: SwipeAction[] }[] = [
+    { n: "a", name: "Roadmap", right: [archive("a"), del("a")] },
+    { n: "b", name: "Meeting notes", right: [archive("b"), del("b")] },
+    { n: "c", name: "Old sketch", left: [unarchive("c")] },
+  ];
+
+  const item = (id: string, label: string, icon: ReactNode, extra?: { note?: string }) => ({ id, label, icon, onPress: () => setAction(`action: ${id}`), ...extra });
+  return (
+    <View style={[styles.root, { backgroundColor: t.bg }]} testID="sheets-kit-root">
+      <View style={styles.row}>
+        <Text weight="600" size={18}>Kit self-test</Text>
+        <Button size="sm" label="Back" testID="sheets-kit-back" onPress={onBack} />
+      </View>
+      <View style={styles.row}>
+        <Button size="sm" label="Fit sheet" testID="sheets-fit-open" onPress={() => setShown("fit")} />
+        <Button size="sm" label="Large sheet" testID="sheets-large-open" onPress={() => setShown("large")} />
+        <Button size="sm" label="Form sheet" testID="sheets-form-open" onPress={openForm} />
+      </View>
+      <Text size={12} tone="muted" testID="sheets-detent-fit">{fit.result}</Text>
+      <Text size={12} tone="muted" testID="sheets-detent-large">{large.result}</Text>
+      <Text size={12} tone="muted" testID="sheets-action">{action}</Text>
+      <Text size={12} tone="muted" testID="sheets-form-state">{form}</Text>
+      <Text size={12} tone="muted" testID="sheets-swipe-last">{swipe}</Text>
+      <Text size={12} tone="muted" testID="sheets-haptics">{`sheets-haptics: ${buzzes}`}</Text>
+      <Text size={12} tone="muted" testID="sheets-haptics-native">{native}</Text>
+
+      <View style={[styles.swipes, { top: Math.round(win.height / 2 - KIT_ROW / 2) }]}>
+        {rows.map((r) => (
+          <SwipeRow key={r.n} data={{ row: r.n }} right={r.right} left={r.left}>
+            <Pressable testID={`sheets-row-${r.n}`} accessibilityLabel={r.name} delayLongPress={LONG_PRESS_MS} onPress={() => setSwipe(`tap ${r.n}`)}
+              onLongPress={() => { haptic("select"); setBuzzes((n) => n + 1); setSwipe(`long ${r.n}`); }}
+              style={[styles.front, { borderColor: t.line }]}>
+              <Text size={TYPE.control}>{r.name}</Text>
+            </Pressable>
+          </SwipeRow>
+        ))}
+      </View>
+
+      <ActionSheet open={shown === "fit"} onClose={close} testID="sheets-fit"
+        head={{ title: "Checkout service", sub: fit.result, icon: <View ref={fit.probe} collapsable={false} style={[styles.probe, { backgroundColor: t.accent }]} /> }}
+        items={[
+          item("new-chat", "New chat in this group", <ChatIcon size={ICON} />),
+          item("new-board", "New board in this group", <BoardIcon size={ICON} />, { note: "Opens on the board" }),
+          item("rename", "Rename…", <Pencil size={ICON} />),
+          item("share", "Share", <ChatIcon size={ICON} />),
+        ]}
+        destructive={item("delete", "Delete group…", <StopIcon size={ICON} />)} />
+
+      <Sheet open={shown === "large"} onClose={close} label="Large sheet" testID="sheets-large" detent="large"
+        head={<SheetHead title="Large sheet" sub={large.result} right={{ label: "Done", strong: true, onPress: close, testID: "sheets-large-done" }} />}>
+        <View ref={large.probe} collapsable={false}>
+          <Menu>
+            {Array.from({ length: 30 }, (_, i) => <MenuItem key={i} label={`Line ${i + 1}`} onPress={() => setAction(`action: line ${i + 1}`)} />)}
+          </Menu>
+        </View>
+      </Sheet>
+
+      <KitFormSheet open={shown === "form"} onClose={() => { close(); if (!saved.current) setForm("form: discarded"); saved.current = false; }} title="Rename" sub="Checkout service · Studio Mac"
+        canSave={one.trim() !== "" || two.trim() !== ""} dirty={one !== "" || two !== ""}
+        onSave={async () => { await wait(200); saved.current = true; setForm(`form: saved ${one}|${two}`); }}>
+        <View style={styles.formBody}>
+          <Text size={TYPE.secondary} tone="muted">First</Text>
+          <TextInput testID="sheets-form-one" value={one} onChangeText={setOne} onFocus={() => setFocus(1)} placeholder="First" placeholderTextColor={t.faint}
+            autoCorrect={false} autoCapitalize="none" accessibilityLabel="First" style={[styles.input, { color: t.text, borderColor: t.line2, backgroundColor: t.panel }]} />
+          <View style={styles.spacer}><Text size={TYPE.secondary} tone="muted">The second box is low in this sheet: the keyboard covers it unless the sheet scrolls it up.</Text></View>
+          <Text size={TYPE.secondary} tone="muted">Second</Text>
+          <TextInput ref={boxTwo} testID="sheets-form-two" value={two} onChangeText={setTwo} onFocus={() => setFocus(2)} placeholder="Second" placeholderTextColor={t.faint}
+            autoCorrect={false} autoCapitalize="none" accessibilityLabel="Second" style={[styles.input, { color: t.text, borderColor: t.line2, backgroundColor: t.panel }]} />
+          <Text size={11} tone="muted" testID="sheets-form-geometry">{formGeometry}</Text>
+        </View>
+      </KitFormSheet>
+    </View>
+  );
+}
+
 export function SheetsSelfTest() {
   return (
     <GestureHandlerRootView style={styles.fill}>
@@ -263,15 +463,18 @@ export function SheetsSelfTest() {
 function Screen() {
   const { tokens: t } = useTheme();
   const [open, setOpen] = useState(false);
+  const [kit, setKit] = useState(false); // the kit page (package F1)
   const [events, setEvents] = useState<string[]>([]);
   const say = (s: string) => setEvents((e) => [...e, s]);
   const out = usePopups("out", say);
   const log = `log: ${events.length ? events.join(" | ") : "none"}`;
+  if (kit) return <KitPage onBack={() => setKit(false)} />;
   return (
     <View style={[styles.root, { backgroundColor: t.bg }]} testID="sheets-root">
       <Text weight="600" size={18}>Sheets self-test</Text>
       <View ref={out.anchor} style={styles.row}>
         <Button label="Open the form sheet" testID="sheets-open" onPress={() => setOpen(true)} />
+        <Button label="Kit" testID="sheets-kit-open" onPress={() => setKit(true)} />
       </View>
       <Text testID="sheets-state">{open ? "sheet: open" : "sheet: closed"}</Text>
       <Text testID="sheets-root-log">{log}</Text>
@@ -304,6 +507,13 @@ const styles = StyleSheet.create({
   /** Where the `topkb` bar rests with no keyboard: over the bottom bar's buttons. */
   kbBar: { position: "absolute", left: 16, right: 16, gap: 6 },
   anchor: { alignSelf: "flex-start" },
+  /** The kit page: the swipe rows start at the screen's left edge (the 16 pt margin is the page's, the rows have none), the middle of the first at half the window's height. */
+  swipes: { position: "absolute", left: 0, right: 0 },
+  front: { height: KIT_ROW, justifyContent: "center", paddingHorizontal: PHONE.margin, borderBottomWidth: StyleSheet.hairlineWidth },
+  probe: { width: 24, height: 24, borderRadius: 6 },
+  formBody: { gap: 6, padding: PHONE.margin - 8, paddingTop: 12 },
+  spacer: { height: 260, justifyContent: "center" },
+  input: { minHeight: PHONE.target, borderWidth: 1, borderRadius: 10, paddingHorizontal: 12, fontSize: TYPE.control },
   box: { margin: 0 },
   search: { borderWidth: 1, borderRadius: 6, paddingHorizontal: 10, paddingVertical: 8, margin: 4, fontSize: 15 },
 });

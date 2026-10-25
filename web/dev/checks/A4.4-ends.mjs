@@ -13,6 +13,7 @@
 // under it, Send live again, the pickers live; the pick on a fresh fork whose agent fails to start (B-FK-19); the draft the failed Send leaves.
 import { callMatcher, callOfRequest, check, holds, hostCall, mockEval, release, sampleFrames, seed, until } from "../shot.mjs";
 import { byTid, openChat, press } from "./sel.mjs";
+import { closeChoice, openChoice } from "./composer.mjs";
 import { actsSeen, endRow, notice, openRow, openTree, pressAct, send as sendMsg, startMove, treeRow, waitsSeen as seenNow, firstMsg } from "./fork.mjs";
 
 export const viewports = ["desktop", "tablet", "phone"];
@@ -30,7 +31,8 @@ function threadProbe() {
   return { bad: !n, n, sending: !!thread.querySelector('[data-testid="msg"][data-sending]') };
 }
 
-await check("A4.4 every wait of the fork flows ends", async ({ url, open, fail, note }) => {
+await check("A4.4 every wait of the fork flows ends", async ({ url, layout, open, fail, note }) => {
+  const phone = layout === "phone"; // (the phone layout: Talk is the primary while the box is empty, so a Send that waits is not drawn; the pickers are sheets)
   const knob = (code) => mockEval(code, url);
   const frame = (page) => page.evaluate(() => new Promise((ok) => requestAnimationFrame(() => requestAnimationFrame(() => ok()))));
   const openAt = async (chat) => open({ sel: { chat }, wait: MSG });
@@ -69,15 +71,15 @@ await check("A4.4 every wait of the fork flows ends", async ({ url, open, fail, 
     if (answer) await held(name, "send"); else if (!await until(() => waiting === 1)) fail(`${name}: the page sent no message`);
     let seen = await when(page, name, (s) => s.msgs.some((m) => m.sending));
     expect(`${name}: while it is on its way the message is in the thread and the controls are held`, seen.back.disabled && same(seen.lines, [["send", "Starting the agent…"]]), seen);
-    expect(`${name}: while it is on its way Send spins and the box is empty`, seen.send.spin && seen.box === "", seen);
+    expect(`${name}: while it is on its way ${phone ? "the phone's primary is Talk, with no Send to spin," : "Send spins"} and the box is empty`, (phone ? !seen.send && !!seen.talk : seen.send.spin) && seen.box === "", seen);
     if (answer) await release(url, "send", answer); else cut();
-    seen = await when(page, `${name}, ended`, (s) => !s.msgs.some((m) => m.sending) && s.box !== "" && !s.send.disabled);
+    seen = await when(page, `${name}, ended`, (s) => !s.msgs.some((m) => m.sending) && s.box !== "" && s.send && !s.send.disabled);
     expect(`${name}: the message has left the thread, which is the cut one again, with no line`, same(texts(seen), CUT) && !seen.lines.length, [texts(seen), seen.lines]);
     expect(`${name}: the text is back in the box, with the error under it`, seen.box === said && says.test(seen.err), [seen.box, seen.err]);
     expect(`${name}: the pending move stays: the banner tells of the new branch again`, /your message starts it/.test(seen.banner), seen.banner);
     const acts = await actsSeen(page);
     expect(`${name}: the controls are live again: Back, the message's actions`, !seen.back.disabled && acts.length > 0 && acts.every((a) => !a.disabled), [seen.back, acts]);
-    expect(`${name}: the controls are live again: Send, the pickers`, !seen.send.disabled && !seen.send.spin && seen.send.title === "Send (Enter)" && !seen.model?.disabled && !seen.effort?.disabled, seen);
+    expect(`${name}: the controls are live again: Send, the pickers`, !seen.send.disabled && !seen.send.spin && (phone ? seen.send.label === "Send" : seen.send.title === "Send (Enter)") && !seen.model?.disabled && !seen.effort?.disabled, seen);
     if (answer) {
       // the next Send goes through, from the same point
       await knob(`delete flags.send;`);
@@ -150,14 +152,18 @@ await check("A4.4 every wait of the fork flows ends", async ({ url, open, fail, 
       if (!await byTid(page, "tchip", { kind }).count() && await byTid(page, "more-chip").count()) { await press(page, byTid(page, "more-chip").first()); await byTid(page, "more-pop").first().waitFor({ state: "visible", timeout: 10000 }); }
       return byTid(page, "tchip", { kind }).first();
     };
-    await press(page, await chip("model"));
-    await press(page, byTid(page, "pick-row", { optionId: "gpt-5.4" }).first());
+    if (phone) await press(page, byTid(await openChoice(page, "model"), "picker-row", { value: "gpt-5.4" }));
+    else {
+      await press(page, await chip("model"));
+      await press(page, byTid(page, "pick-row", { optionId: "gpt-5.4" }).first());
+    }
     await held(name, "configure");
-    await when(page, name, (s) => s.fixed);
+    if (phone) { if (!await until(async () => !(await byTid(page, "model-sheet").count()), 1500)) await closeChoice(page); } // (Done; the sheet may close by itself as the agent starts)
+    await when(page, name, phone ? (s) => s.lines.length > 0 : (s) => s.fixed); // (the phone: the thread tells that the agent is starting; its chip has no fixed look)
     await release(url, "configure", `flags.configure.refuse = { status: 409, code: "window", error: "the model's context window is too small for this conversation" }`);
-    const seen = await when(page, `${name}, ended`, (s) => !s.fixed && !s.model?.disabled);
+    const seen = await when(page, `${name}, ended`, phone ? (s) => !s.lines.length && !!s.err : (s) => !s.fixed && !s.model?.disabled);
     expect(`${name}: the server's sentence under the composer`, /context window is too small/.test(seen.err), seen.err);
-    expect(`${name}: the picker is back on the model it had, and Send, the pickers and the thread are as before the pick`, seen.model.text === before.model.text && !seen.model.disabled && !seen.effort?.disabled && seen.send.title === before.send.title && !seen.lines.length, [seen.model, seen.send, seen.lines]);
+    expect(`${name}: the picker is back on the model it had, and Send, the pickers and the thread are as before the pick`, seen.model.text === before.model.text && !seen.model.disabled && !seen.effort?.disabled && (phone ? !seen.send === !before.send && seen.talk?.label === before.talk?.label : seen.send.title === before.send.title) && !seen.lines.length, [seen.model, seen.send, seen.talk, seen.lines]);
     await knob(`delete flags.configure;`);
     await ctx.close();
   }
@@ -169,9 +175,9 @@ await check("A4.4 every wait of the fork flows ends", async ({ url, open, fail, 
     await sendOf(page, id, said);
     await held(name, "send");
     let seen = await when(page, name, (s) => s.msgs.some((m) => m.sending));
-    expect(`${name}: while it is on its way the text is after the copied history`, same(texts(seen), [...CUT, `user (sending) (not an item): ${said}`]) && seen.send.spin, [texts(seen), seen.send]);
+    expect(`${name}: while it is on its way the text is after the copied history`, same(texts(seen), [...CUT, `user (sending) (not an item): ${said}`]) && (phone ? !seen.send && !!seen.talk : seen.send.spin), [texts(seen), seen.send, seen.talk]);
     await release(url, "send", `flags.send.refuse = { status: 500, code: "", error: "the agent did not start" }`);
-    seen = await when(page, `${name}, ended`, (s) => !s.msgs.some((m) => m.sending) && s.box !== "" && !s.send.disabled);
+    seen = await when(page, `${name}, ended`, (s) => !s.msgs.some((m) => m.sending) && s.box !== "" && s.send && !s.send.disabled);
     expect(`${name}: the message has left the thread`, same(texts(seen), CUT), texts(seen));
     expect(`${name}: the text is back in the box with the error under it, and Send is live`, seen.box === said && /the agent did not start/.test(seen.err) && !seen.send.disabled && !seen.send.spin, seen);
     await knob(`delete flags.send;`);

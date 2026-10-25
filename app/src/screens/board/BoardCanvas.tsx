@@ -9,11 +9,11 @@ import { NavigationContext } from "@react-navigation/native";
 import { useContext, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Linking, StyleSheet, View } from "react-native";
 
-import { boardView } from "@aiwb/core/logic/boardsave.ts";
+import { boardView, droppedText, serverNameOf } from "@aiwb/core/logic/boardsave.ts";
 import { ApiError } from "@aiwb/core/api.ts";
 import { serverOfKey } from "@aiwb/core/logic/keys.ts";
 import { serverConnected } from "@aiwb/core/logic/serverlists.ts";
-import { getState, setRole } from "@aiwb/core/state/store.ts";
+import { getState, setDropped, setRole } from "@aiwb/core/state/store.ts";
 
 import { BoardHost } from "../../platform/board";
 import type { HostChannel } from "../../platform/board.types.ts";
@@ -22,17 +22,24 @@ import { useStore } from "../../state/useStore.ts";
 import { Text } from "../../ui/Text.tsx";
 import { useTheme } from "../../ui/theme.tsx";
 import { tid } from "../../ui/tid.ts";
+import { showToast } from "../../ui/Toast.tsx";
+import { usePhone } from "../../ui/useLayout.ts";
 import { boardApp } from "../shell/boardside.ts";
 import { useSlots } from "../shell/slots.tsx";
 import { confirm, select } from "../shell/nav.ts";
 import { BoardOff, SaveBanner } from "./BoardOff.tsx";
 import { boardKeyHandler } from "./boardkeys.ts";
 import { engine } from "./engine.ts";
+import { useBoardLandscape } from "./landscape.ts";
 import { onPhone } from "./phone.ts";
 import { DroppedNote, FlashLayer, PickLayer, Presence } from "./Overlays.tsx";
 import { setPickGo } from "./refs.ts";
-import { RoleBar } from "./RoleBar.tsx";
+import { BottomRow } from "./BottomRow.tsx";
+import { usePickWait } from "./PickBar.tsx";
+import { RoleBar, editHere } from "./RoleBar.tsx";
+import { EDIT_HERE } from "./rolebar.ts";
 import { FILL } from "./fill.ts";
+import { usePhoneBoard } from "./usePhoneBoard.ts";
 
 // The view of the board on screen (where it is scrolled and how far it is zoomed), for the browser checks of the pick layer (P7.4-board.mjs): a build
 // made for the checks (version "uicheck", `buildAppDist`) shows it as `window.__aiwbView()`; no other build does.
@@ -59,6 +66,28 @@ function useBlurFlush(board: string) {
   useEffect(() => nav?.addListener("blur", () => { void boardApp.flush(board); }), [nav, board]);
 }
 
+/** The phone says what the wide layouts draw over the board as toasts (b1-design.md §4): an edit made here that was dropped, once
+ *  for each drop, whether this window still holds the board or came back to it as a reader, and this window losing the board to another, with the action that takes it back. */
+function useBoardToasts(board: string, on: boolean) {
+  const role = useStore((s) => s.roles[board]);
+  const archived = useStore((s) => !!s.boards[board]?.archived);
+  const agent = useStore((s) => s.writers[board] === "headless"); // (an agent has it by now: the bar says so)
+  const dropped = useStore((s) => !!s.dropped[board] && !s.boards[board]?.archived); // (held: the canvas's note; a reader: the bar's line)
+  const server = useStore((s) => serverNameOf(board, s.servers));
+  const was = useRef(role);
+  useEffect(() => {
+    if (!on || !dropped) return;
+    showToast({ text: droppedText(role === "held" && boardApp.droppedInOutage(board), server), kind: "board-dropped", ms: 8000 });
+    setDropped(board, false); // (said: the next drop is another)
+  }, [on, dropped]);
+  useEffect(() => {
+    const before = was.current;
+    was.current = role;
+    if (on && role === "lost" && before !== "lost" && !archived && !agent)
+      showToast({ text: "Another window took over this board", kind: "board-lost", ms: 8000, action: { label: EDIT_HERE, run: () => editHere(board) } });
+  }, [on, role]);
+}
+
 export function BoardCanvas({ board }: { board: string }) {
   const { tokens: t } = useTheme();
   const b = useStore((s) => s.boards[board]);
@@ -72,7 +101,12 @@ export function BoardCanvas({ board }: { board: string }) {
   const [channel, setChannel] = useState<HostChannel | null>(null);
   const status = useViewStatus();
   const slots = useSlots();
+  const phone = usePhone();
+  const landscape = useBoardLandscape();
+  const picking = !!usePickWait(board); // (on the phone the pick bar is the whole bottom row while a chat of the board waits: the voice pill is not drawn over it, b2-design.md §6)
 
+  useBoardToasts(board, phone);
+  usePhoneBoard(board, { phone, landscape, loaded: status.board === board && status.loaded });
   useBlurFlush(board);
   useEffect(() => onKey(boardKeyHandler(onPhone)), []);
   useEffect(() => { setPickGo(select); }, []); // (the phone's wait for a point goes between the chat and the board by the shell's own selection)
@@ -146,12 +180,13 @@ export function BoardCanvas({ board }: { board: string }) {
             </View>
           )}
           <FlashLayer board={board} />
-          <Presence board={board} />
+          {!phone && <Presence board={board} />}
         </PickLayer>
-        {!archived && <RoleBar board={board} />}
-        {!archived && <slots.BoardVoice board={board} />}
+        {!archived && !phone && <RoleBar board={board} />}
+        {!archived && !(phone && picking) && <slots.BoardVoice board={board} />}
         <SaveBanner board={board} />
-        <DroppedNote board={board} />
+        {!phone && <DroppedNote board={board} />}
+        {phone && !landscape && <BottomRow board={board} />}
       </>
     );
   }

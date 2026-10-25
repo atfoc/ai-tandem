@@ -136,12 +136,16 @@ await check("L8 a long chat stays smooth, and the thread keeps its place while a
   const after = await read(), kept = await anchor();
   if (Math.abs(after.top - held.top) > 2) fail(`${viewport}: the user scrolled up and the thread moved by ${after.top - held.top} px (from ${held.top} to ${after.top}) as the answer streamed`);
   if (!pin || !kept || pin.text !== kept.text || Math.abs(pin.top - kept.top) > 2) fail(`${viewport}: the message the user was looking at moved: ${JSON.stringify(pin)} before, ${JSON.stringify(kept)} after`);
+  // (the phone shows the "↓ Latest" pill when new text came while the person is scrolled up: it is the sign that there is more below)
+  if (viewport === "phone" && !await until(async () => (await byTid(page, "thread-latest").count()) === 1, 3000)) fail(`${viewport}: scrolled up while the answer grew, the thread shows no Latest pill`);
+  if (viewport !== "phone" && await byTid(page, "thread-latest").count()) fail(`${viewport}: the wide thread shows the phone's Latest pill`);
   if (after.height <= held.height + 50) fail(`${viewport}: the answer did not grow while the user was scrolled up (${held.height} to ${after.height} px): nothing was proved`);
 
   // ---- back to the end: it follows again
   await scrollBy(after.height);
   if (!await atEnd(5000)) fail(`${viewport}: scrolled back to the end, the thread is ${await gap()} px from it`);
   if (!await until(async () => (await read()).follows === "true", 3000)) fail(`${viewport}: scrolled back to the end, the thread does not say it follows`);
+  if (await byTid(page, "thread-latest").count()) fail(`${viewport}: scrolled back to the end, the Latest pill is still there`);
   await stream(CHUNKS - 5, CHUNKS, at + 1);
   if (!await atEnd(5000)) fail(`${viewport}: scrolled back to the end, the thread did not follow the answer: ${await gap()} px from it`);
   await mockEval(putText(at + 1, chunkText(CHUNKS), true) + setStatus("ready") + `items.c_long[${at + 2}] = { kind: "end" };`, url);

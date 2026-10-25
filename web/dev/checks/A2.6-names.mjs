@@ -6,8 +6,16 @@
 // folder whole on its button. A short name is not cut.
 // Ports dev/checks/A2.6-names.mjs with its states, widths and assertions (the wide toolbar is the desktop's 1100 px; the touch viewports run the
 // cases at 300 px, where "more" is a sheet). The folder's browser closes with Esc too (every popup of ui/Overlay does).
+// At the phone (ux-improvements C1: the phone viewport, a touch viewport's window and the desktop's pages of 300 px, windows under 700 px) the choices
+// are the chips of the chip row above the box and there is no "more" popup: the choice chips (the folder's and the model's of a new chat) are held
+// there as above, and with the whole name in the chip's tooltip or its accessibility label (the phone's parts have no tooltips); the fixed chips of a
+// started chat and the server's chip are not drawn there (a started chat's settings are in Chat info, the server is named in the header), so those cases
+// are left out of a phone-layout page and held by the desktop's pages of 1100 px and its panel of 300 px (board-long).
+// The phone's menus (ux-improvements C2) are the chip sheets: the folder's chip opens folder-sheet, whose "Use <name>" button (dir-use) names the folder
+// whole, and the model's chip model-sheet, whose row (picker-row) names the model whole; each opens from its chip with composer.mjs' openChoice and closes
+// with closeChoice. The chip says "<model> · <effort>" there, the whole name in the chip's accessibility label.
 import { check, seed, until } from "../shot.mjs";
-import { MORE, POP, frame, openAt, openState, playable } from "./composer.mjs";
+import { MORE, POP, closeChoice, frame, openAt, openChoice, openState, playable } from "./composer.mjs";
 import { byTid, press, tidSel } from "./sel.mjs";
 
 export const viewports = ["desktop", "tablet", "phone"];
@@ -33,6 +41,9 @@ const CASES = [
   ["board-long", 300, [["folder, fixed", FOLDER], ["model, fixed", MODEL]]],
 ];
 
+// The same at the phone: the sheet each chip opens, and the element of it that names the choice
+const PHONE_MENUS = { folder: ["folder-sheet", tidSel("dir-use")], model: ["model-sheet", tidSel("picker-row")] };
+
 /** In the page: the chip that [kind, fixed] names under `root`, its name's element and what is drawn beside the name. */
 function chipInPage([root, kind, fixed]) {
   const scope = document.querySelector(root) ?? document;
@@ -44,7 +55,7 @@ function chipInPage([root, kind, fixed]) {
   const beside = [...chip.children].filter((e) => e !== name).map((e) => { const r = e.getBoundingClientRect(); return { el: e.tagName.toLowerCase() + (e.dataset.testid ? "." + e.dataset.testid : ""), whole: r.width > 0 && r.left >= c.left - 0.5 && r.right <= c.right + 0.5 }; });
   return { text: name.textContent, cut: name.scrollWidth > name.clientWidth, ellipsis: cs.textOverflow === "ellipsis" && cs.overflowX === "hidden" && cs.whiteSpace === "nowrap",
     lines: Math.round(n.height / parseFloat(cs.lineHeight) || 1), inChip: n.left >= c.left - 0.5 && n.right <= c.right + 0.5, beside,
-    titles: [chip.getAttribute("title") ?? "", name.getAttribute("title") ?? ""], where: chip.closest('[data-testid="more-pop"]') ? "popup" : "row" };
+    titles: [chip.getAttribute("title") ?? "", name.getAttribute("title") ?? "", chip.getAttribute("aria-label") ?? ""], where: chip.closest('[data-testid="more-pop"]') ? "popup" : "row" };
 }
 
 /** In the page: the elements of an open menu that say `name`, each against its menu and the window. */
@@ -58,7 +69,8 @@ function namedInMenu([menu, item, name]) {
 await check("A2.6 a long name is cut with an ellipsis, and whole in the tooltip and in the menu", async ({ url, layout, open, fail, note }) => {
   const wide = layout === "desktop";
   const states = (await seed(url, "A2")).filter((s) => playable(s, layout));
-  let chips = 0, menus = 0;
+  let chips = 0, menus = 0, skipped = 0;
+  const ROW = '[data-testid="composer-tools"], [data-testid="composer-chip-row"]'; // (the wide toolbar's row, or the phone's chip row)
   for (const [id, wanted, named] of CASES) {
     const width = wide ? wanted : 300;
     if (!wide && wanted !== 300) continue; // (a touch viewport has no wide toolbar: the wide cases are the desktop's)
@@ -66,9 +78,11 @@ await check("A2.6 a long name is cut with an ellipsis, and whole in the tooltip 
     const { page, ctx } = await openAt(open, s, layout, width);
     try {
       for (const [kind, name] of named) {
-        const at = `${id} at ${width} px, the ${kind} chip`, [match, menu, item] = CHIPS[kind], fixed = match.fixed;
+        const phone = await page.evaluate(() => !!document.querySelector('[data-testid="composer-phone-tools"]'));
+        const at = `${id} at ${width} px, the ${kind} chip`, [match, menu, item] = phone && PHONE_MENUS[kind] ? [CHIPS[kind][0], ...PHONE_MENUS[kind]] : CHIPS[kind], fixed = match.fixed;
         // (a chip the row has no room for is in the "more" popup, which stays open while its chips are looked at)
-        const inRow = () => page.evaluate(chipInPage, ['[data-testid="composer-tools"]', match.kind, fixed]);
+        if (phone && fixed) { skipped++; continue; } // (a started chat has no chip row at the phone, and the server is named in the header)
+        const inRow = () => page.evaluate(chipInPage, [ROW, match.kind, fixed]);
         if (!await inRow() && await page.locator(MORE).count() && !await page.locator(POP).count()) await press(page, page.locator(MORE));
         const c = await until(async () => (await inRow()) ?? (await page.evaluate(chipInPage, ['[data-testid="more-pop"]', match.kind, fixed])), 5000);
         if (!c) { fail(`${at}: is not on the page, in the toolbar or in "more"`); continue; }
@@ -79,11 +93,11 @@ await check("A2.6 a long name is cut with an ellipsis, and whole in the tooltip 
         if (!c.ellipsis) fail(`${at}: its cut name does not end in an ellipsis on one line`);
         if (c.lines !== 1 || !c.inChip) fail(`${at}: its name takes ${c.lines} lines${c.inChip ? "" : " and ends outside its chip"}`);
         for (const b of c.beside) if (!b.whole) fail(`${at}: its ${b.el} is not whole beside the cut name`);
-        if (!c.titles.some((t) => t.includes(name))) fail(`${at}: neither its tooltip ("${c.titles[0]}") nor its name's ("${c.titles[1]}") has the name whole`);
+        if (!c.titles.some((t) => t.includes(name))) fail(`${at}: neither its tooltip ("${c.titles[0]}") nor its name's ("${c.titles[1]}") nor its label ("${c.titles[2]}") has the name whole`);
         if (!menu) continue;
         // the menu: opened from the chip where it is
-        const from = c.where === "popup" ? byTid(page, "more-pop") : byTid(page, "composer-tools");
-        await press(page, from.locator(`${tidSel("tchip")}[data-kind="${match.kind}"]:not([data-fixed="true"])`).first());
+        const from = c.where === "popup" ? byTid(page, "more-pop") : byTid(page, phone ? "composer-chip-row" : "composer-tools");
+        if (phone) await openChoice(page, match.kind); else await press(page, from.locator(`${tidSel("tchip")}[data-kind="${match.kind}"]:not([data-fixed="true"])`).first());
         if (kind === "folder") await byTid(page, "dir-use").first().waitFor({ state: "visible", timeout: 8000 }).catch(() => {});
         const rows = await until(async () => { const r = await page.evaluate(namedInMenu, [tidSel(menu), item, name]); return r?.length ? r : null; }, 8000);
         if (!rows) fail(`${at}: its menu has no ${item} that says "${name}"`);
@@ -91,7 +105,7 @@ await check("A2.6 a long name is cut with an ellipsis, and whole in the tooltip 
           menus++;
           for (const r of rows) if (r.cut || !r.inside) fail(`${at}: in its menu "${r.text}" is ${r.cut ? "cut" : "not inside the menu"}`);
         }
-        await page.keyboard.press("Escape");
+        if (phone) await closeChoice(page); else await page.keyboard.press("Escape");
         if (!await until(async () => !await byTid(page, menu).count(), 5000)) fail(`${at}: its menu did not close`);
       }
     } catch (e) { fail(`${id} at ${width} px: ${e.message.split("\n")[0]}`); }
@@ -102,10 +116,10 @@ await check("A2.6 a long name is cut with an ellipsis, and whole in the tooltip 
     const s = states.find((x) => x.id === "plain-new"), { page, ctx } = wide ? await openState(open, s, layout, 1100) : await openAt(open, s, layout, 560);
     await frame(page);
     for (const kind of ["folder", "model"]) {
-      const c = await page.evaluate(chipInPage, ['[data-testid="composer-tools"]', kind, false]);
+      const c = await page.evaluate(chipInPage, [ROW, kind, false]);
       if (!c || c.none || c.cut) fail(`plain-new at ${wide ? "1100" : "560"} px, the ${kind} chip: ${!c ? "is not on the page" : c.none ? "has no name element" : `its short name "${c.text}" is cut`}`);
     }
     await ctx.close();
   }
-  note(`${chips} chips with a long name: each cut with an ellipsis, its icon and caret whole, the name whole in a tooltip; ${menus} menus name it whole`);
+  note(`${chips} chips with a long name: each cut with an ellipsis, its icon and caret whole, the name whole in a tooltip; ${menus} menus name it whole${skipped ? `; ${skipped} fixed chips not drawn in the phone layout` : ""}`);
 }, { viewports, page: false });

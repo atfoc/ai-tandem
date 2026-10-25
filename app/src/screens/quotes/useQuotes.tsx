@@ -19,11 +19,14 @@ import { registerTaker } from "./bus.ts";
 import { CommentSheet } from "./CommentSheet.tsx";
 import { QuoteFloat } from "./QuoteFloat";
 import { QuoteCount } from "./QuoteCount.tsx";
+import { QuotesSheet } from "./QuotesSheet.tsx";
+import { usePhone } from "../../ui/useLayout.ts";
 import { withFloat, type Editing } from "./model.ts";
 import { useSheetPath } from "./path.ts";
 
 export const useQuotes: QuotesHook = ({ chat, quotes, setQuotes, readOnly, width = 0 }) => {
   const sheet = useSheetPath();
+  const phone = usePhone();
   const [edit, setEdit] = useState<Editing | null>(null);
   const [list, setList] = useState(false);
   const now = useRef({ quotes, edit, readOnly });
@@ -42,6 +45,8 @@ export const useQuotes: QuotesHook = ({ chat, quotes, setQuotes, readOnly, width
   };
   const remove = (r: Reference) => setQuotes((qs) => qs.filter((q) => quoteKey(q) !== quoteKey(r)));
   useEffect(() => { if (readOnly && now.current.edit) keep(now.current.edit, false); }, [readOnly]);
+  // no quotes left (the last one removed, or the draft cleared): the phone's sheet closes and does not come back with the next quote
+  useEffect(() => { if (quotes.length === 0) setList(false); }, [quotes.length]);
 
   const latest = useRef((r: Reference) => {});
   latest.current = (r) => {
@@ -72,12 +77,20 @@ export const useQuotes: QuotesHook = ({ chat, quotes, setQuotes, readOnly, width
     quote,
     kept,
     count: n > 0 ? (
-      <QuoteCount quotes={quotes} open={list} width={width} onOpen={() => setList(true)} onClose={() => setList(false)} onRemove={readOnly ? undefined : remove}
-        onPick={(q) => {
-          setList(false);
-          quotePort.show(chat, q, false);
-          open(q);
-        }} />
+      <>
+        <QuoteCount quotes={quotes} open={list} width={width} onOpen={() => setList(true)} onClose={() => setList(false)} onRemove={readOnly ? undefined : remove}
+          onPick={(q) => {
+            setList(false);
+            quotePort.show(chat, q, false);
+            open(q);
+          }} />
+        {/* the phone's chip opens the sheet "Quoted in this message" and not the list; a comment typed in it, and a removal, change the draft as the float does */}
+        {phone && list ? (
+          <QuotesSheet chat={chat} quotes={quotes} readOnly={readOnly} onClose={() => setList(false)}
+            onComment={(q, text) => setQuotes((qs) => withFloat(qs, { r: q, edit: true, text }, false))}
+            onRemove={remove} />
+        ) : null}
+      </>
     ) : null,
     float: field ? (sheet ? <CommentSheet {...field} /> : <QuoteFloat chat={chat} {...field} />) : null,
   };

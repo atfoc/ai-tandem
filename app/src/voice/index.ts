@@ -4,7 +4,7 @@
 import { useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import type { VoiceProblemKind } from "./ports.ts";
 import type { VoiceSettings } from "./logic/settings.ts";
-import { hasKey, playPreview, removeKey, setKey, testKey, voices } from "./engine/keycheck.ts";
+import { hasKey, playPreview, removeKey, setKey, stopPreview, testKey, voices } from "./engine/keycheck.ts";
 import { readAloud, stopReading, testSpeaker } from "./engine/speaker.ts";
 import { deviceListStore, micTestStore, resume, startMicTest, stopMicTest, watchDevices } from "./engine/devices.ts";
 import { choicesFor } from "./logic/devices.ts";
@@ -85,6 +85,8 @@ export const voice: {
   removeKey(): Promise<void>;
   voices(o?: { all?: boolean; search?: string; cursor?: string }): Promise<VoiceList>;
   playPreview(voiceId: string): Promise<void>;
+  /** Stops the preview clip in play (a sample's stop button); a message read aloud, a session and Test speaker are left alone. */
+  stopPreview(): void;
   dismissProblem(): void;
   /** Continue after a pause (VD-12): the speech bar's Continue, the paused orb, Continue reading. The sound goes on from the system's output. */
   resume(): void;
@@ -110,6 +112,7 @@ export const voice: {
   removeKey,
   voices,
   playPreview,
+  stopPreview,
   dismissProblem,
   resume,
   testSpeaker,

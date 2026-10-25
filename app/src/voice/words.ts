@@ -21,7 +21,6 @@ export const PROBLEM_DISMISS = "Not now";
 // ---- The composer (architecture §9): the titles of the two controls of its toolbar, and of their entries in the "more" popup
 
 export const DICTATE_TITLE = "Dictate";
-export const DICTATE_STOP_TITLE = "Stop dictating";
 export const SPEECH_TITLE = "Speech mode";
 export const SPEECH_END_TITLE = "End speech mode";
 
@@ -30,7 +29,7 @@ export const SPEECH_END_TITLE = "End speech mode";
 export const SPEECH_BAR = "Speech mode";
 export const SPEECH_MUTE = "Mute";
 export const SPEECH_UNMUTE = "Unmute";
-export const SPEECH_MUTE_TIP = "Stop sending your voice, and keep the session";
+export const SPEECH_MUTE_TIP = "Send no voice, and keep the session";
 export const SPEECH_UNMUTE_TIP = "Send your voice again";
 export const SPEECH_END = "End";
 export const SPEECH_END_TIP = "End speech mode";
@@ -44,7 +43,7 @@ export const MIC_MARK = "Spoken";
 // ---- Read aloud (architecture VC-24)
 
 export const READ_ALOUD = "Read aloud";
-export const READ_STOP = "Stop reading";
+export const READ_END = "End reading";
 export const READ_CONTINUE = "Continue reading";
 
 // ---- the board's pill (VC-28)
@@ -78,10 +77,10 @@ export const PILL_SPOKEN = "Reply";
 /** What the orb does when it is pressed, by its state (its tooltip and its label). */
 export const PILL_ORB: Record<"idle" | "listening" | "countdown" | "waiting" | "thinking" | "speaking" | "paused", string> = {
   idle: "Talk to a chat of this board",
-  listening: "Stop listening",
-  countdown: "Stop listening",
-  waiting: "Stop listening",
-  thinking: "Stop and put the voice away",
+  listening: "End",
+  countdown: "End",
+  waiting: "End",
+  thinking: "End",
   speaking: SPEECH_WAVE_TIP,
   paused: "Continue",
 };
@@ -189,7 +188,7 @@ export const DEVICES_HIDDEN_NOTE = "Allow the microphone to see your other devic
 
 /** The checks (VD-15, VD-16). */
 export const MIC_TEST = "Test microphone";
-export const MIC_TEST_STOP = "Stop test";
+export const MIC_TEST_END = "End test";
 export const MIC_TEST_BUSY = "Voice is listening.";
 export const SPEAKER_TEST = "Test speaker";
 
@@ -212,3 +211,95 @@ export const NOTICE_LOST_SPEAKER = (name: string): string => `${q(name)} was dis
 export const NOTICE_LOST_SPEAKER_UNNAMED = "The speaker was disconnected. Speaking through the system speaker.";
 export const NOTICE_PAUSED = (name: string): string => `${q(name)} was disconnected. Paused so nothing is played out loud.`;
 export const NOTICE_PAUSED_UNNAMED = "Your headphones were disconnected. Paused so nothing is played out loud.";
+
+// ux-s3: Settings › Voice on the phone
+
+/** The no-key card (07b) and what waits for a key. */
+export const VS_PROMO_TITLE = "Talk to your agents";
+export const VS_PROMO_BODY = "Talk to your agents and hear replies. Voice uses your own ElevenLabs account.";
+export const VS_ADD_KEY = "Add ElevenLabs key";
+export const VS_GET_KEY = "No key yet? Get one at elevenlabs.io ↗";
+export const VS_GET_KEY_URL = "https://elevenlabs.io/app/settings/api-keys";
+export const VS_NO_KEY_FOOTER = "Speech mode and the advanced options appear once a key is saved.";
+
+/** The key row, the voice and the groups of the screen (07). */
+export const VS_KEY_SAVED = "Saved on this device ✓";
+export const VS_FIRST_VOICE = "Your account's first voice";
+export const VS_PLAYING = "Playing sample…";
+export const VS_CHOOSE_VOICE = "Choose voice";
+export const VS_SENDING_TITLE = "Sending";
+export const VS_AUTOSEND = "Auto-send after speaking";
+export const VS_AUTOSEND_FOOTER = "Sends your turn after a pause. For board chats and regular chats alike. Off: you tap Send.";
+export const VS_ADVANCED_TITLE = "Advanced";
+export const VS_STT_MODEL = "Transcription";
+export const VS_SKIP_CODE = "Skip code blocks";
+export const VS_REMOVE_KEY = "Remove key from this device";
+
+/** Add key (P3). */
+export const VS_KEY_SHEET_TITLE = "ElevenLabs key";
+export const VS_KEY_FIELD = "API key";
+export const VS_KEY_PASTE = "Paste";
+export const VS_KEY_SHOW = "Show key";
+export const VS_KEY_HIDE = "Hide key";
+export const VS_KEY_WORKS = (voices: number): string => `✓ ${keyWorks(voices)}`;
+export const VS_KEY_PROBLEM = (sentence: string): string => `! ${sentence}`;
+
+/** Choose voice (P5). */
+export const CV_TITLE = "Choose voice";
+export const CV_CHOSEN = "Chosen";
+export const CV_STOP_SAMPLE = "Pause sample";
+
+/** The device rows of Advanced (chunk 4). */
+export const VS_DEVICE_SYSTEM_VALUE = "System";
+export const VS_DEVICE_SHEET_SUB = "Used for voice on this device";
+
+// ux-v1: the phone's composer voice (goal 3.7.2, 3.7.3): Talk, Dictate, Send, Cancel, Interrupt, Mute, End; Listening, Sending in N s, Thinking…, Speaking, Muted
+export const TALK_TITLE = "Talk";
+export const TALK_END_TITLE = "End";
+export const DICTATE_END_TITLE = "End dictation";
+export const DICTATE_LINE_LISTENING = "Listening…";
+export const DICTATE_LINE_END = "Tap the mic to end";
+export const BAR_LISTENING = "Listening";
+export const BAR_SENDING = (seconds: number): string => `Sending in ${seconds} s`;
+export const BAR_THINKING = "Thinking…";
+export const BAR_SPEAKING = "Speaking";
+export const BAR_MUTED = "Muted";
+export const BAR_PAUSED = "Paused";
+export const BAR_INTERRUPT = "Interrupt";
+
+// ux-v1: the board's orb and card
+
+/** The docked orb's accessibility label for each state: the vocabulary, Talk, End, Interrupt, Continue. */
+export const BOARD_ORB: Record<"idle" | "listening" | "countdown" | "waiting" | "thinking" | "speaking" | "paused", string> = {
+  idle: "Talk",
+  listening: "End",
+  countdown: "End",
+  waiting: "End",
+  thinking: "End",
+  speaking: "Interrupt",
+  paused: "Continue",
+};
+export const BOARD_ORB_BADGE = (n: number): string => `${n} selected shape${n === 1 ? "" : "s"} go with what you say`;
+
+/** The voice card of a phone board. */
+export const CARD_TO = "To:";
+export const CARD_TO_LABEL = (name: string): string => `Send to ${name}. Choose another chat.`;
+export const CARD_NEW_CHAT = "New chat";
+export const CARD_SENDING_IN = (seconds: number): string => `Sending in ${seconds} s`;
+export const CARD_THINKING = (agent: string): string => `${agent} · thinking…`;
+export const CARD_SPEAKING = (agent: string): string => `${agent} · speaking`;
+export const CARD_IN = (chat: string): string => `In “${chat}”`;
+export const CARD_OPEN_CHAT = "Open chat";
+export const CARD_INTERRUPT = "Interrupt";
+export const CARD_AGENT_NONE = "Your agent";
+export const CARD_WITH_SELECTED = (n: number): string => `With ${n} selected shape${n === 1 ? "" : "s"}`;
+
+// ux-v1: Set up voice (the phone's sheet for every voice problem)
+export const SETUP_TITLE = "Set up voice";
+export const SETUP_TALK = (agent: string): string => `Talk to ${agent}, or dictate into the box, with your voice.`;
+export const SETUP_NOTE = "Voice runs on ElevenLabs, a speech service with its own account. Add your ElevenLabs API key once; it stays on this device and is sent only to elevenlabs.io.";
+export const SETUP_OPEN_VOICE = "Open Settings › Voice";
+export const SETUP_ELEVENLABS_TITLE = "ElevenLabs";
+export const SETUP_MIC_TITLE = "Microphone";
+export const SETUP_OFFLINE_TITLE = "Can't reach ElevenLabs";
+export const SETUP_YOUR_AGENTS = "your agents";

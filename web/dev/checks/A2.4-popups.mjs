@@ -7,9 +7,17 @@
 // Ports dev/checks/A2.4-popups.mjs: its states, widths and assertions. Deviations: the folder's
 // browser closes with Esc as every popup of ui/Overlay does (the old one had none: a press outside closes it too, and is tried); at the touch
 // viewports the popups are sheets (AD-72) and the window is the device's (the pane's 300 px a window of 300), and the width of a chip in "more"
-// against the wide toolbar is the desktop's (it needs a window of 1100 and one of 300).
+// against the wide toolbar is the desktop's (it needs a window of 1100 and a narrower one).
+// At the phone (ux-improvements C1: the phone viewport, a touch viewport's window and the desktop's pages of 300 px, windows under 700 px) the choices
+// are the chips of the chip row above the box and there is no "more" popup: the lists open from the chips in the row, and the usage popover from the
+// context ring in the phone's toolbar row (its "Context and usage" sheet, `usage-sheet`, package T3); each is held the same (inside the window, the element at its own corners), and "more" and what is
+// opened from it are the wide layouts' (the desktop's panels: board-new and board-started). A chip's width in "more" is held at the desktop's
+// narrowest page with a popup, a window of 824 px (the page of 560 px, as under 700 px it would be the phone layout).
+// The phone's popups are the chip sheets (ux-improvements C2): agent-sheet, folder-sheet, model-sheet (the effort's list is its effort-seg control, held
+// the same: inside the window, the element at its own corners), sub-sheet; each opens from its chip (composer.mjs' openChoice), is read at rest, and
+// closes with Done or Cancel or a press outside (closeChoice); the usage popover opens from the ring.
 import { check, seed, until } from "../shot.mjs";
-import { HEIGHT, MORE, POP, SIDE, chip, frame, openAt, openState, placesOf, playable } from "./composer.mjs";
+import { HEIGHT, MORE, POP, SIDE, chip, closeChoice, frame, openAt, openChoice, openState, phoneChip, placesOf, playable } from "./composer.mjs";
 import { byTid, press, tidSel } from "./sel.mjs";
 
 export const viewports = ["desktop", "tablet", "phone"];
@@ -21,6 +29,15 @@ const OPENERS = [
   ["the model's list", "model", "picker"],
   ["the effort's list", "effort", "picker"],
   ["the usage popover", "meter", "usage-pop"],
+];
+// The phone's: [name, the chip's kind ("meter": the context ring), the popup's testID, a part of it held on its own]
+const PHONE_OPENERS = [
+  ["the agent's sheet", "agent", "agent-sheet"],
+  ["the folder's sheet", "folder", "folder-sheet"],
+  ["the model's sheet", "model", "model-sheet"],
+  ["the effort's control in the model sheet", "model", "model-sheet", "effort-seg"],
+  ["the subagents' sheet", "subagents", "sub-sheet"],
+  ["the Context and usage sheet", "meter", "usage-sheet"], // (the phone's ring opens T3's sheet)
 ];
 /** The control of a kind under a row or a popup: a chip, or the context ring. */
 const opener = (from, kind) => (kind === "meter" ? byTid(from, "ctx-meter") : chip(from, kind, { fixed: false }));
@@ -61,20 +78,51 @@ await check("A2.4 the toolbar's popups at 300 px, and a chip's width in \"more\"
   for (const id of ["plain-new", "plain-remote-new", "plain-new-long", "plain-started", "board-new", "board-started"]) {
     const s = state(id), p = await openAt(open, s, layout, 300), at = `${id}, a ${s.pane[0]} of 300 px`;
     try {
-      const hasMore = await p.page.locator(MORE).count() > 0;
+      const phone = (await placesOf(p.page))?.phone, hasMore = await p.page.locator(MORE).count() > 0;
+      if (phone && hasMore) fail(`${at}: the phone has a "more" chip`);
+      // (the phone's choices are in the chip row, its ring in the toolbar row)
+      const rowFor = (kind) => byTid(p.page, kind === "meter" ? (phone ? "composer-phone-tools" : "composer-tools") : phone ? "composer-chip-row" : "composer-tools");
+      if (phone) {
+        // ---- the phone: each chip of the row opens its sheet, the ring the usage popover
+        for (const [what, kind, popup, part] of PHONE_OPENERS) {
+          const target = kind === "meter" ? byTid(rowFor(kind), "ctx-meter") : phoneChip(p.page, kind);
+          if (!await target.count()) continue; // (the state has no such choice)
+          const name = `${at}: ${what}`;
+          if (kind === "meter") await press(p.page, target.first()); else await openChoice(p.page, kind);
+          if (!await until(() => byTid(p.page, popup).count(), 5000)) { fail(`${name}: did not open`); continue; }
+          if (kind === "folder") await byTid(p.page, "dir-use").first().waitFor({ state: "visible", timeout: 8000 }).catch(() => fail(`${name}: the folders did not load`)); // (as tall as it gets)
+          if (await holds(p.page, name, popup)) seen++;
+          if (part) { // a part of the sheet: inside the window and the element at its own corners
+            if (!await byTid(p.page, popup).locator(tidSel(part)).count()) fail(`${name}: the sheet has no ${part}`);
+            else {
+              // (the sheet scrolls: in a window of 640 px the effort's control, below the list, is under the fold until the sheet is scrolled to it)
+              await byTid(p.page, popup).locator(tidSel(part)).first().scrollIntoViewIfNeeded();
+              if (await holds(p.page, `${name} (${part})`, part)) seen++;
+            }
+          }
+          if (kind === "meter") await p.page.keyboard.press("Escape"); else await closeChoice(p.page);
+          if (!await gone(p.page, popup)) fail(`${name}: did not close`);
+        }
+        await close(p);
+        continue;
+      }
       if (hasMore) {
         await press(p.page, p.page.locator(MORE));
         if (await holds(p.page, `${at}: the "more" popup`, "more-pop")) seen++;
         await p.page.keyboard.press("Escape");
         if (!await gone(p.page, "more-pop")) fail(`${at}: Esc did not close the "more" popup`);
       }
-      for (const [what, kind, popup] of OPENERS) {
-        const inRow = await (kind === "meter" ? byTid(byTid(p.page, "composer-tools"), "ctx-meter") : chip(byTid(p.page, "composer-tools"), kind)).count() > 0;
+      for (const [what, kind, opens] of OPENERS) {
+        // (on the phone layout the ring opens the "Context and usage" sheet, ux-improvements T3, and so does a ring in a window under 700 px of
+        // the wide composer: held the same; A2.4-usage says which one opens where)
+        let popup = kind === "meter" && phone ? "usage-sheet" : opens;
+        const inRow = await (kind === "meter" ? byTid(rowFor(kind), "ctx-meter") : chip(rowFor(kind), kind)).count() > 0;
         if (!inRow && hasMore) await press(p.page, p.page.locator(MORE));
-        const from = inRow ? byTid(p.page, "composer-tools") : byTid(p.page, "more-pop"), target = opener(from, kind);
+        const from = inRow ? rowFor(kind) : byTid(p.page, "more-pop"), target = opener(from, kind);
         if (!await target.count()) { if (!inRow && hasMore) { await p.page.keyboard.press("Escape"); await gone(p.page, "more-pop"); } continue; } // (the state has no such choice)
         const name = `${at}: ${what}${inRow ? "" : ', opened from "more"'}`;
         await press(p.page, target.first());
+        if (kind === "meter") popup = await until(async () => (await byTid(p.page, "usage-sheet").count() ? "usage-sheet" : await byTid(p.page, opens).count() ? opens : null), 5000) ?? popup;
         if (!await until(() => byTid(p.page, popup).count(), 5000)) { fail(`${name}: did not open`); continue; }
         if (what === "the folder's browser") await byTid(p.page, "dir-use").first().waitFor({ state: "visible", timeout: 8000 }).catch(() => fail(`${name}: the folders did not load`)); // (as tall as it gets)
         if (await holds(p.page, name, popup)) seen++;
@@ -95,7 +143,7 @@ await check("A2.4 the toolbar's popups at 300 px, and a chip's width in \"more\"
     } catch (e) { fail(`${at}: ${e.message.split("\n")[0]}`); }
     await close(p);
   }
-  note(`${seen} popups at 300 px: each inside the window and the element at its own corners; Esc closes a list opened from "more" before the popup`);
+  note(`${seen} popups at 300 px: each inside the window and the element at its own corners; Esc closes a list opened from "more" before the popup (at the phone: the chip sheets, closed by Done or Cancel)`);
 
   if (layout !== "desktop") return;
   // ---- a chip in "more" is as wide as in the toolbar
@@ -104,7 +152,9 @@ await check("A2.4 the toolbar's popups at 300 px, and a chip's width in \"more\"
     const n = c.querySelector('[data-testid="chip-name"]'), r1 = (x) => Math.round(x * 10) / 10;
     return [(c.getAttribute("title") ?? c.textContent).split(/[ :—]/)[0] + (c.dataset.fixed === "true" ? "*" : ""), { w: r1(c.getBoundingClientRect().width), name: n ? r1(n.getBoundingClientRect().width) : 0, cap: n ? getComputedStyle(n).maxWidth : "", cut: n ? n.scrollWidth > n.clientWidth : false, where: c.closest('[data-testid="more-pop"]') ? "popup" : "row" }];
   })));
+  const NARROW = SIDE + 560; // (the page of 560 px beside the sidebar: the narrowest window of the wide layout where the page has the popup; under 700 px is the phone's)
   let compared = 0, cut = 0;
+  const skipped = [];
   for (const id of ["plain-new-long", "plain-remote-new", "plain-remote-started-long", "plain-started-long", "plain-new"]) {
     const s = state(id), p = await openState(open, s, layout, 1100), name = `${id}`;
     // (a plain chat's column is 780 px at most, which the long names with the Subagents chip pass: it is let as wide as its page while the
@@ -113,21 +163,22 @@ await check("A2.4 the toolbar's popups at 300 px, and a chip's width in \"more\"
     await frame(p.page);
     const wide = await chipsIn(p.page);
     if (Object.values(wide).some((c) => c.where !== "row")) fail(`${name}: at 1100 px a chip is not in the row: ${JSON.stringify(wide)}`);
-    await p.page.setViewportSize({ width: 300, height: HEIGHT });
+    await p.page.setViewportSize({ width: NARROW, height: HEIGHT });
     await frame(p.page);
+    if (!await p.page.locator(MORE).count()) { skipped.push(id); await close(p); continue; } // (a toolbar that fits its page whole has no popup: the long names of a started chat's fixed chips, with the page no narrower than this)
     await press(p.page, p.page.locator(MORE));
-    if (!await until(() => p.page.locator(POP).count(), 5000)) fail(`${name}: at 300 px the "more" chip did not open its popup`);
+    if (!await until(() => p.page.locator(POP).count(), 5000)) fail(`${name}: at ${NARROW} px the "more" chip did not open its popup`);
     await frame(p.page);
     const narrow = await chipsIn(p.page);
     for (const [k, c] of Object.entries(narrow)) {
-      if (!wide[k]) { fail(`${name}: at 300 px a chip "${k}" that the wide toolbar has not`); continue; }
-      if (Math.abs(c.w - wide[k].w) > 0.2 || Math.abs(c.name - wide[k].name) > 0.2 || c.cap !== wide[k].cap) fail(`${name}: the ${k} chip is ${c.w} px wide in the ${c.where} at 300 px (its name ${c.name}, cap ${c.cap}), and ${wide[k].w} in the wide toolbar (name ${wide[k].name}, cap ${wide[k].cap})`);
+      if (!wide[k]) { fail(`${name}: at ${NARROW} px a chip "${k}" that the wide toolbar has not`); continue; }
+      if (Math.abs(c.w - wide[k].w) > 0.2 || Math.abs(c.name - wide[k].name) > 0.2 || c.cap !== wide[k].cap) fail(`${name}: the ${k} chip is ${c.w} px wide in the ${c.where} at ${NARROW} px (its name ${c.name}, cap ${c.cap}), and ${wide[k].w} in the wide toolbar (name ${wide[k].name}, cap ${wide[k].cap})`);
       if (c.where === "popup") { compared++; if (c.cut) cut++; }
     }
-    if (Object.keys(narrow).length !== Object.keys(wide).length) fail(`${name}: ${Object.keys(narrow).length} chips at 300 px with the popup open, ${Object.keys(wide).length} in the wide toolbar`);
+    if (Object.keys(narrow).length !== Object.keys(wide).length) fail(`${name}: ${Object.keys(narrow).length} chips at ${NARROW} px with the popup open, ${Object.keys(wide).length} in the wide toolbar`);
     await close(p);
   }
   if (!cut) fail("no chip in a popup had its name cut: the long names were not among those compared");
+  if (skipped.length) note(`no "more" at ${NARROW} px, not compared: ${skipped}`);
   note(`${compared} chips in "more", ${cut} of them with a name cut by its cap: each as wide as in the toolbar`);
-  void SIDE;
 }, { viewports, page: false });

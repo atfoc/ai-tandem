@@ -1,11 +1,11 @@
 // VC.5 (new, voice-chats P14): Read aloud on every message, on the mock with the stand-in voice service mounted at /voice (dev/voicestandin.mjs), at the
-// desktop and the phone. Goal 3.3, 3.5, 3.8, 4.7, 6.2; architecture VC-24 and VC-25. What the stand-in's log says is the proof of what was sent.
-//   the action       a mouse sees "Read aloud" in the bar over a message (`fk-act`, kind `read`), a finger in the "⋯" menu, on the person's message and the
+// desktop and the phone (where the action is a row of the message sheet a finger's hold opens: `openActs` of fork.mjs). Goal 3.3, 3.5, 3.8, 4.7, 6.2; architecture VC-24 and VC-25. What the stand-in's log says is the proof of what was sent.
+//   the action       a mouse sees "Read aloud" in the bar over a message (`fk-act`, kind `read`), a finger in the "⋯" menu (the phone: the first row of the message sheet), on the person's message and the
 //                    model's alike, and also where no fork action is (an archived chat); a reply still being written has none until it is done
 //   what is said     the TTS texts sent for each message have no markdown mark, no link, no URL, no image and no code (Skip code blocks is on by default),
 //                    and keep the words of the message; with "Skip code blocks" off the code is read; the stand-in saw nothing against the protocol
 //   (voice devices D9: while a reading is paused, `voice-reading-continue` stands beside the `voice-reading` chip; VC.8 drives it, this check does not)
-//   stop             while a message is read, the control says "Stop reading" and a chip (`voice-reading`) stays on the message when the pointer leaves
+//   stop             while a message is read, the control says "End reading" and a chip (`voice-reading`) stays on the message when the pointer leaves
 //                    it; both stop the reading, and the stand-in's open request is cancelled
 //   one at a time    a Read aloud on another message stops the first at once (the first's open requests are cancelled, none of
 //                    its later sentences is asked for) and then reads the second
@@ -105,7 +105,8 @@ await check("VC.5 Read aloud: on both messages, cleaned, stopped, one at a time,
     }
     const opened = await openActs(page, done);
     const kinds = (await actsIn(page, opened.scope)).map((a) => a.kind);
-    if (kinds[kinds.length - 1] !== "read") fail(`Read aloud is not the last of the reply's actions (${kinds.join()})`);
+    // (the wide bar and menu end with Read aloud; the phone's message sheet (T1) opens with it, above the fork actions)
+    if (kinds[opened.sheet ? 0 : kinds.length - 1] !== "read") fail(`Read aloud is not the ${opened.sheet ? "first" : "last"} of the reply's actions (${kinds.join()})`);
     await shot(page, "1-actions");
     await opened.close();
 
@@ -115,7 +116,10 @@ await check("VC.5 Read aloud: on both messages, cleaned, stopped, one at a time,
     if (!await until(async () => !!(await byTid(page, "voice-problem").count()))) fail("Read aloud with no key shows no popover");
     else {
       if (await byTid(page, "voice-problem").getAttribute("data-kind") !== "no_key") fail(`the popover is "${await byTid(page, "voice-problem").getAttribute("data-kind")}", not the one for no key`);
-      if (((await byTid(page, "voice-problem-text").textContent()) ?? "").trim() !== "Voice needs your ElevenLabs key. It stays on this device.") fail("the popover does not say the key is needed");
+      // (the phone's sheet, V1: "Set up voice", the body that says what voice is for, and the note that the ElevenLabs key is needed and stays on this device)
+      const said = ((await byTid(page, "voice-problem-text").textContent()) ?? "").trim();
+      if (layout === "phone" ? !/^Talk to .+, or dictate into the box, with your voice\.$/.test(said) || !(await byTid(page, "voice-problem").first().textContent()).includes("Add your ElevenLabs API key once; it stays on this device")
+        : said !== "Voice needs your ElevenLabs key. It stays on this device.") fail(`the popover does not say the key is needed (${JSON.stringify(said)})`);
       if (!await touchNow(page)) { await page.mouse.move(2, 2); await sleep(200); }
       if (!await byTid(page, "voice-problem").count()) fail("the popover went when the pointer left the message");
       // (on the phone the popover is a sheet from the bottom: it hangs from nothing)
@@ -178,7 +182,7 @@ await check("VC.5 Read aloud: on both messages, cleaned, stopped, one at a time,
     if ((await state(page)).reading.key !== null || await byTid(page, "voice-reading").count()) fail("a reading that ended leaves the chip or the mark");
     const ids = { user: await itemOf(mine), reply: await itemOf(done) };
 
-    // ---- the sound starts before the stand-in has finished the sentence; Stop reading ends it, and the open request is cancelled
+    // ---- the sound starts before the stand-in has finished the sentence; End reading ends it, and the open request is cancelled
     await knob("voice.reset(); voice.pace({ chunkMs: 300, chunks: 10 });");
     const w0 = await page.evaluate(() => window.__aiwbVoice.player().writes);
     await pressAct(page, done, "read");
@@ -190,24 +194,24 @@ await check("VC.5 Read aloud: on both messages, cleaned, stopped, one at a time,
     }, 20000);
     if (!early?.length) fail("nothing was written to the player");
     else if (early[0].finishedAt !== null || early[0].chunks >= 10) fail(`the first sound was written only after the stand-in had finished the first sentence (chunks ${early[0].chunks}, finishedAt ${early[0].finishedAt})`);
-    // the chip and the control both say Stop reading, with the pointer away
+    // the chip and the control both say End reading, with the pointer away
     if (!await touchNow(page)) { await page.mouse.move(2, 2); await sleep(150); }
     const chip = byTid(page, "voice-reading");
     if (!await until(async () => !!(await chip.count()), 5000)) fail("no chip shows the message being read");
     else {
-      if (((await chip.first().textContent()) ?? "").trim() !== "Stop reading") fail(`the chip says "${await chip.first().textContent()}"`);
+      if (((await chip.first().textContent()) ?? "").trim() !== "End reading") fail(`the chip says "${await chip.first().textContent()}"`);
       if (await byTid(done, "voice-reading").count() !== 1) fail("the chip is not on the message that is read");
       await shot(page, "4-chip");
     }
     const during = await reading(page, done);
-    if (during?.text !== "Stop reading") fail(`the control of a message being read says "${during?.text}", not "Stop reading"`);
+    if (during?.text !== "End reading") fail(`the control of a message being read says "${during?.text}", not "End reading"`);
     await press(page, chip.first());
     if (!await idle(page, 8000)) fail("the chip does not stop the reading");
     // (the player's own stop is counted only while sound is queued, and a slow stand-in lets the queue run dry: what is proved here is that nothing more is written)
     const wStop = await page.evaluate(() => window.__aiwbVoice.player().writes);
     await until(async () => (await tts()).every((e) => e.finishedAt !== null || e.cancelled), 8000);
     const open1 = (await tts()).filter((e) => e.finishedAt === null);
-    if (open1.length === 0 || open1.some((e) => !e.cancelled)) fail(`Stop reading left a request open: ${JSON.stringify((await tts()).map((e) => [e.chunks, e.finishedAt !== null, e.cancelled]))}`);
+    if (open1.length === 0 || open1.some((e) => !e.cancelled)) fail(`End reading left a request open: ${JSON.stringify((await tts()).map((e) => [e.chunks, e.finishedAt !== null, e.cancelled]))}`);
     const after = (await tts()).length;
     await sleep(800);
     if ((await tts()).length !== after) fail("a sentence was asked for after the reading was stopped");
@@ -220,7 +224,7 @@ await check("VC.5 Read aloud: on both messages, cleaned, stopped, one at a time,
     await pressAct(page, done, "read");
     await until(async () => (await state(page)).reading.key !== null, 8000);
     await pressAct(page, done, "read");
-    if (!await idle(page, 8000)) fail("the control that says Stop reading does not stop it");
+    if (!await idle(page, 8000)) fail("the control that says End reading does not stop it");
 
     // ---- one at a time: another message's Read aloud stops the first
     await knob("voice.reset(); voice.pace({ chunkMs: 300, chunks: 10 });");

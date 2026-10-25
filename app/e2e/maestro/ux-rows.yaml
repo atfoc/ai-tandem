@@ -1,0 +1,291 @@
+# aiwb-e2e: needs=server,agent,control app=1
+# ux-rows (ux-improvements package H2, chunk 10; plans/ux-improvements/h2-design.md §0 H2-4, §3, §7, §9): what only a finger on a device shows of Home's rows.
+# On a scratch server a group "Rows-group" and, outside it, a plain chat "Rows-chat" and a board "Rows-board" (the control API); the app is given the server.
+#   1  a left swipe on a row ("Rows-group", at 90 % to 40 % of the width: it starts well right of the left edge's 20 pt) shows Archive and Delete (`swipe-action`); a tap on
+#      another row closes them and does not open that row
+#   2  a full left swipe on "Rows-chat" (90 % to 10 %) archives it: the toast "Archived “Rows-chat”" with Undo; Undo, and the row is back on Home
+#   3  a long press on "Rows-board" and release opens the row's sheet (`row-sheet`: Open, Rename…, Move to…, Archive, Delete …); a tap outside closes it
+#   4  a finger that holds first and then moves (a Maestro `swipe` of 2 s, which is a hold and then a move: 1.5 s never dropped in four tries, 2 s dropped every time; the system's synthesized touch sends nothing for the duration and then the
+#      move, so it is a hold and then a move) from "Rows-chat" onto "Rows-group" drops the chat into the group: it is no longer on Home and is on the group's screen
+#   5  the list still scrolls with a finger that moves at once (more chats are made so that it overflows): a scroll, not a sheet and not a drag
+# What Maestro's finger cannot do: it is one touch-down, one move and one touch-up, with no events between. A partial swipe (a few hundred points) on "Rows-chat" or "Rows-board"
+# started from a Home that had just been shown ended as a tap on the row (the chat or the board opened) in most tries; on "Rows-group" it never did, and a swipe of 80 % of the width
+# did not either. So 1 swipes the group's row, 2 swipes the chat's full width, and there is no "a finger that moves at once from a row drags nothing" step: such a swipe is read as a tap. The
+# points are percentages of the window of the iPhone 17 simulator (whole percents only): with one group, one board and one chat the rows are at 36 %, 48 % and 59 % of the height.
+# The haptic of the hold ("select") cannot be asserted: the simulator has no engine, and Maestro cannot read one. That the hold was reached shows as the sheet (3) and the drag (4).
+# iOS simulator only. Android is not run (no JDK 17 on the machine that wrote this; notes-foundation.md).
+appId: ${APP_ID}
+---
+- runFlow: _open-sidebar.yaml
+# (_open-sidebar: a retry finds the app where the first attempt left it, a group's screen or a chat, and backs out to Home)
+- runFlow: _forget-servers.yaml
+- runScript:
+    file: _ctl.js
+    env:
+      METHOD: POST
+      ROUTE: /group?name=Rows-group
+- evalScript: ${output.group = output.ctl.id}
+- runScript:
+    file: _ctl.js
+    env:
+      METHOD: POST
+      ROUTE: /chat?name=Rows-chat
+- runScript:
+    file: _ctl.js
+    env:
+      METHOD: POST
+      ROUTE: /board?name=Rows-board
+- runFlow: _add-server.yaml
+# (a row's label is "<name>, <sub-line>": the rows are matched by their id and the name as a pattern)
+- extendedWaitUntil:
+    visible:
+      id: "home-row"
+      text: "Rows-group.*"
+    timeout: 60000
+- extendedWaitUntil:
+    visible:
+      id: "home-row"
+      text: "Rows-chat.*"
+    timeout: 60000
+- extendedWaitUntil:
+    visible:
+      id: "home-row"
+      text: "Rows-board.*"
+    timeout: 60000
+- waitForAnimationToEnd
+- takeScreenshot: h2-00-home
+
+# ---- 1. a left swipe shows Archive and Delete (on the group's row, see the header); a tap on another row closes them and does not open it
+- swipe:
+    start: 90%,36%
+    end: 40%,36%
+    duration: 800
+- waitForAnimationToEnd
+- takeScreenshot: h2-01-swipe
+- assertVisible:
+    id: "swipe-action"
+    text: "Archive"
+- assertVisible:
+    id: "swipe-action"
+    text: "Delete"
+- tapOn:
+    point: 50%,48%
+- waitForAnimationToEnd
+- assertNotVisible:
+    id: "swipe-action"
+- assertNotVisible:
+    id: "board-stage"
+- takeScreenshot: h2-01-closed
+
+# ---- 2. a full swipe archives: the toast with Undo; Undo puts the row back
+# (Maestro's touch-up is also a tap on the row: the chat may open under the toast, which Undo still answers; Home is back by `nav-back`)
+- swipe:
+    start: 90%,59%
+    end: 10%,59%
+    duration: 500
+- extendedWaitUntil:
+    visible:
+      id: "toast"
+    timeout: 15000
+- takeScreenshot: h2-02-archived-toast
+- assertVisible: "Archived .Rows-chat.*"
+- tapOn:
+    id: "toast-action"
+- runFlow: _to-sidebar.yaml
+- extendedWaitUntil:
+    visible:
+      id: "home-row"
+      text: "Rows-chat.*"
+    timeout: 30000
+- waitForAnimationToEnd
+- takeScreenshot: h2-02-undone
+
+# ---- 3. a long press that does not move opens the row's sheet on release
+- longPressOn:
+    point: 50%,48%
+- extendedWaitUntil:
+    visible:
+      id: "row-sheet"
+    timeout: 15000
+- waitForAnimationToEnd
+- takeScreenshot: h2-03-row-sheet
+- assertVisible: "Open"
+- assertVisible: "Rename…"
+- assertVisible: "Move to…"
+- assertVisible: "Archive"
+- assertVisible: "Delete whiteboard…"
+- tapOn:
+    point: 50%,8%
+- waitForAnimationToEnd
+- assertNotVisible:
+    id: "row-sheet"
+- assertNotVisible:
+    id: "board-stage"
+- takeScreenshot: h2-03-sheet-closed
+
+# ---- 4. a hold and then a move drops the chat on the group
+- swipe:
+    start: 50%,59%
+    end: 50%,36%
+    duration: 2000
+- extendedWaitUntil:
+    notVisible:
+      id: "home-row"
+      text: "Rows-chat.*"
+    timeout: 30000
+- waitForAnimationToEnd
+- takeScreenshot: h2-04-dropped
+- assertNotVisible:
+    id: "row-sheet"
+- tapOn:
+    id: "home-row"
+    text: "Rows-group.*"
+- extendedWaitUntil:
+    visible:
+      id: "group-screen"
+    timeout: 30000
+- extendedWaitUntil:
+    visible:
+      id: "home-row"
+      text: "Rows-chat.*"
+    timeout: 30000
+- takeScreenshot: h2-04-in-group
+- tapOn:
+    id: "nav-back"
+- extendedWaitUntil:
+    visible:
+      id: "home"
+    timeout: 30000
+- waitForAnimationToEnd
+
+# ---- 5. a finger that moves at once scrolls the list (made long enough with more chats); no sheet, no drag
+- runScript:
+    file: _ctl.js
+    env:
+      METHOD: POST
+      ROUTE: /chat?name=Rows-more-1
+- runScript:
+    file: _ctl.js
+    env:
+      METHOD: POST
+      ROUTE: /chat?name=Rows-more-2
+- runScript:
+    file: _ctl.js
+    env:
+      METHOD: POST
+      ROUTE: /chat?name=Rows-more-3
+- runScript:
+    file: _ctl.js
+    env:
+      METHOD: POST
+      ROUTE: /chat?name=Rows-more-4
+- runScript:
+    file: _ctl.js
+    env:
+      METHOD: POST
+      ROUTE: /chat?name=Rows-more-5
+- runScript:
+    file: _ctl.js
+    env:
+      METHOD: POST
+      ROUTE: /chat?name=Rows-more-6
+- runScript:
+    file: _ctl.js
+    env:
+      METHOD: POST
+      ROUTE: /chat?name=Rows-more-7
+- runScript:
+    file: _ctl.js
+    env:
+      METHOD: POST
+      ROUTE: /chat?name=Rows-more-8
+- runScript:
+    file: _ctl.js
+    env:
+      METHOD: POST
+      ROUTE: /chat?name=Rows-more-9
+- runScript:
+    file: _ctl.js
+    env:
+      METHOD: POST
+      ROUTE: /chat?name=Rows-more-10
+- runScript:
+    file: _ctl.js
+    env:
+      METHOD: POST
+      ROUTE: /chat?name=Rows-more-11
+- runScript:
+    file: _ctl.js
+    env:
+      METHOD: POST
+      ROUTE: /chat?name=Rows-more-12
+- runScript:
+    file: _ctl.js
+    env:
+      METHOD: POST
+      ROUTE: /chat?name=Rows-more-13
+- runScript:
+    file: _ctl.js
+    env:
+      METHOD: POST
+      ROUTE: /chat?name=Rows-more-14
+- runScript:
+    file: _ctl.js
+    env:
+      METHOD: POST
+      ROUTE: /chat?name=Rows-more-15
+- runScript:
+    file: _ctl.js
+    env:
+      METHOD: POST
+      ROUTE: /chat?name=Rows-more-16
+- runScript:
+    file: _ctl.js
+    env:
+      METHOD: POST
+      ROUTE: /chat?name=Rows-more-17
+- runScript:
+    file: _ctl.js
+    env:
+      METHOD: POST
+      ROUTE: /chat?name=Rows-more-18
+- extendedWaitUntil:
+    visible:
+      id: "home-row"
+      text: "Rows-more-.*"
+    timeout: 60000
+- waitForAnimationToEnd
+- takeScreenshot: h2-05-top
+- assertVisible:
+    id: "home-row"
+    text: "Rows-group.*"
+- swipe:
+    start: 50%,80%
+    end: 50%,20%
+    duration: 300
+- swipe:
+    start: 50%,80%
+    end: 50%,20%
+    duration: 300
+- waitForAnimationToEnd
+- takeScreenshot: h2-05-scrolled
+- assertNotVisible:
+    id: "home-row"
+    text: "Rows-group.*"
+- assertNotVisible:
+    id: "row-sheet"
+- swipe:
+    start: 50%,25%
+    end: 50%,85%
+    duration: 300
+- swipe:
+    start: 50%,25%
+    end: 50%,85%
+    duration: 300
+- waitForAnimationToEnd
+- takeScreenshot: h2-05-back-at-top
+- assertVisible:
+    id: "home-row"
+    text: "Rows-group.*"
+- assertNotVisible:
+    id: "row-sheet"

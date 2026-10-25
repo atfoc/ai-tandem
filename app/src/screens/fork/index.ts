@@ -4,14 +4,17 @@
 import { chatParts, setChatPart } from "../chat/index.ts";
 import { setSlot } from "../shell/slots.tsx";
 import { Banner, BranchCrumb, HeaderTail } from "./Chrome.tsx";
-import { MessageExtras } from "./Message.tsx";
+import { MessageBelow, MessageExtras } from "./Message.tsx";
+import { MessageSheet } from "./MessageSheet.tsx";
 import { TreePopup } from "./TreePopup.tsx";
 
 setChatPart("MessageExtras", MessageExtras);
+setChatPart("MessageBelow", MessageBelow);
 setChatPart("HeaderCrumb", BranchCrumb);
 setChatPart("HeaderTail", HeaderTail);
 setChatPart("Banner", Banner);
 setSlot("Overlays", TreePopup);
+setSlot("Overlays", MessageSheet);
 
 // A build made for the checks (version "uicheck", `buildAppDist`) lets them send a message the way the composer's Send does (the chat view's
 // `sendMessage` part: a move's message goes through `sendAt`), so the waits of the fork flows are read before the composer (K3) is merged and
@@ -22,5 +25,6 @@ if (process.env.EXPO_PUBLIC_AIWB_VERSION === "uicheck" && typeof window !== "und
 
 export { Banner, BranchCrumb, HeaderTail, useLiveTree } from "./Chrome.tsx";
 export { MessageExtras } from "./Message.tsx";
+export { MessageSheet } from "./MessageSheet.tsx";
 export { TreePopup, TREE_POPUP_ID } from "./TreePopup.tsx";
 export { LabelInput } from "./LabelInput.tsx";

@@ -12,9 +12,13 @@
 // The composer is the real one (K3): the message is typed in the box and sent with Enter, and what is read of it is the model and effort pickers disabled
 // with the reason, Send disabled with its spinner, Stop live, a press on the pickers, what is typed while the message is on its way and Enter sending
 // nothing, the box after the answer.
+// The phone half (T3-8) describes the phone's screens: a message's actions are the rows of the message sheet (a hold opens it; an action that waits is faded with
+// its reason as the row's second line: `waitReason`), the header has no alert pills (its Tree button says it: its label ends ", a branch failed" or ", a branch needs
+// your approval", and it stays live), the chat tree is a full-height sheet (one tap on a held row opens nothing; a hold opens the row's P1, whose rows are faded with
+// the reason as the second line; no foot). The meaning of each assertion is the one of the wide halves.
 import { callOfRequest, check, holds, mockEval, release, seed, until } from "../shot.mjs";
 import { byTid, openChat, press } from "./sel.mjs";
-import { actsSeen, closeTree, firstMsg, menuOfRow, notice, openRow, openTree, pressAct, send as sendMsg, startMove, treeRow, treeSeen, waitsSeen as seenNow, endRow } from "./fork.mjs";
+import { actsSeen, closeTree, firstMsg, menuOfRow, openActs, notice, openRow, openTree, pressAct, send as sendMsg, startMove, treeRow, treeSeen, waitsSeen as seenNow, endRow } from "./fork.mjs";
 
 export const viewports = ["desktop", "tablet", "phone"];
 
@@ -29,9 +33,47 @@ await check("A4.3 what a wait holds is disabled and says why", async ({ url, vie
   const openAt = async (chat) => open({ sel: { chat }, wait: MSG });
   const expect = (name, ok, got) => { if (!ok) fail(`${name}: got ${JSON.stringify(got)}`); };
   const held = async (name, k, n = 1) => { if (!await until(async () => await holds(url, k) === n)) fail(`${name}: the mock holds ${await holds(url, k)} calls of ${k}, not ${n}`); };
-  const waitsSeen = (page) => seenNow(page, { composer: true });
+  const phone = viewport === "phone";
+  /** The Tree button of the phone's header, which replaced the alert pills: its count, its words (they say whether another branch failed or asks) and whether it is off. */
+  const treeButton = (page) => byTid(page, "chat-tree").first().evaluate((el) => ({ count: el.dataset.count ?? "", label: el.getAttribute("aria-label") ?? "", disabled: el.getAttribute("aria-disabled") === "true" || el.disabled === true }));
+  /** The fork actions of one open message sheet (the phone's rows): a row that waits has its reason as the second line of its words, which stands in for the tooltip. */
+  const sheetActs = (scope) => scope.locator('[data-testid="action-row"]').evaluateAll((els) => els.filter((b) => !["copy", "quote", "select", "read"].includes(b.dataset.action)).map((b) => {
+    const disabled = b.getAttribute("aria-disabled") === "true", label = (b.getAttribute("aria-label") ?? "").trim(), words = (b.textContent ?? "").replace(/\s+/g, " ").trim();
+    // (a glyph icon, "⊕", is text before the label: the reason is what follows the label)
+    return { kind: b.dataset.action, text: label, disabled, title: disabled ? words.slice(words.indexOf(label) + label.length).trim() : "" };
+  }));
+  /** Every fork action of every message, as `actsSeen` reads them; on the phone each message's sheet is opened in turn. */
+  const actsNow = async (page) => {
+    if (!phone) return actsSeen(page);
+    const items = await page.evaluate(`[...document.querySelectorAll('[data-testid="msg"][data-item]')].map((e) => +e.dataset.item).sort((a, b) => a - b)`);
+    const out = [];
+    for (const i of items) {
+      const opened = await openActs(page, byTid(page, "msg", { item: i }).first()).catch(() => null);
+      if (!opened) continue;
+      out.push(...await sheetActs(opened.scope));
+      await opened.close();
+    }
+    return out;
+  };
+  const waitsSeen = async (page) => ({ ...await seenNow(page, { composer: true }), tree: phone ? await treeButton(page) : null });
+  /** The composer's Send as the test reads it: off, with its spinner, and its words (the wide Send has them as its title; the phone's has no title, its words are
+   *  its accessibility label). On the phone the primary button is Stop while the agent works and Send stands beside it only once the box holds something (C1), so
+   *  a letter is typed to see it and taken out again. */
+  const sendNow = async (page) => {
+    const box = byTid(page, "composer-input").first();
+    if (phone) {
+      await box.fill("x");
+      await byTid(page, "send").first().waitFor({ state: "attached", timeout: 5000 }).catch(() => {});
+    }
+    const seen = await page.evaluate(() => {
+      const e = document.querySelector('[data-testid="send"]');
+      return e ? { disabled: e.getAttribute("aria-disabled") === "true" || e.disabled === true, spin: e.dataset.sending === "true", title: e.getAttribute("title") || e.getAttribute("aria-label") || "" } : null;
+    });
+    if (phone) await box.fill("");
+    return seen;
+  };
   /** What the page shows, with the actions of every message (the old `waitsSeen`). */
-  const view = async (page) => ({ ...await waitsSeen(page), acts: await actsSeen(page) });
+  const view = async (page) => ({ ...await waitsSeen(page), acts: await actsNow(page) });
   const when = async (page, name, sign, withActs = false) => {
     let seen;
     if (!await until(async () => sign((seen = withActs ? await view(page) : await waitsSeen(page))))) fail(`${name}: the page did not come to show it. It shows ${JSON.stringify(seen)}`);
@@ -41,8 +83,20 @@ await check("A4.3 what a wait holds is disabled and says why", async ({ url, vie
   const tree = (page) => treeSeen(page);
   const item = (menu, label) => menu.find((m) => m.text === label);
   /** The menu of a row of the open tree. */
-  const menuOf = async (page, kind, has) => { await menuOfRow(page, treeRow(page, kind, has)); return (await tree(page)).menu; };
-  const closeMenu = async (page) => { await page.keyboard.press("Escape"); await until(async () => !(await byTid(page, "menu").count()), 4000); };
+  const menuOf = async (page, kind, has) => {
+    await menuOfRow(page, treeRow(page, kind, has));
+    return phone ? (await sheetActs(byTid(page, "fk-row-sheet").last())) : (await tree(page)).menu;
+  };
+  const closeMenu = async (page) => {
+    if (!phone) { await page.keyboard.press("Escape"); await until(async () => !(await byTid(page, "menu").count()), 4000); return; }
+    // (the row's sheet: a press just after the hold closes nothing, so Escape is pressed again until it is gone and the tree is back)
+    await until(async () => {
+      if (await byTid(page, "fk-row-sheet").count()) { await page.keyboard.press("Escape"); await page.waitForTimeout(300); }
+      return !await byTid(page, "fk-row-sheet").count() && !!await byTid(page, "fk-nav").count();
+    }, 8000);
+  };
+  /** The words of the phone's Tree button when another branch failed ("Error on…" is the pill the wide header has) and when one asks ("Approval needed on…"). */
+  const FAILED = ", a branch failed", ASKS = ", a branch needs your approval";
   const posts = (page, part) => { const seen = []; page.on("request", (r) => { const c = callOfRequest(r); if (c?.method === "POST" && c.path.includes(part)) seen.push(c.path); }); return seen; };
   const sendOf = (page, chat, text) => sendMsg(page, chat, text, { composer: true });
 
@@ -58,22 +112,35 @@ await check("A4.3 what a wait holds is disabled and says why", async ({ url, vie
     const { page, ctx } = await openAt(TWO);
     const stopped = posts(page, "/interrupt");
     await startMove(page);
-    let seen = await view(page);
-    expect(`before the Send nothing is held: Back, the alerts, the message's actions`, !seen.back.disabled && seen.alerts.length === 2 && seen.alerts.every((a) => !a.disabled) && seen.acts.every((a) => !a.disabled), seen);
-    expect(`before the Send the thread says what the branch it is cut from does`, JSON.stringify(seen.typing) === '["Thinking…"]', seen.typing);
+    // (the busy line is drawn a moment after the page; and at the phone it carries the seconds the branch has worked, "Thinking… · 1 s", which advance while this reads: what the goal asks
+    // is the words, so the line is waited for and read without its seconds, as A4.2 reads it)
+    let seen = await when(page, "before the Send", (s) => s.typing.length > 0, true);
+    // (the phone's header has no alert pills: its Tree button says a branch failed, with the count of the branches, and is live)
+    const alerted = phone ? seen.tree.label.endsWith(FAILED) && seen.tree.count === "3" && !seen.tree.disabled : seen.alerts.length === 2 && seen.alerts.every((a) => !a.disabled);
+    expect(`before the Send nothing is held: Back, the alerts, the message's actions`, !seen.back.disabled && alerted && seen.acts.every((a) => !a.disabled), seen);
+    expect(`before the Send the thread says what the branch it is cut from does`, JSON.stringify(seen.typing.map((x) => x.replace(/( · \d+ [hms])+$/, ""))) === '["Thinking…"]', seen.typing);
     await sendOf(page, TWO, said);
     await held(name, "send");
     seen = await when(page, name, (s) => s.msgs.some((m) => m.sending), true);
 
     expect(`${name}: Back is disabled and says why`, seen.back?.disabled && seen.back.title === SEND_HELD, seen.back);
-    expect(`${name}: "Error on…" is disabled and says why, and "1 other branch working" is live`,
+    if (phone) expect(`${name}: the Tree button still says that a branch failed and is live (its rows hold the wait: below)`, seen.tree.label.endsWith(FAILED) && seen.tree.count === "3" && !seen.tree.disabled, seen.tree);
+    else expect(`${name}: "Error on…" is disabled and says why, and "1 other branch working" is live`,
       /^Error on/.test(seen.alerts[0]?.text) && seen.alerts[0].disabled && seen.alerts[0].title === SEND_HELD && /other branch working/.test(seen.alerts[1]?.text) && !seen.alerts[1].disabled, seen.alerts);
     for (const kind of ["branch", "branchEdit"]) expect(`${name}: a message's "${kind}" is disabled and says why`, act(seen, 0, kind)?.disabled && act(seen, 0, kind).title === SEND_HELD, seen.acts);
     for (const kind of ["fork", "forkEdit", "label"]) expect(`${name}: a message's "${kind}" is live`, act(seen, 0, kind) && !act(seen, 0, kind).disabled && act(seen, 0, kind).title !== SEND_HELD, seen.acts);
     // (a picker the toolbar has no room for is in the "more" popup, which is closed: it is then not read)
-    expect(`${name}: the model picker is disabled and says why`, seen.model ? seen.model.disabled && !seen.fixed && seen.model.title.endsWith(SEND_HELD) : seen.more, seen.model);
-    expect(`${name}: the effort picker is disabled and says why`, seen.effort ? seen.effort.disabled && seen.effort.title.endsWith(SEND_HELD) : seen.more, seen.effort);
-    expect(`${name}: Send is disabled, shows a spinner and says why`, seen.send?.disabled && seen.send.spin && seen.send.title === "Your message is being sent", seen.send);
+    if (phone) {
+      // (the phone has no hover title: the model chip, which holds the effort too, is disabled, its accessible name ends with the reason, and the same words stand
+      // as a visible line under the chip row (goal 3.1.3); there is no separate effort picker; goal 4.10)
+      expect(`${name}: the model chip is disabled and says why in its name and in a visible line`, !!seen.model && seen.model.disabled && !seen.fixed && seen.model.label.endsWith(`. ${SEND_HELD}`) && seen.held === SEND_HELD, [seen.model, seen.held]);
+      expect(`${name}: the phone has no separate effort picker (the model chip names it)`, !seen.effort && /· High/.test(seen.model?.text ?? ""), [seen.effort, seen.model]);
+    } else {
+      expect(`${name}: the model picker is disabled and says why`, seen.model ? seen.model.disabled && !seen.fixed && seen.model.title.endsWith(SEND_HELD) : seen.more, seen.model);
+      expect(`${name}: the effort picker is disabled and says why`, seen.effort ? seen.effort.disabled && seen.effort.title.endsWith(SEND_HELD) : seen.more, seen.effort);
+    }
+    const sent = await sendNow(page);
+    expect(`${name}: Send is disabled, shows a spinner and says why`, sent?.disabled && sent.spin && sent.title === "Your message is being sent", sent);
     expect(`${name}: the thread has the line of the message, and not the status of the branch it leaves`, JSON.stringify(seen.lines) === '[["send","Starting the agent…"]]' && !seen.typing.length, [seen.lines, seen.typing]);
     expect(`${name}: Stop is drawn and live`, seen.stop, seen.stop);
 
@@ -95,18 +162,20 @@ await check("A4.3 what a wait holds is disabled and says why", async ({ url, vie
     await until(async () => !(await byTid(page, "fk-label-field").count()));
 
     // "N other branches working" opens the tree; there a press on a row opens nothing, and "Branch and edit" is disabled
-    await press(page, byTid(page, "fk-alert", { kind: "quiet" }).first());
+    // (the phone: the Tree button, live; its sheet has no foot and its rows do not carry the reason, which the row's own sheet says: asserted below)
+    await press(page, phone ? byTid(page, "chat-tree").first() : byTid(page, "fk-alert", { kind: "quiet" }).first());
     await byTid(page, "fk-row").first().waitFor({ state: "visible", timeout: 15000 });
     let t = await tree(page);
-    expect(`${name}, the tree: every row is marked as disabled and says why, and so does the popup's foot`, t.rows.length >= 4 && t.rows.every((r) => r.disabled && r.title === SEND_HELD) && t.foot.startsWith(SEND_HELD), t);
+    expect(`${name}, the tree: every row is marked as disabled and says why, and so does the popup's foot`, t.rows.length >= 4 && t.rows.every((r) => r.disabled && (phone || r.title === SEND_HELD)) && (phone || t.foot.startsWith(SEND_HELD)), t);
     await openRow(page, endRow(page, "alt"));
     await openRow(page, treeRow(page, "user", "Is there a faster way?"));
     await frame(page);
     seen = await waitsSeen(page);
     expect(`${name}, the tree: opening a row opens nothing, and the popup stays`, !!await tree(page) && /is being sent/.test(seen.banner) && seen.msgs.some((m) => m.sending), [!!await tree(page), seen.banner]);
     let menu = await menuOf(page, "user", "Is there a faster way?");
+    const LABEL = phone ? "Label…" : "Label"; // (the phone's row says "Label…", "Relabel…" on a message that has one)
     expect(`${name}, the tree: "Branch and edit" is disabled and says why; "Fork and edit" and Label are live`,
-      item(menu, "Branch and edit")?.disabled && item(menu, "Branch and edit").title === SEND_HELD && item(menu, "Fork and edit") && !item(menu, "Fork and edit").disabled && item(menu, "Label") && !item(menu, "Label").disabled, menu);
+      item(menu, "Branch and edit")?.disabled && item(menu, "Branch and edit").title === SEND_HELD && item(menu, "Fork and edit") && !item(menu, "Fork and edit").disabled && item(menu, LABEL) && !item(menu, LABEL).disabled, menu);
     await closeMenu(page);
     menu = await menuOf(page, "text", "Yes: skip the copy");
     expect(`${name}, the tree: "Fork to new chat" is live`, item(menu, "Fork to new chat") && !item(menu, "Fork to new chat").disabled, menu);
@@ -161,14 +230,26 @@ await check("A4.3 what a wait holds is disabled and says why", async ({ url, vie
     const { page, ctx } = await openAt(TWO);
     await startMove(page);
     let seen = await waitsSeen(page);
-    expect(`before the Send "Approval needed on…" is live`, seen.alerts.length === 1 && /^Approval needed on/.test(seen.alerts[0].text) && !seen.alerts[0].disabled, seen.alerts);
+    if (phone) expect(`before the Send the Tree button says that a branch needs approval and is live`, seen.tree.label.endsWith(ASKS) && !seen.tree.disabled, seen.tree);
+    else expect(`before the Send "Approval needed on…" is live`, seen.alerts.length === 1 && /^Approval needed on/.test(seen.alerts[0].text) && !seen.alerts[0].disabled, seen.alerts);
     await sendOf(page, TWO, "Try it another way");
     await held(name, "send");
     seen = await when(page, name, (s) => s.msgs.some((m) => m.sending));
-    expect(`${name}: "Approval needed on…" is disabled and says why`, seen.alerts.length === 1 && /^Approval needed on/.test(seen.alerts[0].text) && seen.alerts[0].disabled && seen.alerts[0].title === SEND_HELD, seen.alerts);
-    await press(page, byTid(page, "fk-alert", { kind: "asks" }).first(), { force: true });
-    await frame(page);
-    expect(`${name}: a press on it leaves the chat where it is`, /is being sent/.test((await waitsSeen(page)).banner), (await waitsSeen(page)).banner);
+    if (phone) {
+      // (no pill to hold on the phone: the Tree button stays live and says it, and what it opens holds the wait, as the first part proved: a row opens nothing)
+      expect(`${name}: the Tree button still says that a branch needs approval and is live`, seen.tree.label.endsWith(ASKS) && !seen.tree.disabled, seen.tree);
+      await press(page, byTid(page, "chat-tree").first());
+      await byTid(page, "fk-row").first().waitFor({ state: "visible", timeout: 15000 });
+      await openRow(page, endRow(page, "alt"));
+      await frame(page);
+      expect(`${name}: a press on a row of the tree leaves the chat where it is`, !!await tree(page) && /is being sent/.test((await waitsSeen(page)).banner), (await waitsSeen(page)).banner);
+      await closeTree(page);
+    } else {
+      expect(`${name}: "Approval needed on…" is disabled and says why`, seen.alerts.length === 1 && /^Approval needed on/.test(seen.alerts[0].text) && seen.alerts[0].disabled && seen.alerts[0].title === SEND_HELD, seen.alerts);
+      await press(page, byTid(page, "fk-alert", { kind: "asks" }).first(), { force: true });
+      await frame(page);
+      expect(`${name}: a press on it leaves the chat where it is`, /is being sent/.test((await waitsSeen(page)).banner), (await waitsSeen(page)).banner);
+    }
     await release(url, "send");
     await when(page, `${name}, answered`, (s) => !s.banner && s.msgs.every((m) => m.live));
     await knob(`delete flags.send;`);
@@ -188,13 +269,14 @@ await check("A4.3 what a wait holds is disabled and says why", async ({ url, vie
     expect(`${name}: every Fork and "Fork and edit" of the thread is disabled and says why`, forks.length >= 4 && forks.every((a) => a.disabled && a.title === FORK_HELD), forks);
     expect(`${name}: Branch, "Branch and edit" and Label are live`, rest.length >= 4 && rest.every((a) => !a.disabled), rest);
     expect(`${name}: the composer is as it was: no banner`, !seen.banner, seen.banner);
-    expect(`${name}: Send is as it was`, !seen.send.spin && seen.send.title === "Send (Enter)", seen.send);
+    const sent = await sendNow(page);
+    expect(`${name}: Send is as it was`, sent && !sent.spin && sent.title === (phone ? "Send" : "Send (Enter)"), sent);
     await pressAct(page, await firstMsg(page), "fork", { force: true });
     await frame(page);
     expect(`${name}: a press on Fork asks for no second fork`, await holds(url, "fork") === 1, await holds(url, "fork"));
     await openTree(page);
     const t = await tree(page);
-    expect(`${name}, the tree: its rows open as always`, t.rows.every((r) => !r.disabled && !r.title) && /^(Double-click|Tap a message twice)/.test(t.foot), t);
+    expect(`${name}, the tree: its rows open as always`, t.rows.every((r) => !r.disabled && !r.title) && (phone || /^(Double-click|Tap a message twice)/.test(t.foot)), t);
     let menu = await menuOf(page, "user", "Fix it.");
     expect(`${name}, the tree: "Fork and edit" is disabled and says why, "Branch and edit" is live`, item(menu, "Fork and edit")?.disabled && item(menu, "Fork and edit").title === FORK_HELD && !item(menu, "Branch and edit")?.disabled, menu);
     await closeMenu(page);

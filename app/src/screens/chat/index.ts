@@ -4,8 +4,14 @@
 import { stats } from "../markdown/parse.ts";
 import { setSlot } from "../shell/slots.tsx";
 import { ChatView } from "./ChatView.tsx";
+import { ChatInfoHost } from "./ChatInfo.tsx";
+import { setChatInfo, showChatInfo } from "./chatinfo.ts";
+import "../markdown/register.ts";
 
 setSlot("ChatView", ChatView);
+// Chat info (T3): the phone header's title and ⋯ open this sheet; the wide layouts never call it.
+setChatInfo(showChatInfo);
+setSlot("Overlays", ChatInfoHost);
 
 // The counters of the Markdown blocks parsed and drawn, for the browser check of a streaming answer (L8-stream.mjs): a build made for
 // the checks (version "uicheck", `buildAppDist`) shows them on `window`; no other build does.

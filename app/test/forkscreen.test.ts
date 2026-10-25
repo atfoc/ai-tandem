@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { DOUBLE_MS, footText, gutterCells, headSub, markText, opensOn, stopTitle } from "../src/screens/fork/treemodel.ts";
+import { DOUBLE_MS, filterWords, footText, gutterCells, headSub, labelCount, markText, opensOn, rowSheetSub, stopTitle } from "../src/screens/fork/treemodel.ts";
 
 test("the foot: the words for a mouse, for a finger, for a chat to be read and for opening held", () => {
   const base = { pointer: "mouse" as const, off: "", readOnly: false, held: "" };
@@ -44,4 +44,14 @@ test("the gutter is a cell of three characters a level, and the head counts bran
   assert.equal(headSub("Two branches", 2, 0), "Two branches · 2 branches");
   assert.equal(headSub("Two branches", 1, 1), "Two branches · 1 branch · 1 fork");
   assert.equal(headSub("Chat", 3, 2), "Chat · 3 branches · 2 forks");
+});
+
+test("the phone sheet's words: the filters with the count of labels, the held row's sub-line", () => {
+  assert.equal(labelCount({ a: { label: "x" }, b: {}, c: { label: "y" }, d: { label: "" } }), 2);
+  assert.equal(labelCount({}), 0);
+  assert.equal(filterWords("default", 2), "Messages");
+  assert.equal(filterWords("labeled", 2), "Labeled · 2");
+  assert.equal(filterWords("labeled", 0), "Labeled");
+  assert.equal(rowSheetSub(true, "Claude", "main"), "Your message · main");
+  assert.equal(rowSheetSub(false, "Claude", "Full refunds only"), "Claude's reply · Full refunds only");
 });

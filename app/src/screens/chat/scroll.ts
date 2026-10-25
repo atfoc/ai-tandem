@@ -16,3 +16,10 @@ export function follows(was: boolean, last: number, s: Scroll): boolean {
   if (s.offset < last - 1) return near;
   return near || was;
 }
+
+/** Whether the "↓ Latest" pill shows (phone, goal 3.5): the thread does not follow its end because the person scrolled up, and its content
+ *  has grown since they left it (`leftAt`: the content's height when they did, null while the thread follows), or its last message changed since
+ *  (`fresh`: the list measures only the rows it draws, so a row that grows out of its window leaves the content's height as it was). */
+export function showLatest(following: boolean, leftAt: number | null, content: number, fresh = false): boolean {
+  return !following && leftAt !== null && (fresh || content > leftAt + 1);
+}

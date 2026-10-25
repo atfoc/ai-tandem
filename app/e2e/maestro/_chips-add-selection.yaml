@@ -1,0 +1,46 @@
+# Part of `composer-chips` (package D1, after B2): puts the board's selection into the box at its caret.
+#   phone (B2, plans/ux-improvements/b2-design.md §3): the composer's "+" › "Add selection" goes to the board with the wait kept (the pick bar, `pick-bar`); the rectangle
+#     is tapped (it stays selected if it was), the bar's Add (`pick-add`, "Add, 1 selected") puts the chip at the caret the box had and opens the chat again, the box focused;
+#   wide: the context row's "Add 1 selected" (the chat is beside the board).
+appId: ${APP_ID}
+---
+- runFlow:
+    when:
+      visible:
+        id: "composer-plus"
+    commands:
+      - tapOn:
+          id: "composer-plus"
+      - extendedWaitUntil:
+          visible: "Add selection"
+          timeout: 15000
+      - tapOn: "Add selection"
+      - extendedWaitUntil:
+          visible:
+            id: "pick-bar"
+          timeout: 30000
+      - waitForAnimationToEnd
+      # (the fitted board's rectangle: 22 % to 78 % of the width, 44 % to 58 % of the height on the iPhone 17)
+      - tapOn:
+          point: "38%,50%"
+      - extendedWaitUntil:
+          visible:
+            id: "pick-add"
+            enabled: true
+          timeout: 15000
+      - tapOn:
+          id: "pick-add"
+      - extendedWaitUntil:
+          visible:
+            id: "composer-input"
+          timeout: 30000
+      - extendedWaitUntil:
+          visible: "(?i)return"
+          timeout: 15000
+      - waitForAnimationToEnd
+- runFlow:
+    when:
+      notVisible:
+        id: "composer-plus"
+    commands:
+      - tapOn: "Add 1 selected"

@@ -131,6 +131,8 @@ export function flavourTokens(f: Flavour): Token[] {
     "--user-text": is(p, "text"),
     "--warn": strong(p, ["yellow"], [base, mantle], FLOORS.weak),
     "--warn-soft": tint(p, "yellow", 12),
+    // warning-toned text of the phone (a sub-line): read as text, so it has the text floor, where --warn (a mark) has the weak one
+    "--warn-text": strong(p, ["yellow", "peach"], [base, mantle], FLOORS.text),
     "--danger": strong(p, ["red"], [base], FLOORS.text),
     "--danger-fill": is(p, "red"),
     "--on-danger": is(p, "base"),
@@ -161,6 +163,7 @@ export const PAIRS: Pair[] = [
   { fg: "--faint", bg: "--bg", floor: FLOORS.weak, what: "faint text" },
   { fg: "--ok", bg: "--bg", floor: FLOORS.weak, what: "ok" },
   { fg: "--warn", bg: "--bg", floor: FLOORS.weak, what: "warning" },
+  { fg: "--warn-text", bg: "--bg", floor: FLOORS.text, what: "warning text" },
   ...["keyword", "string", "number", "title", "type", "attr"].map((k) => ({ fg: `--syn-${k}`, bg: "--panel", floor: FLOORS.weak, what: `code: ${k}` })),
   { fg: "--knob", bg: "--line-2", floor: FLOORS.weak, what: "the switch's knob on its track, off" },
   { fg: "--knob-on", bg: "--accent-fill", floor: FLOORS.weak, what: "the switch's knob on its track, on" },
@@ -172,6 +175,7 @@ export const PAIRS: Pair[] = [
   { fg: "--faint", bg: "--panel", floor: FLOORS.weak, what: "faint text on a secondary pane" },
   { fg: "--ok", bg: "--panel", floor: FLOORS.weak, what: "ok on a secondary pane" },
   { fg: "--warn", bg: "--panel", floor: FLOORS.weak, what: "warning on a secondary pane" },
+  { fg: "--warn-text", bg: "--panel", floor: FLOORS.text, what: "warning text on a secondary pane" },
   { fg: "--ok", bg: "--accent-soft", floor: FLOORS.weak, what: "ok on a chosen row" },
   { fg: "--faint", bg: "--accent-soft", floor: FLOORS.weak, what: "faint text on a chosen row" },
 ];

@@ -11,17 +11,24 @@ import { composerOpen, heldImages } from "./actions.ts";
 import { draftToShow, putDraft, savesDone } from "./chatdraft.ts";
 import { draftOf, staleOf } from "../logic/drafts.ts";
 import { branchKey } from "../logic/branches.ts";
-import { IMAGE_TYPES, imageUrl, checkFiles, fileType, goneLine, imagesBytes, refusedLine, uploadFailed, withImages, withoutImages, type Picked, type Refused, type UploadFile } from "../logic/chatimage.ts";
+import { IMAGE_TYPES, imageUrl, checkFiles, fileType, goneLine, imagesBytes, isBytesFile, refusedLine, uploadFailed, withImages, withoutImages, type Picked, type Refused, type RefusedWhy, type UploadFile } from "../logic/chatimage.ts";
 import type { ChatImage } from "../types.ts";
 
 /** An upload that runs: key names it here, src is what its thumbnail shows meanwhile. */
 export type Upload = { key: number; name: string; size: number; src: string };
 
-/** What a branch's composer draws of its uploads: the ones that run, in the order they were added, and what its error
- *  line says of the images (files that were not added, an upload that failed, images that are no longer there). */
-export type Slot = { uploads: readonly Upload[]; error: string };
+/** A file the last add refused, kept so that the phone's strip can show it: key names it here; name and reason as the check gave them;
+ *  uri: the file the picker left, when there is one (its tile's preview); off: for reason "off", why the chat takes no image now. */
+export type RefusedFile = { key: number; name: string; reason: RefusedWhy; uri?: string; off?: string };
 
-const NONE: Slot = { uploads: [], error: "" };
+/** What a branch's composer draws of its uploads: the ones that run, in the order they were added, and what its error
+ *  line says of the images (files that were not added, an upload that failed, images that are no longer there).
+ *  refused: the files of the last add that were not added, one entry each (the phone's strip draws them, and the error line
+ *  says them too: the wide layouts draw only the line). said: the error line without the sentence about those files, which the
+ *  phone's strip says by the entries (an upload that failed, images that are gone, the picker that could not be opened). */
+export type Slot = { uploads: readonly Upload[]; error: string; refused: readonly RefusedFile[]; said: string };
+
+const NONE: Slot = { uploads: [], error: "", refused: [], said: "" };
 const slots = new Map<string, Slot>();
 const aborts = new Map<number, AbortController>();
 const listeners = new Set<() => void>();
@@ -39,21 +46,26 @@ export const slotOf = (chat: string, branch: string): Slot => slots.get(branchKe
 function setSlot(chat: string, branch: string, f: (s: Slot) => Slot) {
   const key = branchKey(chat, branch), was = slotOf(chat, branch), now = f(was);
   if (now === was) return;
-  if (now.uploads.length || now.error) slots.set(key, now); else slots.delete(key);
+  if (now.uploads.length || now.error || now.refused.length) slots.set(key, now); else slots.delete(key);
   if (!was.uploads.length !== !now.uploads.length) setUploading(chat, branch, now.uploads.length > 0);
   for (const l of [...listeners]) l();
 }
 
-/** Sets what the error line of a branch's composer says of its images; "" takes it away. */
+/** Sets what the error line of a branch's composer says of its images; "" takes it away, and the refused files kept for the phone's strip with it. */
 export function setImageError(chat: string, branch: string, error: string) {
-  setSlot(chat, branch, (s) => (s.error === error ? s : { ...s, error }));
+  setSlot(chat, branch, (s) => (s.error === error && (error || !s.refused.length) ? s : { ...s, error, said: error, refused: error ? s.refused : [] }));
+}
+
+/** Takes a refused file out of the phone's strip: its tile and its line. */
+export function dismissRefused(chat: string, branch: string, key: number) {
+  setSlot(chat, branch, (s) => (s.refused.some((r) => r.key === key) ? { ...s, refused: s.refused.filter((r) => r.key !== key) } : s));
 }
 
 /** Says something of a branch's images: in the error line of its composer when one is open, after what the line says
  *  already; else in a dialog, since the line of a composer opened later would tell of what is long over. */
 function say(chat: string, branch: string, text: string) {
   if (!getState().chats[chat]) return;
-  if (composerOpen(chat, branch)) setSlot(chat, branch, (s) => ({ ...s, error: s.error ? `${s.error} ${text}` : text }));
+  if (composerOpen(chat, branch)) setSlot(chat, branch, (s) => ({ ...s, error: s.error ? `${s.error} ${text}` : text, said: s.said ? `${s.said} ${text}` : text }));
   else ui().reportError(`Couldn't add an image to “${getState().chats[chat]?.name || "the chat"}”`, new Error(text));
 }
 
@@ -136,7 +148,12 @@ export function addImages(chat: string, branch: string, files: readonly Picked[]
   const room = { count: o.has.length + slot.uploads.length, bytes: imagesBytes(o.has) + imagesBytes(slot.uploads) };
   const asked = files.map((f) => ({ ...f, type: f.file.type, size: f.file.size }));
   const { take, refused } = checkFiles(asked, room, !!o.off);
-  setImageError(chat, branch, refusedLine([...(o.skipped ?? []), ...refused], o.off || undefined));
+  const all = [...(o.skipped ?? []), ...refused], error = refusedLine(all, o.off || undefined);
+  const kept = all.map((r): RefusedFile => {
+    const file = files.find((f) => f.name === r.name)?.file;
+    return { key: ++seq, name: r.name, reason: r.reason, ...(isBytesFile(file) && file.uri ? { uri: file.uri } : {}), ...(r.reason === "off" && o.off ? { off: o.off } : {}) };
+  });
+  setSlot(chat, branch, (s) => (!s.error && !s.refused.length && !error ? s : { ...s, error, said: "", refused: kept }));
   for (const f of take) start(chat, branch, f.file, f.name, fileType(f));
 }
 
@@ -222,5 +239,6 @@ export function imagesGone(chat: string, branch: string, gone: readonly ChatImag
   if (!gone.length || !getState().chats[chat]) return;
   const ids = gone.map((x) => x.id);
   heldImages(chat, branch, (now) => (now.some((x) => ids.includes(x.id)) ? withoutImages(now, ids) : now as ChatImage[]));
-  setSlot(chat, branch, (s) => ({ ...s, error: [s.error, goneLine(gone.map((x) => x.name))].filter(Boolean).join(" ") }));
+  const line = goneLine(gone.map((x) => x.name));
+  setSlot(chat, branch, (s) => ({ ...s, error: [s.error, line].filter(Boolean).join(" "), said: [s.said, line].filter(Boolean).join(" ") }));
 }

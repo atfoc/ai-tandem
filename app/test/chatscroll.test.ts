@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { FOLLOW_PX, distanceFromEnd, follows } from "../src/screens/chat/scroll.ts";
+import { FOLLOW_PX, distanceFromEnd, follows, showLatest } from "../src/screens/chat/scroll.ts";
 
 const at = (offset: number, content = 2000, view = 500) => ({ offset, content, view });
 
@@ -33,4 +33,15 @@ test("content that grows under a thread that follows does not end it: the event 
 
 test("a view that got shorter (the composer grew) does not end it either", () => {
   assert.equal(follows(true, 1500, at(1500, 2000, 300)), true);
+});
+
+test("showLatest: the pill shows when the person is away from the end and the content has grown since they left it", () => {
+  assert.equal(showLatest(true, null, 2000), false);  // following: nothing is behind
+  assert.equal(showLatest(false, 2000, 2000), false); // left the end, nothing new yet
+  assert.equal(showLatest(false, 2000, 2001), false); // a pixel of rounding is no news
+  assert.equal(showLatest(false, 2000, 2300), true);  // a row came or the last one grew
+  assert.equal(showLatest(true, 2000, 2300), false);  // back at the end by any means: gone
+  assert.equal(showLatest(false, null, 2300), false); // never left: no pill
+  assert.equal(showLatest(false, 2000, 2000, true), true); // the last message changed out of the window, whose rows are not measured: news
+  assert.equal(showLatest(true, 2000, 2000, true), false); // but not for a thread that follows
 });

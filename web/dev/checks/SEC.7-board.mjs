@@ -7,9 +7,15 @@
 // From the sweep (rows of area D that were true and not shown): the note's × hides it (D-RB-06); a board whose scene the server answers 503 shows the
 // view that says it is not connected, and its "Servers…" opens the dialog (D-RB-02); the box beside the board's chat, read-only while the server is away,
 // takes no chip from ⌘L and no wait for a point from ⌘⇧L (D-RB-12).
+// The phone (B1) has no reader's bar and no note over the canvas: "Edit here" is the bottom row's `board-take` (the writer's sign there is that the
+// button is gone: boarddraw.mjs), the note of a dropped change is a toast (`toast`, data-kind `board-dropped`, which goes by itself after 8 s, so it has no ×:
+// "the × hides it" is read as "it is gone within its time"), and the board's chat beside it is the screen over the board, reached by the bar's Chats
+// button and a row of the Chats sheet (`board-chats`, `chats-row`).
+// At the phone (B2) the board's chat has no selection or point button in its context row (the selection rule): the board's rows are the "+" sheet's `selection`
+// ("Add selection") and `point` ("Point at"), which are on while the server is connected and dimmed (or the "+" off) while it is away.
 import { callMatcher, callsOf, check, mockEval, seed, until } from "../shot.mjs";
-import { act, byTid, openBoard, press, tidSel } from "./sel.mjs";
-import { sideSeen } from "./side.mjs";
+import { act, back as stackBack, byTid, openBoard, press, tidSel } from "./sel.mjs";
+import { homeOf, sideSeen } from "./side.mjs";
 // Added in the sweep (rn-sw-webtest), from web/test/sectionviews.test.ts "a section's board whose server is away and which this window keeps no drawing of says that it
 // opens when the server is back; one deleted there says so" (A-ST-08), which nothing in the browser proved on the new build: the view in the canvas's place (`board-off`).
 import { drawer, editHere, LIVE } from "./boarddraw.mjs";
@@ -19,7 +25,7 @@ export const viewports = ["desktop", "tablet", "phone"];
 const J = JSON.stringify;
 const STUDIO = "s_studio";
 
-await check("SEC.7 a board that is open when its server drops, and when it is back", async ({ url, open, fail, note, viewport }) => {
+await check("SEC.7 a board that is open when its server drops, and when it is back", async ({ url, open, fail, note, viewport, layout }) => {
   const drop = () => mockEval(`setServerState("${STUDIO}", "unreachable", { detail: "connection refused" });`, url);
   const back = (first = "") => mockEval(`${first}; setServerState("${STUDIO}", "connected");`, url);
   const there = (code) => mockEval(`return onServer("${STUDIO}", () => { ${code} });`, url);
@@ -27,9 +33,21 @@ await check("SEC.7 a board that is open when its server drops, and when it is ba
   const { page, ctx } = await open({ sel: { board: `${STUDIO}~b_loose`, chat: null } });
   const calls = callsOf(page);
   const on = (re, method) => calls.filter((c) => c.server === STUDIO && re.test(c.path) && (!method || c.method === method));
-  const text = (id) => byTid(page, id).first().textContent({ timeout: 2000 }).catch(() => "");
-  const says = async (name, id, want) => { if (!await until(async () => (await text(id)).includes(want), 10000)) fail(`${name}: ${id} says "${await text(id)}", not "${want}"`); };
-  const noRows = async (name) => { if (!await until(async () => !(await sideSeen(page, STUDIO)).outline.length, 10000)) fail(`${name}: the section still has rows: ${J((await sideSeen(page, STUDIO)).outline)}`); };
+  const phone = viewport === "phone";
+  const text = (id, data) => byTid(page, id, data).first().textContent({ timeout: 2000 }).catch(() => "");
+  const says = async (name, id, want, data) => { if (!await until(async () => (await text(id, data)).includes(want), 10000)) fail(`${name}: ${id} says "${await text(id, data)}", not "${want}"`); };
+  // the note of a dropped change: the reader bar's line (`board-role-dropped`) and the held canvas's note (`canvas-note`) on the wide layouts, the toast on the phone
+  const [readerNote, heldNote] = phone ? [["toast", { kind: "board-dropped" }], ["toast", { kind: "board-dropped" }]] : [["board-role-dropped"], ["canvas-note"]];
+  const noRows = async (name) => {
+    // (the phone, package H1: Home, under the board in the stack, shows the server it showed last; Studio Mac's chip, or its Home's problem
+    // card, says that it is not connected: what Home lists then is SEC.2's phone half)
+    if (layout === "phone") {
+      const away = (h) => (h.server === STUDIO ? h.state === "trouble" && h.card?.server === STUDIO : h.chips.find((c) => c.server === STUDIO)?.word === "unreachable");
+      if (!await until(async () => away(await homeOf(page)), 10000)) fail(`${name}: Home under the board does not say that Studio Mac is not connected: ${J(await homeOf(page))}`);
+      return;
+    }
+    if (!await until(async () => !(await sideSeen(page, STUDIO)).outline.length, 10000)) fail(`${name}: the section still has rows: ${J((await sideSeen(page, STUDIO)).outline)}`);
+  };
   const none = async (id) => until(async () => !(await byTid(page, id).count()), 10000);
 
   await editHere(page); // (a board opens as a reader's: the button makes the window its writer)
@@ -52,11 +70,13 @@ await check("SEC.7 a board that is open when its server drops, and when it is ba
   // back, at the revision the page has: the drawing is saved there
   const at = saves().length;
   await back();
+  // (the reconnection takes a moment: until the new stream's first scene the canvas is still the writer's, with no button, and Edit here would be a no-op)
+  if (!await byTid(page, "board-take").first().waitFor({ state: "visible", timeout: 15000 }).then(() => true, () => false)) fail("back, the window holding an unsaved drawing shows no Edit here");
   await editHere(page); // (the new stream holds nothing: the window is a reader, with its unsaved drawing kept; the button saves it where it was made)
   if (!await until(async () => await count() === 4, 15000)) fail(`back at the same revision, the board's drawing was not saved: Studio Mac has ${await count()} shapes, not 4; the saves: ${J(saves().slice(at).map((c) => [c.path, c.status]))}`);
   if (!await none("save-banner")) fail("back and saved, the banner stays");
   if (saves().slice(at).some((c) => c.status !== 200 && c.status !== undefined)) fail(`back at the same revision, a save was refused: ${J(saves().slice(at).map((c) => [c.path, c.status]))}`);
-  if (await byTid(page, "canvas-note").count()) fail("back at the same revision, the page says that changes were dropped");
+  if (await byTid(page, ...heldNote).count()) fail("back at the same revision, the page says that changes were dropped");
   // back, at another revision: the drawing is dropped with the notice
   await drop();
   await draw();
@@ -64,20 +84,20 @@ await check("SEC.7 a board that is open when its server drops, and when it is ba
   const other = { type: "excalidraw", version: 2, elements: [{ id: "sec_other", type: "ellipse", x: 200, y: 160, width: 140, height: 90 }], appState: {}, files: {} };
   await back(`onServer("${STUDIO}", () => { scenes.b_loose.scene = ${J(other)}; scenes.b_loose.rev += 5; })`);
   // (the window came back as a reader: the note is the reader bar's, with the words of a dropped change; the outage's own sentence belongs to the note on a held canvas)
-  await says("a board changed there while its server was away", "board-role-dropped", "A change made here was not saved in time and was dropped.");
+  await says("a board changed there while its server was away", readerNote[0], "A change made here was not saved in time and was dropped.", readerNote[1]);
   if (!await none("save-banner")) fail("the edit dropped, the banner stays");
-  if (await byTid(page, "canvas-note").count()) fail("the canvas of a reader shows the note of a held one");
+  if (!phone && await byTid(page, "canvas-note").count()) fail("the canvas of a reader shows the note of a held one");
   if (J(await there("return scenes.b_loose.scene.elements.map((e) => e.id);")) !== J(["sec_other"])) fail(`the drawing made during the outage replaced the one made there: ${J(await there("return scenes.b_loose.scene.elements.map((e) => e.id);"))}`);
   if (!await page.locator(".excalidraw").count() || !await byTid(page, "board-take").count()) fail("after the dropped edit the board is not shown to a reader with its button");
-  // the button takes the board again at the stored scene, and the reader bar's note goes with the press
+  // the button takes the board again at the stored scene, and the reader bar's note goes with the press (the phone said it once, as a toast)
   await editHere(page);
-  if (!await none("board-role-dropped")) fail("the dropped note stays after Edit here");
+  if (!await until(async () => !(await byTid(page, ...readerNote).count()), 12000)) fail("the dropped note stays after Edit here");
   // a held canvas's note: a save refused as stale (the board was saved elsewhere meanwhile) drops the edit with the note, and its × hides it (D-RB-06)
   await there("return othersave('b_loose', [])");
   await draw();
-  await says("a drawing refused as stale", "canvas-note", "A change made here was not saved in time and was dropped.");
-  await press(page, byTid(page, "canvas-note-hide").first());
-  if (!await none("canvas-note")) fail("the × of the note does not hide it");
+  await says("a drawing refused as stale", heldNote[0], "A change made here was not saved in time and was dropped.", heldNote[1]);
+  if (!phone) await press(page, byTid(page, "canvas-note-hide").first()); // (the phone's toast has no ×: it goes by itself)
+  if (!await until(async () => !(await byTid(page, ...heldNote).count()), 12000)) fail(phone ? "the toast of the dropped change stays" : "the × of the note does not hide it");
   if (!await page.locator(".excalidraw").count()) fail("hiding the note took the canvas away");
   if (calls.some((c) => c.server === "local" && /^\/api\/boards\//.test(c.path))) fail("a call for the section's board went to this computer's routes");
   await ctx.close(); // (the mock has one stream: two pages open take it from each other)
@@ -96,9 +116,11 @@ await check("SEC.7 a board that is open when its server drops, and when it is ba
       if (await byTid(q.page, "board-canvas").first().getAttribute("data-state") !== "off") fail("the board's state is not off while its view says the server is not connected");
       if (await q.page.locator(".excalidraw").count()) fail("a canvas is drawn under the view that says the server is not connected");
       await press(q.page, byTid(q.page, "board-off-servers").first());
-      if (!await until(() => byTid(q.page, "servers-dialog").count(), 10000)) fail('"Servers…" in the view of a board whose server is away does not open the Servers dialog');
-      await q.page.keyboard.press("Escape");
-      if (!await until(async () => !(await byTid(q.page, "servers-dialog").count()), 10000)) fail("Esc does not close the Servers dialog");
+      // (the phone: S2's list, a screen pushed over the board, left by the stack's back; the wide layouts: the dialog, left by Esc)
+      const servers = byTid(q.page, layout === "phone" ? "srv-list" : "servers-dialog");
+      if (!await until(() => servers.count(), 10000)) fail(`"Servers…" in the view of a board whose server is away does not open ${layout === "phone" ? "the Servers list" : "the Servers dialog"}`);
+      if (layout === "phone") await stackBack(q.page); else await q.page.keyboard.press("Escape");
+      if (!await until(async () => !(await servers.count()), 10000)) fail(`${layout === "phone" ? "Back does not leave the Servers list" : "Esc does not close the Servers dialog"}`);
     }
     await q.ctx.close();
   }
@@ -110,10 +132,30 @@ await check("SEC.7 a board that is open when its server drops, and when it is ba
     const q = await open({ sel: { board: `${STUDIO}~b_loose`, chat: null } });
     await editHere(q.page);
     await act(q.page, "select");
-    await press(q.page, byTid(q.page, "board-chats").first()); // (the chat beside the board; on the phone the screen over it)
+    await press(q.page, byTid(q.page, "board-chats").first()); // (the chat beside the board; on the phone the Chats button opens the sheet, a row of which opens the chat's screen over the board)
+    if (phone) await press(q.page, byTid(q.page, "chats-row").first());
     const chips = () => byTid(q.page, "composer-input").locator(tidSel("ref-chip")).allTextContents();
     const picking = () => byTid(q.page, "pick-layer").count().then((n) => n > 0);
     const keys = viewport !== "phone"; // (the tablet has a hardware keyboard, as P7.4-board has it; the phone has none)
+    // (the phone has no such buttons in the context row (B2: the selection rule); the board's rows are the "+" sheet's `selection` and `point`: on while the
+    // server is connected, dimmed with a reason while it is away)
+    const plusRows = async () => {
+      const plus = byTid(q.page, "composer-plus").first();
+      // (V1: while the server is away the block replaces the toolbar, so the "+" may go between two reads: a "+" gone is one that takes nothing)
+      const off = () => plus.isDisabled({ timeout: 3000 }).catch(() => true);
+      if (!await plus.count() || await off()) return []; // (a box that takes nothing: the "+" is off or gone)
+      if (!await plus.tap({ timeout: 3000 }).then(() => true, () => false)) return await off() ? [] : null; // (the box went read-only meanwhile)
+      if (!await until(() => byTid(q.page, "plus-sheet").count(), 10000)) return null;
+      const rows = await q.page.evaluate(() => [...document.querySelectorAll('[data-testid="plus-sheet"] [data-testid="action-row"]')].filter((e) => ["selection", "point"].includes(e.dataset.action)).map((e) => ({ action: e.dataset.action, dimmed: e.getAttribute("aria-disabled") === "true" || getComputedStyle(e).opacity < 1 || e.querySelector('[aria-disabled="true"]') !== null })));
+      await q.page.keyboard.press("Escape");
+      await until(async () => !await byTid(q.page, "plus-sheet").count(), 5000);
+      return rows;
+    };
+    if (phone) {
+      await q.page.waitForSelector(tidSel("composer-input"), { timeout: 15000 });
+      const rows = await plusRows();
+      if (rows?.length !== 2 || rows.some((r) => r.dimmed)) return fail(`the board's chat has no on "+" rows for the selection and the point while its server is connected: ${J(rows)}`);
+    } else
     if (!await until(() => byTid(q.page, "ctx-act", { kind: "selection" }).count(), 15000)) return fail("the board's chat beside it has no button for the selection while its server is connected");
     if (keys) {
       await q.page.keyboard.press("ControlOrMeta+Shift+l");
@@ -122,6 +164,10 @@ await check("SEC.7 a board that is open when its server drops, and when it is ba
       await until(async () => !(await picking()), 5000);
     }
     await mockEval(`setServerState("${STUDIO}", "unreachable", { detail: "connection refused" });`, url);
+    if (phone) {
+      const off = await until(async () => { const rows = await plusRows(); return !rows || rows.length === 0 || rows.every((r) => r.dimmed) ? true : null; }, 15000);
+      if (!off) fail("the board's chat still offers its \"+\" rows for the selection and the point while its server is away");
+    } else
     if (!await until(async () => !(await byTid(q.page, "ctx-act").count()), 15000)) fail("the board's chat still offers its buttons for the selection and the point while its server is away");
     if (keys) {
       await q.page.keyboard.press("ControlOrMeta+l");

@@ -8,11 +8,11 @@
 import { useContext, useRef, type ReactNode } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
 
-import { DictationBoxContext, type DictationBox } from "../composer/dictation.ts";
+import { DictationBoxContext, setDictationGuess, type DictationBox } from "../composer/dictation.ts";
 import { useMeasuring } from "../composer/measure.tsx";
 import { sendMessage } from "../composer/send.ts";
 import { voice, useVoiceSession } from "../../voice/index.ts";
-import { DICTATE_STOP_TITLE, DICTATE_TITLE, SPEECH_END_TITLE, SPEECH_TITLE } from "../../voice/words.ts";
+import { DICTATE_END_TITLE, DICTATE_TITLE, SPEECH_END_TITLE, SPEECH_TITLE, TALK_END_TITLE, TALK_TITLE } from "../../voice/words.ts";
 import { IconButton } from "../../ui/IconButton.tsx";
 import { MicIcon, WaveIcon } from "../../ui/icons.tsx";
 import { Text } from "../../ui/Text.tsx";
@@ -20,6 +20,7 @@ import { useTheme } from "../../ui/theme.tsx";
 import { tid } from "../../ui/tid.ts";
 import { useControlRef } from "../../ui/useControlRef";
 import { webStyle } from "../../ui/webstyle.ts";
+import type { VoiceControlProps } from "../composer/parts.tsx";
 import { ProblemPopover } from "./ProblemPopover.tsx";
 
 export type ComposerVoiceProps = { chatId: string; branch: string; place: "row" | "more"; disabled: string };
@@ -35,17 +36,22 @@ function useOwns(kind: "dictation" | "speech", chat: string, branch: string): bo
   return useVoiceSession((s) => s.owner !== null && s.owner.kind === kind && s.owner.chat === chat && s.owner.branch === branch);
 }
 
-/** Starts dictation into `box`: it ends when the session does, or when the person types in the box. */
-function dictate(box: DictationBox, chat: string, branch: string): void {
+/** Starts dictation into `box`: it ends when the session does, or when the person types in the box. On the phone the box takes the finished words only
+ *  and the live guess is published for the box to draw muted under the text (dictation.ts `setDictationGuess`); on the wide layouts the guess is in the box. */
+function dictate(box: DictationBox, chat: string, branch: string, phone = false): void {
   const base = box.text();
   let typed = false;
   const off = box.watch(() => { typed = true; off(); voice.end(); });
   const put = (text: string) => { if (!typed && text !== box.text()) box.put(text); };
+  if (phone) setDictationGuess(chat, "");
   void voice.startDictation({
     chat, branch, anchor: `dictate:${chat}`,
     sink: {
-      show: ({ committed, partial }) => put(dictated(base, [committed, partial].filter(Boolean).join(" "))),
-      done: (text) => { off(); put(dictated(base, text.trim())); },
+      show: ({ committed, partial }) => {
+        if (phone) { put(dictated(base, committed)); setDictationGuess(chat, typed ? "" : partial); }
+        else put(dictated(base, [committed, partial].filter(Boolean).join(" ")));
+      },
+      done: (text) => { off(); if (phone) setDictationGuess(chat, ""); put(dictated(base, text.trim())); },
     },
   });
 }
@@ -64,7 +70,7 @@ export function ComposerVoice({ chatId, branch, place, disabled }: ComposerVoice
     if (speaking) { voice.end(); return; }
     void voice.startSpeech({ chat: chatId, branch, anchor: `speech:${chatId}`, send: (text) => (box ? box.keeping(() => sendMessage(chatId, text)) : sendMessage(chatId, text)) });
   };
-  const dictateLabel = dictating ? DICTATE_STOP_TITLE : DICTATE_TITLE, speechLabel = speaking ? SPEECH_END_TITLE : SPEECH_TITLE;
+  const dictateLabel = dictating ? DICTATE_END_TITLE : DICTATE_TITLE, speechLabel = speaking ? SPEECH_END_TITLE : SPEECH_TITLE;
   const dictateTitle = disabled || dictateLabel, speechTitle = disabled || speechLabel; // (the tooltip says why a control is off)
   const ids = (id: string, on: boolean) => (measuring ? {} : tid(id, { on }));
   // (what is drawn in the measuring layer takes no press and carries no id; it hangs no popover either)
@@ -103,6 +109,36 @@ export function ComposerVoice({ chatId, branch, place, disabled }: ComposerVoice
       </View>
       {popover("speech", speechRef)}
     </View>
+  );
+}
+
+/** One of the two controls alone, for the phone's toolbar (ux-improvements goal 3.6, the composer part `VoiceControl`): "dictate" is the mic, "talk"
+ *  the primary button's Talk (speech mode). The same presses as the pair's above; the composer draws the look (`children`), this the anchor of the
+ *  problem popover around it. testIDs: `voice-dictate` and `voice-speech`, with dataSet `on`, as the pair's. */
+export function VoiceControl({ chatId, branch, which, disabled, children }: VoiceControlProps) {
+  const box = useContext(DictationBoxContext);
+  const dictating = useOwns("dictation", chatId, branch);
+  const speaking = useOwns("speech", chatId, branch);
+  const ref = useRef<View>(null);
+  const talk = which === "talk";
+  const on = talk ? speaking : dictating;
+  const onPress = talk
+    ? () => {
+      if (speaking) { voice.end(); return; }
+      void voice.startSpeech({ chat: chatId, branch, anchor: `speech:${chatId}`, send: (text) => (box ? box.keeping(() => sendMessage(chatId, text)) : sendMessage(chatId, text)) });
+    }
+    : () => {
+      if (dictating) voice.end();
+      else if (box) dictate(box, chatId, branch, true);
+    };
+  const label = talk ? (speaking ? TALK_END_TITLE : TALK_TITLE) : (dictating ? DICTATE_END_TITLE : DICTATE_TITLE);
+  return (
+    <>
+      <View ref={ref} collapsable={false} {...tid(talk ? "voice-speech" : "voice-dictate", { on })}>
+        {children({ on, onPress, label, disabled: !!disabled })}
+      </View>
+      <ProblemPopover anchor={`${talk ? "speech" : "dictate"}:${chatId}`} target={ref} align="right" up />
+    </>
   );
 }
 

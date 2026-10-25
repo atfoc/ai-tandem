@@ -10,6 +10,7 @@ import { NO_WAY } from "./appname.ts";
 import { bootstrap } from "./bootstrap.ts";
 import { ChipDocGallery } from "./dev/ChipDocGallery.tsx";
 import { Gallery } from "./dev/Gallery.tsx";
+import { KitGallery } from "./dev/KitGallery.tsx";
 import { StorageProbe } from "./dev/StorageProbe.tsx";
 import { kv } from "./platform/kv";
 import { markReady } from "./platform/lifecycle";
@@ -17,8 +18,8 @@ import "./screens/register.ts";
 import { Shell } from "./screens/shell/Shell.tsx";
 import { ThemeProvider, useTheme } from "./ui/theme.tsx";
 
-/** The gallery asked for: on web by the URL, `/?gallery` (the primitives, package U2) or `/?gallery=chipdoc` (the native chip
- *  input's logic, package K2); on iOS and Android by the bundle, EXPO_PUBLIC_AIWB_GALLERY=chipdoc (the device checks of app/e2e). */
+/** The gallery asked for: on web by the URL, `/?gallery` (the primitives, package U2), `/?gallery=chipdoc` (the native chip
+ *  input's logic, package K2) or `/?gallery=kit` (the phone kit, ux-improvements package F1); on iOS and Android by the bundle, EXPO_PUBLIC_AIWB_GALLERY=chipdoc (the device checks of app/e2e). */
 const gallery = (): string | null =>
   Platform.OS === "web" ? new URLSearchParams(window.location.search).get("gallery") : process.env.EXPO_PUBLIC_AIWB_GALLERY ?? null;
 
@@ -38,7 +39,7 @@ export default function App() {
     return (
       <GestureHandlerRootView style={styles.fill}>
         <SafeAreaProvider>
-          <ThemeProvider>{which === "chipdoc" ? <ChipDocGallery /> : <Gallery />}</ThemeProvider>
+          <ThemeProvider>{which === "chipdoc" ? <ChipDocGallery /> : which === "kit" ? <KitGallery /> : <Gallery />}</ThemeProvider>
         </SafeAreaProvider>
       </GestureHandlerRootView>
     );

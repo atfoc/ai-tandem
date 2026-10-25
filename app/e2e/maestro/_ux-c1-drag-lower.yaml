@@ -1,0 +1,12 @@
+# Part of `ux-composer` (package C1; required since X1): with the box focused, a drag down on the thread lowers the keyboard (goal 3.6 "a drag down lowers the keys").
+# The phone's thread lists set `keyboardDismissMode` (`THREAD_KEYBOARD`, StickyList.tsx): "interactive" on iOS, so the keyboard follows the finger only once the
+# finger reaches it; the drag therefore ends inside the keyboard (92 % of the height), as a thumb pulling the keys down does.
+appId: ${APP_ID}
+---
+- swipe:
+    start: 50%,30%
+    end: 50%,92%
+    duration: 400
+- extendedWaitUntil:
+    notVisible: "(?i)return"
+    timeout: 5000

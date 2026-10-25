@@ -50,6 +50,7 @@ export function Picker({ kind, label, title, prefix, icon, hint = UNTIL_FIRST_ME
   const chip = useRef<View>(null);
   const wasOpen = useRef(false);
   const rowFocus = useRef(false); // a row has the focus: its Enter is its own press
+  const tabbed = useRef(false); // Tab has been pressed since the list opened: only then is a row's focus the person's (the overlay focuses its first row as it opens)
   const scroll = useRef<ScrollView>(null);
   const field = useRef<TextInput>(null);
   const view = useRef({ top: 0, height: 0 });
@@ -83,6 +84,7 @@ export function Picker({ kind, label, title, prefix, icon, hint = UNTIL_FIRST_ME
   // On open: start on the selected row (else the first); closing drops the query (the overlay hands the focus back to the chip, ui/modal.web.tsx).
   useEffect(() => {
     rowFocus.current = false; // (a row that had the focus as the list closed is unmounted without a blur: the next list starts with none)
+    tabbed.current = false;
     if (!open) {
       if (!wasOpen.current) return;
       wasOpen.current = false;
@@ -110,15 +112,16 @@ export function Picker({ kind, label, title, prefix, icon, hint = UNTIL_FIRST_ME
     else if (r.y + r.h > v.top + v.height) scroll.current?.scrollTo({ y: r.y + r.h - v.height, animated: false });
   }, [open, hi]);
 
-  // Effort has no field, so the keys are heard from the keyboard while the list is open (the chip keeps the focus). Enter on a focused row
-  // is that row's own press, not a pick of the highlighted one. Esc is the overlay's.
+  // Effort has no field, so the keys are heard from the keyboard while the list is open (the chip keeps the focus). Enter on a row the person has moved the focus to
+  // (by Tab: a list opened from the "more" popup has its first row focused by the overlay, which is no choice) is that row's own press, not a pick of the highlighted one. Esc is the overlay's.
   const now = useRef({ move, pickAt, hi });
   now.current = { move, pickAt, hi };
   useEffect(() => {
     if (!open || searchable) return;
     return onKey((e) => {
+      if (e.key === "Tab") tabbed.current = true;
       if (e.key !== "ArrowDown" && e.key !== "ArrowUp" && e.key !== "Enter") return;
-      if (e.key === "Enter" && rowFocus.current) return;
+      if (e.key === "Enter" && rowFocus.current && tabbed.current) return;
       e.preventDefault(); e.stopPropagation();
       if (e.key === "ArrowDown") now.current.move(1); else if (e.key === "ArrowUp") now.current.move(-1); else now.current.pickAt(now.current.hi);
     });

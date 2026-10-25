@@ -3,7 +3,7 @@
 import { boardChats } from "@aiwb/core/logic/tree.ts";
 import type { ChatView } from "@aiwb/core/types.ts";
 
-import type { Phase } from "../../../voice/index.ts";
+import type { Phase, SessionState } from "../../../voice/index.ts";
 
 /** The orb's states (goal 3.6). `waiting` is "Tap to send waiting" (the ↑ badge); `countdown` is "Auto-send waiting" (the ring fills);
  *  `paused` (voice devices VD-12) is a session held because the headphones went away: a tap on the orb continues. */
@@ -99,3 +99,48 @@ export function captionTexts(o: { phase: Phase; size: PillSize; committed: strin
 export function selectionKey(sel: { count: number; lines: readonly string[] }): string {
   return `${sel.count}\n${sel.lines.join("\n")}`;
 }
+
+// ux-v1: the phone's docked orb and voice card
+
+/** What a tap on the orb does in each state (the pill's `press`): start a turn, end the session, cut the spoken reply, or go on after a pause. */
+export type OrbTap = "start" | "end" | "interrupt" | "resume";
+export function orbTap(state: OrbState): OrbTap {
+  return state === "idle" ? "start" : state === "paused" ? "resume" : state === "speaking" ? "interrupt" : "end";
+}
+
+/** The parts the phone's voice card draws: the turn being heard (words still coming, waiting for Send, or the countdown), the turn on its way
+ *  or the reply being thought, the reply spoken, and a pause (VD-12). */
+export type CardPhase = "listening" | "waiting" | "countdown" | "thinking" | "speaking" | "paused";
+
+/** The card's phase for the session, or null when the session is idle: at rest nothing but the orb is drawn. */
+export function cardPhase(phase: Phase, paused: boolean): CardPhase | null {
+  if (phase === "idle") return null;
+  if (paused) return "paused";
+  switch (phase) {
+    case "starting": case "listening": return "listening";
+    case "waiting": return "waiting";
+    case "countdown": return "countdown";
+    case "sending": case "thinking": return "thinking";
+    case "speaking": return "speaking";
+  }
+}
+
+/** The card's foot: the controls of the phase, in the order they are drawn from the left. */
+export function cardFoot(p: CardPhase): ("cancel" | "send" | "open" | "interrupt" | "continue")[] {
+  switch (p) {
+    case "listening": case "waiting": return ["cancel", "send"];
+    case "countdown": return ["cancel", "send"];
+    case "thinking": return ["open"];
+    case "speaking": return ["open", "interrupt"];
+    case "paused": return ["continue"];
+  }
+}
+
+/** The seconds the countdown line says: whole seconds, never "0 s" while it still runs. */
+export const countdownSeconds = (left: number): number => Math.max(1, Math.ceil(left - 0.05));
+
+/** The count on the orb's badge: a short number. */
+export const badgeText = (n: number): string => (n > 9 ? "9+" : String(n));
+
+/** The session is this board's pill session (the voice card and the orb draw nothing of another board's or another owner's). */
+export const ownSession = (s: SessionState, board: string): boolean => s.owner?.kind === "pill" && s.owner.board === board;

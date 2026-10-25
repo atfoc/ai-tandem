@@ -7,7 +7,7 @@ import { problemOfException } from "../logic/problems.ts";
 import { VoiceProblemError, voicePorts } from "../ports.ts";
 import type { VoiceProblemKind } from "../ports.ts";
 import { dismissProblem, onReset, problemStore, showProblem } from "./state.ts";
-import { playClipOnce, requestJson, speaker } from "./speaker.ts";
+import { playClipOnce, requestJson, speaker, stopPreviewClip } from "./speaker.ts";
 
 /** The preview address of every voice seen in an answer of the service; a clip is fetched only from an address that came this way (VC-5). */
 const previews = new Map<string, string>();
@@ -75,3 +75,6 @@ export async function playPreview(voiceId: string): Promise<void> {
     showProblem({ kind: problemOfException(e), anchor, retry: () => { void playPreview(voiceId); } });
   }
 }
+
+/** Stops the preview clip in play, if one is: the stop button of a sample. Nothing else that sounds is touched. */
+export const stopPreview = (): void => stopPreviewClip();

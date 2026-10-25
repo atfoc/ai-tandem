@@ -13,18 +13,26 @@
 // is read by the testID `board-off` (its `view` is "gone"), the bar of the open chat by `remote-bar` (its `kind`); on the phone the list is
 // behind the chat, still drawn, so the rows are read where they are, and the local part's first chat is opened by the stack's path.
 // Besides the old check (A-SB-13): the draft mark of a row is titled "Unsent message".
+// The phone (package H1) has Home and group screens in the sidebar's place (plans/ux-improvements/h1-design.md §3): its half (`onPhone` below)
+// reads each change where it is listed, Studio Mac's Home or the screen of the group it is in (a board's chats as the count of its row's
+// line), with the same changes made elsewhere, the same "no call, no reload", and the open chat and board deleted there. The phone has no
+// "Show archived": what is archived there leaves Home and is listed in Settings › Archived (`archived-screen`), and is gone from it again when
+// unarchived or deleted. Home's rows have no
+// draft mark (h1-design §3: icon, name, line, dot or count), so the draft part is the wide layouts'.
 import { callsOf, check, mockEval, seed, until } from "../shot.mjs";
-import { byTid, openBoard, openChat, press, showList } from "./sel.mjs";
-import { rowNamed, section, sideSeen } from "./side.mjs";
-import { messages, says, textOf, threadShown } from "./chat.mjs";
+import { byTid, openBoard, openChat, openFoot, press, showHome, showList } from "./sel.mjs";
+import { archivedNames } from "./rows.mjs";
+import { homeOf, rowNamed, section, sideSeen } from "./side.mjs";
+import { WAIT, composerBlock, headSub, messages, says, sendIsOff, textOf, threadShown } from "./chat.mjs";
 
 export const viewports = ["desktop", "tablet", "phone"];
 
 const J = JSON.stringify;
 const STUDIO = "s_studio", LOOSE = "__ungrouped__";
 
-await check("SEC.6 a section follows what is made, changed and deleted on its server from elsewhere", async ({ url, viewport, open, fail, note }) => {
+await check("SEC.6 a section follows what is made, changed and deleted on its server from elsewhere", async ({ url, viewport, open, fail, note, layout }) => {
   await seed(url, "SEC");
+  if (layout === "phone") return onPhone({ url, viewport, open, fail, note });
   const { page } = await open({ wait: '[data-testid="side-tree"]' });
   const calls = callsOf(page);
   const sec = section(page, STUDIO);
@@ -156,3 +164,141 @@ await check("SEC.6 a section follows what is made, changed and deleted on its se
 
   note(`${n} changes made on Studio Mac from elsewhere, each shown without a reload and without a call of the page; nothing deleted left a row; an open chat and board said that they are no longer there`);
 }, { viewports, page: false });
+
+/** The phone's half: each change read on Studio Mac's Home or its group's screen (see the head of the file). */
+async function onPhone({ url, viewport, open, fail, note }) {
+  const { page } = await open({ wait: '[data-testid="home"]' });
+  const calls = callsOf(page);
+  const far = async (method, path, body) => {
+    const r = await mockEval(`return await elsewhere("${STUDIO}", ${J(method)}, ${J(path)}, ${body === undefined ? "undefined" : J(body)});`, url);
+    if (r.status !== 200) fail(`the mock answered ${method} ${path} with ${r.status}: ${J(r.body)}`);
+    return r.body;
+  };
+  /** Studio Mac's Home (`group` null) or the screen of its top-level group `group` (its id there), on screen. */
+  const at = async (group) => {
+    await showHome(page, STUDIO);
+    if (!group) return null;
+    const key = `${STUDIO}~${group}`;
+    await byTid(page, "home-row", { kind: "group", key }).first().waitFor({ state: "visible", timeout: 10000 });
+    await press(page, byTid(page, "home-row", { kind: "group", key }).first());
+    await byTid(page, "group-screen", { key }).last().waitFor({ state: "visible", timeout: 10000 });
+    return key;
+  };
+  let n = 0;
+  const shows = async (name, group, { has = [], hasNot = [], rows } = {}) => {
+    n++;
+    const key = await at(group);
+    const ok = (s) => has.every((l) => s.outline.includes(l)) && hasNot.every((l) => !s.outline.includes(l)) && (!rows || rows(s.rows));
+    if (!await until(async () => ok(await homeOf(page, key)), 10000)) fail(`${name}: ${group ?? "Studio Mac's Home"} does not show it: ${J((await homeOf(page, key)).outline)}`);
+  };
+  /** Settings › Archived, opened and read (the phone has no "Show archived": archived things are only listed there); `want` names that must / must not be listed. */
+  const inArchived = async (name, { has = [], hasNot = [] }) => {
+    n++;
+    await showHome(page, STUDIO);
+    await openFoot(page, "side-archived");
+    const ok = async () => { const l = await archivedNames(page); return has.every((x) => l.includes(x)) && hasNot.every((x) => !l.includes(x)); };
+    if (!await until(ok, 10000)) fail(`${name}: Settings › Archived lists ${J(await archivedNames(page))}, wanted ${J(has)} and not ${J(hasNot)}`);
+  };
+  const sub = (name) => (rows) => rows.find((r) => r.name === name)?.sub ?? "";
+  await showHome(page, STUDIO);
+  if (!await until(async () => (await homeOf(page)).rows.length, 15000)) fail("Studio Mac's Home has no row");
+  await page.evaluate(() => { window.__loaded = 1; });
+  const writes0 = calls.filter((c) => c.method !== "GET").length;
+
+  // ---- made elsewhere
+  const chat = await far("POST", "/chats", { group: "g_old" });
+  await shows("a chat made in a group", "g_old", { has: ["chat New chat"] });
+  await far("PATCH", `/chats/${chat.id}`, { name: "Take 15" });
+  await shows("that chat named", "g_old", { has: ["chat Take 15"], hasNot: ["chat New chat"] });
+  await far("POST", "/boards", { group: "g_shop", name: "Shot list" });
+  await shows("a board made in a group", "g_shop", { has: ["board Shot list"] });
+  const dailies = await far("POST", "/groups", { name: "Dailies" });
+  await shows("a group made", null, { has: ["group Dailies"] });
+  await far("POST", "/groups", { name: "Monday", parent: dailies.id });
+  await shows("a group made in a group", dailies.id, { has: ["group Monday"] });
+  const onBoard = await far("POST", "/chats", { board: "b_arch" });
+  await far("PATCH", `/chats/${onBoard.id}`, { name: "Cut scene nine" });
+  await shows("a chat made on a board", "g_shop", { rows: (r) => /2 chats/.test(sub("Storyboard")(r)) });
+
+  // ---- renamed elsewhere
+  await far("PATCH", "/chats/c_take", { name: "Take 14b" });
+  await shows("a chat renamed", "g_old", { has: ["chat Take 14b"], hasNot: ["chat Take 14"] });
+  await far("POST", "/boards/b_arch/rename", { name: "Storyboard B" });
+  await shows("a board renamed", "g_shop", { has: ["board Storyboard B"], hasNot: ["board Storyboard"] });
+  await far("PATCH", "/groups/g_old", { name: "Older takes" });
+  await shows("a group renamed", null, { has: ["group Older takes"], hasNot: ["group Old takes"] });
+
+  // ---- moved elsewhere
+  await far("PATCH", "/chats/c_take", { group: "g_shop" });
+  await shows("a chat moved to another group", "g_shop", { has: ["chat Take 14b"] });
+  await shows("a chat moved out of its group", "g_old", { hasNot: ["chat Take 14b"] });
+  await far("PATCH", "/boards/b_arch", { group: LOOSE });
+  await shows("a board moved out of its group", null, { has: ["board Storyboard B"] });
+  await far("POST", "/groups/g_sub/move", { parent: "" });
+  await shows("a group moved to the top level", null, { has: ["group Nightly"] });
+  // that server's order of its groups is Home's
+  const order = async () => (await homeOf(page)).outline.filter((l) => l.startsWith("group "));
+  await at(null);
+  const was = await order();
+  await mockEval(`onServer("${STUDIO}", () => { groups.reverse(); send({ type: "groups", groups }); });`, url);
+  if (!await until(async () => J(await order()) === J([...was].reverse()), 10000)) fail(`the groups turned round on Studio Mac, Home has ${J(await order())}, before ${J(was)}`);
+  n++;
+
+  // ---- archived and unarchived elsewhere
+  // (gone from Home, listed in Settings › Archived; back on Home, gone from Archived)
+  for (const [what, path, group, line, name] of [["a chat", "/chats/c_take", "g_shop", "chat Take 14b", "Take 14b"], ["a board", "/boards/b_arch", null, "board Storyboard B", "Storyboard B"], ["a group", "/groups/g_old", null, "group Older takes", "Older takes"]]) {
+    await far("POST", `${path}/archive`);
+    await shows(`${what} archived`, group, { hasNot: [line] });
+    await inArchived(`${what} archived`, { has: [name] });
+    await far("POST", `${path}/unarchive`);
+    await shows(`${what} unarchived`, group, { has: [line] });
+    await inArchived(`${what} unarchived`, { hasNot: [name] });
+  }
+
+  // ---- deleted elsewhere: no row stays
+  await far("DELETE", "/chats/c_take"); await shows("a chat deleted", "g_shop", { hasNot: ["chat Take 14b"] });
+  await far("DELETE", "/boards/b_arch"); await shows("a board deleted", null, { hasNot: ["board Storyboard B"] });
+  await far("DELETE", "/groups/g_old?contents=delete"); await shows("a group deleted with what is in it", null, { hasNot: ["group Older takes"] });
+  await far("DELETE", `/groups/${dailies.id}?contents=keep`); await shows("a group deleted, its contents kept", null, { has: ["group Monday"], hasNot: ["group Dailies"] });
+
+  await inArchived("everything deleted", { hasNot: ["Take 14b", "Storyboard B", "Older takes", "Take 15", "Dailies"] });
+
+  // ---- the page did all of that by following: no call that changes something, and no reload
+  const own = calls.filter((c) => c.method !== "GET").slice(writes0);
+  if (own.length) fail(`the page made calls of its own meanwhile: ${J(own.map((c) => `${c.method} ${c.path}`))}`);
+  if (!await page.evaluate(() => window.__loaded === 1)) fail("the page was loaded anew");
+
+  // ---- open, and deleted elsewhere: the view stays and says so
+  await openChat(page, `${STUDIO}~c_plain`);
+  await threadShown(page);
+  await far("DELETE", "/chats/c_plain");
+  // (the phone has no top banner (T3, goal 3.1): a chat that is gone from a server that is connected is shown as it was, so its header gives the place line,
+  // not "offline" (X2's headline `gone`), and the composer's block, V1's `composer-block` of kind "gone", takes the toolbar's place and says it. As SEC.7-drop and
+  // AAC.2-localdown, the block's lines fail until V1 is merged; goal 4.10)
+  if (!await until(async () => !!await composerBlock(page), 5000)) fail(`${viewport}: the open chat deleted elsewhere does not say so: the composer has no block (V1's, not merged yet)`);
+  else {
+    const blk = await composerBlock(page);
+    if (blk.kind !== "gone" || blk.text !== "This chat is no longer on Studio Mac.") fail(`${viewport}: the open chat deleted elsewhere: the composer's block is ${J(blk)}, not the gone line "This chat is no longer on Studio Mac."`);
+    if (blk.servers || await byTid(page, "block-servers").count()) fail(`${viewport}: the block of a chat that is no longer on its server offers "Servers"`);
+  }
+  if (await byTid(page, "remote-bar").count()) fail(`${viewport}: the phone draws a top banner (remote-bar) for a chat that is no longer on its server`);
+  const place = await headSub(page);
+  if (!place || place.includes("offline")) fail(`${viewport}: the header of a chat that is gone from a connected server says "${place}", not its place line`);
+  if (!(await messages(page)).some((m) => m.role === "user")) fail(`${viewport}: the open chat's thread went with the chat`);
+  if (!await sendIsOff(page)) fail(`${viewport}: Send is on for a chat that is no longer on its server`);
+  await shows("the open chat deleted elsewhere", null, { hasNot: ["chat Render queue is stuck"] });
+
+  await openBoard(page, `${STUDIO}~b_loose`);
+  await byTid(page, "board-canvas", { state: "ready" }).first().waitFor({ state: "attached", timeout: 15000 });
+  await far("DELETE", "/boards/b_loose");
+  if (!await says(page, "board-off", "No longer on Studio Mac")) fail(`${viewport}: the open board deleted elsewhere does not say so: "${await textOf(page, "board-off")}"`);
+  await shows("the open board deleted elsewhere", null, { hasNot: ["board Floor plan"] });
+  // left, it is gone for good: a chat of this computer is opened, and nothing of the board is on screen
+  await showHome(page, "local");
+  await press(page, byTid(page, "home-row", { kind: "group", key: "g_shop" }).first());
+  const first = await byTid(byTid(page, "group-screen", { key: "g_shop" }).last(), "home-row", { kind: "chat" }).first().getAttribute("data-key");
+  await openChat(page, first);
+  if (!await until(async () => (await page.evaluate(() => JSON.parse(localStorage.getItem("aiwb.sel") ?? "{}"))).board !== `${STUDIO}~b_loose` && !await byTid(page, "board-off").count(), 10000)) fail(`${viewport}: the view of the deleted board stays after another thing was opened`);
+
+  note(`${n} changes made on Studio Mac from elsewhere, each shown on its Home or group screen without a reload and without a call of the page; an open chat and board said that they are no longer there`);
+}

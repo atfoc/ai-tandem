@@ -18,7 +18,7 @@ import { RECENT_KEY, withLists, withThreadError, type ThreadError } from "../log
 import { inSection, keyOn, serverOfKey } from "../logic/keys.ts";
 import { treeIn } from "../logic/sectionwire.ts";
 import { COLLAPSE_KEY, collapsedSaved, leftBehind, onScreen, parseCollapsed, prunedCollapsed, prunedLocalGroups, thingsOf, thingsOn, withCollapsed, withSection, type Section } from "../logic/sections.ts";
-import { LOCAL_ENTRY, type ServerForm, type ServerView } from "../logic/servers.ts";
+import { LOCAL_ENTRY, sinceAfter, type ServerForm, type ServerView } from "../logic/servers.ts";
 import { libraryAway, removeLibrary, upsertLibrary, type LibraryView } from "../logic/library.ts";
 import type { InsertTarget } from "../logic/insert.ts";
 import { NO_MARK, type DropMark } from "../logic/dropmark.ts";
@@ -42,6 +42,8 @@ export type { Thread };
 /** A dialog the user answers: a title, a body, and the actions it offers (the client draws it from `State.confirm`). */
 export type ConfirmRequest = {
   title: string; body?: string;
+  /** The go button's label on the phone's sheet (the verb and the noun: "Delete chat"); absent = the action's own `label`. */
+  confirmLabel?: string;
   /** An action that fails leaves the dialog open, with the error's sentence in it. */
   actions: { label: string; tone?: "danger" | "primary"; run: () => Promise<void> | void }[]; // plus Cancel
 };
@@ -83,12 +85,15 @@ export type State = {
   busyOn: Record<string, { chat: string; branch?: string; agent: AgentKind | string; until: number }>; // by board id; branch = the calling branch, when the call names one
   confirm: ConfirmRequest | null; // the client's confirm dialog (Dialogs.tsx on the old page)
   servers: ServerView[];          // the server list, the local entry first (logic/servers.ts)
+  serverSince: Record<string, number>; // by entry id: when the entry's state began (epoch ms), for "since 9:12" (logic/statewords.ts formatSince); set where the list changes (`withServers`)
+  localNetworkDenied: boolean;    // iOS refused the app the local network (platform/localnetwork, fed by the app); false everywhere else
   serversNotice: string;          // why the list file was set aside, or ""; read when the Servers dialog opens
   serversDialog: { form?: ServerForm } | null; // the Servers dialog (Servers.tsx): null = closed; form = the form it opens with
   libraries: LibraryView[];       // the prompt libraries, one per server, from its snapshot and its `own_library` events (logic/library.ts); the popups show them in the order of the server list (logic/libraryview.ts)
   libraryDialog: { back?: InsertTarget } | null; // the library popup (Library.tsx): null = closed; back = the text box whose insert popup it was opened from
   insertPopup: InsertTarget | null; // the insert popup (Library.tsx): the text box it is open for; null = closed
-  picking: string | null;         // chat id waiting for a point clicked on its board (⌘⇧L)
+  picking: string | null;         // chat id waiting for a point clicked on its board (⌘⇧L), or (pickFor "select") for shapes selected there
+  pickFor: "point" | "select";    // what `picking` waits for: a point, or the phone's Add selection (ux-improvements B2); "point" when nothing waits
   restart: Restart;               // a restart of this computer's server, which its section says (version.ts)
 
   // The role per board: several windows work on one server, and each board is held by one of them (board.ts).
@@ -125,8 +130,8 @@ function initialState(): State {
     sideHidden: parseSideHidden(safeGet("aiwb.side")),
     themePref: savedTheme, theme: resolveTheme(savedTheme, systemDark()),
     selection: { count: 0, lines: [] }, view: { scrollX: 0, scrollY: 0, zoom: 1, width: 0, height: 0 },
-    flashes: [], busyOn: {}, confirm: null, picking: null,
-    servers: [LOCAL_ENTRY], serversNotice: "", serversDialog: null,
+    flashes: [], busyOn: {}, confirm: null, picking: null, pickFor: "point",
+    servers: [LOCAL_ENTRY], serverSince: {}, localNetworkDenied: false, serversNotice: "", serversDialog: null,
     libraries: [], libraryDialog: null, insertPopup: null,
     restart: NO_RESTART,
     roles: {}, writers: {}, dropped: {}, sceneGen: {}, outage: {}, saveSaid: {},
@@ -309,12 +314,23 @@ export function libraryAwayOf(server: string) {
   setState((s) => ({ libraries: libraryAway(s.libraries, server) }));
 }
 
+/** The patch for a new server list: the list and, with it, the record of when each entry's state began (a state that changed, or
+ *  an entry not seen before, is stamped now). Every change of `servers` goes through here. */
+export function withServers(s: Pick<State, "servers" | "serverSince">, servers: ServerView[], now: number = Date.now()): Pick<State, "servers" | "serverSince"> {
+  return { servers, serverSince: sinceAfter(s.serverSince, s.servers, servers, now) };
+}
+
+/** The app's word on the local network permission (iOS: denied). */
+export function setLocalNetworkDenied(denied: boolean) {
+  if (getState().localNetworkDenied !== denied) setState({ localNetworkDenied: denied });
+}
+
 /** The server list (the app's `servers` event): the collapse of a section whose entry left the list goes with it. */
 export function setServers(servers: ServerView[], notice: string) {
   setState((s) => {
     const collapsed = prunedCollapsed(s.collapsed, servers, s.sections);
     if (collapsed !== s.collapsed) safeSet(COLLAPSE_KEY, collapsedSaved(collapsed));
-    return { servers, serversNotice: notice, collapsed };
+    return { ...withServers(s, servers), serversNotice: notice, collapsed };
   });
 }
 
@@ -370,6 +386,7 @@ function without(s: State, dead: ReadonlySet<string>): Partial<State> {
     subDrawer: s.subDrawer && dead.has(s.subDrawer.chat) ? null : s.subDrawer,
     treeNav: s.treeNav && dead.has(s.treeNav.chat) ? null : s.treeNav,
     picking: s.picking && dead.has(s.picking) ? null : s.picking,
+    pickFor: s.picking && dead.has(s.picking) ? "point" : s.pickFor,
   };
 }
 

@@ -10,11 +10,18 @@ export type Row =
   | { kind: "forked"; key: "forked" }
   | { kind: "empty"; key: "empty" }
   | { kind: "item"; key: string; item: Item; index: number | undefined; readOnly: boolean }
+  | { kind: "group"; key: string; group: FoldKind; items: GroupItem[]; readOnly: boolean }
   | { kind: "mark"; key: "mark"; at: number }
   | { kind: "sending"; key: "sending"; said: Said }
   | { kind: "typing"; key: "typing"; text: string }
   | { kind: "waiting"; key: "waiting"; text: string }
   | { kind: "wait"; key: string; id: string; text: string };
+
+/** What a run of items folds into on the phone (ux T2): "steps", the tool calls that only read (two or more in a row); "subagents", the
+ *  calls that started subagents (one or more in a row: one card per call). */
+export type FoldKind = "steps" | "subagents";
+/** An item of a group row, with its place in the thread. */
+export type GroupItem = { item: Item; index: number };
 
 export type RowsIn = {
   /** The chat is a fork of another chat (the note at the top). */
@@ -34,7 +41,12 @@ export type RowsIn = {
   typing: string;
   waiting: string;
   lines: readonly WaitLine[];
+  /** The phone's folding (ux T2): what run an item belongs to, null for none. Without it every item is a row of its own (the wide layouts). */
+  fold?: (item: Item) => FoldKind | null;
 };
+
+/** The fewest items in a row that fold, by kind. */
+const FOLD_MIN: Record<FoldKind, number> = { steps: 2, subagents: 1 };
 
 const KINDS = new Set<string>(["user", "text", "tool", "perm", "note", "subresult"]);
 
@@ -51,10 +63,25 @@ export function threadRows(i: RowsIn): Row[] {
     i.kept.forEach((item, n) => { if (drawn(item)) rows.push({ kind: "item", key: `kept:${n}`, item, index: undefined, readOnly: true }); });
   } else {
     const mark = i.loaded ? prefixMark(i.end, i.items.length) : null;
+    // a run of drawn items of one fold kind, not yet pushed; it never crosses the mark (the copied part is read-only, the rest is not)
+    let run: { group: FoldKind; items: GroupItem[] } | null = null;
+    const flush = () => {
+      if (!run) return;
+      const first = run.items[0].index;
+      if (run.items.length >= FOLD_MIN[run.group]) rows.push({ kind: "group", key: `${i.branch}:${first}`, group: run.group, items: run.items, readOnly: first < i.end });
+      else for (const x of run.items) rows.push({ kind: "item", key: `${i.branch}:${x.index}`, item: x.item, index: x.index, readOnly: x.index < i.end });
+      run = null;
+    };
     i.items.forEach((item, n) => {
-      if (n === mark) rows.push({ kind: "mark", key: "mark", at: i.end });
-      if (drawn(item)) rows.push({ kind: "item", key: `${i.branch}:${n}`, item, index: n, readOnly: n < i.end });
+      if (n === mark) { flush(); rows.push({ kind: "mark", key: "mark", at: i.end }); }
+      if (!drawn(item)) return;
+      const f = i.fold?.(item) ?? null;
+      if (f && run?.group === f) { run.items.push({ item, index: n }); return; }
+      flush();
+      if (f) { run = { group: f, items: [{ item, index: n }] }; return; }
+      rows.push({ kind: "item", key: `${i.branch}:${n}`, item, index: n, readOnly: n < i.end });
     });
+    flush();
     if (mark === i.items.length) rows.push({ kind: "mark", key: "mark", at: i.end });
   }
   if (i.sent) rows.push({ kind: "sending", key: "sending", said: i.sent });
@@ -66,4 +93,4 @@ export function threadRows(i: RowsIn): Row[] {
 
 /** Whether the list has nothing to scroll through but the empty state, the note of a fork and the lines at the foot: it is drawn
  *  centred in a plain view then, and is a list from the first item. */
-export const isShort = (rows: readonly Row[]): boolean => !rows.some((r) => r.kind === "item" || r.kind === "mark" || r.kind === "sending");
+export const isShort = (rows: readonly Row[]): boolean => !rows.some((r) => r.kind === "item" || r.kind === "group" || r.kind === "mark" || r.kind === "sending");

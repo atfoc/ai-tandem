@@ -1,9 +1,10 @@
 // L2 (new in the app, package U3): each width gives its layout, and the phone's stack follows the selection (AD-71, AD-72).
 //   desktop and tablet: one split view: the sidebar's pane beside the stage, the chat panel between them for a board's chat, a
 //     resizer on each pane's edge, no back control; a plain chat is the chat page; a board is the board stage with its bar.
-//   phone: a stack: the sidebar is the first screen with nothing beside it, no resizer; a board, a board's chat over its board and a
+//   phone: a stack: Home (package H1: the sidebar is the wide layouts') is the first screen with nothing beside it, no resizer; a board, a board's chat over its board and a
 //     plain chat each replace the screen below, with the back control (`nav-back`); the saved selection (`aiwb.sel`) is what each screen
-//     says (forward), and a back sets it (the chat or the board cleared) and shows the screen below, until the list is the screen.
+//     says (forward), and a back sets it (the chat or the board cleared) and shows the screen below (a board in a group: the group's
+//     screen, whose `home-row`s list it, then Home), until Home is the screen.
 //   the window: a desktop window made narrow is the phone layout with the selection it had, and wide again the split view;
 //     a tablet window too narrow for the three at their least starts with the sidebar hidden, and shows it over the stage.
 // The sidebar, the chat and the canvas inside the panes are the stand-ins of the shell (screens/shell/slots.tsx) until S1, S4 and B4;
@@ -29,7 +30,7 @@ await check("L2 each width gives its layout; the phone's stack follows the selec
     // a board's chat is the top of the stack: the chat over its board over the list
     await byTid(page, IDS.chatHead).first().waitFor({ state: "visible", timeout: 15000 });
     if (!await visible(page, IDS.back)) fail("a chat on the phone has no back control");
-    if (await visible(page, IDS.tree)) fail("the list shows over the chat on the phone");
+    if (await visible(page, IDS.home)) fail("Home shows over the chat on the phone");
     if (await byTid(page, "resizer").count()) fail("the phone draws a resizer");
     if (await byTid(page, "app").count()) fail("the phone draws the split view");
     if (await byTid(page, "board-panel").count()) fail("the phone draws the chat panel beside the board");
@@ -39,16 +40,25 @@ await check("L2 each width gives its layout; the phone's stack follows the selec
     if ((await saved(page))?.board !== "b_arch") fail(`after the back from the chat the board is not kept: ${JSON.stringify(await saved(page))}`);
     if (!await visible(page, IDS.back)) fail("a board on the phone has no back control");
     await back(page);
-    await byTid(page, IDS.tree).first().waitFor({ state: "visible", timeout: 15000 });
+    // (the board is in the group Shop: a back from content lands on the content's place, the group's screen, then on the list)
+    await byTid(page, IDS.homeRow, { kind: "board", key: "b_arch" }).first().waitFor({ state: "visible", timeout: 15000 });
+    if (await visible(page, IDS.home)) fail("Home shows after one back from a board in a group: the group's screen comes first");
+    if (!await visible(page, IDS.back)) fail("the group's screen has no back control");
+    const mid = await saved(page);
+    if (mid?.board || mid?.chat) fail(`on the group's screen the saved selection is ${JSON.stringify(mid)}, not none`);
+    await back(page);
+    await byTid(page, IDS.home).first().waitFor({ state: "visible", timeout: 15000 });
     const s = await saved(page);
-    if (s?.board || s?.chat) fail(`on the list the saved selection is ${JSON.stringify(s)}, not none`);
-    if (await visible(page, IDS.back)) fail("the list has a back control");
+    if (s?.board || s?.chat) fail(`on Home the saved selection is ${JSON.stringify(s)}, not none`);
+    if (await visible(page, IDS.back)) fail("Home has a back control");
     // forward: a row opens its screen, and the selection follows
     await openChat(page, "c_plain");
     if ((await saved(page))?.chat !== "c_plain") fail(`opening c_plain saved ${JSON.stringify(await saved(page))}`);
-    if (await visible(page, IDS.tree)) fail("the list shows over a chat");
+    if (await visible(page, IDS.home)) fail("Home shows over a chat");
     await back(page);
-    await byTid(page, IDS.tree).first().waitFor({ state: "visible", timeout: 15000 });
+    await byTid(page, IDS.homeRow, { kind: "chat", key: "c_plain" }).first().waitFor({ state: "visible", timeout: 15000 }); // (c_plain is in the group Shop too)
+    await back(page);
+    await byTid(page, IDS.home).first().waitFor({ state: "visible", timeout: 15000 });
     await openBoard(page, "b_arch");
     if ((await saved(page))?.board !== "b_arch") fail(`opening b_arch saved ${JSON.stringify(await saved(page))}`);
     note("the stack follows the selection: board and chat pushed over the list, each back clears what it left");
@@ -82,7 +92,9 @@ await check("L2 each width gives its layout; the phone's stack follows the selec
   if (!await until(async () => layoutNow(page) === "phone" && await visible(page, IDS.back), 10000)) fail("a window 600 wide is not the phone's stack with the chat on top");
   if ((await saved(page))?.chat !== "c_plain") fail(`narrowing the window changed the selection to ${JSON.stringify(await saved(page))}`);
   await back(page);
-  if (!await until(() => visible(page, IDS.tree), 10000)) fail("a back in the narrow window did not show the list");
+  if (!await until(() => visible(page, IDS.homeRow, { kind: "chat", key: "c_plain" }), 10000)) fail("a back from a chat of a group in the narrow window did not show the group's screen");
+  await back(page);
+  if (!await until(() => visible(page, IDS.home), 10000)) fail("a back in the narrow window did not show Home");
   await page.setViewportSize({ width: 1280, height: 800 });
   if (!await until(async () => await visible(page, "app") && !await visible(page, IDS.back), 10000)) fail("a window made wide again is not the split view");
   if (await byTid(page, "chat-page").count() || await byTid(page, "board-stage").count()) fail("the split view shows a chat or a board after a back to the list");

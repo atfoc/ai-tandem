@@ -18,6 +18,11 @@
 // sidebar's foot (a page of 300 px has no sidebar on the new build: a window under 700 px is the phone layout). So the cards are opened in each page,
 // and the branch send is made in each (the mock is seeded and the call held anew). The clock is not pinned as the old check pinned it (a pinned
 // clock stops the sheets' animation; neither the composer nor the cards tell a time).
+// On the phone the choice is made in Settings > Appearance (A6.1, A6.2 and UX.S1 prove that); this check opens each page with the saved value, as it
+// does at the other two viewports, and waits for the app by its own signs, not for the sidebar's foot.
+// At the phone (ux-improvements C2) the choices are the chips of the chip row and the popups are their sheets: the row's chips (kind, label, width) are the
+// facts a flavour must leave as they are, and each chip's sheet (agent-sheet, folder-sheet, model-sheet with the effort control, sub-sheet) is a stage of its
+// own, opened with composer.mjs' openChoice and closed with closeChoice; the usage popover opens from the ring.
 // OUT=/tmp/x keeps a screenshot of every stage in every flavour there, for a person's look. PART=composer (or cards, rail) runs one of the three.
 // Ports dev/checks/P7.1-flavours.mjs. Deviations: the pages as said above; the windows are the desktop's (a pane of 300 px is a window of 300, a
 // panel beside a board is the panel at its minimum of 300 in a wide window) and the tablet's and the phone's own; at those two the stages of the
@@ -25,11 +30,16 @@
 import fs from "node:fs";
 import path from "node:path";
 import { atRest, check, colourOf, contrastAudit, contrastOf, holds, mockEval, paneSize, release, sampleFrames, seed, until } from "../shot.mjs";
-import { cardsFit, openCards, toolCards } from "./cards.mjs";
-import { MORE, POP, SEES, chip, countOf, frame, measureComposer, openAt, openState, playable, toolbarWidths } from "./composer.mjs";
+import { cardsFit, openCards, openSubSteps, toolCards } from "./cards.mjs";
+import { MORE, POP, SEES, chip, closeChoice, countOf, frame, measureComposer, openAt, openChoice, openState, phoneChip, placesOf, playable, toolbarWidths } from "./composer.mjs";
 import { startMove, typeAndSend, waitsSeen } from "./fork.mjs";
-import { act, byTid, hover, press, tidSel } from "./sel.mjs";
+import { editHere } from "./boarddraw.mjs";
+import { act, byTid, hover, layoutNow, press, tidSel } from "./sel.mjs";
 import { tokensFor } from "../../../app/src/ui/tokens.ts";
+
+// Alone on a free machine one run of the three viewports takes about 980 s (phone 255, tablet 298, desktop 425: 8 themes of every composer
+// state and tool-card thread); twice that for a loaded machine. (The runner's 600 s was the cause of "it had not ended after 600 s".)
+export const limit = 2000;
 
 export const viewports = ["desktop", "tablet", "phone"];
 
@@ -50,6 +60,14 @@ const OPENERS = [
   ["the model's list", "model", "picker"],
   ["the effort's list", "effort", "picker"],
   ["the usage popover", "meter", "usage-pop"],
+];
+// The phone's: [name, the chip's kind ("meter": the context ring), the sheet's or popup's testID]
+const PHONE_OPENERS = [
+  ["the agent's sheet", "agent", "agent-sheet"],
+  ["the folder's sheet", "folder", "folder-sheet"],
+  ["the model's sheet", "model", "model-sheet"],
+  ["the subagents' sheet", "subagents", "sub-sheet"],
+  ["the Context and usage sheet", "meter", "usage-sheet"], // (the phone's ring opens T3's sheet)
 ];
 /** The control of a kind under a row or a popup: a chip, or the context ring. */
 const opener = (from, kind) => (kind === "meter" ? byTid(from, "ctx-meter") : chip(from, kind, { fixed: false }));
@@ -94,7 +112,10 @@ function railProbe() {
 
 await check("P7.1 the composer, the tool cards and the sidebar's rail in each flavour", async ({ url, viewport, layout, open, fail, note }) => {
   if (OUT) fs.mkdirSync(OUT, { recursive: true });
-  const states = (await seed(url, "A2")).filter((s) => playable(s, layout) && (layout === "desktop" || FEW.includes(s.id)));
+  // (every state is opened at 300 px, the phone layout, where a chat on a server with no agent installed has no composer: V1's no-agent bar stands in
+  // the box's place, goal 3.7.1, and UX.V1 · 1 and R1's `composer.v1-no-agent` read it; there is no box here to measure)
+  const NO_BOX = ["plain-noagent-installed"];
+  const states = (await seed(url, "A2")).filter((s) => playable(s, layout) && !NO_BOX.includes(s.id) && (layout === "desktop" || FEW.includes(s.id)));
   const gone = (page, id) => until(async () => !await byTid(page, id).count(), 5000);
   const part = async (name, body) => { if (!PART || PART === name) await body(); };
 
@@ -129,11 +150,15 @@ await check("P7.1 the composer, the tool cards and the sidebar's rail in each fl
       const name = `the composer, ${s.id}`;
       for (const theme of THEMES) {
         const at = `${theme}, ${name}`;
-        const { page, ctx } = await openAt(open, s, layout, 300, { ls: { "aiwb.theme": theme }, still: true });
+        // (a board opens as a reader's, in view mode, until "Edit here" (board-take, since 848862a); the state that selects every shape on the canvas
+        // needs the writer's canvas, so the window takes the board once the page is open, before the state's act)
+        const openState = s.act === "select" ? async (o) => { const r = await open(o); await editHere(r.page); return r; } : open;
+        const { page, ctx } = await openAt(openState, s, layout, 300, { ls: { "aiwb.theme": theme }, still: true });
         try {
           await frame(page);
-          const m = await fits(page, at), bar = await toolbarWidths(page);
-          const facts = { box: m?.boxW, row: bar.controls.map((c) => `${c.kind} "${c.label}" ${c.w}`) };
+          const m = await fits(page, at), phone = (await placesOf(page))?.phone, bar = phone ? null : await toolbarWidths(page);
+          // (the phone's row of chips: kind, label and width of each; no "more" chip)
+          const facts = { box: m?.boxW, row: bar ? bar.controls.map((c) => `${c.kind} "${c.label}" ${c.w}`) : await page.evaluate(() => [...document.querySelectorAll('[data-testid="composer-chip-row"] [data-testid="tchip"]')].map((c) => `${c.dataset.kind} "${c.textContent.replace(/[⌄▾]/g, "").trim()}" ${Math.round(c.getBoundingClientRect().width * 10) / 10}`)) };
           const more = await page.locator(MORE).count() > 0;
           if (more) {
             await press(page, page.locator(MORE));
@@ -143,13 +168,29 @@ await check("P7.1 the composer, the tool cards and the sidebar's rail in each fl
           await stage(theme, name, page, [tidSel("composer"), tidSel("more-pop")], facts);
           if (more) { await page.keyboard.press("Escape"); if (!await gone(page, "more-pop")) fail(`${at}: Esc did not close the "more" popup`); }
           if (!POPUPS.includes(s.id)) continue;
-          for (const [what, kind, popup] of OPENERS) {
+          if (phone) { // the chips' sheets (a started chat has no chip: its ring's popover)
+            for (const [what, kind, popup] of PHONE_OPENERS) {
+              const target = kind === "meter" ? byTid(page, "composer-phone-tools").locator(tidSel("ctx-meter")) : phoneChip(page, kind);
+              if (!await target.count()) continue; // (the state has no such choice)
+              if (kind === "meter") await press(page, target.first()); else await openChoice(page, kind);
+              await page.waitForSelector(tidSel(popup), { timeout: 5000 });
+              if (kind === "folder") await byTid(page, "dir-use").first().waitFor({ state: "visible", timeout: 8000 });
+              await stage(theme, `${name}: ${what}`, page, [tidSel(popup)]);
+              if (kind === "meter") await page.keyboard.press("Escape"); else await closeChoice(page);
+              if (!await gone(page, popup)) fail(`${at}: ${what} did not close`);
+            }
+            continue;
+          }
+          for (const [what, kind, opens] of OPENERS) {
+            // (a ring in a window under 700 px opens T3's "Context and usage" sheet, not the popover: A2.4-usage says which; here it is held in each flavour)
+            let popup = opens;
             const inRow = await opener(byTid(page, "composer-tools"), kind).count() > 0;
             if (!inRow && !more) continue; // (the state has no such choice)
             if (!inRow) { await press(page, page.locator(MORE)); await page.waitForSelector(POP, { timeout: 5000 }); }
             const target = opener(inRow ? byTid(page, "composer-tools") : byTid(page, "more-pop"), kind);
             if (await target.count()) {
               await press(page, target.first());
+              if (kind === "meter") popup = await until(async () => (await byTid(page, "usage-sheet").count() ? "usage-sheet" : await byTid(page, opens).count() ? opens : null), 5000) ?? opens;
               await page.waitForSelector(tidSel(popup), { timeout: 5000 });
               if (what === "the folder's browser") await byTid(page, "dir-use").first().waitFor({ state: "visible", timeout: 8000 });
               await stage(theme, `${name}: ${what}`, page, [tidSel(popup)]);
@@ -177,10 +218,12 @@ await check("P7.1 the composer, the tool cards and the sidebar's rail in each fl
           await typeAndSend(page, said);
           if (!await until(() => holds(url, "send"))) fail(`${at}: the page's call did not reach the mock`);
           let seen;
-          if (!await until(async () => { seen = await waitsSeen(page, { composer: true }); return seen.msgs.some((x) => x.sending) && seen.send?.spin && seen.lines.length === 1 && seen.banner; })) fail(`${at}: the page does not show the wait: ${JSON.stringify(seen)}`);
+          // (at the phone layout the box emptied by the send shows Talk, its one primary, and no Send with a spinner (ux-improvements C1): the wait is
+          // the message's pending look, the line and the banner, as A4.2 reads it there)
+          if (!await until(async () => { seen = await waitsSeen(page, { composer: true }); return seen.msgs.some((x) => x.sending) && (seen.phone ? !!seen.talk : seen.send?.spin) && seen.lines.length === 1 && seen.banner; })) fail(`${at}: the page does not show the wait: ${JSON.stringify(seen)}`);
           const m = await fits(page, at);
-          const spin = { what: "the spinner in Send", fg: await colourOf(page, `${tidSel("send")} svg circle`, "stroke"), bg: await colourOf(page, tidSel("send"), "backgroundColor") };
-          await stage(theme, name, page, [tidSel("thread"), tidSel("composer")], { box: m?.boxW, lines: seen.lines, banner: seen.banner, send: seen.send?.title }, [spin]);
+          const spin = seen.phone ? [] : [{ what: "the spinner in Send", fg: await colourOf(page, `${tidSel("send")} svg circle`, "stroke"), bg: await colourOf(page, tidSel("send"), "backgroundColor") }];
+          await stage(theme, name, page, [tidSel("thread"), tidSel("composer")], { box: m?.boxW, lines: seen.lines, banner: seen.banner, send: seen.phone ? seen.talk?.label : seen.send?.title }, spin);
           await release(url, "send");
           if (!await until(async () => !(await waitsSeen(page)).banner)) fail(`${at}: let go, the send did not end`);
         } catch (e) { fail(`${at}: ${e.message.split("\n")[0]}`); }
@@ -206,27 +249,40 @@ await check("P7.1 the composer, the tool cards and the sidebar's rail in each fl
       const P = FLAVOURS[theme], say = (line) => fail(`${theme}, ${name}: ${line}`), t = tokensFor(P?.under ?? theme, P ? theme : null);
       const tone = (sel, prop) => colourOf(page, sel, prop).then(hex);
       const thread = tidSel("thread"), line = (kind) => `${thread} ${tidSel("diff-row", { kind })}`;
-      const ground = { add: await tone(line("add"), "backgroundColor"), del: await tone(line("del"), "backgroundColor"), same: await tone(`${thread} ${tidSel("tool-diff")}`, "backgroundColor") };
+      // At the phone the card is T2's step (screens/tools/StepCard.tsx), not the wide card: its change is `step-diff` rows over the step's own ground (the panel), its counts
+      // `step-counts`, a failed step's title in danger, its output boxes `step-output` and its command a box of plain text. The checks below name what each layout draws.
+      // (the window of the desktop run is 300 px wide: the page there is the phone layout, so the layout is the page's own, not the viewport's)
+      const phone = layoutNow(page) === "phone", card = phone ? tidSel("step") : tidSel("tool-card");
+      const ground = { add: await tone(line("add"), "backgroundColor"), del: await tone(line("del"), "backgroundColor"), same: await tone(phone ? line("same") : `${thread} ${tidSel("tool-diff")}`, "backgroundColor") };
       if (new Set(Object.values(ground)).size !== 3) say(`an added line (${ground.add}), a removed one (${ground.del}) and one that stays (${ground.same}) are not told apart by their ground`);
-      if (ground.same !== t.bg) say(`a change is on ${ground.same}, not on the background ${t.bg}`);
+      if (ground.same !== (phone ? t.panel : t.bg)) say(`a change is on ${ground.same}, not on the ${phone ? "step's ground, the panel" : "background"} ${phone ? t.panel : t.bg}`);
       for (const [what, sel, token] of [["an added line's sign", `${line("add")} ${tidSel("diff-sign")}`, "ok"], ["a removed line's sign", `${line("del")} ${tidSel("diff-sign")}`, "danger"],
-        ["the count of added lines", `${thread} ${tidSel("tool-counts")} > span:nth-of-type(1)`, "ok"], ["the count of removed lines", `${thread} ${tidSel("tool-counts")} > span:nth-of-type(2)`, "danger"],
-        ["a failed output's flag", `${thread} ${tidSel("tool-part", { failed: "true" })} ${tidSel("tool-sub")} > span`, "danger"]])
+        ["the count of added lines", `${thread} ${tidSel(phone ? "step-counts" : "tool-counts")} > span:nth-of-type(1)`, "ok"], ["the count of removed lines", `${thread} ${tidSel(phone ? "step-counts" : "tool-counts")} > span:nth-of-type(2)`, "danger"],
+        ["a failed output's flag", phone ? `${thread} ${tidSel("step", { failed: "true" })} ${tidSel("tool-label")}` : `${thread} ${tidSel("tool-part", { failed: "true" })} ${tidSel("tool-sub")} > span`, "danger"]])
         if (await tone(sel, "color") !== t[token]) say(`${what} is drawn in ${await tone(sel, "color")}, not in ${token} ${t[token]}`);
       // (in a flavour a sign has its floor on its own line's ground, with no leave for what Light has: ok and danger are the flavour's)
       if (P) for (const [what, kind] of [['the "+" of an added line', "add"], ['the "−" of a removed line', "del"]]) {
         const q = contrastOf(await colourOf(page, `${line(kind)} ${tidSel("diff-sign")}`, "color"), await colourOf(page, line(kind), "backgroundColor"));
         if (q < FLOOR) say(`${what} is ${two(q)}:1 on its line's ground, under ${FLOOR}:1`);
       }
-      const edges = await page.evaluate(() => [...document.querySelectorAll('[data-testid="thread"] [data-testid="tool-part"]')].filter((p) => /^Output/.test(p.querySelector('[data-testid="tool-sub"]')?.textContent ?? "") && p.querySelector('[data-testid="tool-text"]'))
-        .map((p) => [p.dataset.failed === "true", getComputedStyle(p.querySelector('[data-testid="tool-text"]')).borderTopColor]));
+      const edges = await page.evaluate((phone) => phone
+        ? [...document.querySelectorAll('[data-testid="thread"] [data-testid="step-output"]')].map((o) => [o.closest('[data-testid="step"]')?.dataset.failed === "true", getComputedStyle(o).borderTopColor])
+        : [...document.querySelectorAll('[data-testid="thread"] [data-testid="tool-part"]')].filter((p) => /^Output/.test(p.querySelector('[data-testid="tool-sub"]')?.textContent ?? "") && p.querySelector('[data-testid="tool-text"]'))
+          .map((p) => [p.dataset.failed === "true", getComputedStyle(p.querySelector('[data-testid="tool-text"]')).borderTopColor]), phone);
       if (!edges.some(([failed]) => failed) || edges.filter(([failed]) => failed).some(([, c]) => edges.some(([failed, d]) => !failed && d === c))) say(`a failed output's box has the border of one that did not fail: ${JSON.stringify(edges)}`);
-      // (a word of a command is a span of its text with a colour of its own)
+      // (a word of a command is a span of its text with a colour of its own; the phone's step draws a command and an output as plain text in the theme's text colour, no run
+      // coloured: what it asserts instead is that every such text is drawn in the text colour, so a command is as readable in a flavour as the page)
+      if (phone) {
+        const inks = await page.evaluate(() => [...document.querySelectorAll('[data-testid="thread"] [data-testid="step-command"] > *:first-child, [data-testid="thread"] [data-testid="step-output"] [data-testid="tool-pre"]')].map((e) => getComputedStyle(e).color));
+        if (!inks.length) say("the phone's steps show no command and no output");
+        for (const c of new Set(inks)) if (hex(c.match(/[\d.]+/g).slice(0, 3).map(Number)) !== t.text) say(`a command or an output is drawn in ${hex(c.match(/[\d.]+/g).slice(0, 3).map(Number))}, not in the text colour ${t.text}`);
+      } else {
       const words = await page.evaluate(() => [...new Set([...document.querySelectorAll('[data-testid="thread"] [data-testid="tool-pre"]')].flatMap((pre) => [...pre.querySelectorAll("span")].map((e) => getComputedStyle(e).color).filter((c) => c !== getComputedStyle(pre).color)))].map((c) => c.match(/[\d.]+/g).slice(0, 3).map(Number)));
       const code = new Set([...SYNTAX, "faint", "muted", "danger"].map((n) => t[n]));
       if (!words.length) say("no word of a command is coloured as code");
       for (const w of words) if (!code.has(hex(w))) say(`a word of a command is drawn in ${hex(w)}, which is none of the theme's code colours`);
-      if (P && (t.bg !== P.base || await tone(`${thread} ${tidSel("tool-card")}`, "backgroundColor") !== P.mantle)) say(`a card is on ${await tone(`${thread} ${tidSel("tool-card")}`, "backgroundColor")} and its parts on ${t.bg}, not on Mantle ${P.mantle} and Base ${P.base}`);
+      }
+      if (P && (t.bg !== P.base || await tone(`${thread} ${card}`, "backgroundColor") !== P.mantle)) say(`a card is on ${await tone(`${thread} ${card}`, "backgroundColor")} and its parts on ${t.bg}, not on Mantle ${P.mantle} and Base ${P.base}`);
     };
     for (const [id, root = "thread"] of CARDS) {
       const s = a5.find((x) => x.id === id) ?? (() => { throw new Error(`the seed has no state A5.${id}`); })(), name = `the tool cards, ${id}`;
@@ -235,6 +291,7 @@ await check("P7.1 the composer, the tool cards and the sidebar's rail in each fl
         const { ctx, page } = await open({ sel: s.sel, wait: tidSel("chat-head"), ...win, ls: { ...win.ls, "aiwb.theme": theme }, still: true });
         try {
           await act(page, s.act);
+          if (layoutNow(page) === "phone" && id === "sub") await openSubSteps(page); // (an ended subagent's steps are one row at the phone until a tap)
           await byTid(page, "tool-card").first().waitFor({ state: "visible", timeout: 15000 });
           await openCards(page, root);
           await cardsOf(theme, name, page, root);

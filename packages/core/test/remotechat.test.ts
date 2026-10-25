@@ -276,7 +276,7 @@ test("a server that is not connected, or that no longer has the chat: paste of a
   assert.equal(imagesOff({ server: THERE.name, connected: true, model: "" }), null, "connected again: images are taken");
   assert.equal(imagesOff({ server: HERE.name, connected: HERE.connected, model: "" }), null);
   const uploads = src("state/uploads.ts");
-  assert.ok(uploads.includes("const { take, refused } = checkFiles(asked, room, !!o.off);") && uploads.includes("setImageError(chat, branch, refusedLine([...(o.skipped ?? []), ...refused], o.off || undefined));"));
+  assert.ok(uploads.includes("const { take, refused } = checkFiles(asked, room, !!o.off);") && uploads.includes("const all = [...(o.skipped ?? []), ...refused], error = refusedLine(all, o.off || undefined);"));
   // asked all the same (a composer that opened before the view said so), the upload is refused with that server's sentence, which the error line
   // says with the file's name
   assert.equal(uploadFailed("shot.png", "Studio is not connected."), "shot.png was not added: Studio is not connected.");

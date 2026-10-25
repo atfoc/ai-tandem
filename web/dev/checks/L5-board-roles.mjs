@@ -5,6 +5,10 @@
 //   Another window takes the board. The server says `superseded`: the canvas stays, in view mode, under the reader's bar (`board-role`, role
 //   "lost"; "Another window took over this board. View only."), the rest of the window stays, and "Edit here" takes the board back: the canvas
 //   is editable again, with the stored drawing. (Headless-board W12: a board opens as a reader's; the window writes only after the button.)
+//   The phone (B1) has no reader's bar: a window that lost the board says so in a toast (`toast`, data-kind `board-lost`, "Another window took
+//   over this board" with the action `toast-action` Edit here), and "Edit here" is the bottom row's button `board-take`, which is gone once the
+//   board is taken back (the writer's sign there; no "Editing" mark either: boarddraw.mjs). The canvas stays in view mode as before. An archived
+//   board's note is the bar's state word `state-word` (data-word `archived`, "Archived · read-only") in place of `archived-note`.
 // And, from the sweep (rows of area D that were true and not shown): the stage is covered, with no canvas of any board, while the scene is read,
 // and a read that fails says why (D-BD-03); an archived board opens read-only, with its note, and is not asked for (D-BD-10), and when it is
 // unarchived under the open screen it is asked for and the canvas is editable (D-BD-11); a drawing is undone and redone by Excalidraw's own
@@ -15,7 +19,8 @@ import { drawer, editHere, LIVE } from "./boarddraw.mjs";
 
 export const viewports = ["desktop", "tablet", "phone"];
 
-await check("L5 leaving a board writes it; a board taken by another window shows the reader's bar and is taken back with Edit here", async ({ url, open, fail, note, touch }) => {
+await check("L5 leaving a board writes it; a board taken by another window shows the reader's bar and is taken back with Edit here", async ({ url, open, fail, note, touch, viewport }) => {
+  const phone = viewport === "phone";
   await seed(url, "A2");
   const stored = () => mockEval("return scenes.b_ui.scene.elements.filter((e) => !e.isDeleted).length;", url);
   const ready = tidSel("board-canvas", { board: "b_ui", state: "ready" });
@@ -46,19 +51,22 @@ await check("L5 leaving a board writes it; a board taken by another window shows
     const calls = callsOf(page);
     const takes = () => calls.filter((c) => c.method === "POST" && /\/boards\/b_ui\/take/.test(c.path)).length;
     await mockEval('writer("b_ui", "window");', url); // (the server's word for another window taking the board: `superseded`; who writes stays a window)
-    const bar = byTid(page, "board-role");
-    if (!await until(() => bar.count(), 10000)) return fail("the window that lost the board shows no reader's bar");
-    if (await bar.first().getAttribute("data-role") !== "lost") fail(`the bar's role is ${await bar.first().getAttribute("data-role")}, not lost`);
+    const bar = byTid(page, "board-role"), toast = byTid(page, "toast", { kind: "board-lost" });
+    const said = phone ? toast : bar;
+    if (!await until(() => said.count(), 10000)) return fail(phone ? "the window that lost the board shows no toast that another window took it" : "the window that lost the board shows no reader's bar");
+    if (phone) {
+      if (!await byTid(page, "toast-action").first().textContent().then((t) => /Edit here/.test(t ?? ""), () => false)) fail("the toast of the lost board has no Edit here action");
+    } else if (await bar.first().getAttribute("data-role") !== "lost") fail(`the bar's role is ${await bar.first().getAttribute("data-role")}, not lost`);
     if (!await until(async () => !(await page.locator(LIVE).count()), 10000)) fail("the canvas can still be drawn on after the board went to another window");
     if (!await page.locator(".excalidraw").count()) fail("the canvas went away when the board went to another window (it stays, in view mode)");
-    if (!(await bar.first().textContent())?.includes("Another window took over this board. View only.")) fail(`the bar says "${await bar.first().textContent()}"`);
+    if (!(await said.first().textContent())?.includes(phone ? "Another window took over this board" : "Another window took over this board. View only.")) fail(`the ${phone ? "toast" : "bar"} says "${await said.first().textContent()}"`);
     if (!await byTid(page, "board-bar").count()) fail("the board's bar went with its canvas");
     if (await byTid(page, "board-editing").count()) fail('the "Editing" mark stays after the board was lost');
     const before = takes();
     await press(page, byTid(page, "board-take").first());
     if (!await until(() => page.locator(`${ready} ${LIVE}`).count(), 15000)) fail('"Edit here" did not bring the canvas back, editable');
     if (takes() <= before) fail('"Edit here" did not ask the server for the board');
-    if (await bar.count()) fail("the bar stays after the board was taken back");
+    if (phone ? await byTid(page, "board-take").count() : await bar.count()) fail(phone ? "the Edit here button stays after the board was taken back" : "the bar stays after the board was taken back");
     await ctx.close();
   }
 
@@ -100,9 +108,11 @@ await check("L5 leaving a board writes it; a board taken by another window shows
     await mockEval('boards.b_ui.archived = true; boards.b_ui.archiveOp = "op_l5"; return 1;', url);
     const { page, ctx } = await open({ sel: { board: "b_ui", chat: null }, wait: ready });
     const held = () => mockEval('return heldBoards.has("b_ui");', url); // (the server's word: a take made while the page loaded is in it too)
-    if (!await until(() => byTid(page, "archived-note").count(), 10000)) return fail("an archived board's bar has no note that it is read-only");
-    const note = (await byTid(page, "archived-note").first().textContent())?.trim();
-    if (note !== "Archived — read-only") fail(`the archived board's note says "${note}"`);
+    // (the phone's bar says it with its state word)
+    const archivedMark = phone ? byTid(page, "state-word", { word: "archived" }) : byTid(page, "archived-note");
+    if (!await until(() => archivedMark.count(), 10000)) return fail("an archived board's bar has no note that it is read-only");
+    const note = (await archivedMark.first().textContent())?.trim();
+    if (note !== (phone ? "Archived · read-only" : "Archived — read-only")) fail(`the archived board's note says "${note}"`);
     if (!await until(() => page.locator(".excalidraw.excalidraw--view-mode canvas.interactive").count(), 15000)) fail("an archived board's canvas is not in view mode");
     if (await page.locator(LIVE).count()) fail("an archived board's canvas is editable");
     await page.waitForTimeout(800); // (a take, if one were to be made, is made as the screen settles)
@@ -114,7 +124,7 @@ await check("L5 leaving a board writes it; a board taken by another window shows
     if (await held()) fail("the board was unarchived under the open screen and the window took it by itself");
     await editHere(page);
     if (!await held()) fail("Edit here on the unarchived board did not ask the server for it");
-    if (await byTid(page, "archived-note").count()) fail("the archived note stays after the board was unarchived");
+    if (await archivedMark.count()) fail("the archived note stays after the board was unarchived");
     await ctx.close();
   }
 

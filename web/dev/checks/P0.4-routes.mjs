@@ -17,7 +17,8 @@
 //  - each scenario of the page seeds A4 first (the old file's later scenarios used what the earlier ones had left: the chats they open are not the ones
 //    the earlier ones changed, so the result is the same, and the page's half can run at a viewport that did not run the mock's).
 import { check, hostCall, mockEval, seed, until } from "../shot.mjs";
-import { byTid, press, tidSel } from "./sel.mjs";
+import { byTid, layoutNow, press, tidSel } from "./sel.mjs";
+import { closeChoice, openChoice, openSheetKind } from "./composer.mjs";
 import { firstMsg, msgsSeen, openRow, openTree, pressAct, startMove, treeRow, typeAndSend, waitsSeen } from "./fork.mjs";
 
 export const viewports = ["desktop", "tablet", "phone"];
@@ -354,7 +355,7 @@ const WAIT = 15000;
 const T = "c_A4_turns";
 const BRANCH_REPLY = "A canned reply of the mock";
 
-async function pageHalf({ url, open, fail, note }) {
+async function pageHalf({ url, layout, open, fail, note }) {
   const branchSend = async (page, text) => { await startMove(page); await typeAndSend(page, text); };
   const replied = (page) => page.waitForFunction((r) => [...document.querySelectorAll('[data-testid="msg"][data-role="assistant"]')].some((m) => (m.textContent ?? "").includes(r)), BRANCH_REPLY, { timeout: WAIT });
   const usersOf = async (page) => (await msgsSeen(page)).filter((m) => m.who === "user").map((m) => m.text.slice(0, 30));
@@ -372,7 +373,7 @@ async function pageHalf({ url, open, fail, note }) {
     try {
       await page.waitForFunction((said) => !document.querySelector('[data-testid="fk-banner"]') && [...document.querySelectorAll('[data-testid="msg"][data-role="user"]')].some((m) => (m.textContent ?? "").includes(said)), said, { timeout: WAIT });
       await replied(page);
-      const seen = { users: await usersOf(page), pill: await byTid(page, "fk-tree-btn").first().getAttribute("data-count") };
+      const seen = { users: await usersOf(page), pill: await byTid(page, layoutNow(page) === "phone" ? "chat-tree" : "fk-tree-btn").first().getAttribute("data-count") /* (the phone header's Tree button, T1) */ };
       note(`a branch send in the page against a route delayed by 1.5 s: on the new branch after ${Date.now() - t} ms, the thread says ${JSON.stringify(seen.users)}, the tree button counts ${seen.pill}`);
       if (seen.users.length !== 2 || seen.pill !== "2") fail(`after the branch send the thread has ${JSON.stringify(seen.users)} and the tree button counts ${seen.pill}: not the new branch, cut after the first turn`);
       if (Date.now() - t < 1500) fail("the page was on the new branch before the delayed answer");
@@ -411,17 +412,31 @@ async function pageHalf({ url, open, fail, note }) {
     await seed(url, "A4");
     await mockEval(`flags.configure = { delay: 1500 };`, url);
     const { ctx, page } = await open({ sel: { chat: "c_A4_fork_claude" }, wait: tidSel("tchip", { kind: "model" }) });
+    const model = () => waitsSeen(page, { composer: true }).then((s) => s.model);
+    if (layout === "phone") {
+      // The phone: the pick is made in the model sheet. The fork's agent is told to start, so the row goes with it while the pick is held (a started chat has no chip row):
+      // the thread says that the agent is starting, and the chip is back on the model picked when the pick ends.
+      await openChoice(page, "model");
+      await press(page, byTid(page, "picker-row").filter({ hasText: "Sonnet 5.5" }).first());
+      try {
+        const starts = await until(async () => { const s = await waitsSeen(page, { composer: true }); return [...s.typing, ...s.lines.map((l) => l[1])].some((t) => t.startsWith("Starting the agent")); }, WAIT);
+        if (starts) note("a model pick on a fresh fork, held for 1.5 s: meanwhile the thread says that the agent is starting");
+        else fail("while a pick of Sonnet 5.5 on a fresh fork is held the thread does not say that the agent is starting");
+        if (await openSheetKind(page)) await closeChoice(page); // (Done; the sheet may have closed by itself as the agent started)
+        await page.waitForFunction((sel) => (document.querySelector(sel)?.textContent ?? "").includes("Sonnet 5.5"), tidSel("tchip", { kind: "model" }), { timeout: WAIT });
+      } catch (e) { fail(`a held model pick on a fresh fork did not show its start, or did not end on the model picked: ${e.message.split("\n")[0]} (the chip: ${JSON.stringify(await model())})`); }
+    } else {
     // (the model's chip is in the toolbar's row, or, where the row has no room for it, in the "more" popup, opened for it and left open)
     if (!await byTid(page, "tchip", { kind: "model" }).count() && await byTid(page, "more-chip").count()) { await press(page, byTid(page, "more-chip").first()); await byTid(page, "more-pop").first().waitFor({ state: "visible", timeout: WAIT }); }
     await press(page, byTid(page, "tchip", { kind: "model" }).first());
     await press(page, byTid(page, "pick-row").filter({ hasText: "Sonnet 5.5" }).first());
-    const model = () => waitsSeen(page, { composer: true }).then((s) => s.model);
     try {
       const during = await (await page.waitForFunction((sel) => { const e = document.querySelector(sel); return e?.dataset.fixed === "true" && (e.getAttribute("title") ?? "").startsWith("Starting the agent") ? e.textContent : false; }, tidSel("tchip", { kind: "model" }), { timeout: WAIT })).jsonValue();
       if (during.includes("Sonnet 5.5")) note(`a model pick on a fresh fork, held for 1.5 s: meanwhile the chip says "${during.trim()}"`);
       else fail(`while a pick of Sonnet 5.5 on a fresh fork is held the chip says "${during.trim()}": not the model picked`);
       await page.waitForFunction((sel) => { const e = document.querySelector(sel); return e?.dataset.fixed !== "true" && (e?.textContent ?? "").includes("Sonnet 5.5"); }, tidSel("tchip", { kind: "model" }), { timeout: WAIT });
     } catch (e) { fail(`a held model pick on a fresh fork did not show its start, or did not end on the model picked: ${e.message.split("\n")[0]} (the chip: ${JSON.stringify(await model())})`); }
+    }
     await mockEval(`delete flags.configure;`, url);
     await ctx.close();
   }

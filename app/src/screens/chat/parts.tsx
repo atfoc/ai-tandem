@@ -15,17 +15,22 @@
 //   HeaderCrumb    S8: the branch crumb at the end of the header's second line (nested Text, " · " first); nothing for a chat never split.
 //   HeaderTail     S8: the header's branch alert and its Tree button, before the × (they are views of their own, in a row).
 //   Banner         S8: the pending move's banner, between the thread and the composer (nothing when the chat has no move).
+//   AboveComposer  ux T2: what stands right above the composer (the permission dock); nothing until T2 registers it.
+//   StepGroup      ux T2: on the phone, a run of tool calls that only read, folded to one row (rows.ts `group` "steps"); `renderItem`
+//                  draws one of its items as the thread would on its own. The stand-in draws every item.
+//   SubagentGroup  ux T2: on the phone, the card of a run of calls that started subagents (rows.ts `group` "subagents"). Same props.
 //   showQuote      K5: what a press on a quote of a sent message does: shows where it is from.
 //   useMessageHold K5: a hook that gives a message of the thread the props and style that open the Quote sheet on a long press (the sheet path of
 //                  quotes: native, and the phone layout of the web build); `{}` where the platform's own selection quotes. Called for every message.
 //   MessageFlash   K5: drawn inside a message (user or agent) and over it: the flash that shows where a quote points on native (null at rest).
 //   sendMessage    K3: a suggestion's chip sends its text as the chat's first message (a board chat sends its context with it).
+//   MessageBelow   T3: what stands under a user's bubble on the phone, outside it (the "‹ Branch 1 of 2 ›" pill); nothing at rest.
 //   MessageMark    voice (VC-23): the mic mark of a message that was spoken, drawn inside the message; nothing at rest.
 //   useReadAloud   voice (VC-24): a hook that gives a message its Read aloud action, or null where it has none (no text to say). Called for every message.
 //
 // The thread draws each message in a wrapper that carries `testID="msg"` and `dataSet { role, item, quotable, streaming }`: a part that
 // is drawn inside a message does not change them.
-import type { ComponentType, RefObject } from "react";
+import type { ComponentType, ReactElement, RefObject } from "react";
 import { useSyncExternalStore } from "react";
 import { StyleSheet, View, type ViewProps, type ViewStyle } from "react-native";
 
@@ -49,13 +54,21 @@ export type ChatParts = {
   HeaderCrumb: ComponentType<{ chat: string }>;
   HeaderTail: ComponentType<{ chat: string }>;
   Banner: ComponentType<{ chat: string }>;
+  AboveComposer: ComponentType<{ chat: string }>;
+  StepGroup: ComponentType<GroupProps>;
+  SubagentGroup: ComponentType<GroupProps>;
   showQuote: (chat: string, ref: Reference) => void;
   useMessageHold: (chat: ChatView, index: number | undefined, item: Item) => MessageHold;
   MessageFlash: ComponentType<{ chat: string; index: number }>;
   sendMessage: (chat: string, text: string) => Promise<unknown>;
   MessageMark: ComponentType<{ chat: ChatView; index: number; item: Item }>;
+  MessageBelow: ComponentType<{ chat: ChatView; index: number; item: Item }>;
   useReadAloud: (chat: ChatView, branch: string, index: number, item: Item) => ReadAloudAction | null;
 };
+
+/** A group row's part (ux T2): its items in thread order with their places, and how one of them is drawn on its own. readOnly: the run lies
+ *  in the part copied from the thread's source. */
+export type GroupProps = { chat: ChatView; branch: string; items: { item: Item; index: number }[]; readOnly: boolean; renderItem(x: { item: Item; index: number }): ReactElement | null };
 
 /** A message's Read aloud action: `reading` while it is read (the action then stops it), `title` the action's words, `run` what a press does,
  *  `anchor` the control the problem popover hangs from. `paused`: the reading is held because the headphones went away and the rest would be
@@ -67,6 +80,11 @@ export type MessageHold = { props: Pick<ViewProps, "onTouchStart" | "onTouchMove
 const NO_HOLD: MessageHold = { props: {} };
 
 const Nothing = () => null;
+
+/** A group row until its part is registered: its items, each as on its own. */
+function GroupStandIn({ items, renderItem }: GroupProps) {
+  return <View style={styles.group}>{items.map((x) => <View key={x.index}>{renderItem(x)}</View>)}</View>;
+}
 
 /** The composer's place until K3: a bar with the context ring and its popup (S9), where the checks of the ring and the popup run. */
 function ComposerStandIn({ chat }: { chat: string }) {
@@ -112,9 +130,10 @@ const sendFirst = (chat: string, text: string): Promise<unknown> =>
 
 let parts: ChatParts = {
   Composer: ComposerStandIn, ToolCard: ToolCardStandIn, PermCard: PermCardStandIn, SubagentRow: SubagentRowStandIn, SubResultRow: Nothing,
-  MessageExtras: Nothing, MessageImages: Nothing, HeaderCrumb: Nothing, HeaderTail: Nothing, Banner: Nothing, showQuote: () => {},
+  MessageExtras: Nothing, MessageImages: Nothing, HeaderCrumb: Nothing, HeaderTail: Nothing, Banner: Nothing, AboveComposer: Nothing,
+  StepGroup: GroupStandIn, SubagentGroup: GroupStandIn, showQuote: () => {},
   useMessageHold: () => NO_HOLD, MessageFlash: Nothing, sendMessage: sendFirst,
-  MessageMark: Nothing, useReadAloud: () => null,
+  MessageMark: Nothing, MessageBelow: Nothing, useReadAloud: () => null,
 };
 const listeners = new Set<() => void>();
 
@@ -135,4 +154,5 @@ export const chatParts = (): ChatParts => parts;
 const styles = StyleSheet.create({
   bar: { flexDirection: "row", justifyContent: "flex-end", alignItems: "center", paddingVertical: 4, paddingHorizontal: 8, borderTopWidth: 1 },
   standIn: { borderWidth: 1, borderRadius: 6, paddingVertical: 4, paddingHorizontal: 8, alignSelf: "flex-start", maxWidth: "100%" },
+  group: { rowGap: 12, minWidth: 0 },
 });

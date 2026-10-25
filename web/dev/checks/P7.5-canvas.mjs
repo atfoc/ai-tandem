@@ -13,7 +13,7 @@
 //   - the ground is compared with the colour `app-root` is drawn in (the old page read it off <html>'s background, which the app's root view draws);
 //   - the picks are read where Excalidraw draws its properties panel: on the desktop it is beside the canvas; on the tablet and the phone
 //     Excalidraw keeps it behind the bottom bar's Edit button, which the check presses;
-//   - the second part puts the one page in each theme by the picker in the sidebar's foot (`theme-btn`, `theme-menu`, as the old check did), the six
+//   - the second part puts the one page in each theme by the picker in the sidebar's foot (`theme-btn`, `theme-menu`, as the old check did; on the phone, which has none, Settings > Appearance by `pickTheme` of settings.mjs), the six
 //     picks of the old check in its order. The phone shows the foot on the list screen only, so there each pick goes back to the list, picks, and
 //     opens the board again (the page is not reloaded: the check keeps a mark on `window`); Excalidraw is then drawn anew in the new theme
 //     where the other layouts switch the open canvas.
@@ -23,8 +23,9 @@
 // This check imports logic/canvastheme.ts, which node reads as TypeScript (Node 22.18 or newer, no flag).
 import { FLAVOURS } from "../../../packages/core/src/logic/theme.ts";
 import { check, colourOf, seed, until } from "../shot.mjs";
-import { openBoard, press, showList } from "./sel.mjs";
+import { byTid, openBoard, press, showList } from "./sel.mjs";
 import { editHere } from "./boarddraw.mjs";
+import { pickTheme } from "./settings.mjs";
 
 export const viewports = ["desktop", "tablet", "phone"];
 
@@ -122,14 +123,19 @@ await check("P7.5 the canvas takes each theme's ground and filter, on load and w
     let [was] = await settles(page);
     await page.evaluate(() => { window.__sameLoad = true; });
     const pick = async (theme) => {
-      await showList(page); // (the foot is in the list: the wide layouts keep it on screen, the phone goes back to it)
-      await press(page, page.locator(BTN).first());
-      await press(page, page.locator(`${MENU} [data-theme-pref="${theme}"]`).first());
+      if (viewport === "phone") await pickTheme(page, theme); // (the phone has no theme button: Settings > Appearance, S1's settings.mjs)
+      else {
+        await showList(page); // (the foot is in the list: the wide layouts keep it on screen)
+        await press(page, page.locator(BTN).first());
+        await press(page, page.locator(`${MENU} [data-theme-pref="${theme}"]`).first());
+      }
       const took = await until(() => page.evaluate(([t, f]) => { const d = document.documentElement.dataset; return d.theme === t && (d.flavour ?? null) === f && !document.querySelector('[data-testid="theme-menu"]'); },
         [FLAVOURS.includes(theme) ? (theme === "latte" ? "light" : "dark") : theme, FLAVOURS.includes(theme) ? theme : null]), 10000);
       if (!took) throw new Error(`a pick of ${theme} in the theme's menu did not put the page in it`);
       if (viewport === "phone") await openBoard(page, "b_ui");
       await page.waitForSelector(LIVE, { timeout: 15000 });
+      // (the board opened again is under its loading cover (canvas-empty) until the view has drawn its scene: a click before that lands on the cover)
+      await byTid(page, "board-canvas", { state: "ready" }).first().waitFor({ state: "attached", timeout: 15000 });
     };
     for (const theme of ["dark", "mocha", "latte", "light", "frappe", "macchiato"]) {
       await pick(theme);

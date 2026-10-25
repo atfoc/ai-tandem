@@ -8,15 +8,18 @@
 // Ports dev/checks/A5.3-gaps.mjs (package S6) at desktop, tablet and phone: the same seed (A5), items, assertions and words; the cards are read
 // over testIDs (`cards.mjs`; a card's classes `running` and `err` are its dataSet, a part that could not be drawn is `guard-fail`). The call cut with
 // its subagent, which the old check read in the drawer, is read in S7's drawer (`sub-drawer-body`).
+// On the phone (package T2) the cards are steps (screens/tools/StepCard.tsx): `cards.mjs` reads them into the same parts and `phoneBrief` says
+// what a step shows of each (a change under the notes, with its buttons; "+1" for "1 line"); a Content that is still arriving is the rows of an
+// added file; the steps of the subagent's screen are folded into one row until a tap.
 import { check, mockEval, paneSize, seed, until } from "../shot.mjs";
-import { openCards, toolCards } from "./cards.mjs";
+import { addedRows, openCards, openSubSteps, phoneBrief, toolCards } from "./cards.mjs";
 import { act, byTid } from "./sel.mjs";
 
 export const viewports = ["desktop", "tablet", "phone"];
 
 const DRAWER_ROOT = "sub-drawer-body";
 
-const brief = (card) => card.parts.map((p) => (p.part === "path" ? ["path", p.path, p.counts, p.lines].filter(Boolean).join(" ") : p.part === "text" || p.part === "change" ? `${p.part} ${p.title}` : `${p.part} ${p.text}`));
+const brief = (card) => card.parts.map((p) => (p.part === "path" ? ["path", p.path, p.counts, p.lines].filter(Boolean).join(" ") : p.part === "diffbar" ? "bar" : p.part === "text" || p.part === "change" ? `${p.part} ${p.title}`.trim() : `${p.part} ${p.text}`));
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const DOC = "/Users/demo/projects/shop/internal/calc/doc.go";
 // The incomplete items' cards: [the label, the line beside it, the classes it has of "running" and "err", its parts]
@@ -31,10 +34,15 @@ const GAPS = [
 await check("A5.3 an incomplete tool item says what is missing, and no item breaks the page", async ({ url, viewport, open, fail, note }) => {
   const states = await seed(url, "A5");
   const state = (id) => states.find((s) => s.id === id) ?? (() => { throw new Error(`the seed has no state ${id}`); })();
+  const phone = viewport === "phone";
   const win = viewport === "desktop" ? paneSize("page", 700, 900) : {};
-  const show = async (id) => {
-    const s = state(id), p = await open({ sel: s.sel, wait: '[data-testid="chat-head"]', ...win });
+  // (a phone's thread keeps only the rows near the screen: the malformed items, of which the failed ones open by themselves, are read in a window
+  // tall enough for all of them)
+  const show = async (id, tall) => {
+    const s = state(id), p = await open({ sel: s.sel, wait: '[data-testid="chat-head"]', ...win, ...(tall && phone ? { size: [393, 4000] } : {}) });
     await act(p.page, s.act);
+    // (the phone's subagent screen folds the steps of an ended subagent into one row: a tap shows them)
+    if (viewport === "phone" && id === "sub") await openSubSteps(p.page);
     await byTid(p.page, "tool-card").first().waitFor({ state: "visible", timeout: 15000 });
     return p;
   };
@@ -54,19 +62,22 @@ await check("A5.3 an incomplete tool item says what is missing, and no item brea
         if (!c) continue;
         if (c.label !== label || c.hint !== hint) fail(`${at}: its row says "${c.label}" and "${c.hint}", not "${label}" and "${hint}"`);
         if (!same(c.cls.filter((x) => x === "running" || x === "err"), cls)) fail(`${at}: its classes are ${c.cls.join(" ")}, not ${cls.join(" ")}`);
-        if (!c.open || !same(brief(c), parts)) fail(`${at}: open it shows ${JSON.stringify(brief(c))}, not ${JSON.stringify(parts)}`);
+        const wanted = phone ? phoneBrief(parts) : parts;
+        if (!c.open || !same(brief(c), wanted)) fail(`${at}: open it shows ${JSON.stringify(brief(c))}, not ${JSON.stringify(wanted)}`);
       }
-      const content = () => toolCards(p.page).then((all) => all[4]?.parts.find((x) => x.title === "Content")?.text);
-      if (!same(await content(), ["// Package calc adds num"])) fail(`${name}: of the input that is arriving the card shows ${JSON.stringify(await content())}`);
+      // (the content of a write: a text on the wide card, the rows of an added file on the phone)
+      const content = () => toolCards(p.page).then((all) => (phone ? all[4]?.parts.find((x) => x.part === "change")?.rows : all[4]?.parts.find((x) => x.title === "Content")?.text));
+      const rows = (text) => (phone ? addedRows(text) : [text]);
+      if (!same(await content(), rows("// Package calc adds num"))) fail(`${name}: of the input that is arriving the card shows ${JSON.stringify(await content())}`);
 
       // the input goes on arriving, then it is whole and the call is done: the open card follows
       const put = (item) => mockEval(`const list = items.c_A5_gaps, i = list.findIndex((x) => x && x.toolId === "i5"); list[i] = ${JSON.stringify(item)};
         send({ type: "chat_items", chat: "c_A5_gaps", branch: "main", version: (versions.c_A5_gaps = (versions.c_A5_gaps ?? 1) + 1), updates: [{ index: i, item: list[i] }] });`, url);
       const TEXT = "// Package calc adds numbers.\npackage calc\n";
       await put({ kind: "tool", toolId: "i5", name: "Write", partial: `{"file_path": "${DOC}", "content": "// Package calc adds numbers.\\npackage ca` });
-      if (!await until(async () => same(await content(), ["// Package calc adds numbers.\npackage ca"]), 8000)) fail(`${name}: after more of the input arrived the open card shows ${JSON.stringify(await content())}`);
+      if (!await until(async () => same(await content(), rows("// Package calc adds numbers.\npackage ca")), 8000)) fail(`${name}: after more of the input arrived the open card shows ${JSON.stringify(await content())}`);
       await put({ kind: "tool", toolId: "i5", name: "Write", partial: JSON.stringify({ file_path: DOC, content: TEXT }), input: { file_path: DOC, content: TEXT }, result: `File created successfully at: ${DOC}` });
-      const done = ["path internal/calc/doc.go 2 lines", "text Content"];
+      const done = phone ? phoneBrief(["path internal/calc/doc.go 2 lines", "text Content"]) : ["path internal/calc/doc.go 2 lines", "text Content"];
       if (!await until(async () => { const c = (await toolCards(p.page))[4]; return c?.open && same(brief(c), done) && c.label === "Wrote doc.go" && !c.cls.includes("running"); }, 8000)) {
         const c = (await toolCards(p.page))[4];
         fail(`${name}: with its input and its result the card is "${c?.label}" (${c?.cls.join(" ")}), ${c?.open ? "open" : "closed"}, and shows ${JSON.stringify(c && brief(c))}, not ${JSON.stringify(done)}`);
@@ -92,7 +103,7 @@ await check("A5.3 an incomplete tool item says what is missing, and no item brea
 
   // ---- items with fields of other types than the page reads
   {
-    const p = await show("junk"), name = "the malformed items", want = state("junk").count;
+    const p = await show("junk", true), name = "the malformed items", want = state("junk").count;
     try {
       await until(async () => (await toolCards(p.page))?.length === want, 15000);
       const closed = await toolCards(p.page);

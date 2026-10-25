@@ -1038,6 +1038,20 @@ test("a section's lists stay while its server is not connected, and go with its 
   assert.deepEqual(s().lists, {});
 });
 
+test("an entry that leaves the list is told to `onEntryGone`'s handlers once, after the store dropped it; one that stays is not", async () => {
+  await ev({ ...snapshot([]), servers: SERVERS, sections: { [S1]: treeOf() } });
+  const told: [string, boolean][] = [];
+  const off = conn.onEntryGone((id: string) => told.push([id, s().servers.some((v: { id: string }) => v.id === id)]));
+  try {
+    await ev({ type: "servers", servers: SERVERS });
+    assert.deepEqual(told, [], "the same list: nothing left it");
+    await ev({ type: "servers", servers: [LOCAL] });
+    assert.deepEqual(told, [[S1, false]]);
+    conn.entryRemoved(S1);
+    assert.deepEqual(told, [[S1, false]], "the answer after the event finds it gone already");
+  } finally { off(); }
+});
+
 test("a snapshot's `sections` go to the store under the page's keys, beside this computer's things of the same ids", async () => {
   const defaults = { groups: { g_1: { servers: { local: { agent: "pi" } } } } };
   await ev({ ...snapshot([view("c_2")], [rec("c_2", "main")]), groups: [{ id: "g_1", name: "Mine" }], boards: [boardRow("b_1")], servers: SERVERS,
@@ -1378,6 +1392,45 @@ test("an entry that leaves `connected` takes its tree away, marks its library an
   await tick();
   await ev({ type: "server_state", server: STUDIO });
   assert.deepEqual([keys(s().sections), keys(s().chats), s().libraries.map((l: { connected: boolean }) => l.connected)], [[S1], [K1], [true]]);
+});
+
+test("serverSince: an entry's state change is stamped, the same state again is not, and a stream that ends restamps the entries that were up", async () => {
+  const was = Date.now;
+  try {
+    store.setState({ servers: [LOCAL, STUDIO], serverSince: {} });
+    Date.now = () => 1000;
+    await ev({ type: "servers", servers: [LOCAL, STUDIO], notice: "" });
+    assert.deepEqual(s().serverSince, { local: 1000, [S1]: 1000 }, "an entry with no record is stamped when first listed");
+    Date.now = () => 2000;
+    await ev({ type: "server_state", server: STUDIO });
+    assert.equal(s().serverSince[S1], 1000, "the same state is no change");
+    await ev({ type: "server_state", server: { ...STUDIO, state: "unreachable", detail: "x" } });
+    assert.deepEqual(s().serverSince, { local: 1000, [S1]: 2000 }, "only the entry whose state changed");
+    Date.now = () => 3000;
+    await ev({ type: "server_state", server: { ...STUDIO, state: "unreachable", detail: "y" } });
+    assert.equal(s().serverSince[S1], 2000, "a new detail in the same state is no change");
+    Date.now = () => 4000;
+    await ev({ type: "servers", servers: [LOCAL, { ...STUDIO, name: "Renamed", state: "unreachable" }], notice: "" });
+    assert.equal(s().serverSince[S1], 2000, "nor is a new list with the same state");
+    await ev({ type: "servers", servers: [LOCAL], notice: "" });
+    assert.deepEqual(s().serverSince, { local: 1000 }, "the record of an entry that left goes");
+    store.setState({ servers: [LOCAL, STUDIO, { id: S2, name: "Office", state: "connecting" }], serverSince: { local: 1000, [S1]: 1000, [S2]: 1000 } });
+    Date.now = () => 5000;
+    source().onState("closed");
+    assert.deepEqual(s().serverSince, { local: 5000, [S1]: 5000, [S2]: 1000 }, "the entries shown as connecting again are stamped, the one that was connecting is not");
+  } finally { Date.now = was; }
+});
+
+test("localNetworkDenied: the app's word is kept, and the same word again changes nothing", () => {
+  assert.equal(s().localNetworkDenied, false);
+  let calls = 0;
+  const off = store.subscribe(() => { calls++; });
+  store.setLocalNetworkDenied(true);
+  store.setLocalNetworkDenied(true);
+  assert.deepEqual([s().localNetworkDenied, calls], [true, 1]);
+  store.setLocalNetworkDenied(false);
+  assert.deepEqual([s().localNetworkDenied, calls], [false, 2]);
+  off();
 });
 
 test("this computer's entry leaving `connected` takes its tree away as a section's: the page keeps its things and its library, and holds the tree again at its snapshot", async () => {

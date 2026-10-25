@@ -33,6 +33,7 @@
 import React, { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 import { Platform, StyleSheet, Text, TextInput, type NativeSyntheticEvent, type TextInputKeyPressEventData, type TextInputSelectionChangeEventData } from "react-native";
 
+import { TYPE } from "../../ui/metrics.ts";
 import { BASE_SIZE } from "../../ui/Text.tsx";
 import { reportRaw, reportState } from "../../dev/chipreport.ts";
 import { useTokens } from "../../ui/theme.tsx";
@@ -42,9 +43,10 @@ import type { ChipInputHandle, ChipInputProps } from "./types.ts";
 export type { ChipInputHandle, ChipInputProps } from "./types.ts";
 
 const LINE = Math.round(BASE_SIZE * 1.45);
+const PHONE_LINE = Math.round(TYPE.control * 1.45);
 
-/** The native field: the runs as the TextInput's children. */
-export const NativeField = forwardRef<FieldHandle, FieldProps>(function NativeField(
+/** The native field: the runs as the TextInput's children. `phone`: the phone's box (17 pt, one line high to six, then it scrolls inside). */
+const makeField = (phone: boolean) => forwardRef<FieldHandle, FieldProps>(function NativeField(
   { runs, selection, rev, onText, onSelection, onKeyPress, placeholder, editable, readOnly, plain, testID },
   ref,
 ) {
@@ -78,7 +80,7 @@ export const NativeField = forwardRef<FieldHandle, FieldProps>(function NativeFi
       onSelectionChange={(e: NativeSyntheticEvent<TextInputSelectionChangeEventData>) => onSelection(e.nativeEvent.selection)}
       onKeyPress={(e: NativeSyntheticEvent<TextInputKeyPressEventData>) => onKeyPress(e.nativeEvent.key)}
       {...(plain ? { autoCorrect: false, spellCheck: false, autoCapitalize: "none" as const } : {})}
-      style={[styles.field, { color: t.text }]}
+      style={[styles.field, phone && styles.phone, { color: t.text }]}
     >
       {runs.map((r, i) => (
         <Text key={i} style={[r.chip ? [styles.chip, { color: t.accent, backgroundColor: t.accentSoft }] : null, nudge]}>{r.text}</Text>
@@ -87,15 +89,19 @@ export const NativeField = forwardRef<FieldHandle, FieldProps>(function NativeFi
   );
 });
 
+export const NativeField = makeField(false);
+const PhoneField = makeField(true);
+
 // (Android: the first tap of a double tap inside a chip is not moved before the second; ChipDocInputProps.Field. On iOS the
 // wait made UIKit miss the double tap in every run, without it now and then: there the view is moved at once.)
-(NativeField as typeof NativeField & { tapSnapDelay?: number }).tapSnapDelay = Platform.OS === "android" ? 350 : 0;
+for (const F of [NativeField, PhoneField]) (F as typeof F & { tapSnapDelay?: number }).tapSnapDelay = Platform.OS === "android" ? 350 : 0;
 
 export const ChipInput = forwardRef<ChipInputHandle, ChipInputProps>(function ChipInput(props, ref) {
-  return <ChipDocInput {...props} ref={ref} Field={NativeField} onState={reportState} onRaw={reportRaw} />;
+  return <ChipDocInput {...props} ref={ref} Field={props.size === "phone" ? PhoneField : NativeField} onState={reportState} onRaw={reportRaw} />;
 });
 
 const styles = StyleSheet.create({
   field: { fontSize: BASE_SIZE, lineHeight: LINE, paddingVertical: 3, paddingHorizontal: 0, minHeight: 3 * LINE + 6, maxHeight: 6 * LINE + 6, textAlignVertical: "top" },
+  phone: { fontSize: TYPE.control, lineHeight: PHONE_LINE, minHeight: PHONE_LINE + 6, maxHeight: 6 * PHONE_LINE + 6 },
   chip: { fontWeight: "600" },
 });

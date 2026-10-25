@@ -96,6 +96,38 @@ How AI Whiteboard fits together: the server, the app on its four targets (the de
   run by Maestro (`app/e2e/`); the rest is tested in the browser on the web build, at three
   viewports (a desktop, a tablet and a phone).
 
+## Phone layout
+
+Under 700 points (`usePhone()` in `app/src/ui/useLayout.ts`) the app is a phone: a screen written for the phone reads
+`usePhone()` or is phone-only, and the tablet and desktop layouts keep their split view and their sizes.
+
+- **Home** (`app/src/screens/home/`) is the first screen: one server's list at a time, picked by the chips above it
+  (`ServerChips.tsx`; each chip carries the server's state word), with the groups, boards and chats of that server. A group is a
+  screen pushed over Home, nested as deep as the groups are. Where Home is (the server and the groups pushed over it) is
+  `HomePlace` (`screens/shell/stack.ts`), saved in the kv as `aiwb.home`.
+- **One native stack, derived from the store.** `screens/shell/PhoneStack.tsx` draws a React Navigation stack; nobody pushes a
+  route by hand to open a chat. `stackOf` (`screens/shell/stack.ts`, pure) gives the entries from the selection and `HomePlace`
+  (home › groups › a board › its chat, or a plain chat), and a back writes the store (`planPopTo`), not the stack, so the stack is
+  the same whichever way a screen was reached. A screen that is neither content nor a group (Settings, Servers, the library, a full
+  table, a diff) is registered once with `registerScreen(name, spec)` and opened with `pushScreen(name, params)`
+  (`screens/shell/screens.ts`); `select` of other content clears the pushed ones. A place screen's back names the screen under it
+  (`BackControl`, `PlaceBar` in `ui/Bars.tsx`), a content screen has the chevron alone, and **holding** the back opens a sheet
+  of the screens under this one (a pick goes back several levels). The edge swipe is off on a board, whose canvas owns the edge,
+  and while a point is picked (`gesture` in `PhoneStack.tsx`); a pushed screen can opt out (`edgeSwipe`).
+- **The kit** (`app/src/ui/`, gallery at `/?gallery=kit`, check `UX.F1-kit`): P1 `ActionSheet` (rows of actions, the destructive
+  one last and red, no Cancel), P2 `PickerSheet` (a choice, the current one checked), P3 `FormSheet` (Cancel · title · Save, with
+  a leave guard), P4 `ConfirmSheet` (what cannot be undone, red button, Cancel), and P5, the pushed list screen built of `Cells`
+  (`ui/Cells.tsx`) under a `PlaceBar`. Only one sheet may stand over another, a form's guard (`over: "form"`).
+- **Sizes** are in `ui/metrics.ts` (no React, so Node loads it): `PHONE.target` 44 (every control, by a hit slop where it looks
+  smaller), rows 50 to 60, and the type ramp `TYPE` with controls, lists, sheets, bars and the composer's box at 17 and secondary
+  text never under 13. The rules check (`web/dev/checks/rules.mjs`, `UX.R1`) reads these on every screen.
+- **The toast** (`ui/Toast.tsx`, `showToast`, with an action such as Undo) tells what was done: an archive asks nothing and
+  its toast undoes it. A screen with a bar at the bottom lifts it with `useToastLift`.
+- **State words.** Every state of a server, a chat or a board is said by the one list in
+  `packages/core/src/logic/statewords.ts` (`SERVER_WORDS`, `CHAT_WORDS`, `BOARD_WORDS`, a `StateWord` = key, text, tone ok / wait /
+  warn / bad) and drawn by `ui/StateWord.tsx`; a screen never writes a state word of its own. Warning and ok text use `warnText`
+  and `okText`, because the amber and the green of a mark are under 4.5:1 on white.
+
 ## The server's listeners
 
 A server has two listeners and one socket.
@@ -558,7 +590,7 @@ never used voice opens no socket, asks for no microphone, makes no audio context
   with its first chunk, before the service has finished it. The speed in Settings is sent as `voice_settings.speed`; the
   player does not stretch the sound.
 - **Interrupting.** A tap interrupts everywhere: a tap on the speech bar's waveform or on the pill's orb while a reply is
-  spoken, and the **Stop reading** control of a message, each stop the sound and the open requests at once (and in a session
+  spoken, and the **End reading** control of a message, each stop the sound and the open requests at once (and in a session
   the microphone goes on listening at once). Speaking does not interrupt, on any platform. From the moment a spoken turn is
   on its way until its reply is over (played to its end, stopped, failed or tapped), **no audio is sent** and nothing heard
   counts, in speech mode and in the pill, on the phones, the desktop and the web build alike; a message read aloud during a
@@ -650,9 +682,9 @@ never used voice opens no socket, asks for no microphone, makes no audio context
   fetched (two sentences ahead) into the held queue, so nothing is missing or fetched twice when the person goes on. The speech bar's
   line says "“X” was disconnected. Paused so nothing is played out loud." (`speech-paused`) and its foot shows **Continue**
   (`speech-continue`); the pill's orb takes the state `paused` (`pill-orb` `data-state="paused"`, a pause glyph; a tap on it
-  continues), its bar shows **Continue** (`pill-continue`), and with the pill paused a Space tap continues and a hold does nothing; a message being read aloud shows **Continue reading** (`voice-reading-continue`) beside **Stop reading**, and the
+  continues), its bar shows **Continue** (`pill-continue`), and with the pill paused a Space tap continues and a hold does nothing; a message being read aloud shows **Continue reading** (`voice-reading-continue`) beside **End reading**, and the
   composer's notice line the sentence. **Continue** (`voice.resume()`) plays on from where the sound stopped on the system's
-  output, out loud, on purpose. There is no time limit; End, Stop reading or leaving the chat end it. Which devices
+  output, out loud, on purpose. There is no time limit; End, End reading, or leaving the chat end it. Which devices
   are private is read from the port type on the phones (headphones, Bluetooth, wired and USB headsets, the earpiece), and from
   the name on the desktop and the web (`privacyOfName`: "headphones", "headset", "AirPods", "buds" and the like are private,
   "speakers", "display", "HDMI" are public); a desktop output whose kind cannot be told from its name counts as private when it
@@ -685,13 +717,26 @@ never used voice opens no socket, asks for no microphone, makes no audio context
   waveform, the sentence being spoken, Mute, End, the Auto-send switch, and the countdown with Cancel or Send); the box
   and its draft are kept under it and come back at End. **Read aloud** is the last of a message's actions (the mouse's hover
   bar, the finger's "⋯" menu), on the person's messages and the agent's finished replies, even in an archived chat, because
-  reading needs no server; while a message is read it says **Stop reading**.
+  reading needs no server; while a message is read it says **End reading**.
 - **The board's pill.** A control floating at the bottom of a board's canvas (a canvas board that is not archived), outside
   the board view: an orb that is idle, listening, thinking, speaking, counting down or waiting to send, a chip that names the
   chat the turn goes to (the board's last used chat, or a new one made by the first turn), and a bar while it listens. The
   pill makes its chat with the same action as the sidebar's **+**, but does not open it. If the board has a selection, the
   turn carries it as ⌘L does ("3 selected", removable). In the desktop window (and the web build), holding Space is push-to-talk and
   letting go sends; a phone's or tablet's keyboard cannot give the app a typing key, so there it is a tap on the orb. The agent's edits show on the board as they do for a typed message.
+- **Voice on the phone layout** (ux-improvements goal 3.7 and 4.9, which replace two things of the voice-chats goal there; tablet and
+  desktop keep everything above). One vocabulary: **Talk**, **Dictate**, **Send**, **Cancel**, **Interrupt**, **Mute**, **End**, and the
+  states Listening, Sending in N s, Thinking…, Speaking, Muted; "Stop" only stops the agent. The composer's toolbar has the mic
+  (**Dictate**) and one primary button, **Talk** while the box is empty; while dictation listens a "Listening…" line with a live level is
+  inside the box and the live guess is drawn muted under the text until it is final. The **speech bar** takes the box's place with the
+  state in words, one action of the moment (Send, Cancel during the countdown, Interrupt while a reply is spoken), a waveform, the
+  heard words, **Mute** and **End**; End leaves the unsent words in the box as the draft. **Auto-send** is one setting, in Settings ›
+  Voice only: it is not in the speech bar and not on the board. On a board the **pill is gone**: the orb is docked at the right end of
+  the board's bottom row (in the app's chrome, the inset B1 keeps in Excalidraw's footer), and while a session runs one **voice card**
+  stands above the row: "To:" the chat (it opens the board's Chats sheet), the heard words, "With N selected shapes ×", Cancel and
+  Send; while the reply is spoken the agent's words, **Open chat** and **Interrupt**. Selecting on a board sends nothing to any chat
+  except in this speech mode, and then only to the chat voice is set to. Every voice problem is one sheet, **Set up voice**, whose
+  one button opens Settings › Voice (or ElevenLabs, or the system's settings, by the problem); the key is set only there.
 - **The stand-in.** The tests call no real service and no paid model. `web/dev/voicestandin.mjs` is a local fake of the parts
   of ElevenLabs that voice uses, in plain Node with no dependency: voices, a token, chunked PCM for a sentence, and the
   realtime socket, which answers a script of words by the count of audio chunks it has received and checks the format of

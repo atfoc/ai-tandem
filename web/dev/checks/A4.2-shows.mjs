@@ -17,6 +17,7 @@
 import { check, holds, mockEval, paneSize, release, sampleFrames, seed, until } from "../shot.mjs";
 import { byTid, press, tidSel } from "./sel.mjs";
 import { actsSeen, firstMsg, openRow, openTree, endRow, pressAct, send as sendMsg, startMove, treeRow, waitsSeen as seenNow } from "./fork.mjs";
+import { closeChoice, openChoice, openSheetKind, phoneChip } from "./composer.mjs";
 
 export const viewports = ["desktop", "tablet", "phone"];
 
@@ -36,6 +37,16 @@ function threadProbe() {
 
 await check("A4.2 each wait of the fork flows shows something", async ({ url, viewport, layout, open, fail, note }) => {
   const knob = (code) => mockEval(code, url);
+  /** The model sheet after a pick on a fresh fork: it may close by itself as the pick starts the agent again; else Done closes it. */
+  const leaveSheet = async (page) => { if (!await until(async () => !(await openSheetKind(page)), 1500)) await closeChoice(page); };
+  /** The phone's chip that takes no press (its DOM has no aria-disabled, only its cursor): a press on it opens no sheet. Answers whether one opened (and closes it). */
+  const pressOpened = async (page) => {
+    await phoneChip(page, "model").click({ force: true });
+    const opened = !await until(async () => !(await openSheetKind(page)), 800);
+    if (opened) await closeChoice(page);
+    return opened;
+  };
+  const phone = layout === "phone"; // (the phone layout: Talk is the primary while the box is empty, so a Send that waits is not drawn, and the pickers are sheets)
   const openChat = async (chat, wait = MSG) => open({ sel: { chat }, wait });
   const texts = (seen) => seen.msgs.map((m) => `${m.who}${m.sending ? " (sending)" : ""}${m.live ? "" : " (not an item)"}: ${m.text}`);
   const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
@@ -71,7 +82,8 @@ await check("A4.2 each wait of the fork flows shows something", async ({ url, vi
     let seen = await when(page, `${name}, until the answer`, (s) => s.msgs.some((m) => m.sending));
     expect(`${name}, until the answer: the thread up to the point, then the message in the pending look`, same(texts(seen), [`user: ${ASK}`, `agent: ${ANSWER}`, `user (sending) (not an item): ${said}`]), texts(seen));
     expect(`${name}, until the answer: the line that the agent is starting, and no other status line`, same(seen.lines, [["send", "Starting the agent…"]]) && !seen.typing.length, [seen.lines, seen.typing]);
-    expect(`${name}, until the answer: Send shows a spinner and says why it takes no press`, seen.send?.disabled && seen.send.spin && seen.send.title === SENDING, seen.send);
+    if (phone) expect(`${name}, until the answer: the phone's primary is Talk, with no Send to spin (the box was emptied by the send; the line and the banner tell of the wait)`, !seen.send && !!seen.talk, [seen.send, seen.talk]);
+    else expect(`${name}, until the answer: Send shows a spinner and says why it takes no press`, seen.send?.disabled && seen.send.spin && seen.send.title === SENDING, seen.send);
     expect(`${name}, until the answer: the banner says that the message is being sent`, /your message is being sent/.test(seen.banner), seen.banner);
     expect(`${name}, until the answer: the box is empty`, seen.box === "", seen.box);
     // the list of the new branch is held too: what the page shows between the answer and that list
@@ -135,7 +147,8 @@ await check("A4.2 each wait of the fork flows shows something", async ({ url, vi
     await held(name, "send");
     const seen = await when(page, name, (s) => s.msgs.some((m) => m.sending));
     expect(`${name}: the message, and the line that it is being sent there`, same(texts(seen).slice(-1), [`user (sending) (not an item): ${said}`]) && same(seen.lines, [["send", `Sending to ${LAB}…`]]), [texts(seen), seen.lines]);
-    expect(`${name}: Send shows a spinner`, seen.send?.disabled && seen.send.spin, seen.send);
+    if (phone) expect(`${name}: the phone's primary is Talk, with no Send to spin`, !seen.send && !!seen.talk, [seen.send, seen.talk]);
+    else expect(`${name}: Send shows a spinner`, seen.send?.disabled && seen.send.spin, seen.send);
     await release(url, "send");
     await when(page, `${name}, answered`, (s) => !s.banner && s.msgs.length === 3 && s.msgs.every((m) => m.live));
     await knob(`delete flags.send;`);
@@ -208,7 +221,9 @@ await check("A4.2 each wait of the fork flows shows something", async ({ url, vi
     expect(`${name}: the source's thread as it was, with the line at its foot`, same(seen.lines, [["fork", "Making a fork of this chat…"]]) && seen.msgs.length === 4 && seen.msgs.every((m) => m.live), seen);
     await release(url, "fork");
     if (!await until(async () => ((await byTid(page, "chat-head-name").first().textContent().catch(() => "")) ?? "").includes("Branch send (fork)"))) fail(`${name}: the fork did not open when it was made`);
-    expect(`${name}, made: the fork's thread has no such line`, !(await waitsSeen(page)).lines.length, (await waitsSeen(page)).lines);
+    // (the fork's screen opens as the source's line goes: waited for, so a moment in which both are drawn is not read as the fork's)
+    const left = await until(async () => !(await waitsSeen(page)).lines.length, 5000);
+    expect(`${name}, made: the fork's thread has no such line`, !!left, (await waitsSeen(page)).lines);
     await knob(`delete flags.fork;`);
     await ctx.close();
   }
@@ -220,33 +235,50 @@ await check("A4.2 each wait of the fork flows shows something", async ({ url, vi
     await knob(`flags.configure = { chat: "${id}", hold: true };`);
     const { page, ctx } = await openChat(id, tidSel("tchip", { kind: "model" }));
     const before = await waitsSeen(page);
-    await press(page, await chipOf(page, "model"));
-    const row = byTid(page, "pick-row", { optionId: model });
-    const label = ((await row.first().textContent()) ?? "").replace("✓", "").trim().split("\n")[0];
+    // (the phone: the model sheet's row, which stays open under the pick (Done closes it); the pick is held by the mock, so no ✓ moves yet)
+    const row = phone ? byTid(await openChoice(page, "model"), "picker-row", { value: model }) : (await press(page, await chipOf(page, "model")), byTid(page, "pick-row", { optionId: model }));
+    const label = ((await row.first().textContent()) ?? "").replace("✓", "").replace(/\d+k context.*$/, "").trim().split("\n")[0]; // (the phone's row has the model's sub-line after its name)
     await press(page, row.first());
     await held(name, "configure");
-    let seen = await when(page, name, (s) => s.fixed);
-    expect(`${name}: the model is a fixed chip that names ${label} and says that the agent is starting on it`, seen.model?.title === "Starting the agent on this model…" && seen.model.text.includes(label) && !seen.effort, [seen.model, seen.effort]);
-    expect(`${name}: Send takes no press and says that the agent is starting on ${label}`, seen.send?.disabled && seen.send.title.startsWith(`The agent is starting on ${label}`) && !seen.send.spin, seen.send);
+    if (phone) await leaveSheet(page);
+    // (at the phone the chip has no fixed look: it takes no press, and names the pick)
+    const picking = phone ? (s) => s.lines.length > 0 || s.typing.length > 0 : (s) => s.fixed; // (the phone: the thread tells that the agent is starting)
+    let seen = await when(page, name, picking);
+    // (the phone: while the agent starts on the pick the model chip stays in the row, names the pick and takes no press)
+    if (phone) expect(`${name}: the model chip stays and names ${label}`, !!seen.model && seen.model.label.includes(label), [seen.model, seen.effort]);
+    if (phone) expect(`${name}: a press on the model chip opens no sheet while the agent starts`, !await pressOpened(page), await openSheetKind(page));
+    if (!phone) expect(`${name}: the model is a fixed chip that names ${label} and says that the agent is starting on it`, seen.model?.title === "Starting the agent on this model…" && seen.model.text.includes(label) && !seen.effort, [seen.model, seen.effort]);
+    if (phone) expect(`${name}: the phone's primary is Talk (the box is empty); no Send that waits`, !seen.send && !!seen.talk, [seen.send, seen.talk]);
+    else expect(`${name}: Send takes no press and says that the agent is starting on ${label}`, seen.send?.disabled && seen.send.title.startsWith(`The agent is starting on ${label}`) && !seen.send.spin, seen.send);
     // (the fork says so itself once it is told to be working, which a pi fork never is: the line is then the wait's)
-    expect(`${name}: the thread says once that the agent is starting`, same([...seen.typing, ...seen.lines.map((l) => l[1])], ["Starting the agent…"]) && seen.lines.every((l) => l[0] === "pick"), [seen.lines, seen.typing]);
+    // (the phone's busy line adds the step's seconds, " · 1 s", once one has passed: goal 3.5)
+    const said = [...seen.typing.map((x) => x.replace(/ · \d+ s$/, "")), ...seen.lines.map((l) => l[1])];
+    expect(`${name}: the thread says once that the agent is starting`, same(said, ["Starting the agent…"]) && seen.lines.every((l) => l[0] === "pick"), [seen.lines, seen.typing]);
     if (kind === "pi" && seen.typing.length) fail(`${name}: the mock told of the start, which pi does not: the page's own wait was not what showed it`);
     await release(url, "configure");
     seen = await when(page, `${name}, started`, (s) => !s.fixed && !!s.model?.text.includes(label));
-    expect(`${name}, started: the picker is back on ${label}, and Send is as before the pick`, !seen.model.disabled && seen.send?.title === before.send?.title, [seen.model, seen.send]);
+    expect(`${name}, started: the picker is back on ${label}, and ${phone ? "the primary" : "Send"} is as before the pick`, (phone || !seen.model.disabled) && (phone ? !seen.send === !before.send && seen.talk?.label === before.talk?.label : seen.send?.title === before.send?.title), [seen.model, seen.send, seen.talk]);
     if (kind === "pi") {
       // an effort pick: the same picture, with the effort in the chip
       const effort = "an effort pick on a fresh pi fork";
-      await press(page, await chipOf(page, "effort"));
-      await press(page, byTid(page, "pick-row", { optionId: "high" }).first());
+      if (phone) await press(page, byTid(byTid(await openChoice(page, "model"), "effort-seg"), "segment", { value: "high" })); // (the effort is the model sheet's control; the pick is held, so its segment does not turn on yet)
+      else {
+        await press(page, await chipOf(page, "effort"));
+        await press(page, byTid(page, "pick-row", { optionId: "high" }).first());
+      }
       await held(effort, "configure");
-      seen = await when(page, effort, (s) => s.fixed);
-      expect(`${effort}: the fixed chip names the model and the effort picked, and Send the same`, /High/.test(seen.model?.text ?? "") && seen.model.text.includes(label) && /^The agent is starting on .*High/.test(seen.send?.title ?? "") && seen.send.disabled, [seen.model, seen.send]);
+      if (phone) await leaveSheet(page);
+      seen = await when(page, effort, picking);
+      if (phone) expect(`${effort}: the model chip takes no press and names the model and the effort picked, and the primary is Talk`, /High/.test(seen.model?.text ?? "") && seen.model.text.includes(label) && /High/.test(seen.model.label) && !seen.send && !!seen.talk && !await pressOpened(page), [seen.model, seen.send, seen.talk]);
+      else expect(`${effort}: the fixed chip names the model and the effort picked, and Send the same`, /High/.test(seen.model?.text ?? "") && seen.model.text.includes(label) && /^The agent is starting on .*High/.test(seen.send?.title ?? "") && seen.send.disabled, [seen.model, seen.send]);
       await release(url, "configure");
+      if (phone) await when(page, `${effort}, started`, (s) => !!s.model && /High/.test(s.model.text)); // (the phone has no effort chip: the model chip says "<model> · High")
+      else {
       // (the effort chip is in the "more" popup where voice's pair has no room in the row and brought the chip, which closes with the pick: it is opened to read it)
       await when(page, `${effort}, started: the model chip is the picker again`, (s) => !s.fixed && !!s.model && !s.model.disabled);
       await chipOf(page, "effort");
       await when(page, `${effort}, started`, (s) => !s.fixed && /High/.test(s.effort?.text ?? ""));
+      }
     }
     await knob(`delete flags.configure;`);
     await ctx.close();
@@ -263,7 +295,8 @@ await check("A4.2 each wait of the fork flows shows something", async ({ url, vi
     let seen = await when(page, name, (s) => s.msgs.some((m) => m.sending) && s.typing.length > 0);
     expect(`${name}: the copied history, then the text in the pending look`, same(texts(seen), [`user: ${ASK}`, `agent: ${ANSWER}`, `user (sending) (not an item): ${said}`]), texts(seen));
     expect(`${name}: with the line "Starting the agent…" under it, and no other`, same(seen.typing, ["Starting the agent…"]) && !seen.lines.length, [seen.typing, seen.lines]);
-    expect(`${name}: Send shows a spinner, and the box is empty`, seen.send?.disabled && seen.send.spin && seen.box === "", [seen.send, seen.box]);
+    if (phone) expect(`${name}: the phone's primary is Talk, with no Send to spin, and the box is empty`, !seen.send && !!seen.talk && seen.box === "", [seen.send, seen.talk, seen.box]);
+    else expect(`${name}: Send shows a spinner, and the box is empty`, seen.send?.disabled && seen.send.spin && seen.box === "", [seen.send, seen.box]);
     await release(url, "spawn");
     seen = await when(page, `${name}, taken`, (s) => s.msgs.some((m) => m.text === said && m.live));
     expect(`${name}, taken: the message is in the thread once, as an item`, seen.msgs.filter((m) => m.text === said).length === 1 && !seen.msgs.some((m) => m.sending), texts(seen));

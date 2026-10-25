@@ -21,13 +21,18 @@
 //   Mute, End      Mute sends no audio and keeps the socket; Unmute sends again; End sends none, closes the socket and gives the box and toolbar back
 //   leaving        the session ends when its chat leaves the screen
 //   (voice devices D9 added testIDs this check does not drive: `voice-notice` above the bar, and the pause's `speech-paused` and `speech-continue`; VC.8 does)
+// The phone (V1, goal 3.7.3, mockup co-06d and co-06s) has its own bar: the state word (`speech-state` data-word: Listening, Sending in N s, Thinking…,
+// Speaking, Muted) and one action of the moment (Send while it listens, Cancel in the countdown, Interrupt while the model speaks), the wave, the words,
+// Mute and End; no Auto-send switch (the setting is Settings' alone: set here through the saved settings), and Talk is the primary only while the box is
+// EMPTY, so the phone's turns start on an empty box and the draft is proved through End, which puts the words not yet sent into the box.
 // OUT=/tmp/x keeps a screenshot of the page in each state there, for a person's look.
 import fs from "node:fs";
 import path from "node:path";
 import { atRest, callsOf, check, mockEval, seed, until } from "../shot.mjs";
 import { openState } from "./composer.mjs";
 import { useMic } from "./mic.mjs";
-import { back, byTid, openBoard, press, tidSel } from "./sel.mjs";
+import { back, byTid, openBoard, press, showHome, tidSel } from "./sel.mjs";
+import { openVoice } from "./voicephone.mjs";
 
 export const viewports = ["desktop", "phone"];
 
@@ -57,7 +62,11 @@ await check("VC.4 Speech mode: the bar, a spoken turn, the spoken reply, Cancel,
   const gone = (loc, ms = 10000) => until(async () => (await loc.count()) === 0, ms);
   const hidden = async (loc) => (await loc.count()) === 0 || !(await loc.first().isVisible());
   const textOf = async (loc) => ((await loc.first().textContent().catch(() => "")) ?? "").replace(/\s+/g, " ").trim();
+  const phone = layout === "phone";
+  const toolsId = phone ? "composer-phone-tools" : "composer-tools";
   const typeIn = async (p, s) => { await press(p, box(p)); await p.keyboard.type(s); };
+  /** The phone's bar says its state in words: the word `speech-state` carries. */
+  const wordOf = (p) => byTid(p, "speech-state").first().getAttribute("data-word").catch(() => null);
   const stt = async () => (await log()).filter((e) => e.kind === "stt");
   const tts = async () => (await log()).filter((e) => e.kind === "tts");
   const posts = (calls, from = 0) => calls.slice(from).filter((c) => c.method === "POST" && MSG.test(c.path));
@@ -91,7 +100,7 @@ await check("VC.4 Speech mode: the bar, a spoken turn, the spoken reply, Cancel,
   const pressSpeech = async (p) => {
     // (a page just opened is still measuring its toolbar: the pair is drawn in the row until its width is kept, then placed. Wait for a place that stays.)
     let last = "";
-    for (let i = 0; i < 40; i++) {
+    for (let i = 0; !phone && i < 40; i++) { // (the phone's toolbar has no "more" popup: Talk is the primary of the empty box)
       const at = await p.evaluate(() => { const t = document.querySelector('[data-testid="composer-tools"]'); return t ? `${t.dataset.voice}/${t.dataset.insert}/${t.dataset.more}` : ""; });
       if (at && at === last) break;
       last = at;
@@ -132,7 +141,7 @@ await check("VC.4 Speech mode: the bar, a spoken turn, the spoken reply, Cancel,
   {
     const { page, ctx } = await fresh();
     const calls = callsOf(page);
-    await typeIn(page, "my draft");
+    if (!phone) await typeIn(page, "my draft"); // (the phone's Talk is the primary of an empty box only)
     await watchReply(page);
     await watchBar(page);
     await script([{ after: 3, partial: "what is" }, { after: 6, partial: "what is the plan" }, { after: 8, committed: "what is the plan" }]);
@@ -141,12 +150,17 @@ await check("VC.4 Speech mode: the bar, a spoken turn, the spoken reply, Cancel,
     const from = calls.length;
     if (!await startSpeech(page, "the turn")) { await ctx.close(); return; }
     // the bar stands in the place of the box and the toolbar, which are hidden
-    for (const id of ["speech-wave", "speech-mute", "speech-end", "speech-autosend"]) if (!await shown(byTid(page, id), 5000)) fail(`the speech bar shows no ${id}`);
+    for (const id of phone ? ["speech-wave", "speech-mute", "speech-end", "speech-state", "speech-send"] : ["speech-wave", "speech-mute", "speech-end", "speech-autosend"]) if (!await shown(byTid(page, id), 5000)) fail(`the speech bar shows no ${id}`);
+    if (phone) {
+      if (await byTid(page, "speech-autosend").count()) fail("the phone's speech bar has an Auto-send switch");
+      if (await wordOf(page) !== "Listening") fail(`the bar's state word is ${J(await wordOf(page))}, not "Listening"`);
+      if (!await byTid(page, "speech-send").first().isDisabled()) fail("Send is on in the bar before any words were heard");
+    }
     if (!await hidden(byTid(page, "composer-input"))) fail("the box is still shown while the speech bar is");
-    if (!await hidden(byTid(page, "composer-tools"))) fail("the toolbar is still shown while the speech bar is");
+    if (!await hidden(byTid(page, toolsId))) fail("the toolbar is still shown while the speech bar is");
     if (!await hidden(byTid(page, "voice-speech"))) fail("the Speech mode button is still shown while the speech bar is");
     if (await byTid(page, "composer-input").count() !== 1) fail("the box was unmounted while the speech bar is shown (its draft would be lost)");
-    if (await byTid(page, "speech-autosend").getAttribute("data-on") !== "true") fail("the Auto-send toggle is not on by default");
+    if (!phone && await byTid(page, "speech-autosend").getAttribute("data-on") !== "true") fail("the Auto-send toggle is not on by default");
     // the words so far: the guess, then the finished words; the wave is the microphone's
     const wordsNow = async () => textOf(byTid(page, "speech-words"));
     if (!await until(async () => (await wordsNow()).includes("what is"), 20000)) fail(`the words said never reached the bar: it shows ${J(await textOf(byTid(page, "speech-bar")))}`);
@@ -159,7 +173,10 @@ await check("VC.4 Speech mode: the bar, a spoken turn, the spoken reply, Cancel,
     else {
       const left = +(await byTid(page, "speech-countdown").getAttribute("data-left"));
       if (!(left > 0 && left <= 1.2)) fail(`the countdown has ${left} s left, not 1.2 s or less`);
-      if (!/^\d\.\d s$/.test(await textOf(byTid(page, "speech-countdown")).then((t) => t.replace(/Cancel/, "").trim()))) fail(`the countdown says ${J(await textOf(byTid(page, "speech-countdown")))}, not the seconds left and Cancel`);
+      if (phone) { // the seconds are the state word's ("Sending in 1 s"), the countdown itself a thin line under the row
+        const w = await wordOf(page);
+        if (!/^Sending in \d s$/.test(w ?? "")) fail(`the bar's state word in the countdown is ${J(w)}, not "Sending in N s"`);
+      } else if (!/^\d\.\d s$/.test(await textOf(byTid(page, "speech-countdown")).then((t) => t.replace(/Cancel/, "").trim()))) fail(`the countdown says ${J(await textOf(byTid(page, "speech-countdown")))}, not the seconds left and Cancel`);
       if (!await shown(byTid(page, "speech-cancel"), 3000)) fail("the countdown has no Cancel");
       await shot(page, "2-countdown", false);
       if (posts(calls, from).length) fail("the message went before the countdown ended");
@@ -207,12 +224,14 @@ await check("VC.4 Speech mode: the bar, a spoken turn, the spoken reply, Cancel,
     if (!await shown(box(page), 5000)) fail("the box is not back after End");
     // the draft typed before speech mode is still there after the spoken turn: the server removed the branch's draft for the send, and the composer's
     // saver (`keeping`) saved it again instead of following the removal (a typed message is sent as before, below)
-    if (!await until(async () => (await text(page)) === "my draft", 8000)) fail(`the box holds ${J(await text(page))} after the spoken turn, not the draft typed before speech mode`);
+    // (the phone started on an empty box: the spoken turn was sent, nothing is left unsent, so End puts nothing in the box)
+    const draft = phone ? "" : "my draft";
+    if (!await until(async () => (await text(page)) === draft, 8000)) fail(`the box holds ${J(await text(page))} after the spoken turn, not ${J(draft)}`);
     else {
       await sleep(2500); // (the removal's event can reach the page just after the answer)
-      if (await text(page) !== "my draft") fail(`the box lost the draft later: it holds ${J(await text(page))}`);
+      if (await text(page) !== draft) fail(`the box lost the draft later: it holds ${J(await text(page))}`);
     }
-    if (!await shown(byTid(page, "composer-tools"), 5000)) fail("the toolbar is not back after End");
+    if (!await shown(byTid(page, toolsId), 5000)) fail("the toolbar is not back after End");
     const closed = (await stt())[0];
     if (!closed || closed.closeCode === null || closed.closeCode === undefined) fail("End did not close the socket");
     // a typed message has no mark
@@ -242,6 +261,7 @@ await check("VC.4 Speech mode: the bar, a spoken turn, the spoken reply, Cancel,
     else {
       await press(page, byTid(page, "speech-cancel"));
       if (!await gone(byTid(page, "speech-countdown"), 3000)) fail("the countdown stays after Cancel");
+      if (phone && await wordOf(page) !== "Listening") fail(`after Cancel the bar's state word is ${J(await wordOf(page))}, not "Listening"`);
       if (await textOf(byTid(page, "speech-words")) !== "send nothing") fail(`Cancel did not keep the words: the bar shows ${J(await textOf(byTid(page, "speech-bar")))}`);
       if (!await until(async () => (await sess(page)).phase === "waiting", 3000)) fail(`after Cancel the session is ${J((await sess(page)).phase)}, not waiting`);
       if (await byTid(page, "speech-send").isDisabled()) fail("Send is off after Cancel, with words to send");
@@ -259,14 +279,20 @@ await check("VC.4 Speech mode: the bar, a spoken turn, the spoken reply, Cancel,
 
   // ---- Auto-send off: nothing is sent until Send; the toggle is the one setting
   {
-    const { page, ctx } = await fresh();
+    // (the phone's bar has no switch: Tap to send is set in the saved settings, which Settings shows below, as the person sets it there)
+    const { page, ctx } = await fresh(phone ? { ls: lsOf(off) } : {});
     const calls = callsOf(page);
     await script([{ after: 3, partial: "tap" }, { after: 6, committed: "tap to send" }]);
     const from = calls.length;
     if (!await startSpeech(page, "Auto-send off")) { await ctx.close(); return; }
-    await press(page, byTid(page, "speech-autosend"));
-    if (!await until(async () => (await settings(page)).autoSend === false, 5000)) fail("the bar's Auto-send toggle did not change the voice setting");
-    if (await byTid(page, "speech-autosend").getAttribute("data-on") !== "false") fail("the bar's toggle does not say Auto-send is off");
+    if (phone) {
+      if (await byTid(page, "speech-autosend").count()) fail("the phone's speech bar has an Auto-send switch");
+      if ((await settings(page)).autoSend !== false) fail(`the voice setting is ${J((await settings(page)).autoSend)}, not Tap to send`);
+    } else {
+      await press(page, byTid(page, "speech-autosend"));
+      if (!await until(async () => (await settings(page)).autoSend === false, 5000)) fail("the bar's Auto-send toggle did not change the voice setting");
+      if (await byTid(page, "speech-autosend").getAttribute("data-on") !== "false") fail("the bar's toggle does not say Auto-send is off");
+    }
     if (!await until(async () => (await textOf(byTid(page, "speech-words"))) === "tap to send", 20000)) fail(`the words said never reached the bar: ${J(await textOf(byTid(page, "speech-bar")))}`);
     await sleep(3000); // (well past the 1.2 s pause)
     if (await byTid(page, "speech-countdown").count()) fail("a countdown runs with Auto-send off");
@@ -280,22 +306,40 @@ await check("VC.4 Speech mode: the bar, a spoken turn, the spoken reply, Cancel,
     else if (bodyText(sent) !== "tap to send") fail(`the message is ${J(bodyText(sent))}, not the words said`);
     await press(page, byTid(page, "speech-end"));
     await idle(page);
-    // the setting is Settings' too (the phone shows the sidebar, where the gear is, after Back), and the pill's
-    if (layout === "phone") await back(page);
-    const gear = byTid(page, "settings-btn").first();
-    if (!await shown(gear)) fail("the sidebar's Settings button is not shown");
-    else {
-      await press(page, gear);
-      if (!await shown(byTid(page, "settings-dialog"))) fail("the Settings button opened no page");
+    // the setting is Settings' too (the phone: Home's gear pushes Settings, whose Voice row pushes the Voice screen), and the pill's
+    if (layout === "phone") {
+      await openVoice(page);
+      await until(() => byTid(page, "vs-autosend").count(), 10000); // (the screen draws its rows once the keystore has answered)
+      if (await page.locator('[role="switch"]').filter({ has: byTid(page, "vs-autosend") }).last().getAttribute("aria-checked") !== "false") fail("Settings does not show Tap to send, which the bar set");
+      await shot(page, "7-settings");
+      await showHome(page); // (Back, Back, to Home)
+      await gone(byTid(page, "vs-screen"));
+    } else {
+      const gear = byTid(page, "settings-btn").first();
+      if (!await shown(gear)) fail("the sidebar's Settings button is not shown");
       else {
-        if (await byTid(page, "vs-autosend-false").getAttribute("aria-checked") !== "true") fail("Settings does not show Tap to send, which the bar set");
-        await shot(page, "7-settings");
-        await press(page, byTid(page, "vs-close"));
-        await gone(byTid(page, "settings-dialog"));
+        await press(page, gear);
+        if (!await shown(byTid(page, "settings-dialog"))) fail("the Settings button opened no page");
+        else {
+          if (await byTid(page, "vs-autosend-false").getAttribute("aria-checked") !== "true") fail("Settings does not show Tap to send, which the bar set");
+          await shot(page, "7-settings");
+          await press(page, byTid(page, "vs-close"));
+          await gone(byTid(page, "settings-dialog"));
+        }
       }
     }
     await openBoard(page, "b_ui");
-    if (!await shown(byTid(page, "pill-orb"))) fail("the board shows no pill");
+    if (phone) { // the board's voice is the docked orb and the card: it listens, and it has no Auto-send switch either
+      if (!await shown(byTid(page, "voice-orb"))) fail("the board shows no orb");
+      else {
+        await press(page, byTid(page, "voice-orb"));
+        if (!await shown(byTid(page, "voice-card"), 20000)) fail("the orb's listening card is not shown");
+        else if (await byTid(page, "pill-autosend").count()) fail("the board's voice card has an Auto-send switch");
+        await shot(page, "8-pill", false);
+        await press(page, byTid(page, "voice-orb"));
+        await idle(page);
+      }
+    } else if (!await shown(byTid(page, "pill-orb"))) fail("the board shows no pill");
     else {
       await press(page, byTid(page, "pill-orb"));
       if (!await shown(byTid(page, "pill-autosend"), 20000)) fail("the pill's listening bar shows no Auto-send toggle");
@@ -320,7 +364,11 @@ await check("VC.4 Speech mode: the bar, a spoken turn, the spoken reply, Cancel,
       if (!await shown(byTid(page, "speech-spoken"), 5000)) fail("the bar shows no sentence while the model speaks");
       await shot(page, "9-speaking", false);
       const before = await tts();
-      await press(page, wave);
+      if (phone) { // the bar says Speaking and offers Interrupt, which is what stops it
+        if (await wordOf(page) !== "Speaking") fail(`the bar's state word while the model speaks is ${J(await wordOf(page))}, not "Speaking"`);
+        if (!await shown(byTid(page, "speech-interrupt"), 5000)) fail("the bar shows no Interrupt while the model speaks");
+      }
+      await press(page, phone ? byTid(page, "speech-interrupt") : wave);
       if (!await phaseIs(page, "listening", 8000)) fail(`a tap on the waveform left the session ${J((await sess(page)).phase)}, not listening`);
       if (!await gone(byTid(page, "speech-spoken"), 5000)) fail("the sentence stays in the bar after the interruption");
       await sleep(400);
@@ -342,7 +390,7 @@ await check("VC.4 Speech mode: the bar, a spoken turn, the spoken reply, Cancel,
   {
     const { page, ctx } = await fresh({ ls: lsOf(off) });
     await script([{ after: 3, committed: "hold on" }]);
-    await typeIn(page, "my draft");
+    if (!phone) await typeIn(page, "my draft"); // (the phone's Talk is the primary of an empty box: its draft is the words End leaves, below)
     if (!await startSpeech(page, "Mute")) { await ctx.close(); return; }
     const chunks = async () => (await stt())[0]?.chunks ?? 0;
     if (!await until(async () => (await chunks()) >= 6, 20000)) fail(`the microphone's audio does not reach the voice service (${await chunks()} chunks)`);
@@ -350,6 +398,7 @@ await check("VC.4 Speech mode: the bar, a spoken turn, the spoken reply, Cancel,
     if (!await until(async () => (await sess(page)).muted === true, 5000)) fail("Mute did not mute the session");
     if (await byTid(page, "speech-mute").getAttribute("data-on") !== "true") fail("the Mute control does not say it is on");
     if (await textOf(byTid(page, "speech-mute")) !== "Unmute") fail(`the Mute control says ${J(await textOf(byTid(page, "speech-mute")))} while muted`);
+    if (phone && await wordOf(page) !== "Muted") fail(`the bar's state word while muted is ${J(await wordOf(page))}, not "Muted"`);
     await sleep(500);
     const c1 = await chunks();
     await shot(page, "10-muted", false);
@@ -369,7 +418,8 @@ await check("VC.4 Speech mode: the bar, a spoken turn, the spoken reply, Cancel,
     if (J(e).includes(KEY)) fail("the key is in the stand-in's log");
     if (!await gone(byTid(page, "speech-bar"))) fail("the bar stays after End");
     if (!await shown(box(page), 5000)) fail("the box is not back after End");
-    else if (await text(page) !== "my draft") fail(`the box holds ${J(await text(page))} after speech mode, not the draft it had (the box is hidden while the bar shows, not unmounted)`);
+    // (the phone: the words heard and not sent are put in the box by End: "hold on")
+    else if (await text(page) !== (phone ? "hold on" : "my draft")) fail(`the box holds ${J(await text(page))} after speech mode, not ${J(phone ? "the words heard" : "the draft it had")} (the box is hidden while the bar shows, not unmounted)`);
     await ctx.close();
   }
 

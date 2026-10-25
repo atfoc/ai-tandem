@@ -206,9 +206,14 @@ export const ChipDocInput = forwardRef<ChipInputHandle, ChipDocInputProps>(funct
       marked.current = null;
       put(d, caretAt(end));
     },
-    openInsert() {
+    select(at: { start: number; end: number }) {
+      const d = now.current.doc;
+      put(d, { start: toShown(d, at.start), end: toShown(d, at.end) });
+    },
+    openInsert(at?: { start: number; end: number } | null) {
       if (own.current.locked || own.current.readOnly) return;
-      marked.current = { at: now.current.selection, doc: now.current.doc };
+      const d = now.current.doc;
+      marked.current = { at: at ? { start: toShown(d, at.start), end: toShown(d, at.end) } : now.current.selection, doc: d };
       openInsertPopup({
         insert(text: string) {
           const m = marked.current, { doc: d0 } = now.current;

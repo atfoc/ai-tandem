@@ -1,0 +1,19 @@
+# Shared by `voice-mic` and `voice-devices`: on the Voice screen with a key, "Remove key from this device" asks (the P4 sheet) and "Remove key" removes it:
+# the screen is then the no-key card.
+appId: ${APP_ID}
+---
+- scrollUntilVisible:
+    element:
+      id: "vs-key-remove"
+- tapOn:
+    id: "vs-key-remove"
+- extendedWaitUntil:
+    visible:
+      id: "vs-remove-confirm"
+    timeout: 30000
+- tapOn:
+    id: "confirm-go"
+- extendedWaitUntil:
+    visible:
+      id: "vs-nokey-card"
+    timeout: 30000

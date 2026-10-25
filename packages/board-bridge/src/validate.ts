@@ -121,6 +121,13 @@ const chrome: Check = (v, p) => {
   }
   return null;
 };
+/** The colour of a message: `#rrggbb`. */
+const colour: Check = (v, p) => (typeof v === "string" && CHROME_COLOUR.test(v) ? null : fail(p, "not a colour of the form #rrggbb"));
+const between = (lo: number, hi: number): Check => (v, p) => (typeof v === "number" && Number.isFinite(v) && v >= lo && v <= hi ? null : fail(p, `not a number from ${lo} to ${hi}`));
+const title: Check = (v, p) => (typeof v === "string" && v.length <= 200 ? null : fail(p, "not a string of at most 200 characters"));
+const phoneChrome = shape({ title, inset: between(0, 400), band: colour, line: colour, share: bool });
+const topInsetPx: Check = (v, p) => (typeof v === "number" && Number.isInteger(v) && v >= 0 && v <= 200 ? null : fail(p, "not an integer from 0 to 200"));
+const openView = either(shape({ fit: between(0, 200) }), shape({ scrollX: num, scrollY: num, zoom: positive }), "not {fit} or {scrollX, scrollY, zoom}");
 const theme = shape({ mode: oneOf("light", "dark"), filter: nullable(filter) }, { chrome: nullable(chrome) });
 
 const ref: Check = (v, p) => {
@@ -154,7 +161,9 @@ const op: Check = (v, p) => {
 // ---- the messages
 
 const toBoard: Record<string, Check> = {
-  load: shape({ t: lit("load"), board: name, scene, viewMode: bool, theme, style }),
+  load: shape({ t: lit("load"), board: name, scene, viewMode: bool, theme, style }, { open: openView }),
+  phone: shape({ t: lit("phone"), chrome: nullable(phoneChrome) }),
+  topInset: shape({ t: lit("topInset"), px: topInsetPx }),
   unload: shape({ t: lit("unload") }),
   viewMode: shape({ t: lit("viewMode"), on: bool }),
   theme: shape({ t: lit("theme"), theme }),
@@ -171,6 +180,7 @@ const fromBoard: Record<string, Check> = {
   changed: shape({ t: lit("changed"), board: name, elements, appState, style }, { files, order: list(name) }),
   view: shape({ t: lit("view"), board: name, scrollX: num, scrollY: num, zoom: positive, width: atLeast0, height: atLeast0 }),
   selection: shape({ t: lit("selection"), board: name, ids: list(str) }),
+  menu: shape({ t: lit("menu"), board: name, item: oneOf("share", "clear") }),
   res: (v, p) => (isObj(v) && v.ok === false ? resFailed(v, p) : resOk(v, p)),
   error: shape({ t: lit("error"), message: str }),
 };

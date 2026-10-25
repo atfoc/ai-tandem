@@ -93,3 +93,35 @@ export function lineDiff(old: string, next: string, o: { context?: number; cells
   const lines = [...a.slice(0, head).map(same), ...between, ...a.slice(a.length - tail).map(same)];
   return { rows: fold(lines, context), added, removed, exact, cells: exact ? cells : 0 };
 }
+
+/** A row with its line numbers (ux T2, the phone's diffs): `a` in the old text, `b` in the new one; a line that stays has both, a
+ *  removed one `a`, an added one `b`; a skip has the numbers of its first line, so its end is `a + count - 1`. */
+export type NumberedRow = DiffRow & { a?: number; b?: number };
+
+/** The rows with their line numbers, counted from `from` (the first line of the edited text in its file, when known; else 1: the
+ *  numbers are then the lines of the edit, not of the file). */
+export function numbered(rows: readonly DiffRow[], from: { a: number; b: number } = { a: 1, b: 1 }): NumberedRow[] {
+  let a = from.a, b = from.b;
+  return rows.map((r): NumberedRow => {
+    switch (r.kind) {
+      case "same": return { ...r, a: a++, b: b++ };
+      case "del": return { ...r, a: a++ };
+      case "add": return { ...r, b: b++ };
+      case "skip": { const row = { ...r, a, b }; a += r.count; b += r.count; return row; }
+    }
+  });
+}
+
+/** Where the new text of an edit starts in its file, read from a result that shows the edited part with its line numbers (Claude
+ *  Code's "cat -n" snippet: "    46→text" or "    46\ttext"). null when the result shows no such lines or none of them is the
+ *  new text's first line: nothing is guessed. */
+export function anchorOf(result: string | undefined, next: string): number | null {
+  if (!result) return null;
+  const first = linesOf(next)[0];
+  if (first === undefined) return null;
+  for (const line of result.split("\n")) {
+    const m = /^\s*(\d+)(?:→|\t)(.*)$/.exec(line);
+    if (m && m[2] === first) return Number(m[1]);
+  }
+  return null;
+}

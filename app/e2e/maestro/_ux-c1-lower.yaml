@@ -1,0 +1,14 @@
+# Part of `ux-composer` (package C1): the keyboard is lowered whatever the drag did, so that what follows is checked with it down. A tap on the empty part of the thread
+# (50%,45%) does it: the thread's scroll view takes a tap that is no control as "let go of the box" (Maestro's hideKeyboard does not work on this keyboard: it has no hide key).
+appId: ${APP_ID}
+---
+- runFlow:
+    when:
+      visible: "(?i)return"
+    commands:
+      - tapOn:
+          point: "50%,45%"
+- extendedWaitUntil:
+    notVisible: "(?i)return"
+    timeout: 10000
+- waitForAnimationToEnd

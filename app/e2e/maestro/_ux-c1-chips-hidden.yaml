@@ -1,0 +1,5 @@
+# Part of `ux-composer` (package C1), a required step: the chip row of a new chat is not on the screen while the keyboard is up (goal 3.6; `useKeyboardUp`).
+appId: ${APP_ID}
+---
+- assertNotVisible:
+    id: "composer-chip-row"

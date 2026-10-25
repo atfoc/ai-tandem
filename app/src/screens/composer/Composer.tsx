@@ -1,7 +1,7 @@
 // The message box under a chat, and its toolbar (the old page's Composer.tsx; AD-62). The pickers come from the server's catalogs and can be changed
 // until the first message is sent: of a new chat, of a fork that has had none of its own, and of the branch a pending move starts.
 // `Composer` is what the chat view draws (parts.tsx `Composer`): the composer of the branch the chat is on.
-import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { cloneElement, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode, type Ref as ReactRef } from "react";
 import { Platform, Pressable, StyleSheet, View } from "react-native";
 
 import { Sized } from "../../platform/sized";
@@ -10,13 +10,13 @@ import { api, ApiError } from "@aiwb/core/api.ts";
 import { agentOpen, catalogFor, usableAgents } from "@aiwb/core/logic/agentlist.ts";
 import { branchKey } from "@aiwb/core/logic/branches.ts";
 import { boxOff, notConnectedLine, offPlaceholder, offWhy, sendOff, sendTitleOn } from "@aiwb/core/logic/chatserver.ts";
-import { imagesHold, imagesOff, withImages, withoutImages } from "@aiwb/core/logic/chatimage.ts";
+import { IMAGES_PER_MESSAGE, imagesHold, imagesOff, withImages, withoutImages } from "@aiwb/core/logic/chatimage.ts";
 import { DraftSaver, boxText, hasDraft } from "@aiwb/core/logic/drafts.ts";
 import { draftBacks } from "@aiwb/core/logic/draftsback.ts";
 import { LIVE_FORK } from "@aiwb/core/logic/forkpoints.ts";
 import { mentionOptions, openMention, resolveMentions, type Picked } from "@aiwb/core/logic/mentions.ts";
 import { goneText } from "@aiwb/core/logic/remoteview.ts";
-import { plainText } from "@aiwb/core/logic/refs.ts";
+import { plainText, type Ref } from "@aiwb/core/logic/refs.ts";
 import { selectedOn } from "@aiwb/core/logic/roles.ts";
 import { goneBySend, putsBack, refusalShown, sentNothing, underComposer } from "@aiwb/core/logic/sendend.ts";
 import { serverConnected } from "@aiwb/core/logic/serverlists.ts";
@@ -28,7 +28,7 @@ import { refreshChat } from "@aiwb/core/state/conn.ts";
 import { draftToShow, saveDraft } from "@aiwb/core/state/chatdraft.ts";
 import { boardsOn, branchState, getState, groupsOn, isLegacy, markGone, shownBranch, shownView, unsavedDraft, viewedBranch } from "@aiwb/core/state/store.ts";
 import { addImages, imagesGone, setImageError, slotOf, subscribe as subscribeUploads } from "@aiwb/core/state/uploads.ts";
-import type { AgentKind, ChatImage, Held, Reference } from "@aiwb/core/types.ts";
+import type { AgentKind, Board, ChatImage, Held, Reference } from "@aiwb/core/types.ts";
 
 import { ChipInput, type ChipInputHandle } from "../../platform/chipinput/ChipInput";
 import type { KeyLike } from "../../platform/keys.types.ts";
@@ -40,15 +40,22 @@ import { agentName } from "../../ui/icons.tsx";
 import { Text } from "../../ui/Text.tsx";
 import { useTheme } from "../../ui/theme.tsx";
 import { tid } from "../../ui/tid.ts";
+import { PHONE } from "../../ui/metrics.ts";
+import { usePhone } from "../../ui/useLayout.ts";
 import { webStyle } from "../../ui/webstyle.ts";
 import { voice, useVoiceSession } from "../../voice/index.ts";
 import { useWhere } from "../chat/hooks.ts";
+import { openBoard } from "../shell/nav.ts";
+import { PhoneComposer } from "./phone/PhoneComposer.tsx";
 import { onPhone } from "../board/phone.ts";
-import { addSelection, composerGone, registerInserter, startPick, takeHeld } from "../board/refs.ts";
+import { RefBox, type RefBoxHandle } from "../board/RefBox.tsx";
+import { RefChips } from "../board/RefChips.tsx";
+import { addSelection, composerGone, registerInserter, startPick, startSelect, takeHeld } from "../board/refs.ts";
 import { DictationBoxContext, type DictationBox } from "./dictation.ts";
 import { registerBox } from "./focus.ts";
-import { boxAction, enterSends, keyNames, refKey, sendByKey, sendTitleFor } from "./keys.ts";
-import { ArchivedBar, ContextRow, LegacyBar, ModelNotice } from "./Notices.tsx";
+import { boxAction, enterSends, keyNames, modEnterSends, refKey, sendByKey, sendTitleFor } from "./keys.ts";
+import { ArchivedBar, LegacyBar } from "./Blocked.tsx";
+import { ContextRow, ModelNotice } from "./Notices.tsx";
 import { composerParts, useComposerParts } from "./parts.tsx";
 import { Toolbar } from "./Toolbar.tsx";
 import { keyPlatform } from "../shell/keyplatform.ts";
@@ -86,6 +93,7 @@ export function Composer({ chat }: { chat: string }) {
 function ComposerOf({ chatId, branch }: { chatId: string; branch: string }) {
   const { tokens: t } = useTheme();
   const parts = useComposerParts();
+  const phone = usePhone(); // the phone draws its own composer (phone/PhoneComposer.tsx) from the same state; the wide layouts keep this one's tree
   const c = useStore((s) => shownView(s, chatId));
   const move = useStore((s) => !!s.moves[chatId]); // the next message starts a new branch
   const where = useWhere(c);
@@ -123,6 +131,8 @@ function ComposerOf({ chatId, branch }: { chatId: string; branch: string }) {
   const [sending, setSending] = useState(false);
   const [focused, setFocused] = useState(false);
   const input = useRef<ChipInputHandle>(null);
+  const [boxRefs, setBoxRefs] = useState<Ref[]>([]); // the phone: the references the message holds (RefBox keeps them out of the box's text; the chips show them)
+  const plusAt = useRef<{ start: number; end: number } | null>(null); // the phone: the box's caret when "+" opened its sheet
   const hasFocus = useRef(false);
   const current = useRef(text); // the text now, for a failed send
   const now = useRef({ picked, quotes, images }); // with it, what the composer holds (for a move)
@@ -314,7 +324,7 @@ function ComposerOf({ chatId, branch }: { chatId: string; branch: string }) {
   }, []);
 
   const root = (children: ReactNode) => (
-    <KeyboardLift><Sized {...tid("composer", { chat: chatId, branch })} onWidth={setWidth} style={styles.composer}>
+    <KeyboardLift gap={phone ? PHONE.keyboardGap : undefined} inside={styles.composer.paddingBottom}><Sized {...tid("composer", { chat: chatId, branch })} onWidth={setWidth} style={styles.composer}>
       <DictationBoxContext.Provider value={dictation.current}>{children}</DictationBoxContext.Provider>
     </Sized></KeyboardLift>
   );
@@ -323,13 +333,14 @@ function ComposerOf({ chatId, branch }: { chatId: string; branch: string }) {
   const matches = mention && c?.board ? mentionOptions(mention.q, boards, groups) : [];
   useEscLayer(!readOnly && matches.length > 0, () => setMention(null));
   if (!c) return null;
-  if (c.archived) return root(<>
+  // (the phone draws an archived chat and one of the old board connection through its own composer: the block takes the box's place, Blocked.tsx)
+  if (c.archived && !phone) return root(<>
     {parts.VoiceNotice ? <parts.VoiceNotice chatId={chatId} /> : null}
     {/* (shown as it was, it is not unarchived from here: the bar says why in the place of the button) */}
     <ArchivedBar off={readOnly} why={offWhy(where, left)} onUnarchive={() => api.unarchive("chats", c.id).catch((e) => setErr(e.message))} />
     {err && !readOnly ? <Text {...tid("composer-err")} size={12} tone="danger" style={styles.err}>{err}</Text> : null}
   </>);
-  if (legacy) return root(<>{parts.VoiceNotice ? <parts.VoiceNotice chatId={chatId} /> : null}<LegacyBar /></>);
+  if (legacy && !phone) return root(<>{parts.VoiceNotice ? <parts.VoiceNotice chatId={chatId} /> : null}<LegacyBar /></>);
 
   // esc: the agent is busy on the branch shown; a message that starts a new branch may go out all the same
   const { stop, blocked, esc } = composerControls(c, { newBranch: move, liveFork: !!c.agent && LIVE_FORK[c.agent] });
@@ -353,8 +364,7 @@ function ComposerOf({ chatId, branch }: { chatId: string; branch: string }) {
   // Files on their way into the message, by a paste or from the picker: one check for both (uploads.ts addImages).
   const add = (files: Parameters<typeof addImages>[2], skipped?: Parameters<typeof addImages>[3]["skipped"]) =>
     addImages(chatId, branch, files, { has: held().images, off: noAdd?.line, skipped });
-  const attach = () => {
-    const pick = parts.pickImages;
+  const attach = (pick = parts.pickImages) => {
     if (!pick) return;
     void pick().then((r) => { if (r.files.length || r.skipped.length) add(r.files, r.skipped); }, (e) => setImageError(chatId, branch, `The files could not be picked: ${e?.message ?? e}`));
   };
@@ -432,9 +442,9 @@ function ComposerOf({ chatId, branch }: { chatId: string; branch: string }) {
     const m = openMention(beforeCaret);
     setMention(m ? { ...m, i: 0 } : null);
   };
-  const enters = enterSends(Platform.OS);
+  const enters = enterSends(Platform.OS, phone);
   const onKey = (e: KeyLike): boolean => {
-    const act = boxAction(e, { mention: !!mention && matches.length > 0, enterSends: enters, stoppable: esc && !frozen });
+    const act = boxAction(e, { mention: !!mention && matches.length > 0, enterSends: enters, modEnterSends: modEnterSends(Platform.OS, phone), phone, stoppable: esc && !frozen });
     if (act === "next") setMention({ ...mention!, i: (mention!.i + 1) % matches.length });
     else if (act === "prev") setMention({ ...mention!, i: (mention!.i - 1 + matches.length) % matches.length });
     else if (act === "pick") pick(matches[mention!.i]);
@@ -448,7 +458,7 @@ function ComposerOf({ chatId, branch }: { chatId: string; branch: string }) {
   const placeholder = offPlaceholder(where, usable, c, left) || (c.board ? "Ask or tell… (@ to mention a board)" : `Ask ${agentName(c.agent as AgentKind)}…`);
   const showStop = stop && !frozen;
   const tail = {
-    attach: parts.AttachButton ? <parts.AttachButton off={noAdd?.title ?? ""} onPress={attach} /> : null,
+    attach: parts.AttachButton ? <parts.AttachButton off={noAdd?.title ?? ""} onPress={() => attach()} /> : null,
     stop: showStop ? <StopButton title={esc ? "Stop (Esc)" : "Stop the subagents"} onPress={stopNow} /> : null,
     send: hold && !off && !left ? <SendButton title={hold.title} disabled spin={hold.spin} />
       : imagesHeld && !blocked && !off && !left ? <SendButton title={imagesHeld} disabled /> // the images hold it: an upload runs, or the message cannot carry them
@@ -457,6 +467,71 @@ function ComposerOf({ chatId, branch }: { chatId: string; branch: string }) {
   };
   const Banner = parts.BranchBanner;
   const boxHandlers = { onFocus: () => { hasFocus.current = true; setFocused(true); }, onBlur: () => { hasFocus.current = false; setFocused(false); } } as object;
+  const strip = parts.ImageStrip ? (
+    <parts.ImageStrip chat={chatId} branch={branch} images={images} uploads={up.uploads} note={up.uploads.length ? "" : imagesHeld} again={where.connected}
+      onRemove={readOnly ? undefined : (id) => setImages((now) => withoutImages(now, [id]))} />
+  ) : null;
+  // (the phone's box holds the plain text and the references stand as chips in the context row: screens/board/RefBox.tsx)
+  const box = phone ? (
+    <RefBox ref={input as ReactRef<RefBoxHandle>} placeholder={placeholder} locked={readOnly} readOnly={readOnly} onChange={onChange} onKey={onKey}
+      onImages={parts.ImageStrip ? (files) => add(files) : undefined} testID="composer-input" size="phone" onRefs={setBoxRefs} />
+  ) : (
+    <ChipInput ref={input} placeholder={placeholder} locked={readOnly} readOnly={readOnly} onChange={onChange} onKey={onKey}
+      onImages={parts.ImageStrip ? (files) => add(files) : undefined} testID="composer-input" size={undefined} />
+  );
+
+
+  if (phone) {
+    const why = left ? goneText(where.name) : frozen ? notConnectedLine(where.name) : "";
+    const empty = !text.trim() && !quotes.length && !images.length && !up.uploads.length; // (an upload under way shows the soft Send, not Talk)
+    // Takes a mentioned board out of the message: its "@name" leaves the text, and the board leaves the mentions.
+    const unmention = (b: Board) => {
+      const name = b.name.replace(/[.*+?^$()|[\]{}\\]/g, "\\$&");
+      const at = new RegExp(`@${name}(\\s|$)`, "g");
+      input.current?.set(current.current.replace(at, ""));
+      setPicked((ps) => ps.filter((x) => x.id !== b.id));
+    };
+    const full = images.length + up.uploads.length >= IMAGES_PER_MESSAGE ? `A message takes ${IMAGES_PER_MESSAGE} images: remove one to add another` : "";
+    return root(
+      <PhoneComposer chatId={chatId} branch={branch} readOnly={readOnly} speech={speech} focused={focused} boxHandlers={boxHandlers}
+        onPlusOpen={() => { plusAt.current = input.current?.caret() ?? null; }}
+        mention={mention && !readOnly && matches.length > 0 ? { options: matches, at: mention.i, query: mention.q, onPick: pick } : null}
+        context={c.board || q.count || note || boxRefs.length ? {
+          board: c.board, own, refs, count: q.count, note, onRemoveRef: unmention, onOpenBoard: () => { if (c.board) openBoard(c.board); },
+          refChips: boxRefs.length ? <RefChips refs={boxRefs} readOnly={readOnly} onRemove={(i) => (input.current as RefBoxHandle | null)?.removeRef(i)} /> : undefined,
+        } : null}
+        chips={{ sending, onError: setErr }}
+        lines={archived || legacy ? (parts.VoiceNotice ? <parts.VoiceNotice chatId={chatId} /> : null) : <>
+          {Banner ? <Banner chat={chatId} /> : null}
+          <ModelNotice chatId={chatId} plain />
+          {parts.VoiceNotice ? <parts.VoiceNotice chatId={chatId} /> : null}
+        </>}
+        strip={strip} input={(blocked) => blocked ? cloneElement(box, { placeholder: "" }) : box} // (a box under a block has no placeholder: the block says why)
+        block={{ where, gone: left, usable, refused: parts.ImageStrip ? underComposer(err, c) : under, onDismissRefused: () => setErr("") }}
+        toolbar={{
+          empty, voiceOff: why, plusOff: readOnly ? why : "",
+          stop: showStop ? <StopButton size="touch" title={esc ? "Stop" : "Stop the subagents"} onPress={stopNow} /> : null,
+          send: (why) => hold && !off && !left ? <SendButton size="touch" title={hold.title} disabled spin={hold.spin} />
+            : imagesHeld && !blocked && !off && !left ? <SendButton size="touch" title={imagesHeld} disabled soft={up.uploads.length > 0} />
+            : why ? <SendButton size="touch" title={why} disabled />
+            : <SendButton size="touch" title={sendTitleFor(sendTitleOn(where, usable, c, blocked, left), false)} disabled={blocked || off || left || sending || empty}
+              onPress={() => void submit()} />,
+        }}
+        plus={{
+          board: c.board ? { id: c.board, name: own?.name ?? "board", archived: own?.archived } : undefined, selected,
+          imagesOff: noAdd?.line ?? "", imagesFull: full, insertOff: readOnly ? why : "",
+          onCamera: parts.takePhoto ? () => attach(parts.takePhoto!) : undefined,
+          onLibrary: parts.pickImages ? () => attach() : undefined,
+          onFiles: parts.pickFiles ? () => attach(parts.pickFiles!) : undefined,
+          // (a row that puts something at the caret: the caret noted on "+", which the sheet's focus moved, is put back first)
+          onInsert: () => input.current?.openInsert(plusAt.current),
+          onAddSelection: () => { if (plusAt.current) input.current?.select(plusAt.current); startSelect(chatId); },
+          onPoint: () => { if (plusAt.current) input.current?.select(plusAt.current); startPick(chatId, onPhone()); },
+        }}
+        speechBar={speech && parts.SpeechBar ? <parts.SpeechBar chatId={chatId} branch={branch} /> : null}
+        float={q.float} />,
+    );
+  }
   return root(<>
     {c.board ? (
       <ContextRow own={own} board={c.board} refs={refs} count={q.count} note={note} canRef={canRef} selected={selected} picking={picking} keys={names}
@@ -472,12 +547,8 @@ function ComposerOf({ chatId, branch }: { chatId: string; branch: string }) {
     <View {...tid("composer-box", { readonly: readOnly })} {...boxHandlers}
       style={[styles.box, { borderColor: focused && !readOnly ? t.accent : t.line2, backgroundColor: readOnly ? t.panel : t.bg }, focused && !readOnly && { boxShadow: `0 0 0 3px ${t.accentSoft}` }]}>
       {mention && !readOnly && matches.length > 0 ? <MentionList options={matches} at={mention.i} onPick={pick} /> : null}
-      {parts.ImageStrip ? (
-        <parts.ImageStrip chat={chatId} branch={branch} images={images} uploads={up.uploads} note={up.uploads.length ? "" : imagesHeld} again={where.connected}
-          onRemove={readOnly ? undefined : (id) => setImages((now) => withoutImages(now, [id]))} />
-      ) : null}
-      <ChipInput ref={input} placeholder={placeholder} locked={readOnly} readOnly={readOnly} onChange={onChange} onKey={onKey}
-        onImages={parts.ImageStrip ? (files) => add(files) : undefined} testID="composer-input" />
+      {strip}
+      {box}
       <Toolbar chatId={chatId} branch={branch} onError={setErr} onInsert={() => input.current?.openInsert()} sending={sending} stop={showStop} tail={tail} insertKey={names.insert} />
     </View>
     </View>

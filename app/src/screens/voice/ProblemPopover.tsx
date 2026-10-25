@@ -6,7 +6,7 @@
 //   <ProblemPopover anchor={`dictate:${chat}`} target={ref} />
 //
 // `anchor` is the id the control gave the engine when it started voice (`voice.startDictation({ anchor })`), and the popover shows only
-// while the problem on show names that id; `target` is the element it hangs from (a sheet on the phone layout ignores it). It shows
+// while the problem on show names that id; `target` is the element it hangs from (the phone draws the Set up voice sheet and ignores it). It shows
 // itself from the voice store: the control holds no state for it.
 import type { RefObject } from "react";
 import { StyleSheet, View } from "react-native";
@@ -19,6 +19,12 @@ import { Button } from "../../ui/Button.tsx";
 import { Overlay } from "../../ui/Overlay.tsx";
 import { Text } from "../../ui/Text.tsx";
 import { tid } from "../../ui/tid.ts";
+import { usePhone } from "../../ui/useLayout.ts";
+import { agentName } from "@aiwb/core/agents.ts";
+import { getState } from "@aiwb/core/state/store.ts";
+import { targetNow } from "./pill/control.ts";
+import { SetUpVoiceSheet } from "./SetUpVoiceSheet.tsx";
+import { setupAgent, setupWords } from "./setupwords.ts";
 
 /** Where "Open ElevenLabs" goes: the account's page, where credits and the reason of a refusal are. */
 export const ELEVENLABS_ACCOUNT_URL = "https://elevenlabs.io/app/subscription";
@@ -51,9 +57,14 @@ function actionOf(kind: VoiceProblemKind, retry: (() => void) | undefined): (() 
 
 export function ProblemPopover({ anchor, target, align, up }: ProblemPopoverProps) {
   const problem = useVoiceProblem();
+  const phone = usePhone();
   if (!problem || problem.anchor !== anchor) return null;
-  const words = PROBLEM_WORDS[problem.kind];
   const act = actionOf(problem.kind, problem.retry);
+  if (phone) { // the phone: one sheet for every problem, drawn by the instance whose anchor the problem names
+    const agent = setupAgent(problem.anchor, (id) => { const a = getState().chats[id]?.agent; return a ? agentName(a) : undefined; }, targetNow);
+    return <SetUpVoiceSheet kind={problem.kind} words={setupWords(problem.kind, agent)} act={act} onDismiss={voice.dismissProblem} />;
+  }
+  const words = PROBLEM_WORDS[problem.kind];
   return (
     <Overlay open kind="popover" label={words.sentence} anchor={target} align={align} up={up} onClose={voice.dismissProblem}>
       <View {...tid("voice-problem", { kind: problem.kind })} style={styles.body}>

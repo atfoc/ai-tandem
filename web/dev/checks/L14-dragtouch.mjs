@@ -1,18 +1,144 @@
+// The phone half (package H2, chunk 6; goal 3.3) is Home's: the phone has no sidebar, a finger held 0.5 s on a row and lifted opens the row's sheet,
+// held and then moved 10 pt it drags the row onto a group row of the screen (lit while it is over it, dropped into it); a finger that moves at once
+// scrolls the list or swipes the row and starts no drag. See `phoneHalf` below. The rest of this comment is the wide halves'.
 // Proves what the old page's drag and drop never had to say, because the browser made it (S2, AD-70), on the sidebar of a long list: a drag by
-// the viewport's pointer works at every viewport (the phone's sidebar is its first screen); a finger that moves at once scrolls the list and starts no
+// the viewport's pointer works at every viewport (here the tablet's and the desktop's); a finger that moves at once scrolls the list and starts no
 // drag, and one that is held first drags and does not scroll it (the window sees no pointercancel); a long press that moves nowhere opens nothing, and the
 // press that follows a drag opens its row; a mouse that moves a few pixels is still a click, and one that moves farther on its own row starts a drag that
 // opens nothing; a row in rename mode is not dragged; the label under the pointer names what is dragged and the dragged row is dimmed; a pointer held near
 // the top or the bottom of the list scrolls it. New check (no old one): the B-rows of the drag that no browser check could see: A-DD-01, A-DD-02 (touch),
 // A-DD-06, A-DD-09, with the touch halves of the rows the Note for the app names.
 import { callsOf, check, mockEval, seed, until } from "../shot.mjs";
-import { byTid, hover, openMenu, press, showList, touchDrag, touchNow } from "./sel.mjs";
+import { byTid, hover, openMenu, pointerDragger, press, showList, touchDrag, touchNow } from "./sel.mjs";
 import { dragReader } from "./drag.mjs";
 import { rowNamed } from "./side.mjs";
 
 export const viewports = ["desktop", "tablet", "phone"];
 
-await check("L14 a drag by the pointer of each viewport: scroll and drag apart, the label, the edges of the list", async ({ url, open, fail, note }) => {
+/** The phone's Home, on Studio Mac of the seed UXH1: every scene opens a page of its own, on the server as the seed made it (a drop changes the server's
+ *  tree, so the scenes that drop come last), and closes it. */
+async function phoneHalf({ url, open, fail, note }) {
+  const STUDIO = "h1_studio", J = JSON.stringify;
+  const ls = { "aiwb.uicheck.nolocal": "1", "aiwb.home": J({ server: STUDIO, groups: [] }) };
+  await seed(url, "UXH1");
+  const seen = [];
+  /** A page on Home, the studio server only (the fillers: more chats than a screen holds, for a list that scrolls). */
+  const scene = async (name, body, { fillers = 0 } = {}) => {
+    const bad = (line) => fail(`${name}: ${line}`);
+    await mockEval(`uxh1Show(${J([STUDIO])}); onServer(${J(STUDIO)}, () => { for (let i = 0; i < ${fillers}; i++) { const id = "c_L14_" + i; chats[id] = chat(id, { name: "Filler " + i, group: UNGROUPED, cwd: "/Users/studio/work" }); items[id] = []; } });`, url);
+    const o = await open({ ls, wait: "" });
+    const { page } = o;
+    try {
+      await byTid(page, "home-row", { key: `${STUDIO}~g_infra` }).first().waitFor({ state: "visible", timeout: 20000 });
+      await page.waitForTimeout(300);
+      const calls = callsOf(page);
+      const writes = () => calls.filter((c) => c.method !== "GET");
+      const row = (kind, text) => byTid(page, "home-row", { kind }).filter({ hasText: text }).first();
+      const place = (key) => byTid(page, "home-row-place", { key: `${STUDIO}~${key}` }).first();
+      const ghost = () => byTid(page, "drag-ghost").count();
+      const sheet = () => byTid(page, "row-sheet").first();
+      const sheetShown = (ms = 5000) => sheet().waitFor({ state: "visible", timeout: ms }).then(() => true, () => false);
+      /** The list's scroll: the nearest scrolling element above Home's list. */
+      const top = () => byTid(page, "home-list").first().evaluate((e) => { for (let n = e.parentElement; n; n = n.parentElement) if (/(auto|scroll)/.test(getComputedStyle(n).overflowY) && n.scrollHeight > n.clientHeight) return n.scrollTop; return 0; });
+      await body({ page, bad, calls, writes, row, place, ghost, sheet, sheetShown, top });
+    } catch (e) { bad(String(e.message).split("\n")[0]); }
+    await o.ctx.close();
+  };
+  // ---- a finger held 0.5 s opens nothing while it is held, and the sheet when it is lifted
+  await scene("hold and lift", async ({ page, bad, writes, row, ghost, sheetShown, sheet }) => {
+    const d = await pointerDragger(page, { hold: 700, steps: 6 });
+    await d.start(row("chat", "Rename the env vars"));
+    if (await sheet().isVisible()) bad("the sheet opened while the finger was still down: it opens on the release");
+    if (await ghost()) bad("a held finger that moved nowhere started a drag");
+    await d.end();
+    if (!await sheetShown()) bad("a finger held 0.5 s and lifted opened no row sheet (row-sheet)");
+    if (await ghost()) bad("a drag label is drawn after a hold and a lift");
+    if (writes().length) bad(`a hold and a lift made the calls ${J(writes().map((c) => `${c.method} ${c.path}`))}`);
+  });
+
+  // ---- held, moved 6 pt (under the 10): still no drag, the sheet on the lift; held, moved 14 pt: a drag; back to where it was and lifted over no group: no sheet, no call
+  await scene("a small move and a large one", async ({ page, bad, writes, row, ghost, sheetShown }) => {
+    const r = row("chat", "Rename the env vars"), b = await r.boundingBox();
+    const at = { x: b.x + b.width / 2, y: b.y + b.height / 2 };
+    const d = await pointerDragger(page, { hold: 700, steps: 4 });
+    await d.start(at);
+    await d.move({ x: at.x, y: at.y + 6 });
+    if (await ghost()) bad("a move of 6 pt after the hold started a drag");
+    await d.end();
+    if (!await sheetShown()) bad("a move of 6 pt after the hold, lifted, opened no row sheet");
+  });
+  await scene("a move past 10 pt", async ({ page, bad, writes, row, ghost, sheet, sheetShown }) => {
+    const r = row("chat", "Rename the env vars"), b = await r.boundingBox();
+    const at = { x: b.x + b.width / 2, y: b.y + b.height / 2 };
+    const d = await pointerDragger(page, { hold: 700, steps: 4 });
+    await d.start(at);
+    await d.move({ x: at.x, y: at.y + 14 });
+    if (!await until(async () => (await ghost()) > 0, 5000)) bad("a move of 14 pt after the hold started no drag (no label)");
+    else if (!(await byTid(page, "drag-ghost").first().textContent()).includes("Rename the env vars")) bad("the label does not name the row dragged");
+    if (!(Number(await r.evaluate((e) => getComputedStyle(e).opacity)) < 0.9)) bad("the row dragged is not dimmed");
+    await d.end();
+    await page.waitForTimeout(500);
+    if (await sheet().isVisible()) bad("the sheet opened after a drag that ended over no group");
+    if (await ghost()) bad("the label stays after the drop");
+    if (writes().length) bad(`a drag released over no group made the calls ${J(writes().map((c) => `${c.method} ${c.path}`))}`);
+  });
+
+  // ---- a finger that moves at once scrolls the list (and starts no drag); one that moves sideways at once swipes the row
+  await scene("a move at once", async ({ page, bad, writes, row, ghost, sheet, top }) => {
+    const r = row("chat", "Rename the env vars"), b = await r.boundingBox();
+    const at = { x: b.x + b.width / 2, y: b.y + b.height / 2 };
+    const start = await top();
+    await touchDrag(page, at, { x: at.x, y: at.y - 160 }, { hold: 0, steps: 12 });
+    if (!await until(async () => (await top()) > start + 40, 10000)) bad(`a finger that moved at once did not scroll the list (${start} → ${await top()})`);
+    if (await ghost()) bad("a finger that moved at once started a drag");
+    if (await sheet().isVisible()) bad("a finger that moved at once opened the row sheet");
+    if (writes().length) bad(`a scroll made the calls ${J(writes().map((c) => `${c.method} ${c.path}`))}`);
+  }, { fillers: 14 });
+  await scene("a swipe", async ({ page, bad, writes, row, ghost, sheet }) => {
+    const r = row("board", "Onboarding flow"), b = await r.boundingBox();
+    const at = { x: b.x + b.width - 40, y: b.y + b.height / 2 };
+    await touchDrag(page, at, { x: at.x - 200, y: at.y }, { hold: 0, steps: 12 });
+    if (!await until(async () => (await byTid(page, "swipe-action").count()) > 0, 5000)) bad("a quick sideways move on a row showed no swipe buttons");
+    if (await ghost()) bad("a quick sideways move started a drag");
+    if (await sheet().isVisible()) bad("a quick sideways move opened the row sheet");
+    if (writes().length) bad(`a swipe made the calls ${J(writes().map((c) => `${c.method} ${c.path}`))}`);
+  });
+
+  // ---- held and moved onto a group row: the row is lit while the finger is over it; the lift drops the item into the group
+  const into = async (name, kind, text, group, groupName, expect, after) => scene(name, async ({ page, bad, writes, row, place, ghost, sheet, calls }) => {
+    const target = place(group);
+    const d = await pointerDragger(page, { hold: 700, steps: 10 });
+    await d.start(row(kind, text));
+    await d.move(target);
+    if (!await until(async () => (await target.getAttribute("data-drop")) === "true", 5000)) bad(`the group row "${groupName}" is not lit while the finger is over it`);
+    if (await sheet().isVisible()) bad("the sheet opened during the drag");
+    const shot = process.env.SHOTS;
+    if (shot) await page.screenshot({ path: `${shot}/${name.replace(/\W+/g, "-")}.png` });
+    await d.end();
+    if (!await until(() => writes().some(expect), 8000)) bad(`the lift made the calls ${J(writes().map((c) => `${c.method} ${c.path} ${J(c.body)}`))}, not ${what(expect)}`);
+    if (await target.getAttribute("data-drop")) bad(`the group row "${groupName}" stays lit after the drop`);
+    if (await sheet().isVisible()) bad("the sheet opened after the drop");
+    await after({ page, bad, row });
+  });
+  const what = (f) => String(f).replace(/\s+/g, " ");
+  await into("a chat dropped on a group", "chat", "Rename the env vars", "g_infra", "Infra",
+    (c) => c.method === "PATCH" && /c_rename$/.test(c.path) && /g_infra/.test(JSON.stringify(c.body)),
+    async ({ page, bad, row }) => {
+      if (!await until(async () => (await row("chat", "Rename the env vars").count()) === 0, 8000)) bad("the chat is still on Home after it was dropped into Infra");
+      await press(page, row("group", "Infra"));
+      await byTid(page, "group-screen", { key: `${STUDIO}~g_infra` }).last().waitFor({ state: "visible", timeout: 10000 });
+      if (!await until(async () => (await byTid(page, "group-screen").last().getByText("Rename the env vars").count()) > 0, 8000)) bad("Infra's screen does not list the chat dropped into it");
+    });
+  await into("a group dropped on a group", "group", "Mobile app", "g_infra", "Infra",
+    (c) => c.method === "POST" && /\/groups\/g_mobile\/move$/.test(c.path) && c.body?.parent === "g_infra",
+    async ({ bad, row }) => {
+      if (!await until(async () => (await row("group", "Mobile app").count()) === 0, 8000)) bad("the group Mobile app is still on Home after it was dropped into Infra");
+    });
+  note("a hold and a lift opens the sheet, a move of 6 pt still does, a move past 10 pt drags, a move at once scrolls or swipes, a drop on a group row moves the chat and the group into it");
+}
+
+await check("L14 a drag by the pointer of each viewport: scroll and drag apart, the label, the edges of the list", async ({ url, open, fail, note, viewport }) => {
+  if (viewport === "phone") return phoneHalf({ url, open, fail, note });
   await seed(url, "A3");
   // a long list: forty chats with no group, below the seed's tree
   await mockEval(`for (let i = 0; i < 40; i++) { const id = "c_L14_" + i; chats[id] = chat(id, { name: "Filler " + (i < 10 ? "0" : "") + i, group: UNGROUPED }); items[id] = []; }`, url);

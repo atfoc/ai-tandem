@@ -96,3 +96,14 @@ test("the default bound takes a thousand lines against a thousand, and a long te
   const big = lineDiff(text(300_000, (i) => `row ${i}`), "one\n");
   assert.deepEqual([big.exact, big.removed, big.added, big.rows.length], [true, 300_000, 1, 300_001]);
 });
+
+test("numbered rows: a line that stays has both numbers, a removed one the old, an added one the new; a skip its first line's (ux T2)", async () => {
+  const { numbered, anchorOf } = await import("../src/logic/linediff.ts");
+  const old = ["a", "b", "c", "d", "e", "f", "g", "h", "i"].join("\n");
+  const next = ["a", "b", "c", "d", "e", "f", "g", "H", "H2", "i"].join("\n");
+  const rows = numbered(lineDiff(old, next, { context: 1 }).rows, { a: 40, b: 40 });
+  assert.deepEqual(rows.map((r) => [r.kind, r.a, r.b]), [["skip", 40, 40], ["same", 46, 46], ["del", 47, undefined], ["add", undefined, 47], ["add", undefined, 48], ["same", 48, 49]]);
+  assert.equal(anchorOf("The file was updated:\n    45\tfunc x() {\n    46→  H\n    47→  H2", "  H\n  H2"), 46);
+  assert.equal(anchorOf("The file was updated successfully.", "x"), null);
+  assert.equal(anchorOf(undefined, "x"), null);
+});

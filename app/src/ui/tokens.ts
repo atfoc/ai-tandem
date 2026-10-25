@@ -31,11 +31,13 @@ const light = {
   piSoft: "#e6f4f2",
   warn: "#e8a317",
   warnSoft: "#fffaf0",
+  warnText: "#9a6700", // warning-toned text of the phone parts (a sub-line); `warn` is for marks and dots
   danger: "#e03131",
   dangerFill: "#e03131",
   onDanger: "#ffffff", // text on dangerFill
   dangerSoft: "#fdecec",
   ok: "#2f9e44",
+  okText: "#1b7332", // ok-toned text of the phone parts (a state word); `ok` is for marks and dots
   hover: "rgba(0, 0, 0, .04)",
   hover2: "rgba(0, 0, 0, .05)",
   knob: "#ffffff",
@@ -84,10 +86,12 @@ const DARK: Tokens = {
   piSoft: "#1f3533",
   warn: "#f0b545",
   warnSoft: "#2f2716",
+  warnText: "#f0b545",
   danger: "#ff7070",
   dangerFill: "#d9383a",
   dangerSoft: "#3b2224",
   ok: "#5cc971",
+  okText: "#5cc971",
   hover: "rgba(255, 255, 255, .05)",
   hover2: "rgba(255, 255, 255, .08)",
   knob: "#f2f2f5",

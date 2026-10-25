@@ -12,22 +12,33 @@
 // first); the section is where the drags leave it in the old check (the chat "Take 14" is ungrouped by then).
 // Besides the old check (A-DD-12, whose proof was the old page's Sidebar test): a section group's rename and move are shown before the answer, a refused one is
 // put back with the sentence of the refusal, and one refused after that server told its groups leaves its word (the calls are held and refused with page.route).
+// The phone (package H1) shows one server at a time on Home, so nothing can be dragged from one server's things onto another's there: what
+// this check asks of drags across servers holds by construction. Its half (`onPhone` below) proves that each server's Home and group screens
+// list only that server's things (another server's group, this computer's second group and loose chat stay on their own), that pressing
+// rows and chips changes nothing on any server, and that a board's screen is of its own server. Then the changes inside Studio Mac go through
+// the row actions of package H2 (rows.mjs): a chat, a board and a group renamed by the row's sheet (Rename…) and the Rename sheet; a board and
+// a chat moved into another group of the server, and a group into another group, by Move to… (whose list is that server's groups only); a chat
+// archived by a full swipe and brought back by the toast's Undo (the row returns at the same place in its list); a chat deleted by the swipe's
+// Delete (the question names the server; Cancel keeps the chat and makes no call, Delete removes it). Each is the one call under /api/ to
+// that server, and the list after; none touches this computer's things. The unarchive of a row is Settings › Archived's (chunk 4's), not here.
 import { callMatcher, callsOf, check, mockEval, seed, until } from "../shot.mjs";
-import { byTid, press, showList } from "./sel.mjs";
+import { byTid, longPress, openBoard, press, showHome, showList } from "./sel.mjs";
 import { dragReader } from "./drag.mjs";
-import { groupHead, rowNamed, section, sideMenu, sideSeen } from "./side.mjs";
+import { groupHead, homeOf, rowNamed, section, sideMenu, sideSeen } from "./side.mjs";
+import { moveThroughSheet, openRowSheet, pressSwipe, renameThroughSheet, rowIn, sheetActions, swipeButtons, swipeLeft, swipeOpen } from "./rows.mjs";
 
 export const viewports = ["desktop", "tablet", "phone"];
 
 const J = JSON.stringify;
 const STUDIO = "s_studio";
 
-await check("SEC.5 changes in a section go to its server; nothing is dropped across servers", async ({ url, open, fail, note }) => {
+await check("SEC.5 changes in a section go to its server; nothing is dropped across servers", async ({ url, open, fail, note, layout }) => {
   await seed(url, "SEC");
   // another section with a group, a second local group, and the long local group closed: the targets of the drops
-  await mockEval(`onServer("s_empty", () => { groups.push({ id: "g_theirs", name: "Their group" }); chats.c_theirs = chat("c_theirs", { name: "Their chat", group: "g_theirs" }); items.c_theirs = []; });
+  if (layout !== "phone") await mockEval(`onServer("s_empty", () => { groups.push({ id: "g_theirs", name: "Their group" }); chats.c_theirs = chat("c_theirs", { name: "Their chat", group: "g_theirs" }); items.c_theirs = []; });
     groups.find((g) => g.id === "g_shop").collapsed = true; groups.push({ id: "g_second", name: "Second local" }); chats.c_second = chat("c_second", { name: "Local chat", group: "g_second" }); items.c_second = [];
     chats.c_loose = chat("c_loose", { name: "Loose chat", group: UNGROUPED }); items.c_loose = [];`, url);
+  if (layout === "phone") return onPhone({ url, open, fail, note });
   const { page } = await open({ wait: '[data-testid="side-tree"]' });
   const calls = callsOf(page);
   const writes = () => calls.filter((c) => c.method !== "GET");
@@ -247,3 +258,157 @@ await check("SEC.5 changes in a section go to its server; nothing is dropped acr
 
   note(`${made} changes of a chat, a board and a group, each one call under /api/; ${crossed} drags across servers lit nothing and made no call; "Move to…" offers the section's own groups`);
 }, { viewports, page: false });
+
+/** The phone's half: each server's things on its own Home, and nothing changed by browsing (see the head of the file). */
+async function onPhone({ url, open, fail, note }) {
+  await mockEval(`onServer("s_empty", () => { groups.push({ id: "g_theirs", name: "Their group" }); chats.c_theirs = chat("c_theirs", { name: "Their chat", group: "g_theirs" }); items.c_theirs = []; });
+    groups.push({ id: "g_second", name: "Second local" }); chats.c_second = chat("c_second", { name: "Local chat", group: "g_second" }); items.c_second = [];
+    chats.c_loose = chat("c_loose", { name: "Loose chat", group: UNGROUPED }); items.c_loose = [];`, url);
+  const { page } = await open({ wait: '[data-testid="home"]' });
+  const calls = callsOf(page);
+  // (an open board is followed, as a reader: its follow and unfollow change nothing there, HB.1's)
+  const writes = () => calls.filter((c) => c.method !== "GET" && !/\/(follow|unfollow)$/.test(c.path));
+  const where = { local: ["group Second local", "chat Loose chat"], s_empty: ["group Their group"], [STUDIO]: ["group Renders", "group Old takes", "board Floor plan"] };
+  const homes = {};
+  for (const id of Object.keys(where)) {
+    await showHome(page, id);
+    if (!await until(async () => { homes[id] = (await homeOf(page)).outline; return where[id].every((x) => homes[id].includes(x)); }, 15000)) fail(`${id}'s Home does not list ${J(where[id])}: ${J(homes[id])}`);
+    const rows = (await homeOf(page)).rows;
+    if (rows.some((r) => r.server !== id)) fail(`${id}'s Home lists rows of another server: ${J(rows.filter((r) => r.server !== id))}`);
+  }
+  for (const [id, mine] of Object.entries(where)) for (const [other, list] of Object.entries(homes)) if (other !== id && mine.some((x) => list.includes(x) && !where[other].includes(x))) fail(`${other}'s Home lists a thing of ${id}: ${J(mine.filter((x) => list.includes(x)))}`);
+  // a group's screen holds its own server's things only: Studio Mac's Renders (id g_shop) and this computer's Shop (id g_shop)
+  await showHome(page, STUDIO);
+  await press(page, byTid(page, "home-row", { kind: "group", key: `${STUDIO}~g_shop` }).first());
+  if (!await until(async () => (await homeOf(page, `${STUDIO}~g_shop`)).rows.length > 0, 10000)) fail("Studio Mac's group Renders shows no rows");
+  const renders = (await homeOf(page, `${STUDIO}~g_shop`)).rows;
+  if (renders.some((r) => r.server !== STUDIO)) fail(`Studio Mac's group Renders lists rows of another server: ${J(renders)}`);
+  // a board of Studio Mac opens as Studio Mac's
+  await openBoard(page, `${STUDIO}~b_loose`);
+  if (!await until(async () => (await page.evaluate(() => JSON.parse(localStorage.getItem("aiwb.sel") ?? "{}").board)) === `${STUDIO}~b_loose`, 10000)) fail(`the board Floor plan is not open as Studio Mac's: ${await page.evaluate(() => localStorage.getItem("aiwb.sel"))}`);
+  await showHome(page);
+  if (writes().length) fail(`browsing Home made the calls ${J(writes().map((c) => `${c.server} ${c.method} ${c.path}`))}`);
+  const local0 = await localThings(url);
+
+  // ---- the changes inside Studio Mac, through the row's sheet and swipe
+  let made = 0;
+  /** One change: what is done, and the one call it must make (method, path, the body's fields named). */
+  const change = async (name, act, method, path, body = {}) => {
+    const n = writes().length;
+    await act();
+    if (!await until(() => writes().length > n && writes().slice(n).every((c) => c.status !== undefined), 10000)) return fail(`${name}: no call was made`);
+    const got = writes().slice(n);
+    if (got.length !== 1 || got[0].server !== STUDIO || got[0].method !== method || got[0].path !== path) return fail(`${name}: the calls were ${J(got.map((c) => `${c.server} ${c.method} ${c.path}`))}, not ${STUDIO} ${method} ${path}`);
+    for (const [k, v] of Object.entries(body)) if (J(got[0].body?.[k]) !== J(v)) fail(`${name}: the body has ${k} ${J(got[0].body?.[k])}, not ${J(v)}: ${J(got[0].body)}`);
+    if (got[0].status !== 200) fail(`${name}: answered ${got[0].status}`);
+    made++;
+  };
+  const home = () => byTid(page, "home").first();
+  const k = (id) => `${STUDIO}~${id}`;
+  const outline = async (group = null) => (await homeOf(page, group)).outline;
+  const has = async (name, line, want = true, group = null) => { if (!await until(async () => (await outline(group)).includes(line) === want, 10000)) fail(`${name}: the list ${want ? "has no" : "still has the"} row "${line}": ${J(await outline(group))}`); };
+  await showHome(page, STUDIO);
+
+  // a row's sheet offers what the design says: Open, Rename…, Move to…, Archive, Delete (a chat on a board has no Move to…)
+  {
+    const sheet = await openRowSheet(page, rowIn(home(), "chat", k("c_note")), "chat", k("c_note"));
+    const acts = await sheetActions(sheet);
+    if (J(acts) !== J(["open", "rename", "move", "archive", "delete"])) fail(`the sheet of a chat offers ${J(acts)}`);
+    const sub = (await sheet.textContent()) ?? "";
+    if (!sub.includes("Studio Mac")) fail(`the sheet of a chat of Studio Mac does not say where it is: "${sub}"`);
+    await page.keyboard.press("Escape");
+    if (!await until(async () => !await sheet.count(), 5000)) await press(page, byTid(page, "overlay-backdrop").last());
+    if (!await until(async () => !await sheet.count(), 5000)) fail("the sheet of a chat does not close");
+  }
+
+  // rename: a chat, a board and a group, each by Rename… in the row's sheet
+  await change("a chat renamed", () => renameThroughSheet(page, rowIn(home(), "chat", k("c_note")), "chat", k("c_note"), "Scratch 2"), "PATCH", "/api/chats/c_note", { name: "Scratch 2" });
+  await has("a chat renamed", "chat Scratch 2");
+  await change("a board renamed", () => renameThroughSheet(page, rowIn(home(), "board", k("b_loose")), "board", k("b_loose"), "Floor plan 2"), "POST", "/api/boards/b_loose/rename", { name: "Floor plan 2" });
+  await has("a board renamed", "board Floor plan 2");
+  await change("a group renamed", () => renameThroughSheet(page, rowIn(home(), "group", k("g_old")), "group", k("g_old"), "Old takes 2"), "PATCH", "/api/groups/g_old", { name: "Old takes 2" });
+  await has("a group renamed", "group Old takes 2");
+
+  // move: a board and a chat into another group of the server, a group into another group; the picker lists this server's groups only
+  const offered = [];
+  await change("a board moved by Move to…", async () => offered.push(await moveThroughSheet(page, rowIn(home(), "board", k("b_loose")), "board", k("b_loose"), "Old takes 2")), "PATCH", "/api/boards/b_loose", { group: "g_old" });
+  const want = ["Not in a group", "Renders", "Renders › Nightly", "Old takes 2"];
+  if (J(offered[0]) !== J(want)) fail(`"Move to…" of a board of Studio Mac offers ${J(offered[0])}, not that server's places ${J(want)}`);
+  await has("a board moved", "board Floor plan 2", false);
+  await change("a chat moved by Move to…", () => moveThroughSheet(page, rowIn(home(), "chat", k("c_note")), "chat", k("c_note"), "Renders"), "PATCH", "/api/chats/c_note", { group: "g_shop" });
+  await has("a chat moved", "chat Scratch 2", false);
+  await press(page, rowIn(home(), "group", k("g_shop")));
+  const rendersScreen = byTid(page, "group-screen", { key: k("g_shop") }).last();
+  await rendersScreen.waitFor({ state: "visible", timeout: 10000 });
+  await has("a chat moved, in its new group", "chat Scratch 2", true, k("g_shop"));
+  await change("a group moved by Move to…", () => moveThroughSheet(page, rowIn(rendersScreen, "group", k("g_sub")), "group", k("g_sub"), "Old takes 2"), "POST", "/api/groups/g_sub/move", { parent: "g_old" });
+  await has("a group moved, out of its old parent", "group Nightly", false, k("g_shop"));
+  await showHome(page, STUDIO);
+  await press(page, rowIn(home(), "group", k("g_old")));
+  const old = byTid(page, "group-screen", { key: k("g_old") }).last();
+  await old.waitFor({ state: "visible", timeout: 10000 });
+  for (const line of ["group Nightly", "board Floor plan 2"]) await has("a group and a board moved, in their new group", line, true, k("g_old"));
+  await showHome(page, STUDIO);
+
+  // archive by a full swipe, and Undo: the row comes back where it was
+  const chat = k("c_plain"), name = "Render queue is stuck";
+  const before = await outline();
+  const at = before.indexOf(`chat ${name}`);
+  if (at < 0) fail(`Home lists no chat "${name}": ${J(before)}`);
+  await change("a chat archived by a full swipe", () => swipeLeft(page, rowIn(home(), "chat", chat), { full: true }), "POST", "/api/chats/c_plain/archive");
+  await has("a chat archived", `chat ${name}`, false);
+  const toast = byTid(page, "toast").last();
+  if (!await until(async () => (await toast.textContent().catch(() => "")).includes(`Archived “${name}”`), 5000)) fail(`the archive shows no toast "Archived “${name}”": "${await toast.textContent().catch(() => "")}"`);
+  await change("an archive undone", () => press(page, byTid(page, "toast-action").last()), "POST", "/api/chats/c_plain/unarchive");
+  await has("an archive undone", `chat ${name}`);
+  const after = await outline();
+  if (after.indexOf(`chat ${name}`) !== at) fail(`the chat came back at ${after.indexOf(`chat ${name}`)}, not at ${at}: ${J(after)}`);
+
+  // delete by the swipe's Delete: Cancel keeps the chat and calls nothing, Delete removes it
+  const asked = async () => {
+    const buttons = await swipeOpen(page, rowIn(home(), "chat", chat));
+    if (J(buttons) !== J(["archive", "delete"])) fail(`a swipe shows ${J(buttons)}, not Archive and Delete`);
+    await pressSwipe(page, rowIn(home(), "chat", chat), "delete");
+    const dialog = byTid(page, "confirm-dialog").last();
+    await dialog.waitFor({ state: "visible", timeout: 10000 });
+    const said = (await dialog.textContent()) ?? "";
+    if (!said.includes("Studio Mac") || !said.includes(name)) fail(`the question before a delete does not name the chat and the server: "${said}"`);
+    return dialog;
+  };
+  {
+    const n = writes().length;
+    const dialog = await asked();
+    await press(page, byTid(dialog, "confirm-cancel").first());
+    if (!await until(async () => !await dialog.count(), 5000)) fail("Cancel does not close the question");
+    await page.waitForTimeout(400);
+    if (writes().length !== n) fail(`Cancel made the calls ${J(writes().slice(n).map((c) => `${c.method} ${c.path}`))}`);
+    await has("a delete cancelled", `chat ${name}`);
+  }
+  await change("a chat deleted by the swipe's Delete", async () => { const dialog = await asked(); await press(page, byTid(dialog, "confirm-go").first()); }, "DELETE", "/api/chats/c_plain");
+  await has("a chat deleted", `chat ${name}`, false);
+
+  // nothing of this reached this computer's things or any other server
+  const elsewhere = writes().filter((c) => c.server !== STUDIO);
+  if (elsewhere.length) fail(`calls went to another server: ${J(elsewhere.map((c) => `${c.server} ${c.method} ${c.path}`))}`);
+  if (await localThings(url) !== local0) fail("this computer's own groups, boards or chats changed");
+  // ---- Studio Mac away: Home's list is the last sync's, faded, and has no actions (no swipe, no sheet, so no Rename sheet and no Move to…)
+  await mockEval(`setServerState("${STUDIO}", "unreachable", { detail: "connection refused" });`, url);
+  if (!await until(async () => (await homeOf(page)).stale, 15000)) fail(`Studio Mac away: Home's list is not shown as the last sync's: ${J((await homeOf(page)).state)}`);
+  else {
+    const n = writes().length, away = rowIn(home(), "group", k("g_shop"));
+    const box0 = await away.boundingBox();
+    await swipeLeft(page, away);
+    await page.waitForTimeout(500);
+    const box1 = await away.boundingBox();
+    if (await swipeButtons(away).then((b) => b.length) || Math.abs(box1.x - box0.x) > 1) fail(`Studio Mac away: a faded row has a swipe (buttons ${J(await swipeButtons(away))}, moved ${box1.x - box0.x})`);
+    await longPress(page, away); // (the sheet of a live row rises on this release: H2-4)
+    await page.waitForTimeout(500);
+    if (await byTid(page, "row-sheet").count() || await byTid(page, "rename-sheet").count() || await byTid(page, "move-sheet").count()) fail("Studio Mac away: a long press on a faded row opens a sheet");
+    if (writes().length !== n) fail(`Studio Mac away: the faded row made the calls ${J(writes().slice(n).map((c) => `${c.method} ${c.path}`))}`);
+  }
+  await mockEval(`setServerState("${STUDIO}", "connected");`, url);
+  note(`each server's Home and group screens list its own things only; a board opens as its server's; browsing makes no call; ${made} changes by the row's sheet and swipe (renames of a chat, board and group, moves of a board, chat and group, an archive with Undo, a delete with Cancel and Delete), each one call to Studio Mac under /api/ and the list after; a faded row of a server that is away has no swipe and no sheet; nothing can be dragged across servers on the phone (one server at a time)`);
+}
+
+/** This computer's own groups, boards and chats, as the mock holds them. */
+function localThings(url) { return mockEval("return JSON.stringify([groups, Object.values(boards), Object.values(chats).map((c) => [c.id, c.name, c.group, c.archived])]);", url); }

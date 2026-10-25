@@ -7,22 +7,23 @@
 # System default and the phone's speaker, and the note that a headset is used for both).
 #
 # PART 1 needs NO microphone (the simulator can run it where it cannot capture audio: CoreAudio in a simulator whose host session cannot open the Mac's microphone
-# aborts the app when the engine starts, "Initialize: RPC timeout. Apparently deadlocked."). The scratch server is added and holds a chat. Settings > Voice, with NO key
-# (one an earlier run left is removed first), shows the card "Microphone and speaker" as its title and "Add your key to choose a microphone and a speaker." only
-# (`vs-devices-nokey`; since D16 the card lists nothing before a key is saved): no picker, no test, and no microphone alert from opening Settings. Then the
-# stand-in's key is typed, tested and saved (`vs-key`, `vs-key-save`), the line goes and the card:
-#   1. lists the Microphone picker with "System default (<the system's input>)" and the built-in input, and no microphone alert comes from listing (goal 4.8);
-#   2. has no Speaker picker and no "follows the system" line for the microphone: the speaker line says it follows the system (the platform allows no choice, goal 3.4/4.4),
-#      and no note, no "neither" line;
-#   3. Test speaker plays the chime through the native player to its end (the dev line's `tested` count, read where the Settings sheet is closed: the sheet covers the line);
-#   4. picking the built-in input shows it in the picker, and it is kept over the app being closed and opened again (the saved choice; the key stays).
+# aborts the app when the engine starts, "Initialize: RPC timeout. Apparently deadlocked."). The scratch server is added and holds a chat. On the phone Settings > Voice
+# is a pushed screen (the foot's gear opens it over Settings, `vs-screen`; `_voice-open.yaml`). With NO key (one an earlier run left is removed first) it is the
+# card `vs-nokey-card` and nothing else: no Microphone or Speaker row, no test, and no microphone alert from opening Settings (the devices are listed only while their
+# sheet is open). Then the stand-in's key is typed, tested and saved in the Add key sheet (`vs-key`, `vs-key-test`, Save in the head; `_voice-add-key.yaml`), the card goes
+# and Advanced has the rows Microphone `vs-mic` and Speaker `vs-speaker`, each opening its own sheet that lists while open (`vs-device-sheet-mic` / `-speaker`, with the test inside):
+#   1. the Microphone sheet lists "System default (<the system's input>)" and the built-in input, and no microphone alert comes from listing (goal 4.8);
+#   2. the Speaker cell says System and its sheet says it follows the system (the platform allows no choice, goal 3.4/4.4): no choice for the microphone's "follows the
+#      system" line (`vs-mic-system`), no note, no "neither" line;
+#   3. Test speaker (in the Speaker sheet) plays the chime through the native player to its end (the dev line's `tested` count, read once the sheet is closed: the sheet covers the line);
+#   4. picking the built-in input shows it in the Microphone cell, and it is kept over the app being closed and opened again (the saved choice; the key stays).
 # PART 2 NEEDS A REAL MICROPHONE (a Mac whose microphone the session may open, or a real iPhone/iPad): Dictate puts up the system's microphone alert, Allow, the stand-in
 # hears the chunks and the words come into the box; the dev line `voice-dev-devices` says `mic=builtIn` (the kind of the opened input, never a name; the saved
-# built-in was found, so no notice); Test microphone shows the level meter. On the simulator of a session that cannot open the microphone the run ends here, at the
+# built-in was found, so no notice); Test microphone, in the Microphone sheet, shows the level meter. On the simulator of a session that cannot open the microphone the run ends here, at the
 # app's abort, and the runner also reports that the stand-in saw no transcription socket. Where the steps of PART 2 start is marked "---- PART 2".
 # Loss, pause and a headset's pick are not here: the unit tests over the fake module prove the logic, and a person with a wired or Bluetooth headset on a real iPhone,
 # iPad and Android phone proves the rest (final report).
-# The flow leaves the device as it found it (System default, no key; the card shows `vs-devices-nokey` again), and starts by putting it so, so it runs again on a device an earlier run left half-way.
+# The flow leaves the device as it found it (System default, no key; the screen shows `vs-nokey-card` again), and starts by putting it so, so it runs again on a device an earlier run left half-way.
 appId: ${APP_ID}
 ---
 - runFlow: _open-app.yaml
@@ -35,32 +36,17 @@ appId: ${APP_ID}
 - runFlow: _add-server.yaml
 - takeScreenshot: d13-00-sidebar
 
-# ---- Settings > Voice: no key (one left by an earlier run is removed), and the card
-- tapOn:
-    id: "settings-btn"
-- extendedWaitUntil:
-    visible:
-      id: "vs-page"
-    timeout: 30000
+# ---- Settings > Voice (the pushed screen): no key (one left by an earlier run is removed)
+- runFlow: _voice-open.yaml
 - runFlow:
     when:
       visible:
-        id: "vs-key-remove"
+        id: "vs-key-row"
     commands:
-      - tapOn:
-          id: "vs-key-remove"
-      - tapOn:
-          text: "Remove key"
-- scrollUntilVisible:
-    element:
-      id: "vs-devices-section"
-- assertVisible: "Microphone and speaker"
-# (no key: the card lists nothing and says why -- no picker, no test, no note, and nothing asked the system for the microphone)
-- extendedWaitUntil:
-    visible:
-      id: "vs-devices-nokey"
-      text: "Add your key to choose a microphone and a speaker."
-    timeout: 30000
+      - runFlow: _voice-remove-key.yaml
+# (no key: the screen is the card and nothing else -- no Advanced, no Microphone and Speaker, no test, no note, and nothing asked the system for the microphone)
+- assertVisible:
+    id: "vs-nokey-card"
 - assertNotVisible:
     id: "vs-mic"
 - assertNotVisible:
@@ -79,61 +65,88 @@ appId: ${APP_ID}
 - assertNotVisible: "Allow .* to record audio\\?"
 - takeScreenshot: d13-00a-nokey
 
-# ---- the key (the stand-in's; no microphone yet): the card then lists the devices
+# ---- the key (the stand-in's; no microphone yet): Advanced then has the Microphone and Speaker rows
+- runFlow:
+    file: _voice-add-key.yaml
+    env:
+      KEY: "sk_test_d13devicekey"
+      SHOT: d13-00b-key
 - scrollUntilVisible:
     element:
-      id: "vs-key"
-    direction: UP
-- tapOn:
-    id: "vs-key"
-- inputText: "sk_test_d13devicekey"
-- tapOn:
-    id: "vs-key-test"
-- extendedWaitUntil:
-    visible:
-      id: "vs-key-result"
-      text: "Works: 6 voices found."
-    timeout: 60000
-- tapOn:
-    id: "vs-key-save"
-- extendedWaitUntil:
-    visible: "Key saved on this device."
-    timeout: 30000
-# (the key field still has the keyboard up, which covers the card, and Maestro's hideKeyboard finds no way to put it away: the keyboard's own Done key does
-# -- iOS names it by id, Android's keyboard by its description -- and the field's "done" saves the key again, which changes nothing)
+      id: "vs-mic"
+- assertNotVisible:
+    id: "vs-nokey-card"
+
+# ---- the choices the platform allows: a microphone picker, and the speaker follows the system (the cell says System; its sheet has the line and the test)
+# (first the choice an earlier run may have left: System default)
+- runFlow:
+    file: _voice-device-default.yaml
+    env:
+      CELL: "vs-mic"
+      SHEET: "vs-device-sheet-mic"
+      WORD: "Microphone"
 - runFlow:
     when:
       platform: iOS
     commands:
-      - tapOn:
-          id: "Done"
-- runFlow:
-    when:
-      platform: Android
-    commands:
-      - tapOn: "Done"
-- scrollUntilVisible:
-    element:
-      id: "vs-devices-section"
-- extendedWaitUntil:
-    notVisible:
-      id: "vs-devices-nokey"
-    timeout: 30000
+      - assertVisible:
+          id: "vs-speaker"
+          text: "Speaker, System.*"
+      - assertNotVisible:
+          id: "vs-mic-system"
+      - assertNotVisible:
+          id: "vs-devices-neither"
+      - assertNotVisible:
+          id: "vs-devices-note"
+# (listing the devices asked for no microphone permission, goal 4.8; and none was listed before a sheet was opened)
+- assertNotVisible: ".*Would Like to Access the Microphone.*"
+- assertNotVisible: "Allow .* to record audio\\?"
+- takeScreenshot: d13-01-card
 
-# ---- the choices the platform allows: a microphone picker, and the speaker follows the system (no control that does nothing)
-# (first the choice an earlier run may have left: System default)
+# ---- the Microphone sheet lists System default and the system's input; it holds the test, and the note of a shared headset only where the platform has one
+- tapOn:
+    id: "vs-mic"
 - extendedWaitUntil:
     visible:
-      id: "vs-mic"
+      id: "vs-device-sheet-mic"
     timeout: 30000
+- assertVisible:
+    id: "picker-row"
+    text: "System default \\(.+\\)"
+- assertVisible:
+    id: "picker-row"
+    index: 1
+- assertVisible:
+    id: "vs-mic-test"
+- assertNotVisible: ".*Would Like to Access the Microphone.*"
+- assertNotVisible: "Allow .* to record audio\\?"
+- takeScreenshot: d13-02-menu
 - tapOn:
-    id: "vs-mic"
+    id: "picker-row"
+    index: 1
 - tapOn:
-    id: "menu-item"
-    text: "System default.*"
+    id: "sheet-right"
+- extendedWaitUntil:
+    notVisible:
+      id: "vs-device-sheet-mic"
+    timeout: 30000
 - assertVisible:
     id: "vs-mic"
-    text: "Microphone: System default.*"
+    text: "Microphone, (?!System default).+"
+- assertNotVisible: ".*not connected.*"
+- takeScreenshot: d13-03-picked
+
+# ---- the Speaker sheet: on iOS the line that the system decides, on Android 12+ (the emulator's API 36) System default and the phone's speaker, and the note that
+# a headset is used for both; Test speaker is in it either way: the chime plays through the native player to its end (the dev line is read once the sheet is closed)
+- scrollUntilVisible:
+    element:
+      id: "vs-speaker"
+- tapOn:
+    id: "vs-speaker"
+- extendedWaitUntil:
+    visible:
+      id: "vs-device-sheet-speaker"
+    timeout: 30000
 - runFlow:
     when:
       platform: iOS
@@ -142,104 +155,51 @@ appId: ${APP_ID}
           id: "vs-speaker-system"
           text: "Follows the system: headphones or a headset when connected, otherwise the speaker."
       - assertNotVisible:
-          id: "vs-speaker"
-      - assertNotVisible:
-          id: "vs-mic-system"
-      - assertNotVisible:
-          id: "vs-devices-neither"
-      - assertNotVisible:
           id: "vs-devices-note"
-# (Android 12+ -- the emulator's API 36 -- lets the app choose both: the Speaker is a picker too, with the note that a headset is used for both;
-# first the choice an earlier run may have left: System default)
+# (Android: first the choice an earlier run may have left, System default; then the listing, and the speaker is picked too)
 - runFlow:
     when:
       platform: Android
     commands:
-      - scrollUntilVisible:
-          element:
-            id: "vs-speaker"
       - tapOn:
-          id: "vs-speaker"
-      - tapOn:
-          id: "menu-item"
+          id: "picker-row"
           text: "System default.*"
-      - assertVisible:
-          id: "vs-speaker"
-          text: "Speaker: System default.*"
       - assertNotVisible:
           id: "vs-speaker-system"
-      - assertNotVisible:
-          id: "vs-mic-system"
-      - assertNotVisible:
-          id: "vs-devices-neither"
       - assertVisible:
           id: "vs-devices-note"
           text: "A headset is used for both listening and speaking while you talk to a chat."
-- assertVisible:
-    id: "vs-mic-test"
-- assertVisible:
-    id: "vs-speaker-test"
-# (listing the devices asked for no microphone permission, goal 4.8)
-- assertNotVisible: ".*Would Like to Access the Microphone.*"
-- assertNotVisible: "Allow .* to record audio\\?"
-- takeScreenshot: d13-01-card
-
-# ---- the picker lists System default and the system's input
-- tapOn:
-    id: "vs-mic"
-- assertVisible:
-    id: "menu-item"
-    text: "System default \\(.+\\)"
-- assertVisible:
-    id: "menu-item"
-    index: 1
-- takeScreenshot: d13-02-menu
-- tapOn:
-    id: "menu-item"
-    index: 1
-- assertVisible:
-    id: "vs-mic"
-    text: "Microphone: (?!System default).+"
-- assertNotVisible: ".*not connected.*"
-- takeScreenshot: d13-03-picked
-
-# ---- Android 12+: the Speaker picker lists System default and the phone's speaker; the speaker is picked too
-- runFlow:
-    when:
-      platform: Android
-    commands:
-      - scrollUntilVisible:
-          element:
-            id: "vs-speaker"
-      - tapOn:
-          id: "vs-speaker"
       - assertVisible:
-          id: "menu-item"
+          id: "picker-row"
           text: "System default \\(.+\\)"
       - assertVisible:
-          id: "menu-item"
+          id: "picker-row"
           index: 1
       - takeScreenshot: d13-03a-speaker-menu
       - tapOn:
-          id: "menu-item"
+          id: "picker-row"
           index: 1
-      - assertVisible:
-          id: "vs-speaker"
-          text: "Speaker: (?!System default).+"
-      - assertNotVisible: ".*not connected.*"
       - takeScreenshot: d13-03b-speaker-picked
-
-# ---- Test speaker: the chime plays through the native player to its end (the line is under the sheet: read it after Close)
+- assertVisible:
+    id: "vs-speaker-test"
 - tapOn:
     id: "vs-speaker-test"
 - waitForAnimationToEnd:
     timeout: 4000
 - tapOn:
-    id: "vs-close"
+    id: "sheet-right"
 - extendedWaitUntil:
     notVisible:
-      id: "vs-page"
+      id: "vs-device-sheet-speaker"
     timeout: 30000
+- runFlow:
+    when:
+      platform: Android
+    commands:
+      - assertVisible:
+          id: "vs-speaker"
+          text: "Speaker, (?!System default).+"
+      - assertNotVisible: ".*not connected.*"
 - extendedWaitUntil:
     visible:
       id: "voice-dev-devices"
@@ -254,19 +214,14 @@ appId: ${APP_ID}
       METHOD: POST
       ROUTE: /voice/relaunch
 - runFlow: _open-app.yaml
-- tapOn:
-    id: "settings-btn"
-- extendedWaitUntil:
-    visible:
-      id: "vs-page"
-    timeout: 30000
+- runFlow: _voice-open.yaml
 - scrollUntilVisible:
     element:
-      id: "vs-devices-section"
+      id: "vs-mic"
 - extendedWaitUntil:
     visible:
       id: "vs-mic"
-      text: "Microphone: (?!System default).+"
+      text: "Microphone, (?!System default).+"
     timeout: 30000
 - assertNotVisible: ".*not connected.*"
 - runFlow:
@@ -279,24 +234,19 @@ appId: ${APP_ID}
       - extendedWaitUntil:
           visible:
             id: "vs-speaker"
-            text: "Speaker: (?!System default).+"
+            text: "Speaker, (?!System default).+"
           timeout: 30000
       - assertNotVisible: ".*not connected.*"
 - takeScreenshot: d13-05-kept
 
-# ---- the key is already saved (Dictate needs it); close Settings, no microphone yet
-- tapOn:
-    id: "vs-close"
-- extendedWaitUntil:
-    notVisible:
-      id: "vs-page"
-    timeout: 30000
+# ---- the key is already saved (Dictate needs it); back to the sidebar, no microphone yet
+- runFlow: _voice-back.yaml
 
 # ---- PART 2: NEEDS A REAL MICROPHONE (the saved built-in input is opened by Dictate; the dev line says its kind)
 - extendedWaitUntil:
-    visible: "Voice-chat"
+    visible: "Voice-chat.*"
     timeout: 90000
-- tapOn: "Voice-chat"
+- tapOn: "Voice-chat.*"
 - extendedWaitUntil:
     visible:
       id: "composer-input"
@@ -352,25 +302,18 @@ appId: ${APP_ID}
       text: "voice-dev: phase=idle .*"
     timeout: 30000
 
-# ---- PART 2: Test microphone shows the level of the chosen input
+# ---- PART 2: Test microphone shows the level of the chosen input (in the Microphone sheet)
 - runFlow: _to-sidebar.yaml
-- tapOn:
-    id: "settings-btn"
-- extendedWaitUntil:
-    visible:
-      id: "vs-page"
-    timeout: 30000
+- runFlow: _voice-open.yaml
 - scrollUntilVisible:
     element:
-      id: "vs-devices-section"
-# (Android's card is taller -- the note, the Speaker picker -- so the Test microphone button is below the screen's fold where the card's title is at its top)
-- runFlow:
-    when:
-      platform: Android
-    commands:
-      - scrollUntilVisible:
-          element:
-            id: "vs-mic-test"
+      id: "vs-mic"
+- tapOn:
+    id: "vs-mic"
+- extendedWaitUntil:
+    visible:
+      id: "vs-device-sheet-mic"
+    timeout: 30000
 - tapOn:
     id: "vs-mic-test"
 - extendedWaitUntil:
@@ -384,46 +327,32 @@ appId: ${APP_ID}
     notVisible:
       id: "vs-mic-level"
     timeout: 30000
+- tapOn:
+    id: "sheet-right"
+- extendedWaitUntil:
+    notVisible:
+      id: "vs-device-sheet-mic"
+    timeout: 30000
 
 # ---- the device is left as it was found: System default, no key
-- tapOn:
-    id: "vs-mic"
-- tapOn:
-    id: "menu-item"
-    text: "System default.*"
-- assertVisible:
-    id: "vs-mic"
-    text: "Microphone: System default.*"
+- runFlow:
+    file: _voice-device-default.yaml
+    env:
+      CELL: "vs-mic"
+      SHEET: "vs-device-sheet-mic"
+      WORD: "Microphone"
 - runFlow:
     when:
       platform: Android
     commands:
-      - scrollUntilVisible:
-          element:
-            id: "vs-speaker"
-      - tapOn:
-          id: "vs-speaker"
-      - tapOn:
-          id: "menu-item"
-          text: "System default.*"
-      - assertVisible:
-          id: "vs-speaker"
-          text: "Speaker: System default.*"
-- scrollUntilVisible:
-    element:
-      id: "vs-key-remove"
-    direction: UP
-- tapOn:
-    id: "vs-key-remove"
-- tapOn:
-    text: "Remove key"
-- extendedWaitUntil:
-    visible: "Key removed from this device."
-    timeout: 30000
-# (no key again: the card is back to its one line)
-- scrollUntilVisible:
-    element:
-      id: "vs-devices-nokey"
+      - runFlow:
+          file: _voice-device-default.yaml
+          env:
+            CELL: "vs-speaker"
+            SHEET: "vs-device-sheet-speaker"
+            WORD: "Speaker"
+- runFlow: _voice-remove-key.yaml
+# (no key again: the screen is back to its card)
 - assertNotVisible:
     id: "vs-mic"
 - takeScreenshot: d13-09-restored

@@ -7,6 +7,7 @@ import Svg, { Circle, Path, Rect } from "react-native-svg";
 import type { AgentKind } from "@aiwb/core/types.ts";
 import { agentMeta, type GlyphKind } from "@aiwb/core/agents.ts";
 import { useTokens } from "./theme.tsx";
+import { usePhone } from "./useLayout.ts";
 
 // The app draws each agent through the metadata module, so a new kind (pi) and an unknown one
 // both render without touching this file's callers.
@@ -190,3 +191,13 @@ export const SendUpIcon = ({ size = 12, color }: IconProps) => (
 export const CollapseIcon = ({ size = 13, color }: IconProps) => (
   <Icon size={size} color={color} width={1.5} {...round}><Path d="M6 2.5V6H2.5M10 2.5V6h3.5M6 13.5V10H2.5M10 13.5V10h3.5" /></Icon>
 );
+
+/** The disclosure chevron at the right of a cell that pushes a screen: about 6 × 11 in a 13 × 13 box. It says a row opens a screen, a graphic
+ *  the row needs (3:1, goal 4.3), and `faint` is 2.59:1 on the light theme's white: on the phone a chevron asked for in `faint` is drawn in
+ *  `muted` (4.86:1 or more on the background and the panel of every theme and flavour). The wide layouts keep `faint` (goal 4.2). */
+export const DisclosureChevron = ({ size = 13, color }: IconProps) => {
+  const t = useTokens(), phone = usePhone();
+  return (
+    <Icon size={size} color={phone && color === t.faint ? t.muted : color} box={13} width={1.8} {...round}><Path d="M3 1.5 8.5 6.5 3 11.5" /></Icon>
+  );
+};

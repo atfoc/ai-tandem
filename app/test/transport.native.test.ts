@@ -6,7 +6,7 @@ import { createClient, type Client } from "@aiwb/conn";
 import type { Envelope } from "@aiwb/core/transport/types.ts";
 
 import { createFakeAiwbNet } from "../modules/aiwb-net/src/fake.ts";
-import { pickImagesWith, type ImagePickerPort } from "../src/platform/imagepickcore.ts";
+import { pickImagesWith, takePhotoWith, type CameraPort, type ImagePickerPort } from "../src/platform/imagepickcore.ts";
 import { nativeConnector } from "../src/platform/net/nativeConnector.ts";
 import { createNativeTransport, type AppStatePort } from "../src/platform/nativetransport.ts";
 import { PICTURES_FOLDER, createPictureCache, type FsModule } from "../src/platform/picturecache.ts";
@@ -453,6 +453,46 @@ test("pickImages: a cancelled picker, a file that cannot be read and more than a
   const q = picker([asset("gone.png", PNG)]);
   q.disk.files.clear();
   assert.deepEqual((await pickImagesWith(q.port, q.disk.fs as never)).skipped, [{ name: "gone.png", reason: "read" }]);
+});
+
+// ---- the camera (Take photo)
+
+function camera(assets: ReturnType<typeof asset>[], o: { granted?: boolean; canceled?: boolean } = {}) {
+  const disk = fakeFs();
+  for (const a of assets) disk.files.set(a.uri, a.bytes);
+  const calls: unknown[] = [];
+  const port: CameraPort = {
+    requestCameraPermissionsAsync: async () => { calls.push("permission"); return { granted: o.granted ?? true }; },
+    launchCameraAsync: async (opts) => { calls.push(opts); return o.canceled ? { canceled: true } : { canceled: false, assets: assets.map((a) => ({ uri: a.uri, fileName: a.fileName, ...("fileSize" in a ? { fileSize: a.fileSize as number } : {}) })) }; },
+  };
+  return { port, disk, calls };
+}
+
+test("takePhoto: asks for the camera first, opens it for one image, and answers a JPEG with its type taken from the bytes", async () => {
+  const p = camera([asset("IMG_1.jpg", Uint8Array.from([0xff, 0xd8, 0xff, 1, 2]))]);
+  const r = await takePhotoWith(p.port, p.disk.fs as never);
+  assert.deepEqual(p.calls, ["permission", { mediaTypes: ["images"], allowsEditing: false, quality: 1, preferredAssetRepresentationMode: "compatible" }]);
+  assert.deepEqual(r.skipped, []);
+  assert.deepEqual(r.files.map((f) => [f.name, f.type, f.data.length, f.uri]), [["IMG_1.jpg", "image/jpeg", 5, "file:///picked/IMG_1.jpg"]]);
+});
+
+test("takePhoto: a cancelled camera adds nothing", async () => {
+  const p = camera([], { canceled: true });
+  assert.deepEqual(await takePhotoWith(p.port, p.disk.fs as never), { files: [], skipped: [] });
+});
+
+test("takePhoto: a refused permission is an Error that says how to allow the camera, and the camera is not opened", async () => {
+  const p = camera([asset("IMG_1.jpg", Uint8Array.from([0xff, 0xd8, 0xff]))], { granted: false });
+  await assert.rejects(takePhotoWith(p.port, p.disk.fs as never), /Allow it in Settings/);
+  assert.deepEqual(p.calls, ["permission"]);
+});
+
+test("takePhoto: a HEIC is refused by its type, a file over 5 MB by its size", async () => {
+  const heic = Uint8Array.from([0, 0, 0, 0x18, 0x66, 0x74, 0x79, 0x70, 0x68, 0x65, 0x69, 0x63]);
+  const a = camera([asset("IMG_2.heic", heic)]);
+  assert.deepEqual(await takePhotoWith(a.port, a.disk.fs as never), { files: [], skipped: [{ name: "IMG_2.heic", reason: "type" }] });
+  const b = camera([asset("big.jpg", Uint8Array.from([0xff, 0xd8, 0xff]), { fileSize: 6 * 1024 * 1024 })]);
+  assert.deepEqual(await takePhotoWith(b.port, b.disk.fs as never), { files: [], skipped: [{ name: "big.jpg", reason: "size" }] });
 });
 
 test("native transport: pickImages is the one the device gives", async () => {

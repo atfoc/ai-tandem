@@ -1,35 +1,40 @@
-// The phone's back (AD-71): a chevron turned to the left (`nav-back`). It sets the store with the screen on top gone, never the stack itself.
-// It stands in the bar of a screen of the stack: the board's bar, the chat's own header (S8: one bar for a chat, with its title and
-// controls), the drawer's bar.
-import { StyleSheet, View } from "react-native";
+// The phone's back (AD-71): the BackControl for the screen of its route (`nav-back`). It goes back to the screen under it (goback.ts) and
+// never sets the stack itself. It stands in the bar of a screen of the stack: the board's bar, the chat's own header (S8: one bar for a
+// chat, with its title and controls), the drawer's bar. Holding it opens the stack sheet.
+import { useRef, useState } from "react";
 
-import { getState, setState } from "@aiwb/core/state/store.ts";
+import { haptic } from "../../platform/haptics";
+import { BackControl } from "../../ui/BackControl.tsx";
+import { goBack, popTo } from "./goback.ts";
+import { entryIndex, navBackOf, type NavBackPlan } from "./navback.ts";
+import { useEntryKey } from "./phone/entry.ts";
+import { StackSheet } from "./StackSheet.tsx";
+import { useStack } from "./useShellView.ts";
 
-import { IconButton } from "../../ui/IconButton.tsx";
-import { Chevron } from "../../ui/icons.tsx";
-import { tid } from "../../ui/tid.ts";
-import { awayNow, pickPoint } from "../board/refs.ts";
-import { select } from "./nav.ts";
-import { backFrom, stackOf } from "./stack.ts";
+export { goBack };
 
-/** A back from the screen on top: the store with that screen gone (the drawer closed). While the phone waits for a point on the board, the
- *  board is the screen on top and its back ends the wait, with the chat opened again and nothing added to it (board/refs.ts). */
-export function goBack(): void {
-  if (awayNow()) return pickPoint(null);
-  const r = backFrom(stackOf(getState()), getState().sel);
-  if (!r) return;
-  if ("closeDrawer" in r) setState({ subDrawer: null }); else select(r.sel);
-}
-
-/** The control that goes back (`nav-back`): a chevron turned to the left, in the bar of the screen. */
-export function BackButton() {
+/** The control that goes back (`nav-back`) from the screen of its route, or from the top one outside a route. Nothing on the bottom screen.
+ *  On a place screen it names the screen under it; a press goes back there, a hold lists every screen under this one. */
+export function NavBack() {
+  const entries = useStack();
+  const key = useEntryKey();
+  const [sheet, setSheet] = useState(false);
+  // A route whose entry the stack no longer holds is leaving: it keeps the back it had, not the top's.
+  const live = key === null || entries.some((e) => e.key === key);
+  const last = useRef<NavBackPlan | null>(null);
+  if (live) last.current = navBackOf(entries, key);
+  const plan = last.current;
+  const own = entries[entryIndex(entries, key)];
+  if (!plan || !own) return null;
+  const press = plan.press;
   return (
-    <IconButton {...tid("nav-back")} title="Back" onPress={goBack}>
-      {(color) => <View style={styles.back}><Chevron size={12} color={color} /></View>}
-    </IconButton>
+    <>
+      <BackControl label={plan.label} onPress={() => (press.kind === "back" ? goBack() : popTo(press.key))}
+        onHold={live ? () => { haptic("select"); setSheet(true); } : undefined} />
+      {sheet && live ? <StackSheet open onClose={() => setSheet(false)} entries={entries} own={own} /> : null}
+    </>
   );
 }
 
-const styles = StyleSheet.create({
-  back: { transform: [{ rotate: "180deg" }] },
-});
+/** The back control under its old name, which the routes and the bars import. */
+export const BackButton = NavBack;

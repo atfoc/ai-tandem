@@ -7,15 +7,18 @@
 // requests (`req`: apply, delete, restore, export, snapshot) with apply.ts on the live canvas, or with engine.ts on elements it is handed,
 // and draws a PNG on request. The reply of a request that changes the live scene comes after the `changed` it causes.
 import { createElement, type ReactElement } from "react";
-import { CaptureUpdateAction, FONT_FAMILY } from "@excalidraw/excalidraw";
-import type {
-  ApplyValue, CurrentItemStyle, El, EngineOp, ExportValue, FromBoard, SavedAppState, SnapshotValue, ThemeMsg, ToBoard,
+import { CaptureUpdateAction, FONT_FAMILY, getCommonBounds } from "@excalidraw/excalidraw";
+import {
+  BAND_HEIGHT,
+  type ApplyValue, type CurrentItemStyle, type El, type EngineOp, type ExportValue, type FromBoard, type OpenView, type PhoneChromeMsg, type SavedAppState,
+  type SnapshotValue, type ThemeMsg, type ToBoard,
 } from "@aiwb/board-bridge/messages.ts";
 import { createBaseline, filesAdded } from "@aiwb/board-bridge/delta.ts";
 import { RpcError } from "./apply.ts";
-import { Board, type BoardCanvas, type BoardHooks, type BoardState, type BoardStore } from "./Board.tsx";
+import { Board, type BoardCanvas, type BoardHooks, type BoardState, type BoardStore, type MenuItem } from "./Board.tsx";
 import { answer, applyOn, deleteOn, engineOps, type GivenOp } from "./engine.ts";
 import { exportPicture } from "./export.ts";
+import { fitView, MENU_FIT } from "./phonechrome.ts";
 import { themeCss } from "./theme.ts";
 
 /** The drawing style of a new board until the app says otherwise (section 6): the clean, technical look. */
@@ -82,7 +85,7 @@ export function createEndpoint(post: (m: FromBoard) => void, options: EndpointOp
   const warn = options.warn ?? ((t: string) => console.warn(t));
 
   // ---- what the component renders
-  let state: BoardState = { shown: null, viewMode: true, theme: { mode: "light", filter: null } };
+  let state: BoardState = { shown: null, viewMode: true, theme: { mode: "light", filter: null }, phone: null, topInset: 0 };
   const listeners = new Set<() => void>();
   const set = (patch: Partial<BoardState>) => { state = { ...state, ...patch }; for (const l of [...listeners]) l(); };
   const store: BoardStore = { subscribe: (l) => { listeners.add(l); return () => { listeners.delete(l); }; }, get: () => state };
@@ -98,6 +101,8 @@ export function createEndpoint(post: (m: FromBoard) => void, options: EndpointOp
   let selectionKey = "", selected: unknown = null;
   let lastView = "";
   let starting = 0;                       // the gen that has not drawn yet
+  let opening: OpenView | undefined;      // how the board of `starting` opens, once it has drawn (`load`'s `open`)
+  let fitLater: OpenView | undefined;     // a fit asked while the view had no size (the phone's board under its chat): done once it has one
 
   /** The scene is not what the app last heard: an element, the order of the ids, or a file. */
   const differs = (l: NonNullable<typeof latest>) =>
@@ -138,6 +143,7 @@ export function createEndpoint(post: (m: FromBoard) => void, options: EndpointOp
     const shown = state.shown;
     if (g !== gen || !shown) return;
     latest = { elements, appState, files };
+    if (fitLater && appState.width > 0 && appState.height > 0) { const f = fitLater; fitLater = undefined; openView(f); } // (the update tells change the new view)
     const view = `${appState.scrollX},${appState.scrollY},${appState.zoom?.value},${appState.width},${appState.height}`;
     if (view !== lastView) {
       lastView = view;
@@ -152,14 +158,43 @@ export function createEndpoint(post: (m: FromBoard) => void, options: EndpointOp
       if (key !== selectionKey) { selectionKey = key; post({ t: "selection", board: shown.board, ids }); }
     }
     if (!timer && differs(latest)) timer = setTimeout(sendChanged, CHANGED_EVERY);
-    if (starting === g) { starting = 0; void drawn(g, shown.board); }
+    if (starting === g) { starting = 0; void drawn(g, shown.board, opening); opening = undefined; }
   }
 
-  /** The board has drawn once: after the fonts are ready and a frame, the app is told. */
-  async function drawn(g: number, board: string) {
+  /** The board has drawn once: after the fonts are ready and a frame, it takes the view it opens with (and has a frame to show
+   *  it), then the app is told. */
+  async function drawn(g: number, board: string, open?: OpenView) {
     try { await document.fonts?.ready; } catch { /* no font API: the first draw is not waited for */ }
     await nextFrame();
+    if (open && g === gen && openView(open)) await nextFrame();
     if (g === gen) post({ t: "loaded", board });
+  }
+
+  /** The bottom of Excalidraw's own toolbar at the top of the view (px from the top of the view), 0 when there is none (view mode). */
+  function toolbarBottom(): number {
+    if (state.viewMode) return 0;
+    const bar = document.querySelector(".aiwb-board .App-toolbar-container")?.getBoundingClientRect();
+    return bar ? Math.max(bar.bottom - (api.getAppState().offsetTop ?? 0), 0) : 0;
+  }
+
+  /** Puts the board into the view `open` says: the given scroll and zoom, or `fit`: the elements' bounds in the visible rect (the view
+   *  less the band at the bottom when the phone's chrome is set and, in edit mode, the toolbar at the top), `fit` px free on each
+   *  side, no animation. An empty board is left as it is. Says whether the view changed. */
+  function openView(open: OpenView): boolean {
+    if (!api) return false;
+    let view: { scrollX: number; scrollY: number; zoom: number };
+    if ("fit" in open) {
+      const alive = (api.getSceneElements() as readonly any[]).filter((e) => !e.isDeleted);
+      if (!alive.length) return false;
+      const [x1, y1, x2, y2] = getCommonBounds(alive as never);
+      const a = api.getAppState();
+      // (a view with no size, the board's screen mounted hidden under its chat, would fit into nothing: zoom 0.1; it fits when it is shown)
+      if (!(a.width > 0) || !(a.height > 0)) { fitLater = open; return false; }
+      fitLater = undefined;
+      view = fitView({ x: x1, y: y1, width: x2 - x1, height: y2 - y1 }, { width: a.width, height: a.height }, toolbarBottom(), state.phone ? BAND_HEIGHT : 0, open.fit);
+    } else view = open;
+    api.updateScene({ appState: { scrollX: view.scrollX, scrollY: view.scrollY, zoom: { value: view.zoom } }, captureUpdate: CaptureUpdateAction.NEVER });
+    return true;
   }
 
   const hooks: BoardHooks = {
@@ -167,6 +202,7 @@ export function createEndpoint(post: (m: FromBoard) => void, options: EndpointOp
     unmounted: () => { sendChanged(); },
     api: (g, a) => { if (g === gen) api = a ?? null; },
     change,
+    menu,
     failed: (message) => { starting = 0; post({ t: "error", message }); },
   };
 
@@ -197,14 +233,15 @@ export function createEndpoint(post: (m: FromBoard) => void, options: EndpointOp
     });
     api.history?.clear?.();
     capture();
-    void drawn(gen, m.board);
+    void drawn(gen, m.board, m.open);
   }
 
-  function load(m: Extract<ToBoard, { t: "load" }>) {
-    if (api && state.shown?.board === m.board) return loadInPlace(m);
+  /** `fresh`: a new Excalidraw even for the board that is shown (`also` is put into the store with it). */
+  function load(m: Extract<ToBoard, { t: "load" }>, fresh?: { also: Partial<BoardState> }) {
+    if (api && state.shown?.board === m.board && !fresh) return loadInPlace(m);
     sendChanged(); // what the board shown so far has not told yet goes first
     const g = ++gen;
-    api = null; latest = null; selectionKey = ""; selected = null; lastView = ""; starting = g;
+    api = null; latest = null; selectionKey = ""; selected = null; lastView = ""; starting = g; opening = m.open; fitLater = undefined;
     const { elements, files, appState } = m.scene;
     told(elements, files);
     const initialData = {
@@ -215,13 +252,26 @@ export function createEndpoint(post: (m: FromBoard) => void, options: EndpointOp
         ...CLEAN, ...m.style,
       },
     };
-    set({ shown: { gen: g, board: m.board, initialData }, viewMode: m.viewMode, theme: m.theme });
+    set({ shown: { gen: g, board: m.board, initialData }, viewMode: m.viewMode, theme: m.theme, ...fresh?.also });
     setTimeout(() => { if (starting === g) { starting = 0; post({ t: "error", message: "the board did not start" }); } }, START_LIMIT);
+  }
+
+  /** The phone's chrome comes or goes. Excalidraw takes the menu it is given at its start: it cannot take its own back when ours goes
+   *  (the menu stays gone) and shows both when ours comes while it has its own. So a board that is shown is shown again, from its live
+   *  scene, in the same view (the selection and the undo steps are not kept); a chrome that only changes (title, inset, colours) is
+   *  just drawn. */
+  function setPhone(chrome: PhoneChromeMsg | null) {
+    if (!api || !state.shown || !!state.phone === !!chrome) return set({ phone: chrome });
+    const a = api.getAppState();
+    load({
+      t: "load", board: state.shown.board, viewMode: state.viewMode, theme: state.theme, style: styleOf(a),
+      scene: { elements: api.getSceneElementsIncludingDeleted(), files: api.getFiles(), appState: savedState(a) },
+    }, { also: { phone: chrome } });
   }
 
   function unload() {
     sendChanged();
-    ++gen; api = null; latest = null; selectionKey = ""; selected = null; lastView = ""; starting = 0;
+    ++gen; api = null; latest = null; selectionKey = ""; selected = null; lastView = ""; starting = 0; opening = undefined; fitLater = undefined;
     set({ shown: null });
   }
 
@@ -240,6 +290,17 @@ export function createEndpoint(post: (m: FromBoard) => void, options: EndpointOp
     if (!api) return;
     const els = liveElements(ids);
     if (els.length) api.scrollToContent(els, { animate, fitToViewport: false });
+  }
+
+  /** What a person pressed in the phone's menu (Board.tsx): Find and Export are Excalidraw's own (its search tab, its image export
+   *  dialog), Fit is the open view's fit, Share and Clear are the app's. */
+  function menu(item: MenuItem) {
+    const shown = state.shown;
+    if (!api || !shown) return;
+    if (item === "find") api.toggleSidebar({ name: "default", tab: "search", force: true });
+    else if (item === "export") api.updateScene({ appState: { openDialog: { name: "imageExport" } } });
+    else if (item === "fit") openView({ fit: MENU_FIT });
+    else post({ t: "menu", board: shown.board, item });
   }
 
   // ---- the requests
@@ -326,6 +387,8 @@ export function createEndpoint(post: (m: FromBoard) => void, options: EndpointOp
     receive(m) {
       switch (m.t) {
         case "load": return afterLive(() => load(m));
+        case "phone": return afterLive(() => setPhone(m.chrome));
+        case "topInset": return afterLive(() => set({ topInset: m.px }));
         case "unload": return afterLive(unload);
         case "viewMode": return afterLive(() => set({ viewMode: m.on }));
         case "theme": return afterLive(() => set({ theme: m.theme as ThemeMsg }));

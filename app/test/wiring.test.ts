@@ -71,7 +71,7 @@ test("each choice is drawn once, in the toolbar's row or in its popup, and the r
   // one node per control, placed by the fit: the row draws those that stay, the popup the rest 
   assert.ok(toolbar.includes("{f.toolbar.filter((id) => keys[id] && widths.get(keys[id]!) !== undefined).map((id) => <View key={id} style={styles.control} {...tid(\"tool\", { control: id })}>{chips[id]}</View>)}"));
   assert.ok(toolbar.includes('{f.popup.map((id) => <View key={id} {...tid("more-row", { control: id })}'));
-  assert.equal(count(toolbar, /chips\[id\]/g), 4, "the row, the popup, the measuring of a width not known yet, and the test for that");
+  assert.equal(count(toolbar, /chips\[id\]/g), 6, "the row, the popup, the measuring of a width not known yet, and the test for that; the phone's chip row: its test for a choice with no chip, and its drawing");
   // the line that says why a chat has no agent is not part of the agent's chip, which may be in the popup
   const pick = choices.slice(choices.indexOf("export function AgentPick("), choices.indexOf("export function useAgentChip("));
   assert.ok(pick.length > 0 && !pick.includes("agent-reason"));
@@ -125,8 +125,8 @@ test("the composer's Where is the chat's server, its name and whether it is conn
   assert.ok(!hooks.includes("serverOnBoard") && !composer.includes("serverOnBoard") && !chatView.includes("serverOnBoard"));
   assert.ok(composerTsx.includes("const where = useWhere(c);") && file("screens/chat/Header.tsx").includes("useWhere("));
   assert.ok(composerTsx.includes("usableAgents(s, where.server)") && choices.includes("usableAgents(s, w.server)"));
-  // model and effort come from that server's catalog
-  assert.equal(composer.split("catalogFor(s, serverOf(c), c.agent)").length, 3);
+  // model and effort come from that server's catalog (the composer, its toolbar, the phone's chip row and the blocked state's Pick a model)
+  assert.equal(composer.split("catalogFor(s, serverOf(c), c.agent)").length, 5);
   assert.ok(!composer.includes("catalogFor(s, LOCAL_SERVER"));
 });
 
@@ -219,7 +219,7 @@ test("offWhy: why a chat takes no call, which every control of its view that is 
   // the controls read it through one hook, by the chat's key: a message's actions, the header's way to another branch,
   // Back, the tree popup, a permission request, a subagent's thread
   assert.ok(hooks.includes("export function useOffWhy(chat: string): string {") && hooks.includes("return offWhy(w, gone);"));
-  for (const f of ["screens/fork/Message.tsx", "screens/fork/Chrome.tsx", "screens/fork/TreePopup.tsx", "screens/tools/PermCard.tsx"]) assert.ok(file(f).includes("useOffWhy("), f);
+  for (const f of ["screens/fork/Message.tsx", "screens/fork/Chrome.tsx", "screens/fork/useTreeNav.ts", "screens/tools/PermCard.tsx"]) assert.ok(file(f).includes("useOffWhy("), f);
   assert.ok(dir("screens/subagents").includes("useOffWhy(") || dir("screens/subagents").includes("offWhy"), "a subagent's thread");
 });
 
@@ -289,7 +289,7 @@ test("a server that is not connected, or that no longer has the chat: paste of a
   assert.ok(composerTsx.includes("const noAdd = left ? { line: goneText(where.name), title: goneText(where.name) } : imagesOff({ server: where.name, connected: where.connected, model: noImages });"));
   // the composer asks before it uploads: the button is disabled with the tooltip, and a file that came by a paste goes to the check with the reason,
   // which refuses it there (uploads.ts addImages: no upload is started, and the error line names the file)
-  assert.ok(composerTsx.includes("<parts.AttachButton off={noAdd?.title ?? \"\"} onPress={attach} />"));
+  assert.ok(composerTsx.includes("<parts.AttachButton off={noAdd?.title ?? \"\"} onPress={() => attach()} />"));
   assert.ok(composerTsx.includes("addImages(chatId, branch, files, { has: held().images, off: noAdd?.line, skipped });"));
   // the strip is drawn from what the composer holds, whatever the server's state; while the composer is read-only no image leaves the draft. An
   // image that cannot be fetched is the plain tile (ImageThumb), and is fetched again when the server is back
@@ -335,7 +335,7 @@ test("a chat's composer takes pasted images and has the attach button", () => {
   // and both are off for the same reason, which the button's tooltip and the refusal of a pasted file say (imagesOff)
   assert.ok(composerTsx.includes("const noAdd = left ? { line: goneText(where.name), title: goneText(where.name) } : imagesOff({ server: where.name, connected: where.connected, model: noImages });"));
   assert.ok(!composer.includes("unmoved") && !core("logic/chatimage.ts").includes("unmoved"));
-  assert.ok(composerTsx.includes("<parts.AttachButton off={noAdd?.title ?? \"\"} onPress={attach} />"));
+  assert.ok(composerTsx.includes("<parts.AttachButton off={noAdd?.title ?? \"\"} onPress={() => attach()} />"));
   assert.ok(strip.includes("Add images") && /disabled=\{!!off\}/.test(strip));
   // the box asks the paste rule only where images are taken, and a paste of images is consumed
   assert.ok(box.includes("onImages") && /preventDefault\(\)/.test(box));
@@ -578,7 +578,8 @@ test("the chat's header takes its status from headStatus, and draws no separator
 
 test("boardDeleteBody: the question before a board is deleted; a section's is removed on its server, for everyone who uses it", () => {
   assert.ok(sidebarActions.includes("body: boardDeleteBody(busy.length > 0, there(b.id)),"));
-  assert.ok(sidebarActions.includes('actions: [{ label: "Delete", tone: "danger", run: async () => { await stopAll(busy); await boardApp.flush(b.id); await api.deleteBoard(b.id); } }],'));
+  assert.ok(sidebarActions.includes('actions: [{ label: "Delete", tone: "danger", run: () => deleteBoardNow(b) }],'));
+  assert.ok(sidebarActions.includes("await stopAll(busyChats(b.id));\n  await boardApp.flush(b.id);\n  await api.deleteBoard(b.id);"), "the delete itself, shared with the phone's P4");
 });
 
 test("the sidebar's board row: the menu by the board's key, the targets from the groups of the board's own server, and no server after the name", () => {
@@ -652,9 +653,12 @@ test("the section's event with no tree is here first, as in an outage: the chat 
 // ---- the Servers dialog
 
 test("save and accept put their answer into the store through `answered` alone", () => {
-  const text = dir("screens/servers");
+  const text = ["screens/servers", "screens/servers/AddFlow", "screens/servers/cert", "screens/servers/facts"].map(dir).join("\n");
   assert.equal(text.includes("upsertServer"), false);
-  assert.equal((text.match(/answered\(a\?\.server\)/g) ?? []).length, 2);
+  // the wide dialog's form and its row's accept; the phone's edit form, certificate screen and add flow (package S2)
+  const places = ["ServerForm.tsx", "ServerRow.tsx", "ServerEdit.tsx", "CertChanged.tsx", "AddFlow/Form.tsx"];
+  assert.equal((text.match(/answered\(a\?\.server\)/g) ?? []).length, places.length);
+  for (const f of places) assert.equal((file(`screens/servers/${f}`).match(/answered\(a\?\.server\)/g) ?? []).length, 1, f);
 });
 
 test("Servers.tsx renders no HTML of its own making and no markdown", () => {

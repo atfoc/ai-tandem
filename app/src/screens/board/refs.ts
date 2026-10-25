@@ -7,9 +7,13 @@
 // and its hint show there, and a tap, Cancel, Esc and the stack's back all end the wait (`pickPoint(null)`) and open the chat again. The
 // composer goes away and comes back on that way, so a reference made while the chat's box is not there is held (`held`) and put into
 // the box when it is there again, at the caret it had when the wait began.
+//
+// The phone's Add selection (ux-improvements B2, plans/ux-improvements/b2-design.md §3) is the same wait with `pickFor: "select"`: the board
+// keeps its role's mode, the person selects with Excalidraw's own tools, and the bar's Add (n) (`finishSelect`) puts the selection into the box.
+// Every way a wait ends (a back, Esc, ⌘⇧L, the composer gone) ends either.
 import type { Ref } from "@aiwb/core/logic/refs.ts";
 import type { Sel } from "@aiwb/core/logic/sel.ts";
-import { getState, setState } from "@aiwb/core/state/store.ts";
+import { getState, setState, type State } from "@aiwb/core/state/store.ts";
 
 import { boardApp } from "../shell/boardside.ts";
 
@@ -76,16 +80,48 @@ export function startPick(chat: string, away_: boolean): void {
   const s = getState();
   if (s.picking === chat) return pickPoint(null);
   const board = s.chats[chat]?.board;
-  setState({ picking: chat });
+  setState({ picking: chat, pickFor: "point" });
   if (!away_ || !board) return;
   away = { chat, board, caret: inserters.get(chat)?.caret?.() ?? null };
   go({ board, chat: null });
 }
 
+/** The phone's Add selection: like `startPick(chat, true)`, for shapes selected on the board (the bar's Add (n) ends it: `finishSelect`).
+ *  When the chat is the one that waits, ends the wait. */
+export function startSelect(chat: string): void {
+  const s = getState();
+  if (s.picking === chat) return pickPoint(null);
+  const board = s.chats[chat]?.board;
+  if (!board) return;
+  const caret = inserters.get(chat)?.caret?.() ?? null;
+  setState({ picking: chat, pickFor: "select" });
+  away = { chat, board, caret };
+  go({ board, chat: null });
+}
+
+/** The bar's Add (n): what is selected on the chat's board goes into its box (or is held for it) at the caret the box had, and the wait
+ *  ends with the chat opened again. Nothing selected: nothing happens. */
+export function finishSelect(chat: string): void {
+  const s = getState();
+  const board = s.chats[chat]?.board;
+  if (s.picking !== chat || s.pickFor !== "select" || !board) return;
+  const r = boardApp.selectionRefOn(board);
+  if (!r) return;
+  const a = awayNow();
+  const at = a?.chat === chat ? a.caret : null;
+  if (!insertRef(chat, r, at)) holdRef(chat, r, at);
+  pickPoint(null);
+}
+
+/** What the chat that waits waits for: a point, shapes selected (the phone's Add selection), or nothing. */
+export function pickingFor(s: Pick<State, "picking" | "pickFor">): "point" | "select" | null {
+  return s.picking ? s.pickFor : null;
+}
+
 /** Waits for a point, or stops waiting (null). The phone's wait ends with the chat opened again. */
 export function pickPoint(chat: string | null): void {
   const a = awayNow();
-  setState({ picking: chat });
+  setState({ picking: chat, pickFor: "point" });
   if (chat || !a) return;
   away = null;
   go({ board: a.board, chat: a.chat });

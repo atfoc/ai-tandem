@@ -8,7 +8,7 @@ import type { View } from "react-native";
 import type { ChatView, Item } from "@aiwb/core/types.ts";
 
 import { useReading, voice } from "../../voice/index.ts";
-import { READ_ALOUD, READ_STOP } from "../../voice/words.ts";
+import { READ_ALOUD, READ_END } from "../../voice/words.ts";
 import type { ReadAloudAction } from "../chat/parts.tsx";
 import { ProblemPopover } from "./ProblemPopover.tsx";
 
@@ -29,7 +29,7 @@ export function useReadAloud(chat: ChatView, branch: string, index: number, item
     if (reading) voice.stopReading();
     else void voice.readAloud({ chat: chat.id, branch, index, text, anchor: id });
   };
-  return { reading, title: reading ? READ_STOP : READ_ALOUD, run, anchor, paused, resume: voice.resume };
+  return { reading, title: reading ? READ_END : READ_ALOUD, run, anchor, paused, resume: voice.resume };
 }
 
 /** The popover of a failed Read aloud (no key, a refusal, no network), hung from the message's control `target`. */

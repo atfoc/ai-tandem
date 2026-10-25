@@ -2,6 +2,9 @@
 // seven choices, picked in the menu, the page is reloaded and sampled from its first frame: in every frame, those
 // before the app has drawn among them, <html> has the choice's data-theme and data-flavour and the choice's
 // background. After the reload the picker's button names the choice, its menu marks it, and the saved value is the same.
+// On the phone, which has no such button, the choice is made in Settings > Appearance (`pickTheme` of settings.mjs: the Theme rows, the flavour
+// sheet) and the app has drawn when `app-root` is there; after the reload the saved value is the same, and Appearance marks the choice: the Theme
+// row for Light, Dark and System, for a flavour no Theme row, the flavour row naming it and the flavour sheet marking it (aria-checked).
 // System is reloaded under a light and under a dark OS, and a flavour under an OS of the other kind (Latte under a dark one,
 // Mocha under a light one): the OS does not show through.
 // The sampler's own proof: the same reload of a page whose theme script (public/theme-init.js, which sets data-theme and data-flavour
@@ -9,9 +12,10 @@
 // Ports dev/checks/A6.2-reload.mjs (S1) to the new build, at the three viewports (A-TH-04, A-TH-06, A-TH-08, A-TH-09). Deviations: the ground of the
 // window before the app draws is a style of the page's own (`theme-ground` in public/index.html, held to the tokens by test/export-web.test.ts),
 // there being no stylesheet whose arrival the old probe waited for, and the app has drawn when `app-root` is there; the page's script is a file
-// (`theme-init.js`) where it was inline, so the sampler's proof empties that file.
+// (`theme-init.js`) where it was inline, so the sampler's proof empties that file. The sampler's proof is the same at the three viewports.
 import { check, sampleFrames, until } from "../shot.mjs";
-import { byTid, press } from "./sel.mjs";
+import { press } from "./sel.mjs";
+import { openAppearance, pickTheme, readAppearance } from "./settings.mjs";
 
 export const viewports = ["desktop", "tablet", "phone"];
 
@@ -26,6 +30,7 @@ const CASES = [
   { pref: "macchiato", os: "light", theme: "dark", flavour: "macchiato", bg: "rgb(36, 39, 58)", title: "Theme: Catppuccin Macchiato" },
   { pref: "mocha", os: "light", theme: "dark", flavour: "mocha", bg: "rgb(30, 30, 46)", title: "Theme: Catppuccin Mocha" },
 ];
+const APP = '[data-testid="app-root"]';
 const BTN = '[data-testid="theme-btn"]', MENU = '[data-testid="theme-menu"]';
 
 /** For sampleFrames: the theme of the frame. css: the page's own style applies (before the head is parsed nothing of the page is drawn);
@@ -37,13 +42,14 @@ function themeProbe() {
   return { theme: d.dataset.theme ?? null, flavour: d.dataset.flavour ?? null, bg: cs.backgroundColor, css: !!document.getElementById("theme-ground"), app: !!document.querySelector('[data-testid="app-root"]') };
 }
 
-await check("A6.2 the chosen theme survives a reload, with no frame of another theme", async ({ url, open, fail, note }) => {
-  const wait = '[data-testid="side-tree"]';
+await check("A6.2 the chosen theme survives a reload, with no frame of another theme", async ({ url, layout, open, fail, note }) => {
+  const phone = layout === "phone";
+  const wait = phone ? APP : '[data-testid="side-tree"]';
   /** A reload, sampled from the page's first frame until the app has drawn and some frames more. */
   const reload = async (page) => {
     const sampler = await sampleFrames(page, themeProbe, { fromLoad: true });
     await page.reload({ waitUntil: "domcontentloaded" });
-    await page.waitForSelector(BTN, { timeout: 15000 });
+    await page.waitForSelector(phone ? APP : BTN, { timeout: 15000 });
     await page.waitForFunction(() => window.__frames?.values.filter((v) => v.app).length > 4, null, { timeout: 15000 });
     return sampler.stop();
   };
@@ -54,9 +60,12 @@ await check("A6.2 the chosen theme survives a reload, with no frame of another t
     const { ctx, page } = await open({ wait });
     try {
       await page.emulateMedia({ colorScheme: c.os });
-      await press(page, page.locator(BTN).first());
-      await press(page, page.locator(`${MENU} [data-theme-pref="${c.pref}"]`).first());
-      if (!await until(() => page.evaluate(() => !document.querySelector('[data-testid="theme-menu"]')), 10000)) fail(`${tag}: the pick did not close the menu`);
+      if (phone) await pickTheme(page, c.pref);
+      else {
+        await press(page, page.locator(BTN).first());
+        await press(page, page.locator(`${MENU} [data-theme-pref="${c.pref}"]`).first());
+        if (!await until(() => page.evaluate(() => !document.querySelector('[data-testid="theme-menu"]')), 10000)) fail(`${tag}: the pick did not close the menu`);
+      }
       const picked = await page.evaluate(themeProbe);
       if (wrong(c)(picked)) fail(`${tag}: picked, the page has data-theme "${picked.theme}", data-flavour ${JSON.stringify(picked.flavour)} and the background ${picked.bg}`);
 
@@ -64,13 +73,23 @@ await check("A6.2 the chosen theme survives a reload, with no frame of another t
       const bad = r.values.filter(wrong(c)), early = r.values.filter((v) => !v.app).length, styled = r.values.filter((v) => v.css).length;
       if (r.values.length < 5 || !styled) fail(`${tag}: the reload was sampled in ${r.values.length} frames, ${styled} of them with the page's style`);
       if (bad.length) fail(`${tag}: ${bad.length} of the ${r.values.length} frames of the reload had another theme, the ${r.values.indexOf(bad[0]) + 1}. first: data-theme "${bad[0].theme}", data-flavour ${JSON.stringify(bad[0].flavour)}, background ${bad[0].bg}`);
-      const after = await page.evaluate(() => ({ saved: localStorage.getItem("aiwb.theme"), title: document.querySelector('[data-testid="theme-btn"]')?.title }));
-      if (after.saved !== c.pref) fail(`${tag}: after the reload the kv key "aiwb.theme" is ${JSON.stringify(after.saved)}`);
-      if (after.title !== c.title) fail(`${tag}: after the reload the picker's button says "${after.title}", not "${c.title}"`);
-      await press(page, page.locator(BTN).first());
-      await page.waitForSelector(MENU, { timeout: 10000 });
-      const marked = await page.evaluate(() => [...document.querySelectorAll('[data-testid="theme-menu"] [aria-checked="true"]')].map((e) => e.dataset.themePref));
-      if (marked.join() !== c.pref) fail(`${tag}: after the reload the menu marks ${marked.join(", ") || "nothing"}`);
+      if (phone) {
+        const saved = await page.evaluate(() => localStorage.getItem("aiwb.theme"));
+        if (saved !== c.pref) fail(`${tag}: after the reload the kv key "aiwb.theme" is ${JSON.stringify(saved)}`);
+        await openAppearance(page);
+        const a = await readAppearance(page), onRow = c.flavour ? "" : c.pref;
+        if (a.checkedRows.join() !== onRow) fail(`${tag}: after the reload the Theme rows checked are [${a.checkedRows.join(", ")}], not [${onRow}]`);
+        if (a.flavour.attr !== (c.flavour ?? "off") || !a.flavour.text.includes(c.flavour ? c.title.replace("Theme: Catppuccin ", "") : "Off")) fail(`${tag}: after the reload the flavour row says ${JSON.stringify(a.flavour.text)} (${a.flavour.attr}), not ${c.flavour ?? "Off"}`);
+        if (a.marked.join() !== (c.flavour ?? "")) fail(`${tag}: after the reload the flavour sheet marks [${a.marked.join(", ")}], not [${c.flavour ?? ""}]`);
+      } else {
+        const after = await page.evaluate(() => ({ saved: localStorage.getItem("aiwb.theme"), title: document.querySelector('[data-testid="theme-btn"]')?.title }));
+        if (after.saved !== c.pref) fail(`${tag}: after the reload the kv key "aiwb.theme" is ${JSON.stringify(after.saved)}`);
+        if (after.title !== c.title) fail(`${tag}: after the reload the picker's button says "${after.title}", not "${c.title}"`);
+        await press(page, page.locator(BTN).first());
+        await page.waitForSelector(MENU, { timeout: 10000 });
+        const marked = await page.evaluate(() => [...document.querySelectorAll('[data-testid="theme-menu"] [aria-checked="true"]')].map((e) => e.dataset.themePref));
+        if (marked.join() !== c.pref) fail(`${tag}: after the reload the menu marks ${marked.join(", ") || "nothing"}`);
+      }
       told.push(`${tag} ${r.values.length} (${early} before the app)`);
     } finally { await ctx.close(); }
   }

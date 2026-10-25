@@ -7,7 +7,7 @@ import { Animated, Easing, Platform, Pressable, StyleSheet, View } from "react-n
 import { agentClass, agentShortName } from "@aiwb/core/agents.ts";
 import { boardWorker } from "@aiwb/core/logic/status.ts";
 import { droppedText, serverNameOf } from "@aiwb/core/logic/boardsave.ts";
-import { pointLabel } from "@aiwb/core/logic/refs.ts";
+import { pointLabel, type Ref } from "@aiwb/core/logic/refs.ts";
 import { reachable } from "@aiwb/core/logic/sections.ts";
 import { flash, getState, setDropped, type Flash } from "@aiwb/core/state/store.ts";
 
@@ -19,12 +19,15 @@ import { useTheme } from "../../ui/theme.tsx";
 import { tid } from "../../ui/tid.ts";
 import type { Tokens } from "../../ui/tokens.ts";
 import { usePointer } from "../../ui/usePointer";
+import { usePhone } from "../../ui/useLayout.ts";
 import { IconButton } from "../../ui/IconButton.tsx";
 import { boardApp } from "../shell/boardside.ts";
 import { pickEscape } from "./boardkeys.ts";
 import { PICK_UI } from "./PickSurface.types.ts";
 import { PickSurface } from "./PickSurface";
+import { B2_TID } from "./ids.ts";
 import { finishPick, pickPoint } from "./refs.ts";
+import { pinText } from "./reflabels.ts";
 import type { Spot } from "./taps.ts";
 import { FILL } from "./fill.ts";
 
@@ -131,32 +134,57 @@ export function Presence({ board }: { board: string }) {
   );
 }
 
+/** How long the pin and its label stay on the phone after the tap, before the chat opens with the point. */
+export const PIN_MS = 600;
+
 /**
  * While a chat of this board waits for a point (⌘⇧L, "Point at"): a crosshair over the canvas; a click (a tap) puts the point, in board
  * coordinates, into the chat's message. Esc cancels (a finger has the Cancel button). The layer takes no pointer: the wheel, a drag and
  * a pinch still reach the board underneath, which is in view mode meanwhile (so that a press does nothing to a shape or a tool), and
  * the surface it stands in (PickSurface) watches for the tap. A press that moved puts no point. It wraps what the canvas shows, so
  * that one surface hears the board and the layer over it.
+ *
+ * On the phone (ux-improvements B2, b2-design.md §6) the bar at the bottom (PickBar) says what is waited for, so there is no hint over the
+ * canvas, only the accent border, which is drawn while shapes are selected too (that wait takes no tap here: the board keeps its role's
+ * mode and Excalidraw selects). A tap draws the pin and its label, and `PIN_MS` later the point goes into the chat.
  */
 export function PickLayer({ board, children }: { board: string; children: ReactNode }) {
   const { tokens: t } = useTheme();
+  const phone = usePhone();
   const chat = useStore((s) => (s.picking && s.chats[s.picking]?.board === board ? s.chats[s.picking] : undefined));
+  const forPoint = useStore((s) => s.pickFor === "point");
   const v = useStore((s) => s.view);
   const touch = usePointer() === "touch";
   const [at, setAt] = useState<Spot | null>(null);
+  const [pin, setPin] = useState<{ spot: Spot; ref: Ref } | null>(null);
   useEffect(() => (chat ? onKey(pickEscape) : undefined), [chat?.id]);
+  useEffect(() => { if (!chat) setPin(null); }, [chat?.id]);
+  // the pin stays for a moment; a back or Cancel meanwhile ends the wait and the point is not sent
+  useEffect(() => {
+    if (!pin || !chat) return;
+    const id = setTimeout(() => finishPick(chat.id, pin.ref), PIN_MS);
+    return () => clearTimeout(id);
+  }, [pin, chat?.id]);
 
   const pick = (spot: Spot) => {
-    if (!chat) return;
+    if (!chat || pin || (phone && !forPoint)) return;
     const view = getState().view;
     const r = boardApp.pointRefOn(board, spot.x / view.zoom - view.scrollX, spot.y / view.zoom - view.scrollY);
+    if (phone) { setPin({ spot, ref: r }); return; }
     finishPick(chat.id, r);
     if (r.kind === "point") flash({ board, box: { x: r.x - 6, y: r.y - 6, width: 12, height: 12 }, agent: chat.agent, label: r.label, tone: "edit" }, 1600);
   };
+  const selecting = !forPoint;
   return (
-    <PickSurface on={!!chat} onTap={pick} onHover={setAt}>
+    <PickSurface on={!!chat && !selecting} onTap={pick} onHover={phone ? undefined : setAt}>
       {children}
-      {chat && (
+      {chat && phone && (
+        <>
+          <View {...tid(B2_TID.border)} pointerEvents="none" style={[styles.pick, { borderColor: t.accent, backgroundColor: selecting ? "transparent" : tint(t.accent, 0.04) }]} />
+          {pin && <Pin spot={pin.spot} text={pinText(pin.ref)} />}
+        </>
+      )}
+      {chat && !phone && (
         <View {...tid("pick-layer")} pointerEvents="box-none" style={[styles.pick, { backgroundColor: tint(t.accent, 0.04), borderColor: t.accent }]}>
           <View pointerEvents="box-none" style={styles.hintRow}>
             <View {...tid("pick-hint")} dataSet={{ [PICK_UI]: true }} style={[styles.hint, { backgroundColor: t.accentFill }]}>
@@ -177,6 +205,30 @@ export function PickLayer({ board, children }: { board: string; children: ReactN
         </View>
       )}
     </PickSurface>
+  );
+}
+
+const PIN_DOT = 16, PIN_RING = 28;
+
+/** The phone's pin: an accent dot with a soft ring where the tap was, and its label (`pinText`) under it. */
+function Pin({ spot, text }: { spot: Spot; text: string }) {
+  const { tokens: t } = useTheme();
+  // (the label is centred under the pin and kept 8 px inside the layer's sides, measured once drawn; it is moved by a transform, so its own
+  // width does not depend on where it is put, as an absolute box's would)
+  const [box, setBox] = useState({ layer: 0, label: 0 });
+  const x = box.layer && box.label ? Math.max(8, Math.min(spot.x - box.label / 2, box.layer - box.label - 8)) : spot.x - box.label / 2;
+  return (
+    <View pointerEvents="none" style={styles.pinLayer} onLayout={(e) => { const w = e.nativeEvent.layout.width; setBox((b) => (b.layer === w ? b : { ...b, layer: w })); }}>
+      <View {...tid(B2_TID.pin)} style={[styles.pinRing, { left: spot.x - PIN_RING / 2, top: spot.y - PIN_RING / 2, backgroundColor: tint(t.accent, 0.25), borderColor: tint(t.accent, 0.5) }]}>
+        <View style={[styles.pinDot, { backgroundColor: t.accent }]} />
+      </View>
+      <View style={[styles.pinLabelRow, { top: spot.y + PIN_RING / 2 + 6 }]}>
+        <View {...tid(B2_TID.pinLabel)} onLayout={(e) => { const w = e.nativeEvent.layout.width; setBox((b) => (b.label === w ? b : { ...b, label: w })); }}
+          style={[styles.pinLabel, { backgroundColor: t.text, transform: [{ translateX: x }], opacity: box.label && box.layer ? 1 : 0 }]}>
+          <Text size={13} numberOfLines={1} style={{ color: t.bg }}>{text}</Text>
+        </View>
+      </View>
+    </View>
   );
 }
 
@@ -210,6 +262,11 @@ const styles = StyleSheet.create({
   hintRow: { position: "absolute", left: 0, right: 0, top: 12, alignItems: "center" },
   hint: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 5, paddingHorizontal: 12, borderRadius: 20 },
   kbd: { paddingHorizontal: 5, paddingVertical: 1, borderRadius: 4 },
+  pinLayer: { ...FILL, zIndex: 6, overflow: "hidden" },
+  pinRing: { position: "absolute", width: PIN_RING, height: PIN_RING, borderRadius: PIN_RING / 2, borderWidth: 1, alignItems: "center", justifyContent: "center" },
+  pinDot: { width: PIN_DOT, height: PIN_DOT, borderRadius: PIN_DOT / 2 },
+  pinLabelRow: { position: "absolute", left: 0, right: 0, alignItems: "flex-start" },
+  pinLabel: { maxWidth: 340, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 4 },
   coord: { position: "absolute", paddingHorizontal: 6, paddingVertical: 1, borderRadius: 4 },
   noteRow: { position: "absolute", left: 0, right: 0, bottom: 58, alignItems: "center", zIndex: 4 },
   note: { flexDirection: "row", alignItems: "center", gap: 8, maxWidth: "92%", paddingVertical: 6, paddingLeft: 12, paddingRight: 8, borderRadius: 8, borderWidth: 1 },

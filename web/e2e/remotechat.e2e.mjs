@@ -73,8 +73,13 @@
 //                      the page calls it from its own address, so the page's CSP needs `connect-src 'self'`
 //                      (app/scripts/export-web.mjs `--connect-self`): an export that has it is used as it is, the shipped one
 //                      (`connect-src 'none'`) is copied into the temp folder with that one change, and DIST itself is not touched
-//   VIEWPORT=phone     the page is the phone layout of the app (an iPhone 15: a finger, the sidebar and the chat as screens of a
-//                      stack, the toolbar's folder and effort behind its "more" chip); the owner's page stays at a desk. Default: desktop
+//   VIEWPORT=phone     the page is the phone layout of the app (an iPhone 15: a finger, Home and the chat as screens of a stack, the
+//                      toolbar's folder and effort behind its "more" chip); the owner's page stays at a desk. Default: desktop.
+//                      At the phone the page's server is a chip of Home and its state a word (`ui.waitHomeWord`), its tree what Home
+//                      and the group screens list (`ui.homeOutline`), a make is "+ New" and its sheet (`ui.makeAt`). What Home has no
+//                      counterpart of is skipped there, each with a comment: the sections' lines and folds, the "More" menu of a row,
+//                      a name box for a new board or group, the drags, the draft mark of a row, "Show archived" as a switch beside
+//                      the list, and the states of a server that Home folds into "Unreachable" (it keeps their words as the reason).
 //   AIWB_E2E_KEEP=1    keep the temp folder (server logs, screenshots) after a run that passed;
 //                      after a failed run it is always kept, and its path is printed
 //   AIWB_E2E_SHOTS     a folder that gets a picture of the sidebar in each state the script brings a section to (no
@@ -196,6 +201,9 @@ const inB = (key) => String(key ?? "").startsWith(`${ENTRY}~`);
 // ---- the pages
 
 const VIEWPORT = process.env.VIEWPORT || "desktop"; // "phone": the page is the app's phone layout
+const PHONE = VIEWPORT === "phone";
+// The warning of a chat whose server is not connected, or that is gone from it: the wide bar; on the phone V1's block in the toolbar's place.
+const WARN = PHONE ? '[data-testid="composer-block"][data-kind="offline"], [data-testid="composer-block"][data-kind="gone"]' : q.remoteBar;
 
 let browser = null;
 /** Opens the page of a scratch server's app (A: the page; B: the owner's) and waits for its this-computer section to be connected. */
@@ -203,7 +211,7 @@ async function openPage(s = A) {
   // (the page is the client at the viewport asked for; the owner's page is the owner at a desk)
   const context = s === A && VIEWPORT !== "desktop" ? await viewportContext(VIEWPORT) : undefined;
   const p = await openHostPage(browser, hostOf(s), { timeout: 10000, wait: ui.treeWait, context });
-  await ui.stateOfSection(p, "local").filter({ hasText: /^Connected$/ }).waitFor({ timeout: 90000 });
+  await ui.waitConnected(p, "local", 90000);
   return p;
 }
 const sel = ui.selection;
@@ -218,23 +226,34 @@ const counts = (m) => `${m.user.length} user, ${m.assistant.length} assistant`;
 const noneTwice = (m) => new Set(m.user).size === m.user.length && new Set(m.assistant).size === m.assistant.length;
 const replied = (p, text, timeout = 40000) => holds(`the reply to "${text}"`, async () => (await msgs(p)).assistant.some((t) => t.includes(text)), { timeout });
 
-/** B's section on the page. */
-const section = (p = page) => ui.sectionOf(p, B.name);
+/** B's section on the page. At the phone there is none: the scope is the page, and `rowOf` looks the rows up on Home. */
+const section = (p = page) => (PHONE && p === page ? p : ui.sectionOf(p, B.name));
+/** What a section of a page shows, by the entry's name. At the phone Home says the server's word alone: its label ("Connected", "Connecting…",
+ *  "Unreachable", "Too old", ...) as `state`, and nothing of rows, lines or a "+" (`rows`/`add` are undefined there, so a check that reads them is branched). */
 const sectionLook = (p = page) => lookOf(B.name, p);
-/** What a section of a page shows, by the entry's name. */
-const lookOf = (name, p = page) => ui.lookOf(p, name);
+const WORD_TEXT = { connected: "Connected", connecting: "Connecting…", unreachable: "Unreachable", offline: "Offline", "cert-changed": "Certificate changed · paused", "too-old": "Too old" };
+const serverId = (name) => (name === A.name ? "local" : name === B.name ? ENTRY || B.name : name);
+const lookOf = async (name, p = page) => {
+  if (!PHONE || p !== page) return ui.lookOf(p, name);
+  const w = await ui.homeWord(p, serverId(name));
+  return w ? { name, state: WORD_TEXT[w] ?? w, word: w, collapsed: false } : null;
+};
+/** Waits at the phone until Home says the word key of the server (an entry id or a name). */
+const homeIs = (name, word, timeout = 30000) => holds(`Home says "${word}" of ${name}`, async () => (await ui.homeWord(page, serverId(name))) === word, { timeout, every: 100 });
 
 /** The tree a page shows, as lines: of a section (of: its name; "" for this computer's). A group and a
  *  board are followed by what is in them, two spaces further in. The same code reads the page's section of B and the
- *  owner's own section of B, so "the same tree" is the same lines. */
-const outline = (p, of = "") => ui.outline(p, of || A.name);
+ *  owner's own section of B, so "the same tree" is the same lines. At the phone Home's lists: the stack is left at Home (a chat open is closed). */
+const outline = (p, of = "") => (PHONE && p === page ? ui.homeOutline(p, of && of !== A.name ? serverId(of) : "local") : ui.outline(p, of || A.name));
 const lines = (o) => (o ?? ["(none)"]).map((l) => l.trim()).join(" / ");
 /** Whether the page's section of B and the owner's own section of B show the same tree, each without a reload. A draft mark is
  *  each page's own word about the chat it has open, so it is left out. */
 const plain = (o) => (o ?? []).map((l) => l.replace(" [draft]", ""));
+// (at the phone Home lists groups, boards and chats without the boards' chats and without marks: the owner's lines are cut to the same, and both sorted)
+const homeLike = (o) => plain(o).filter((l) => !/\[archived\]$/.test(l)).sort();
 const sameTree = (timeout = 20000) => holds("the page's section shows the tree of the owner's page", async () => {
   const a = plain(await outline(page, B.name)), b = plain(await outline(owner));
-  return a.length > 0 && one(a) === one(b);
+  return a.length > 0 && (PHONE ? one(homeLike(a)) === one(homeLike(b)) : one(a) === one(b));
 }, { timeout });
 const bothTrees = async () => `the page's section: ${lines(await outline(page, B.name))} || the owner's page: ${lines(await outline(owner))}`;
 
@@ -254,8 +273,15 @@ const nameIt = ui.nameIt;
 /** Names the chat on screen through its header, so that its row can be found by name. */
 async function renameChat(p, name) {
   await ui.renameChat(p, name);
+  if (PHONE && p === page) return; // (Home's row is not on screen under the chat; `openRow` finds it by its name when it is needed)
   await rowOf(side(p), "chat", name).first().waitFor({ state: "attached", timeout: 15000 }); // (attached: the phone shows the chat, not the list)
 }
+/** A make on B from the page: the "+" of the section's head or of a group's head on the wide layouts; at the phone "+ New" of Home's
+ *  chip of B (of the group's screen, the groups pushed one by one) and the sheet's row. `item`: "Chat" | "Whiteboard" | "Group". */
+const NEW_ROW = { Chat: "New chat", Whiteboard: "New whiteboard", Group: "New group" };
+const makeOnB = (item, group) => PHONE
+  ? ui.makeAt(page, NEW_ROW[item], { server: ENTRY, groups: group ? [group] : [] })
+  : plus(page, group ? groupHead(section(), group) : section().locator(q.sectionHead), item);
 /** The key of the thing a page selects after `act`, which it did not select before. */
 async function selected(p, kind, act) {
   const before = (await sel(p))[kind] ?? null;
@@ -286,50 +312,89 @@ let chat0 = "", chatLoose = "", chatGroup = "", boardKey = "";
 
 async function step1() {
   // No server but this computer: no section, and the "+" of the head asks nothing and offers no server.
-  const none = await page.locator('.side-section:not([data-server="local"])').count();
-  await ui.click(page, page.locator(q.newBtn));
-  const offered = (await page.locator(q.menuItem).allInnerTexts()).map((t) => t.trim());
-  await page.keyboard.press("Escape");
-  await check("1 with no server in the list the sidebar has this computer's section alone, and its \"+\" offers a chat, a whiteboard and a group", none === 0 && one(offered) === one(["New chat", "New whiteboard", "New group"]),
-    `sections ${none}; "+" offers ${one(offered)}`);
+  let none, offered;
+  if (PHONE) {
+    // (Home of one server draws no chips; "+ New" opens the sheet: Chat and Whiteboard as tiles, Group as a row)
+    none = await page.locator(q.serverChip).count();
+    await ui.click(page, page.locator(q.homeNew));
+    await page.locator(q.homeNewSheet).first().waitFor();
+    offered = await ui.newSheetOffers(page);
+    await page.keyboard.press("Escape");
+    await page.locator(q.homeNewSheet).first().waitFor({ state: "detached", timeout: 5000 }).catch(() => {});
+    await check("1 with no server in the list Home has no chip, and its \"+ New\" offers a chat, a whiteboard and a group", none === 0 && one(offered) === one(["board", "chat", "group"]), `chips ${none}; "+ New" offers ${one(offered)}`);
+  } else {
+    none = await page.locator('.side-section:not([data-server="local"])').count();
+    await ui.click(page, page.locator(q.newBtn));
+    offered = (await page.locator(q.menuItem).allInnerTexts()).map((t) => t.trim());
+    await page.keyboard.press("Escape");
+    await check("1 with no server in the list the sidebar has this computer's section alone, and its \"+\" offers a chat, a whiteboard and a group", none === 0 && one(offered) === one(["New chat", "New whiteboard", "New group"]),
+      `sections ${none}; "+" offers ${one(offered)}`);
+  }
   await shot("no-server-in-the-list", page);
   chat0 = await selected(page, "chat", async () => { await ui.headPlus(page, "New chat"); });
   await box(page).waitFor();
   await check("1 a new chat is made here at once and nothing asks where it should live", !!(await chatOn(A, chat0)), `A has the chat: ${!!(await chatOn(A, chat0))}`);
   await renameChat(page, HERE);
-  await headGroup(page);
-  await nameIt(side(page), LOCAL_GROUP);
+  if (!PHONE) { // (the phone makes a group with the name the app gives it and Home has no rename: no local group there)
+    await headGroup(page);
+    await nameIt(side(page), LOCAL_GROUP);
+  }
 
-  const dlg = await ui.openServers(page);
-  const form = await ui.fillForm(page, { name: B.name, address: `https://127.0.0.1:${B.port}`, secret: B.secret, selfSigned: true });
-  await ui.click(page, ui.button(form, "Test connection"));
-  const accept = ui.button(form, "Accept fingerprint");
-  await accept.waitFor({ timeout: 30000 });
-  const shown = (await form.locator(q.serversFp).last().innerText()).trim();
-  await check("1 the form shows the fingerprint that `remote setup` printed", shown === B.fingerprint, `shown ${shown}, printed ${B.fingerprint}`);
-  await ui.click(page, accept);
-  const save = ui.button(form, "Save");
-  await waitFor("Save is enabled after the accepted test", async () => !(await save.isDisabled()));
+  const flatFp = (t) => t.replace(/[^0-9a-f]/gi, "").toLowerCase();
+  const typed = { name: B.name, address: `https://127.0.0.1:${B.port}`, secret: B.secret, selfSigned: true };
+  let accept, shown, save, form, saveStep;
+  if (PHONE) { // (S2's add flow: Test connection, the trust step shows the fingerprint, "Trust and save" saves; there is no separate Accept and Save)
+    await ui.openServers(page);
+    form = await ui.fillFormPhone(page, typed);
+    await ui.click(page, form.test);
+    accept = form.trust;
+    await accept.waitFor({ timeout: 30000 });
+    shown = (await form.fingerprint.locator('[data-testid="srv-fp-block"]').allInnerTexts()).join("");
+  } else {
+    await ui.openServers(page);
+    form = await ui.fillForm(page, typed);
+    await ui.click(page, ui.button(form, "Test connection"));
+    accept = ui.button(form, "Accept fingerprint");
+    await accept.waitFor({ timeout: 30000 });
+    shown = (await form.locator(q.serversFp).last().innerText()).trim();
+  }
+  await check("1 the form shows the fingerprint that `remote setup` printed", flatFp(shown) === flatFp(B.fingerprint), `shown ${shown}, printed ${B.fingerprint}`);
+  if (!PHONE) {
+    await ui.click(page, accept);
+    save = ui.button(form, "Save");
+    await waitFor("Save is enabled after the accepted test", async () => !(await save.isDisabled()));
+  }
   // The line is slow from here on: every answer of B takes a second and a half, so the entry's first connection takes seconds.
   setLink("slow");
-  await ui.click(page, save);
-  const connecting = await holds('the section says "Connecting…" and shows no row, no line and no "+"', async () => { const l = await sectionLook(); return !!l && l.state === "Connecting…" && l.tone === "wait" && l.rows === 0 && l.lines.length === 0 && !l.add; }, { timeout: 60000, every: 30 });
-  await check('1 B is added, and while its first connection is being made its section says "Connecting…" and shows nothing else', connecting, one(await sectionLook()));
+  await ui.click(page, PHONE ? accept : save);
+  const connecting = PHONE
+    // (Home: the chip of B says "connecting" and the list is placeholders; its word is all there is to read)
+    ? await holds('Home says "connecting" of B', async () => (await ui.homeWord(page, (await entry())?.id ?? B.name)) === "connecting", { timeout: 60000, every: 30 })
+    : await holds('the section says "Connecting…" and shows no row, no line and no "+"', async () => { const l = await sectionLook(); return !!l && l.state === "Connecting…" && l.tone === "wait" && l.rows === 0 && l.lines.length === 0 && !l.add; }, { timeout: 60000, every: 30 });
+  await check(PHONE ? '1 B is added, and while its first connection is being made Home says "connecting" of it' : '1 B is added, and while its first connection is being made its section says "Connecting…" and shows nothing else', connecting, one(await sectionLook()));
   await shot("connecting", page);
   setLink("pass");
   const row = ui.serverRow(page, B.name);
-  const ok = await holds("the row reads Connected", async () => (await row.locator(q.serversState).innerText()) === "Connected", { timeout: 60000 });
-  await check('1 the link passes again: the entry connects by itself, and its row in the Servers dialog reads "Connected"', ok, `row: ${(await row.innerText().catch(() => "no row")).replace(/\n/g, " / ")}`);
+  const ok = await holds("the row reads Connected", async () => PHONE ? (await row.first().getAttribute("data-word")) === "connected" : (await row.locator(q.serversState).innerText()) === "Connected", { timeout: 60000 });
+  await check(`1 the link passes again: the entry connects by itself, and its row in the Servers ${PHONE ? "list" : "dialog"} reads "Connected"`, ok, `row: ${(await row.innerText().catch(() => "no row")).replace(/\n/g, " / ")}`);
   await ui.closeServers(page);
   ENTRY = (await entry())?.id ?? "";
   B.instance = B.info.instanceId; // (a stand-in that takes B's place reports it: a server without one is no AI Whiteboard server)
 
   // The section: under the local part, with the name and the state, and the line of a server with nothing on it.
-  const empty = await holds("the section says that B has nothing on it", async () => (await sectionLook())?.lines.join("|") === "Nothing on this server yet.", { timeout: 20000 });
-  const look = await sectionLook();
-  const order = (await page.locator(q.section).evaluateAll((els) => els.map((e) => e.getAttribute("aria-label")))).join(",");
-  await check("1 B has a section under this computer's, with its name, the state \"Connected\", the line that nothing is on it, and a \"+\"",
-    empty === true && look?.name === B.name && look.state === "Connected" && look.tone === "ok" && look.rows === 0 && look.add && order === `${A.name},${B.name}`, `${one(look)}; order ${order}`);
+  if (PHONE) {
+    // (Home: with two servers there is a chip each, this computer's first; B's says "connected" and its list is empty, which Home draws as its empty state)
+    const chips = await page.locator(q.serverChip).evaluateAll((els) => els.map((e) => e.dataset.server));
+    const said = await holds("Home says connected of B", async () => (await ui.homeWord(page, ENTRY)) === "connected", { timeout: 60000 });
+    const empty = (await ui.homeOutline(page, ENTRY)).length === 0;
+    await check("1 B has a chip on Home after this computer's, its word is \"connected\", and nothing is on it", said === true && empty && one(chips) === one(["local", ENTRY]), `chips ${one(chips)}; B's tree ${one(await ui.homeOutline(page, ENTRY))}`);
+  } else {
+    const empty = await holds("the section says that B has nothing on it", async () => (await sectionLook())?.lines.join("|") === "Nothing on this server yet.", { timeout: 20000 });
+    const look = await sectionLook();
+    const order = (await page.locator(q.section).evaluateAll((els) => els.map((e) => e.getAttribute("aria-label")))).join(",");
+    await check("1 B has a section under this computer's, with its name, the state \"Connected\", the line that nothing is on it, and a \"+\"",
+      empty === true && look?.name === B.name && look.state === "Connected" && look.tone === "ok" && look.rows === 0 && look.add && order === `${A.name},${B.name}`, `${one(look)}; order ${order}`);
+  }
   await shot("connected-nothing-on-it", page);
   // What the server keeps and what the app keeps: A's own snapshot has nothing of B and its data folder holds no list and no file of a remote
   // thing; the list is the app's, in its state folder, in a file that only its user reads (the secrets are in it).
@@ -361,10 +426,12 @@ async function step2() {
     same === true && one(plain(a)) === one([`board ${OWNER_BOARD}`, `chat ${OWNER_LOOSE}`, `group ${FILMS}`, `  chat ${OWNER_CHAT}`]), await bothTrees());
   await shot("connected-the-owners-tree", page);
   await shot("the-owners-own-page", owner);
-  const rows = await section().locator(`${q.row}, ${q.groupHead}`).evaluateAll((els) => els.map((e) => `${e.textContent} ${e.getAttribute("title") ?? ""}`));
-  await check("2 no row of the section names the server, and no row says who made it", rows.length === 4 && rows.every((t) => !t.includes(B.name) && !/owner\b.*made|made by/i.test(t.replace(OWNER_CHAT, "").replace(OWNER_LOOSE, ""))), one(rows));
+  if (!PHONE) { // (a row of Home is read by its name; the check of the sections' rows has no counterpart)
+    const rows = await section().locator(`${q.row}, ${q.groupHead}`).evaluateAll((els) => els.map((e) => `${e.textContent} ${e.getAttribute("title") ?? ""}`));
+    await check("2 no row of the section names the server, and no row says who made it", rows.length === 4 && rows.every((t) => !t.includes(B.name) && !/owner\b.*made|made by/i.test(t.replace(OWNER_CHAT, "").replace(OWNER_LOOSE, ""))), one(rows));
+  }
   const local = await outline(page);
-  await check("2 the local part holds what lives on this computer alone", one(local) === one([`chat ${HERE}`, `group ${LOCAL_GROUP}`]), lines(local));
+  await check("2 the local part holds what lives on this computer alone", one(local) === one(PHONE ? [`chat ${HERE}`] : [`chat ${HERE}`, `group ${LOCAL_GROUP}`]), lines(local));
   const none = await owner.locator(q.section).count(), remote = await groupOn(B, "Remote");
   await check('2 the owner\'s page has no group "Remote" and one section only: its own, B', none === 1 && !remote, `sections on the owner's page ${none}; a group "Remote" on B: ${!!remote}`);
 }
@@ -372,41 +439,68 @@ async function step2() {
 async function step3() {
   const made = callsFrom(page);
   // The section's "+": a chat, a whiteboard and a group, each on B, outside any group.
-  await ui.headButton(page, section().locator(q.sectionHead), "New on");
-  const offered = (await page.locator(q.menuItem).allInnerTexts()).map((t) => t.trim());
-  await shot("the-plus-of-a-sections-head", page, true);
-  await page.keyboard.press("Escape");
-  chatLoose = await selected(page, "chat", () => plus(page, section().locator(q.sectionHead), "Chat"));
+  let offered;
+  if (PHONE) {
+    // (Home of B's chip: "+ New" and its sheet)
+    await ui.showHome(page, ENTRY);
+    await ui.click(page, page.locator(q.homeNew));
+    await page.locator(q.homeNewSheet).first().waitFor();
+    offered = await ui.newSheetOffers(page);
+    await page.keyboard.press("Escape");
+    await page.locator(q.homeNewSheet).first().waitFor({ state: "detached", timeout: 5000 }).catch(() => {});
+  } else {
+    await ui.headButton(page, section().locator(q.sectionHead), "New on");
+    offered = (await page.locator(q.menuItem).allInnerTexts()).map((t) => t.trim());
+    await shot("the-plus-of-a-sections-head", page, true);
+    await page.keyboard.press("Escape");
+  }
+  chatLoose = await selected(page, "chat", () => makeOnB("Chat"));
   await box(page).waitFor();
   const c1 = await chatOn(B, own(chatLoose));
   await check("3 the section's \"+\" offers a chat, a whiteboard and a group; \"Chat\" makes one on B at once, in no group, unstarted, and A has none of it",
-    one(offered) === one(["Chat", "Whiteboard", "Group"]) && inB(chatLoose) && !!c1 && c1.locked === false && (c1.group ?? "__ungrouped__") === "__ungrouped__" && !(await chatOn(A, own(chatLoose))),
+    one(offered) === one(PHONE ? ["board", "chat", "group"] : ["Chat", "Whiteboard", "Group"]) && inB(chatLoose) && !!c1 && c1.locked === false && (c1.group ?? "__ungrouped__") === "__ungrouped__" && !(await chatOn(A, own(chatLoose))),
     `offered ${one(offered)}; key ${chatLoose}; B's chat ${one(c1 && { group: c1.group, locked: c1.locked })}`);
   await renameChat(page, MY_CHAT);
 
-  boardKey = await selected(page, "board", () => plus(page, section().locator(q.sectionHead), "Whiteboard"));
-  await ui.nameNewBoard(page, section(), MY_BOARD);
-  const b1 = await holds("B has the board under its name", async () => (await stateOf(B)).boards.some((b) => b.id === own(boardKey) && b.name === MY_BOARD && (b.group ?? "__ungrouped__") === "__ungrouped__"));
+  boardKey = await selected(page, "board", () => makeOnB("Whiteboard"));
+  // (the phone cannot name the board it made: Home has no rename, so B has it under the name the app gave it)
+  const named = await ui.nameNewBoard(page, section(), MY_BOARD);
+  const b1 = await holds("B has the board under its name", async () => (await stateOf(B)).boards.some((b) => b.id === own(boardKey) && (named === false ? true : b.name === MY_BOARD) && (b.group ?? "__ungrouped__") === "__ungrouped__"));
   await check("3 \"Whiteboard\" makes a board on B at once and asks nothing", inB(boardKey) && b1 === true && (await stateOf(A)).boards.length === 0, `key ${boardKey}; on B: ${b1}; boards of A: ${(await stateOf(A)).boards.length}`);
 
-  await plus(page, section().locator(q.sectionHead), "Group");
-  await nameIt(section(), MY_GROUP);
-  const g1 = await holds("B has the group", async () => { const g = await groupOn(B, MY_GROUP); return !!g && !g.parent; });
-  await check("3 \"Group\" makes a group on B, at the top level, and A has none of it", g1 === true && !(await groupOn(A, MY_GROUP)), `on B: ${g1}; on A: ${!!(await groupOn(A, MY_GROUP))}`);
+  if (PHONE) {
+    // (the group the page makes keeps the app's name, so the later steps' group is made by the owner, who names it)
+    const groups0 = new Set((await stateOf(B)).groups.map((g) => g.id));
+    await makeOnB("Group");
+    const g1 = await holds("B has a new group", async () => (await stateOf(B)).groups.some((g) => !groups0.has(g.id) && !g.parent));
+    await check("3 \"Group\" makes a group on B, at the top level, and A has none of it", g1 === true && (await stateOf(A)).groups.length === 0, `on B: ${g1}; groups of A: ${(await stateOf(A)).groups.length}`);
+    await headGroup(owner);
+    await nameIt(side(owner), MY_GROUP);
+    await holds("B has the group the owner made", async () => !!(await groupOn(B, MY_GROUP)));
+    await holds("Home lists it", async () => (await outline(page, B.name)).includes(`group ${MY_GROUP}`));
+  } else {
+    await plus(page, section().locator(q.sectionHead), "Group");
+    await nameIt(section(), MY_GROUP);
+    const g1 = await holds("B has the group", async () => { const g = await groupOn(B, MY_GROUP); return !!g && !g.parent; });
+    await check("3 \"Group\" makes a group on B, at the top level, and A has none of it", g1 === true && !(await groupOn(A, MY_GROUP)), `on B: ${g1}; on A: ${!!(await groupOn(A, MY_GROUP))}`);
+  }
 
   // A group's "+" inside the section: the chat and the group are made in that group.
   const gid = (await groupOn(B, MY_GROUP))?.id;
-  chatGroup = await selected(page, "chat", () => plus(page, groupHead(section(), MY_GROUP), "Chat"));
+  chatGroup = await selected(page, "chat", () => makeOnB("Chat", MY_GROUP));
   await box(page).waitFor();
   const c2 = await chatOn(B, own(chatGroup));
   await renameChat(page, IN_GROUP);
-  await plus(page, groupHead(section(), MY_GROUP), "Group");
-  await nameIt(section(), INNER);
-  const g2 = await holds("B has the nested group", async () => (await groupOn(B, INNER))?.parent === gid);
+  const nested0 = new Set((await stateOf(B)).groups.map((g) => g.id));
+  await makeOnB("Group", MY_GROUP);
+  if (!PHONE) await nameIt(section(), INNER);
+  const g2 = await holds("B has the nested group", async () => PHONE ? (await stateOf(B)).groups.some((g) => !nested0.has(g.id) && g.parent === gid) : (await groupOn(B, INNER))?.parent === gid);
   await check("3 a group's \"+\" in the section makes a chat and a group in that group, on B, and asks nothing", inB(chatGroup) && c2?.group === gid && g2 === true,
     `B's chat ${one(c2 && { group: c2.group })}, the group ${gid}; nested on B: ${g2}`);
 
   // Every make was one call to B's server (the call names the entry, the path is B's own) with B's own ids, and none named a server or a collapse.
+  // (the phone's last make is not over when B has its result: the page's record of the call has its status a moment later)
+  if (PHONE) await holds("the page has recorded the answer of every make", async () => made().filter((c) => c.method === "POST" && /^\/api\/(chats|boards|groups)$/.test(c.path)).every((c) => c.status), { timeout: 15000 });
   const posts = made().filter((c) => c.method === "POST" && /^\/api\/(chats|boards|groups)$/.test(c.path));
   const bad = made().filter((c) => c.method !== "GET" && c.method !== "APP" && (c.server !== ENTRY || /"(server|collapsed)"/.test(c.body) || c.body.includes(`${ENTRY}~`)));
   await check("3 each was made by one call to B's server, with B's own ids, naming no server", posts.length === 5 && posts.every((c) => c.status === 200 && c.server === ENTRY) && bad.length === 0,
@@ -658,13 +752,11 @@ async function step7() {
   const dir = path.join(B.work, B_ONLY);
   await ui.openChip(page, "folder", B.name);
   const dirs = ui.dirs(page);
-  const head = ((await dirs.locator(q.dirHead).first().textContent()) ?? "").trim(); // not innerText: the head is drawn in capitals
+  const head = await ui.dirsHead(page);
   try {
-    await dirs.locator(q.dirInput).fill(B.work);
-    await dirs.locator(q.dirInput).press("Enter");
+    await ui.typeDir(page, B.work);
     await waitFor("the picker lists the folder of B's machine", async () => (await dirs.locator(q.dirItem).allInnerTexts()).some((t) => t.includes(B_ONLY)));
-    await dirs.locator(q.dirInput).fill(dir);
-    await dirs.locator(q.dirInput).press("Enter");
+    await ui.typeDir(page, dir);
     await sleep(300);
     await ui.click(page, dirs.locator(q.dirUse, { hasText: new RegExp(`^Use ${path.basename(dir)}$`) })); // (the button names the folder once its listing has loaded)
   } finally {
@@ -672,12 +764,15 @@ async function step7() {
   }
   await ui.closeMore(page);
   const picked = await holds("B's chat has the folder", async () => (await chatOn(B, id))?.cwd === dir);
-  await check(`7 the folder picker of a chat of the section is titled "Folder on ${B.name}", lists folders of B's machine, and the pick is the chat's folder on B`, head === `Folder on ${B.name}` && picked === true, `head "${head}"; B's chat: ${(await chatOn(B, id))?.cwd}`);
+  // (the phone's folder sheet is titled "Start the agent in", with the server under it)
+  const headWant = PHONE ? `Start the agent in · ${B.name}` : `Folder on ${B.name}`;
+  await check(`7 the folder picker of a chat of the section is titled "${headWant}", lists folders of B's machine, and the pick is the chat's folder on B`, head === headWant && picked === true, `head "${head}"; B's chat: ${(await chatOn(B, id))?.cwd}`);
   await send(page, '[[ask Bash {"command":"ls"}]] hello');
-  const card = page.locator(q.permTitle);
+  const card = page.locator(q.permCard).first();
   const asked = await card.waitFor({ timeout: 40000 }).then(() => true, (e) => e.message.split("\n")[0]);
-  const cls = await ui.rowState(rowOf(section(), "chat", IN_GROUP));
-  await check("7 a first message in a chat of the section: the permission card shows, and the row shows that the chat waits or works", asked === true && ui.waitsOrWorks(cls), `card: ${asked}; row state "${cls}"`);
+  // (at the phone the chat is on screen and Home's row is not: the row's state is not read there)
+  const cls = PHONE ? "" : await ui.rowState(rowOf(section(), "chat", IN_GROUP));
+  await check("7 a first message in a chat of the section: the permission card shows, and the row shows that the chat waits or works", asked === true && (PHONE || ui.waitsOrWorks(cls)), `card: ${asked}; row state "${cls}"`);
   if (asked === true) await ui.click(page, page.locator(q.permAllow, { hasText: /^Allow$/ }));
   const reply = await replied(page, "ask Bash -> allow");
   const onB = await holds("B has the user message once", async () => (await userTexts(B, id)).length === 1);
@@ -687,11 +782,11 @@ async function step7() {
   // The defaults of a group in a section are that server's, shared by all who use it: the next chat in the group starts
   // in that folder, made from the page or by the owner; a chat outside the group does not; and A remembers none.
   const gid = (await groupOn(B, MY_GROUP))?.id;
-  const next = await selected(page, "chat", () => plus(page, groupHead(section(), MY_GROUP), "Chat"));
+  const next = await selected(page, "chat", () => makeOnB("Chat", MY_GROUP));
   await box(page).waitFor();
   const byOwner = await selected(owner, "chat", () => plus(owner, groupHead(side(owner), MY_GROUP), "Chat"));
   await box(owner).waitFor();
-  const loose = await selected(page, "chat", () => plus(page, section().locator(q.sectionHead), "Chat"));
+  const loose = await selected(page, "chat", () => makeOnB("Chat"));
   await box(page).waitFor();
   const cw = [(await chatOn(B, own(next)))?.cwd, (await chatOn(B, byOwner))?.cwd, (await chatOn(B, own(loose)))?.cwd];
   const mineKept = one((await stateOf(A)).defaults ?? {});
@@ -705,7 +800,7 @@ async function step7() {
   const ups = callsFrom(page);
   const chooser = page.waitForEvent("filechooser", { timeout: 20000 });
   chooser.catch(() => {}); // (a press that opens no chooser is the failed check below, not an exception that ends the script)
-  const attached = await ui.click(page, page.locator(q.attach), { timeout: 15000 }).then(() => chooser).then((c) => c.setFiles({ name: "dot.png", mimeType: "image/png", buffer: PNG })).then(() => true, (e) => `the attach button gave no file chooser: ${e.message.split("\n")[0]}`);
+  const attached = await ui.pressAttach(page, { timeout: 15000 }).then(() => chooser).then((c) => c.setFiles({ name: "dot.png", mimeType: "image/png", buffer: PNG })).then(() => true, (e) => `the attach button gave no file chooser: ${e.message.split("\n")[0]}`);
   const thumb = page.locator(q.thumb);
   const up = attached === true ? await holds("the thumbnail of the uploaded image shows", async () => (await thumb.count()) === 1 && (await thumb.evaluate((el) => el.complete && el.naturalWidth > 0)), { timeout: 30000 }) : attached;
   const post = ups().find((c) => c.method === "POST" && c.server === ENTRY && c.path.startsWith(`/api/chats/${id}/images`));
@@ -724,7 +819,7 @@ async function step7() {
   await owner.locator(q.msgAssistant).first().waitFor({ timeout: 20000 });
   await send(page, "[[sleep 4]] again");
   const working = await holds("both pages show the chat at work", async () => {
-    const a = await ui.rowState(rowOf(section(), "chat", IN_GROUP)), b = await ui.rowState(rowOf(side(owner), "chat", IN_GROUP));
+    const a = PHONE ? "writing" : await ui.rowState(rowOf(section(), "chat", IN_GROUP)), b = await ui.rowState(rowOf(side(owner), "chat", IN_GROUP)); // (the phone's Home row is under the chat: the owner's alone)
     return ui.working(a) && ui.working(b) && (await msgs(owner)).user.some((t) => t.includes("again"));
   }, { timeout: 20000, every: 50 });
   const both = all(await replied(page, "again"), await replied(owner, "again"));
@@ -738,8 +833,9 @@ async function step7() {
   const ownerCard = owner.locator(q.permAllow, { hasText: /^Allow$/ });
   const shown = await ownerCard.waitFor({ timeout: 40000 }).then(() => true, (e) => e.message.split("\n")[0]);
   if (shown === true) await ui.click(owner, ownerCard);
-  const answered = all(await replied(page, "third"), await holds("the card on A's page is decided", async () => (await page.locator(q.permActions).count()) === 0 && (await page.locator(q.permDone).allInnerTexts()).filter((t) => t === "Approved").length === 2));
-  await check("7 a permission asked by the page's message is answered on the owner's page: the page's card is decided and its reply arrives", all(shown, answered), `the owner's card: ${shown}; ${one(await page.locator(q.permDone).allInnerTexts())}`);
+  const approved = PHONE ? "Allowed" : "Approved"; // (the phone's answered card folds to one line, "Allowed · …")
+  const answered = all(await replied(page, "third"), await holds("the card on A's page is decided", async () => (await ui.waitingCards(page)) === 0 && (await ui.decidedCards(page)).filter((t) => t === approved).length === 2));
+  await check("7 a permission asked by the page's message is answered on the owner's page: the page's card is decided and its reply arrives", all(shown, answered), `the owner's card: ${shown}; ${one(await ui.decidedCards(page))}`);
   await waitFor("the third turn ends", async () => (await chatOn(B, id))?.status === "ready", { timeout: 30000 }).catch(() => {});
   await send(owner, "from the owner");
   const fromOwner = all(await replied(page, "from the owner"), await replied(owner, "from the owner"));
@@ -754,7 +850,8 @@ async function step7() {
   const mirrored = await holds("the owner's composer shows it", async () => (await boxText(owner)).trim() === "a thought from A");
   await ui.openRow(page, rowOf(side(page), "chat", HERE));
   await ui.openRow(owner, rowOf(side(owner), "chat", OWNER_CHAT));
-  const marked = await holds("both rows carry the draft mark", async () => (await outline(page, B.name)).includes(`  chat ${IN_GROUP} [draft]`) && (await outline(owner)).includes(`  chat ${IN_GROUP} [draft]`));
+  // (Home's rows carry no draft mark: at the phone the owner's page alone shows it)
+  const marked = await holds("both rows carry the draft mark", async () => (PHONE || (await outline(page, B.name)).includes(`  chat ${IN_GROUP} [draft]`)) && (await outline(owner)).includes(`  chat ${IN_GROUP} [draft]`));
   await check("7 what the page types is the chat's draft on B, the owner's composer shows it, and the chat's row carries the draft mark on both pages", all(drafted, mirrored, marked), `${await bothTrees()}; B's draft ${one(await draftOn(id))}`);
   const kept = await page.evaluate(() => Object.keys(localStorage).filter((k) => k.startsWith("aiwb.draft.")).map((k) => `${k}=${localStorage.getItem(k)}`));
   await check("7 the browser's storage holds no draft of the section's chat", kept.every((k) => !k.includes(id) && !k.includes("a thought from A")), one(kept));
@@ -795,7 +892,7 @@ async function step7() {
 /** What one page changes of a chat shows on the other with no reload: the choices of a chat that has not started,
  *  and a Stop while its agent works. Each way: the owner's change on the client's page, the client's on the owner's. */
 async function step7b() {
-  const key = await selected(page, "chat", () => plus(page, groupHead(section(), MY_GROUP), "Chat"));
+  const key = await selected(page, "chat", () => makeOnB("Chat", MY_GROUP));
   await box(page).waitFor();
   await renameChat(page, TWO);
   const id = own(key);
@@ -805,7 +902,7 @@ async function step7b() {
   /** Picks, in a picker of a page's composer, the first option that is not the chat's, and answers its id. */
   const pickOther = async (p, title) => {
     await ui.openChip(p, title.toLowerCase());
-    const opt = ui.otherOption(p);
+    const opt = ui.otherOption(p, title.toLowerCase());
     const picked = await ui.optionId(opt);
     await ui.click(p, opt);
     await ui.closeMore(p);
@@ -829,8 +926,9 @@ async function step7b() {
 
   // A Stop made on the other page: the agent sleeps far longer than the check waits, so only the Stop ends the turn.
   const stopOf = (p) => p.locator(q.stop);
-  const works = (p, scope) => holds("the page shows the chat at work, with Stop", async () => (await stopOf(p).count()) === 1 && ui.working(await ui.rowState(rowOf(scope, "chat", TWO))), { timeout: 30000 });
-  const rests = (p, scope) => holds("the page shows the chat stopped: no Stop, the row at rest", async () => (await stopOf(p).count()) === 0 && !ui.working(await ui.rowState(rowOf(scope, "chat", TWO))), { timeout: 20000 });
+  // (the phone's page has the chat on screen and Home's row under it: Stop alone is read there)
+  const works = (p, scope) => holds("the page shows the chat at work, with Stop", async () => (await stopOf(p).count()) === 1 && (PHONE && p === page || ui.working(await ui.rowState(rowOf(scope, "chat", TWO)))), { timeout: 30000 });
+  const rests = (p, scope) => holds("the page shows the chat stopped: no Stop, the row at rest", async () => (await stopOf(p).count()) === 0 && (PHONE && p === page || !ui.working(await ui.rowState(rowOf(scope, "chat", TWO)))), { timeout: 20000 });
   await send(page, "[[sleep 120]] a long one");
   const w1 = all(await works(page, section()), await works(owner, side(owner)));
   let t = Date.now();
@@ -851,10 +949,23 @@ async function step7b() {
 }
 
 /** The section while B is not connected: the state's words, the one line, no row and no "+". */
-const awayLook = (state = "Unreachable") => holds(`the section says "${state}" and the one line, with no row`, async () => {
+const awayLook = (state = "Unreachable") => PHONE ? awayHome(state) : holds(`the section says "${state}" and the one line, with no row`, async () => {
   const l = await sectionLook();
   return !!l && l.state === state && l.tone === "bad" && l.rows === 0 && !l.add && one(l.lines) === one([ONE_LINE]);
 }, { timeout: 30000 });
+/** At the phone: Home's word of B (the chip's) is the state's word key. Home folds the states the Servers dialog names one by one ("Secret not
+ *  accepted", ...) into "Unreachable" and keeps their words as the reason of the problem card; so a word the dialog has and Home has not is
+ *  looked for in that card (`card`: the stack is left at Home, a chat open is closed). */
+const HOME_KEY = { Unreachable: "unreachable", "Too old": "too-old", "Certificate changed": "cert-changed" };
+async function awayHome(state, { card = false } = {}) {
+  const key = HOME_KEY[state] ?? "unreachable";
+  const word = await homeIs(B.name, key, 30000);
+  if (!card || word !== true) return word;
+  await ui.showHome(page, ENTRY);
+  const text = await holds(`the problem card of B says "${state}"`, async () => ((await page.locator(`${q.problemCard}[data-server=${JSON.stringify(ENTRY)}]`).first().innerText().catch(() => "")) || "").includes(state), { timeout: 15000 });
+  return text;
+}
+const hasRows = (l) => PHONE || l.rows > 0;
 
 async function step8() {
   const id = own(chatGroup);
@@ -870,24 +981,32 @@ async function step8() {
   await box(page).fill(typed);
   await waitFor("the save of the typed text is on its way", async () => saves().some((c) => c.method === "PUT" && c.path.includes("/draft")), { timeout: 10000 });
   setLink("cut");
-  const bar = page.locator(q.remoteBarOffText);
-  const warned = await holds("the warning names B", async () => (await bar.innerText().catch(() => "")) === `${AWAY}. This chat is shown as it was when the connection ended.`, { timeout: 30000 });
+  const bar = PHONE ? ui.offWarning(page) : page.locator(q.remoteBarOffText);
+  // (the phone: V1's block in the toolbar's place, "<server> is offline since 14:02." and that the draft is kept)
+  const warnedAs = (t) => PHONE ? t.startsWith(`${B_NAME} is offline`) && t.includes("Your draft is kept until it's back.") : t === `${AWAY}. This chat is shown as it was when the connection ended.`;
+  const warned = await holds("the warning names B", async () => warnedAs(await bar.innerText().catch(() => "")), { timeout: 30000 });
   const m = await msgs(page);
   await check("8 the link is pulled with the chat open: the thread stays on screen as it was, under a warning that names the server", warned === true && one(m) === one(thread), `bar "${await bar.innerText().catch(() => "none")}"; ${counts(m)} (was ${counts(thread)})`);
-  await check("8 the section says that B is not connected and the one line; no row is left, the open chat's neither", await awayLook(), one(await sectionLook()));
+  await check(PHONE ? "8 Home says that B is unreachable" : "8 the section says that B is not connected and the one line; no row is left, the open chat's neither", await awayLook(), one(await sectionLook()));
   await shot("not-connected-with-a-chat-open", page, true);
   const mine = await lookOf(A.name);
-  await check("8 all the while this computer's section is connected, with its rows and its \"+\": the outage of B holds nothing of it up", mine?.state === "Connected" && mine.rows > 0 && (await page.locator(`${q.newBtn}:not([disabled])`).count()) === 1, one(mine));
+  await check("8 all the while this computer's section is connected, with its rows and its \"+\": the outage of B holds nothing of it up", mine?.state === "Connected" && (PHONE || (mine.rows > 0 && (await page.locator(`${q.newBtn}:not([disabled])`).count()) === 1)), one(mine)); // (Home's "+ New" is B's chip's: not read)
   const sendBtn = page.locator(q.send);
-  const why = { disabled: await sendBtn.isDisabled(), title: await sendBtn.getAttribute("title"), line: (await page.locator(q.agentReason).allInnerTexts()).join(" / "), choices: await page.locator(q.choices).count() };
-  await check("8 nothing can be sent or changed, and the composer says why: Send is off with the reason, the line under the toolbar says it, and no choice is a choice",
-    why.disabled === true && why.title === WHY && why.line === WHY && why.choices === 0, one(why));
+  if (PHONE) { // (the phone: the block stands in the toolbar's place, so there is no Send, and it says why)
+    const why = { send: await sendBtn.count(), block: (await bar.innerText().catch(() => "")).replace(/\s+/g, " "), choices: await page.locator(q.choices).count() };
+    await check("8 nothing can be sent or changed, and the composer says why: no Send, the block in the toolbar's place says that B is offline, and no choice is a choice",
+      why.send === 0 && warnedAs(await bar.innerText().catch(() => "")) && why.choices === 0, one(why));
+  } else {
+    const why = { disabled: await sendBtn.isDisabled(), title: await sendBtn.getAttribute("title"), line: (await page.locator(q.agentReason).allInnerTexts()).join(" / "), choices: await page.locator(q.choices).count() };
+    await check("8 nothing can be sent or changed, and the composer says why: Send is off with the reason, the line under the toolbar says it, and no choice is a choice",
+      why.disabled === true && why.title === WHY && why.line === WHY && why.choices === 0, one(why));
+  }
   // Read-only: the box keeps what was typed and takes no more.
   const during = callsFrom(page);
   await box(page).click({ force: true }).catch(() => {});
   await page.keyboard.press("End");
   await page.keyboard.type(" and more");
-  await page.keyboard.press("Enter");
+  await page.keyboard.press("ControlOrMeta+Enter");
   await sleep(800);
   const kept = (await boxText(page)).trim();
   const tried = during().filter((c) => c.method !== "GET");
@@ -911,13 +1030,14 @@ async function step8() {
   setLink("pass");
   const tree = await holds("the section shows B's tree as it is now", async () => (await sectionLook())?.state === "Connected" && (await outline(page, B.name)).includes("chat Made meanwhile"), { timeout: 60000 });
   await check("8 B is back: the section shows the tree as it is now, with what was made there meanwhile", all(tree, await sameTree()), await bothTrees());
-  const level = await holds("the open chat has what was sent there meanwhile, and no warning", async () => (await msgs(page)).user.some((t) => t.includes("while A was away")) && (await page.locator(q.remoteBar).count()) === 0, { timeout: 30000 });
+  if (PHONE) await ui.openRow(page, rowOf(section(), "chat", IN_GROUP)); // (Home's outline left the chat: it is opened again, level with B and with its draft)
+  const level = await holds("the open chat has what was sent there meanwhile, and no warning", async () => (await msgs(page)).user.some((t) => t.includes("while A was away")) && (await page.locator(WARN).count()) === 0, { timeout: 30000 });
   const m2 = await msgs(page);
-  await check("8 the open chat is brought level with B and the warning goes", level === true && m2.user.length === thread.user.length + 1 && noneTwice(m2), `${counts(m2)}; bar ${await page.locator(q.remoteBar).count()}`);
+  await check("8 the open chat is brought level with B and the warning goes", level === true && m2.user.length === thread.user.length + 1 && noneTwice(m2), `${counts(m2)}; bar ${await page.locator(WARN).count()}`);
   const saved = await holds("B has the typed text as the chat's draft", async () => (await draftOn(id)).text === typed, { timeout: 30000 });
   const editable = await holds("the box takes text again", async () => (await box(page).getAttribute("aria-readonly")) !== "true");
   await check("8 the text that was typed is saved on B once it is back, is still in the box, and the box takes text again", all(saved, editable) === true && (await boxText(page)).trim() === typed, `B's draft ${one(await draftOn(id))}; box "${(await boxText(page)).trim()}"`);
-  await box(page).press("Enter");
+  await box(page).press("ControlOrMeta+Enter");
   const works = await replied(page, typed);
   await check("8 the composer works again: the text is sent and answered", works, counts(await msgs(page)));
   await waitFor("its turn ends", async () => (await chatOn(B, id))?.status === "ready", { timeout: 30000 }).catch(() => {});
@@ -926,22 +1046,25 @@ async function step8() {
   setLink("cut");
   await bar.waitFor({ timeout: 30000 });
   await ui.openRow(page, rowOf(side(page), "chat", HERE));
-  const left = await holds("the chat of this computer is on screen and nothing of B", async () => (await sel(page)).chat === chat0 && (await page.locator(`${q.remoteBar}, ${q.chatHeadServer}`).count()) === 0);
+  const left = await holds("the chat of this computer is on screen and nothing of B", async () => (await sel(page)).chat === chat0 && (await page.locator(`${WARN}, ${q.chatHeadServer}`).count()) === 0);
   const look = await sectionLook();
   await shot("not-connected", page);
-  await check("8 the chat is left during an outage: it is closed, the section has no row to open it from, and the selection names nothing of B", left === true && look.rows === 0 && !one(await sel(page)).includes(ENTRY), `${one(look)}; selection ${one(await sel(page))}`);
+  await check("8 the chat is left during an outage: it is closed, the section has no row to open it from, and the selection names nothing of B", left === true && (PHONE || look.rows === 0) && !one(await sel(page)).includes(ENTRY), `${one(look)}; selection ${one(await sel(page))}`);
   await page.reload();
   await page.waitForSelector(ui.treeWait, { state: "attached" });
   const blank = await awayLook();
-  await holds("this computer's section is connected", async () => (await lookOf(A.name))?.state === "Connected" && (await lookOf(A.name)).rows > 0, { timeout: 60000 });
+  await holds("this computer's section is connected", async () => (await lookOf(A.name))?.state === "Connected" && hasRows(await lookOf(A.name)), { timeout: 60000 });
   const mineAgain = await lookOf(A.name);
-  await check("8 a reload of the page during the outage: nothing of B is known, the section says so, and this computer's section is full", blank === true && (await page.locator(`${q.remoteBar}, ${q.chatHeadServer}`).count()) === 0 && mineAgain?.state === "Connected" && mineAgain.rows > 0,
+  await check("8 a reload of the page during the outage: nothing of B is known, the section says so, and this computer's section is full", blank === true && (await page.locator(`${WARN}, ${q.chatHeadServer}`).count()) === 0 && mineAgain?.state === "Connected" && hasRows(mineAgain),
     `${one(await sectionLook())}; this computer's ${one(mineAgain)}`);
   setLink("pass");
   const again = await holds("the section has its rows again", async () => (await sectionLook())?.state === "Connected" && (await outline(page, B.name)).includes(`  chat ${IN_GROUP}`), { timeout: 60000 });
   await ui.openRow(page, rowOf(section(), "chat", IN_GROUP));
-  const opens = await holds("the chat opens with its thread", async () => (await msgs(page)).user.length === thread.user.length + 2 && (await page.locator(q.remoteBar).count()) === 0, { timeout: 30000 });
-  await check("8 B is back: the chat is in the section again and opens as usual", all(again, opens), counts(await msgs(page)));
+  // (the phone's thread is an inverted list that draws the newest items first and the older ones as it is scrolled up: the two messages of
+  // this step are what is read there)
+  const whole = (m) => PHONE ? m.user.some((t) => t.includes("while A was away")) && m.user.some((t) => t.includes(typed)) : m.user.length === thread.user.length + 2;
+  const opens = await holds("the chat opens with its thread", async () => whole(await msgs(page)) && (await page.locator(WARN).count()) === 0, { timeout: 30000 });
+  await check("8 B is back: the chat is in the section again and opens as usual", all(again, opens), `${counts(await msgs(page))}; warnings ${await page.locator(WARN).count()}`);
 
   // A reload during an outage with a chat of B selected: the chat that was open is closed.
   setLink("cut");
@@ -949,7 +1072,7 @@ async function step8() {
   await page.reload();
   await page.waitForSelector(ui.treeWait, { state: "attached" });
   await awayLook();
-  const closed = (await page.locator(`${q.msg}, ${q.remoteBar}, ${q.chatHeadServer}`).count()) === 0;
+  const closed = (await page.locator(`${q.msg}, ${WARN}, ${q.chatHeadServer}`).count()) === 0;
   await check("8 a reload during an outage with a chat of B open: the chat is closed, and nothing of it is on screen", closed, `selection ${one(await sel(page))}; main: ${(await page.locator("main").first().innerText().catch(() => "")).slice(0, 120)}`);
   setLink("pass");
   await waitFor("the section has its rows again", async () => (await sectionLook())?.state === "Connected" && (await outline(page, B.name)).includes(`  chat ${IN_GROUP}`), { timeout: 60000 });
@@ -958,7 +1081,7 @@ async function step8() {
   const reads = callsFrom(page);
   await ui.openRow(page, rowOf(section(), "chat", "Made meanwhile"));
   await box(page).waitFor();
-  await page.locator(q.chatHeadServer).waitFor();
+  if (!PHONE) await page.locator(q.chatHeadServer).waitFor(); // (the phone's head names the server only while it is in trouble)
   await waitFor("the chat's thread is read", async () => reads().some((c) => c.method === "GET" && /\/items\?/.test(c.path) && c.status === 200));
   setLink("cut");
   await bar.waitFor({ timeout: 30000 });
@@ -978,6 +1101,23 @@ async function step8() {
 /** "Test connection" of B's row in the Servers dialog, which makes an entry that waits for the user look again.
  *  true when the row then says `words` of the entry, else what it says. */
 async function testEntry(words) {
+  if (PHONE) { // (S2's screens: the detail's "Test connection"/"Test again" (`srv-test`, where the state offers one), then the list's row, whose label says the word and why)
+    await ui.openServers(page);
+    const prow = ui.serverRow(page, B.name);
+    const detail = await ui.openServerDetail(page, B.name);
+    const test = page.locator('[data-testid="srv-test"]').last();
+    if (await test.count()) {
+      await ui.click(page, test);
+      await page.locator('[data-testid="srv-result"]').last().waitFor({ timeout: 60000 }).catch(() => {}); // (the answer in place; the row below is what is read)
+    }
+    void detail;
+    await ui.stackBack(page);
+    const label = async () => ((await prow.first().getAttribute("aria-label").catch(() => "")) ?? "").toLowerCase();
+    const ok = await holds(`the row says "${words}"`, async () => (await label()).includes(words.toLowerCase()), { timeout: 60000 });
+    const seen = await label();
+    await ui.closeServers(page);
+    return ok === true ? true : `the row says "${seen}"`;
+  }
   await ui.openServers(page);
   const row = ui.serverRow(page, B.name);
   const said = () => row.locator(q.serversState).innerText().catch(() => "");
@@ -1015,7 +1155,7 @@ async function step9() {
   await A.stop();
   const dipped = await holds("this computer's section says that its server is not connected", async () => (await lookOf(A.name))?.state !== "Connected", { timeout: 30000 });
   const during = await lookOf(A.name);
-  const restarted = await holds("the app started this computer's server again: its section is connected", async () => (await lookOf(A.name))?.state === "Connected" && (await lookOf(A.name)).rows > 0, { timeout: 120000, every: 100 });
+  const restarted = await holds("the app started this computer's server again: its section is connected", async () => (await lookOf(A.name))?.state === "Connected" && hasRows(await lookOf(A.name)), { timeout: 120000, every: 100 });
   const aAfter = host1.client.localInfo()?.pid;
   await check("9 this computer's server stops while the page is open: its section says so, the app starts it again by itself with the page not loaded again, and B's section did not move",
     all(dipped, restarted) === true && aAfter !== aBefore && (await page.evaluate(() => window.__notReloaded === true)) && (await sectionLook())?.state === "Connected",
@@ -1029,8 +1169,8 @@ async function step9() {
   await host2.close();
   await B.stop();
   await check("9 B's process stops: the section says that B is not connected and the one line, with no row", await awayLook(), one(await sectionLook()));
-  const kept = (await page.locator(q.msg).count()) > 0 && (await page.locator(q.remoteBarOff).count()) === 1;
-  await check("9 the open chat stays on screen under the warning", kept, `messages ${await page.locator(q.msg).count()}; bars ${await page.locator(q.remoteBarOff).count()}`);
+  const kept = (await page.locator(q.msg).count()) > 0 && (await ui.offWarning(page).count()) === 1;
+  await check("9 the open chat stays on screen under the warning", kept, `messages ${await page.locator(q.msg).count()}; bars ${await ui.offWarning(page).count()}`);
 
   // This computer's server stops during B's outage: it kept nothing of B, and the page that reloads knows nothing of B.
   await A.stop();
@@ -1052,10 +1192,13 @@ async function step9() {
   link.target = oldPort;
   link.set("cut");
   link.set("pass");
-  const tooOld = await holds("the section says that the server is too old, with its version", async () => {
-    const l = await sectionLook();
-    return l.state === "Too old" && l.tone === "bad" && l.rows === 0 && !l.add && one(l.lines) === one(["Update the server on that machine.", "Version 0.4.0-old"]);
-  }, { timeout: 60000 });
+  const tooOld = PHONE
+    // (Home: the word "too-old", and the problem card names the version)
+    ? await holds("Home says that the server is too old, with its version", async () => (await ui.homeWord(page, ENTRY)) === "too-old" && (await ui.showHome(page, ENTRY), (await page.locator(`${q.problemCard}[data-server=${JSON.stringify(ENTRY)}]`).first().innerText().catch(() => "")).includes("0.4.0-old")), { timeout: 60000 })
+    : await holds("the section says that the server is too old, with its version", async () => {
+      const l = await sectionLook();
+      return l.state === "Too old" && l.tone === "bad" && l.rows === 0 && !l.add && one(l.lines) === one(["Update the server on that machine.", "Version 0.4.0-old"]);
+    }, { timeout: 60000 });
   await check("9 a server below the level: the section says that it is too old and must be updated on that machine, with the version it reports, and shows nothing else", tooOld, one(await sectionLook()));
   await shot("too-old", page);
 
@@ -1079,7 +1222,7 @@ async function step9() {
     link.target = port;
     link.set("pass");
     const listed = await testEntry(words);
-    const look = await awayLook(words);
+    const look = PHONE ? await awayHome(words, { card: words !== "Certificate changed" }) : await awayLook(words);
     await check(`9 "${words}": the section says the words the Servers dialog has for the entry and the one line, and shows nothing else`, all(listed, look), `the dialog: ${listed}; ${one(await sectionLook())}`);
     await shot(words.toLowerCase().replace(/[^a-z]+/g, "-"), page);
     await srv.close();
@@ -1094,7 +1237,7 @@ async function step9() {
   // test of the entry leaves it as it is (its row offers the fingerprint to accept). The app is started again (its host
   // is: the state of a connection is not kept): the entry then connects by itself.
   const waits = await testEntry("Certificate changed");
-  await check('9 B\'s own certificate is behind the address again: the entry that saw another one still says "Certificate changed" after a test, and its section with it', all(waits, await awayLook("Certificate changed")), `the dialog: ${waits}; ${one(await sectionLook())}`);
+  await check('9 B\'s own certificate is behind the address again: the entry that saw another one still says "Certificate changed" after a test, and its section with it', all(waits, PHONE ? await awayHome("Certificate changed") : await awayLook("Certificate changed")), `the dialog: ${waits}; ${one(await sectionLook())}`);
   const hostPort = host1.port;
   await host1.close();
   host1 = await hostFor({ out: OUT, name: "page", local: A, extra: { dial: (o) => net.connect(o.port === A.port ? o : { host: "127.0.0.1", port: link.port }), timing: parseAppWaits("backoff=3s,tooold=4s"), port: hostPort } });
@@ -1106,8 +1249,9 @@ async function step9() {
   const after = await census();
   await check("9 the updated server is behind the address again: the entry connects by itself, and the section shows B's tree as it is", back === true && one(before) === one(after), `${one(await sectionLook())}; B had ${one(before)}, has ${one(after)}`);
   await ui.openRow(page, rowOf(section(), "chat", IN_GROUP));
-  const opens = await holds("the chat opens with its thread and no warning", async () => (await page.locator(q.msgAssistant).count()) > 0 && (await page.locator(q.remoteBar).count()) === 0 && !(await page.locator(q.send).getAttribute("title"))?.includes("not connected"), { timeout: 30000 });
-  await check("9 a chat of the section opens as usual again", opens, `messages ${await page.locator(q.msg).count()}; bars ${await page.locator(q.remoteBar).count()}`);
+  // (the phone's empty box has Talk, not Send: no warning is what is read there)
+  const opens = await holds("the chat opens with its thread and no warning", async () => (await page.locator(q.msgAssistant).count()) > 0 && (await ui.anyWarning(page).count()) === 0 && (PHONE || !(await page.locator(q.send).getAttribute("title"))?.includes("not connected")), { timeout: 30000 });
+  await check("9 a chat of the section opens as usual again", opens, `messages ${await page.locator(q.msg).count()}; bars ${await ui.anyWarning(page).count()}`);
 }
 
 /** Calls whose answers do not arrive: B takes them, and what it answers is held back by the link. */
@@ -1118,7 +1262,7 @@ async function stepLost() {
   const had = new Set((await stateOf(B)).chats.map((c) => c.id));
   setLink("mute");
   const t0 = Date.now();
-  await plus(page, section().locator(q.sectionHead), "Chat");
+  await makeOnB("Chat");
   const dlg = page.locator(q.dialog);
   const said = await holds("the page says that the chat could not be started", async () => (await dlg.innerText().catch(() => "")).includes("Couldn't start the chat"), { timeout: 60000, every: 250 });
   const text = (await dlg.innerText().catch(() => "")).replace(/\n/g, " / ");
@@ -1127,7 +1271,7 @@ async function stepLost() {
   await page.keyboard.press("Escape");
   await dlg.waitFor({ state: "detached" }).catch(() => {});
   setLink("pass");
-  const shows = await holds("the chat that was made shows in the section", async () => (await connected(1000)) === true && (await section().locator(q.chatRow).count()) === (await stateOf(B)).chats.filter((c) => !c.board && !c.run && !c.archived).length, { timeout: 60000 });
+  const shows = await holds("the chat that was made shows in the section", async () => (await connected(1000)) === true && (PHONE ? (await outline(page, B.name)).filter((l) => l.trim().startsWith("chat ")).length : await section().locator(q.chatRow).count()) === (await stateOf(B)).chats.filter((c) => !c.board && !c.run && !c.archived).length, { timeout: 60000 });
   await sleep(3000);
   const still = (await stateOf(B)).chats.some((c) => c.id === made[0]?.id);
   await check("M the answers flow again: the chat that was made shows in the section like any other, and nothing deletes it", all(shows, still || "B no longer has the chat"), `on B: ${still}`);
@@ -1135,30 +1279,42 @@ async function stepLost() {
 
 async function step10() {
   // A chat of B is on screen when its entry is removed.
-  await waitFor("the section has its rows", async () => (await sectionLook())?.state === "Connected" && (await rowOf(section(), "chat", IN_GROUP).count()) === 1, { timeout: 60000 });
+  await waitFor("the section has its rows", async () => (await sectionLook())?.state === "Connected" && (PHONE ? (await outline(page, B.name)).includes(`  chat ${IN_GROUP}`) : (await rowOf(section(), "chat", IN_GROUP).count()) === 1), { timeout: 60000 });
   await ui.openRow(page, rowOf(section(), "chat", IN_GROUP));
   await page.locator(q.msgAssistant).first().waitFor({ timeout: 20000 });
   const before = await census();
-  const dlg = await ui.openServers(page);
   const row = ui.serverRow(page, B.name);
-  await ui.click(page, ui.button(row, "Remove"));
-  const ask = page.locator(q.dialog).filter({ has: page.locator(q.dialogTitle, { hasText: /^Remove server$/ }) });
-  const body = await ask.locator(q.dialogBody).innerText();
-  await check("10 the question before the removal says that everything stays on that server, and counts nothing",
-    body.includes(`"${B.name}"`) && /stay there/.test(body) && /Nothing is deleted or stopped on that server/.test(body) && !/\d/.test(body.replace(B.name, "")), body);
-  await ui.click(page, ui.button(ask, "Remove"));
+  let ask;
+  if (PHONE) { // (S2's detail: "Remove server…" asks in a confirm sheet; its title names the server, its body says what stays)
+    await ui.openServerDetail(page, B.name);
+    await ui.click(page, page.locator('[data-testid="srv-remove"]'));
+    ask = page.locator('[data-testid="confirm-dialog"], [data-testid="confirm-sheet"]').last();
+    await ask.waitFor();
+    const title = (await ask.locator('[data-testid="confirm-title"]').innerText()).trim(), text = (await ask.locator('[data-testid="confirm-body"]').innerText()).trim();
+    await check("10 the question before the removal says that everything stays on that server, and counts nothing",
+      title.includes(B.name) && /stay there/.test(text) && /Nothing is deleted or stopped on /.test(text) && !/\d/.test(text.replace(B.name, "")), `${title} / ${text}`);
+    await ui.click(page, ask.locator('[data-testid="confirm-go"]'));
+  } else {
+    await ui.openServers(page);
+    await ui.click(page, ui.button(row, "Remove"));
+    ask = page.locator(q.dialog).filter({ has: page.locator(q.dialogTitle, { hasText: /^Remove server$/ }) });
+    const body = await ask.locator(q.dialogBody).innerText();
+    await check("10 the question before the removal says that everything stays on that server, and counts nothing",
+      body.includes(`"${B.name}"`) && /stay there/.test(body) && /Nothing is deleted or stopped on that server/.test(body) && !/\d/.test(body.replace(B.name, "")), body);
+    await ui.click(page, ui.button(ask, "Remove"));
+  }
   const removed = await holds("the entry is gone", async () => (await entry()) === null && (await row.count()) === 0, { timeout: 15000 });
   await ui.closeServers(page);
-  const gone = await holds("the section is gone", async () => (await page.locator(q.section).count()) === 1, { timeout: 15000 });
+  const gone = await holds("the section is gone", async () => PHONE ? (await page.locator(q.serverChip).count()) === 0 : (await page.locator(q.section).count()) === 1, { timeout: 15000 }); // (one server left: Home draws no chips)
   const listAfter = JSON.parse(fs.readFileSync(path.join(host1.stateDir, "servers.json"), "utf8"));
-  await check("10 the entry is removed: its section leaves the sidebar, this computer's stays, and the app's list holds no entry", all(removed, gone) === true && listAfter.servers.length === 0, `sections on the page ${await page.locator(q.section).count()}; the app's list ${one(listAfter.servers.map((v) => v.name))}`);
+  await check("10 the entry is removed: its section leaves the sidebar, this computer's stays, and the app's list holds no entry", all(removed, gone) === true && listAfter.servers.length === 0, `sections on the page ${PHONE ? "(phone: chips " + await page.locator(q.serverChip).count() + ")" : await page.locator(q.section).count()}; the app's list ${one(listAfter.servers.map((v) => v.name))}`);
   const shut = await holds("the chat of B that was open is closed", async () => (await page.locator(`${q.thread}, ${q.chatHeadServer}, ${q.composer}`).count()) === 0 && !one(await sel(page)).includes(ENTRY), { timeout: 10000 });
   await check("10 the chat of that server that was open is closed with it: a removed entry is no outage, and nothing of it stays on screen", shut, `selection ${one(await sel(page))}; main: ${(await page.locator("main").first().innerText().catch(() => "")).replace(/\s+/g, " ").slice(0, 100)}`);
   await sleep(1500);
   const after = await census();
   await check("10 B still has everything: its groups, boards and chats", one(before) === one(after) && after.chats > 0, `before ${one(before)}; after ${one(after)}`);
   const local = await outline(page);
-  await check("10 the local part is as it was", one(local) === one([`chat ${HERE}`, `group ${LOCAL_GROUP}`]) && (await stored(page, "aiwb.collapsed")) === "[]", `${lines(local)}; stored collapse ${await stored(page, "aiwb.collapsed")}`);
+  await check("10 the local part is as it was", one(local) === one(PHONE ? [`chat ${HERE}`] : [`chat ${HERE}`, `group ${LOCAL_GROUP}`]) && (PHONE || (await stored(page, "aiwb.collapsed")) === "[]"), `${lines(local)}; stored collapse ${await stored(page, "aiwb.collapsed")}`);
   const kept = await page.evaluate((entry) => Object.keys(localStorage).filter((k) => (localStorage.getItem(k) ?? "").includes(entry) || k.includes(entry)), ENTRY);
   await check("10 the browser's storage holds nothing of B", kept.length === 0, one(kept));
 }
@@ -1177,10 +1333,14 @@ try {
   if (!ENTRY) throw new Error("B was not added to the page's server list: nothing else can be shown");
   await step("2 the owner's things", step2);
   await step("3 making from the section", step3);
-  await step("4 groups", step4);
-  await step("5 moving and dragging", step5);
-  await step("6 collapse and Show archived", step6);
-  await step("6 more entries, which never connect", step6b);
+  // (Home has no counterpart of steps 4 to 6: a group is renamed, moved, archived and deleted from the row's sheet, which H2 adds; there is no drag,
+  // no fold of a section, no sections' lines for entries that never connect, and "Show archived" is a switch of Settings. The wide layouts run them.)
+  if (!PHONE) {
+    await step("4 groups", step4);
+    await step("5 moving and dragging", step5);
+    await step("6 collapse and Show archived", step6);
+    await step("6 more entries, which never connect", step6b);
+  }
   await step("7 a chat with two pages", step7);
   try { process.kill(B.info.pid, "SIGCONT"); } catch { /* running */ }
   await step("7 the other page's settings and Stop", step7b);

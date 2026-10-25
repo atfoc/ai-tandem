@@ -138,6 +138,10 @@
 //                                           (the board needs a scene: the seed's, or one that othersave makes)
 //   onCalls                                 every call the client was asked for: { server, method, path, body? }
 //   worlds[id]                              a machine as the mock holds it ("local": this computer)
+//   await uxh2Away(id)                      a server the section UXH2 made goes unreachable once the page has its tree (see the block `// ---- ux-h2`)
+//   uxh1Show(ids, { connected }), uxh1NoServers(), uxh1DropAttic(), uxh1Reset()
+//                                           which servers Home's states show: the machines the seed UXH1 made (dev/mock-ui.js), listed
+//                                           as the state needs them; each is explained in the block `// ---- ux-h1` below
 //   await rpc(call, { server, timeout })    a board tool call of an agent, as the server relays one: the page gets an `rpc` event
 //                                           whose params are `call` ({ chat, branch?, board, target, name, args }: `name` is
 //                                           read_board, get_view, get_image, apply, delete_elements or show_board; `target` the
@@ -431,11 +435,23 @@ function treeItems(list, at) {
   }
   return out;
 }
+// ux-t3: what the UXT3 section of mock-ui.js holds for Chat info and Context and usage (the mock has neither by itself):
+//   ux3.context[chat]   the answer of GET …/chats/<id>/context for that chat (the split by category); other chats get the mock's one
+//   ux3.plan            the plan limits [{ kind, label, percent, inMs }] GET /api/usage/<agent> answers while it is set (a check sets it
+//                       through /mock/eval and deletes it: `ux3.plan = [...]`, `ux3.plan = null`); null: "The mock has no plan limits."
+//   ux3.labels[chat]    the labels of the chat's tree [{ branch, item, text }]; PUT …/label sets one, a blank text removes it, as the server does
+const ux3 = { context: {}, plan: null, labels: {} };
+function ux3Label(id, b) {
+  const list = (ux3.labels[id] ??= []), at = list.findIndex((l) => l.branch === b.branch && l.item === b.item);
+  if (at >= 0) list.splice(at, 1);
+  if (String(b.text ?? "").trim()) list.push({ branch: b.branch, item: b.item, text: b.text });
+  return { labels: list };
+}
 const branchView = (b) => ({ id: b.id, ...(b.from ? { from: b.from } : {}), at: b.at, len: b.items.length, items: treeItems(b.items, b.at) });
 /** One branch's own part of a chat's tree. */
 const treePart = (id, branch) => (branch === "main" ? branchView({ id: "main", at: 0, items: listOf(id) }) : branchView(branches[id].find((b) => b.id === branch)));
 /** GET /api/chats/{id}/tree: main first, then the branches in the order they were made. */
-const treeOf = (id) => ({ current: curOf(chats[id]), branches: [treePart(id, "main"), ...(branches[id] ?? []).map(branchView)], labels: [] });
+const treeOf = (id) => ({ current: curOf(chats[id]), branches: [treePart(id, "main"), ...(branches[id] ?? []).map(branchView)], labels: ux3.labels[id] ?? [] });
 
 // ---- the stream
 
@@ -673,6 +689,69 @@ function removeServer(id) {
   return true;
 }
 
+// ---- ux-h1: the servers of Home's states (the section UXH1 of mock-ui.js)
+// The section makes its machines (uxh1Make: each with its tree, and in no list), and a state shows the ones it needs:
+//   uxh1Show(ids, { connected })   the servers besides this computer's are exactly these registered ones, in this order, each as the
+//                                  section made it (a server named in `connected` is served connected, with its tree); [] is no server
+//                                  at all. The page is told (resync). The list as it was is kept for uxh1Reset
+//   uxh1NoServers()                uxh1Show([]): no server at all besides this computer's (a page with the web build's knob
+//                                  `localStorage` `aiwb.uicheck.nolocal` = "1" then has no entry: Home's first run)
+//   await uxh1DropAttic()         Attic (h1_attic), served connected by uxh1Show, goes unreachable once the page has its tree: it waits
+//                                  for the stream and a moment after it (the app keeps its last copy of the tree, faded); with no page
+//                                  open it drops at once
+//   uxh1Reset()                    the list as it was before the first uxh1Show (what a state leaves for the next one)
+const uxh1 = { held: new Map(), before: null };
+const UXH1_ATTIC = "h1_attic";
+/** The section's way to make a machine: its entry and `lists`, a tree built by `build` (run on it), and out of the list again. */
+function uxh1Make(entry, lists, build) {
+  delete worlds[entry.id]; // each machine anew
+  addServer(entry, { lists });
+  if (build) onServer(entry.id, build);
+  uxh1.held.set(entry.id, { entry: clone(entry), lists });
+  removeServer(entry.id);
+}
+function uxh1Show(ids = [], { connected = [] } = {}) {
+  uxh1.before ??= { servers: extra.servers.map((e) => (e.id === "local" ? e : { ...e })), lists: { ...extra.lists } };
+  for (const e of extra.servers) if (e.id !== "local") { up.delete(e.id); closeStream(e.id); }
+  extra.servers = [extra.servers[0]];
+  for (const id of ids) {
+    const h = uxh1.held.get(id);
+    if (!h) throw new Error(`the section UXH1 made no server ${id}`);
+    addServer({ ...clone(h.entry), ...(connected.includes(id) ? { state: "connected", version: "dev" } : {}) }, { lists: h.lists });
+    if (connected.includes(id)) delete extra.servers.find((e) => e.id === id).detail;
+  }
+  resync();
+}
+const uxh1NoServers = () => uxh1Show([]);
+async function uxh1DropAttic() {
+  if (sub) {
+    for (let i = 0; i < 100 && !sub.opened.has(UXH1_ATTIC); i++) await wait(100);
+    await wait(3000); // (the page reads the snapshot and Home keeps its copy: on a loaded machine the page draws long after the stream opens)
+  }
+  return setServerState(UXH1_ATTIC, "unreachable", { detail: "connection refused" });
+}
+function uxh1Reset() {
+  const b = uxh1.before;
+  if (!b) return;
+  uxh1.before = null;
+  for (const e of extra.servers) if (e.id !== "local") { up.delete(e.id); closeStream(e.id); }
+  extra.servers = b.servers; extra.lists = b.lists;
+  for (const e of b.servers) if (e.state === "connected") up.add(e.id);
+  resync();
+}
+
+// ---- ux-h2: a server of the section UXH2 that goes away (the seed is in mock-ui.js, the machines are made by uxh1Make above)
+// uxh2Away(id): the server `id` (a machine of UXH2, listed by uxh1Show and served connected) goes unreachable once the page has its tree: it waits for
+// the stream and a moment after it (the app keeps its last copy of the tree, faded: Home's trouble state, the search's faded results); with no page
+// open it drops at once. The generalised uxh1DropAttic.
+async function uxh2Away(id) {
+  if (sub) {
+    for (let i = 0; i < 100 && !sub.opened.has(id); i++) await wait(100);
+    await wait(3000);
+  }
+  return setServerState(id, "unreachable", { detail: "connection refused" });
+}
+
 /** A change made on a server from elsewhere, as its owner or another client of it makes one: the call `method path`
  *  (the path as under /api: "/chats", "/groups/g_x/move", …) with `body`, answered by that machine, whose events go
  *  to the pages as that server's. `id` "local": on this computer, as another window does it. Answers { status, body }.
@@ -875,6 +954,8 @@ async function chatRoute(req, res, id, rest) {
   }
   if ((m = /^\/subagents\/([^/]+)\/items$/.exec(rest)) && M === "GET") return answer(res, { version: 1, items: subItems[`${id}/${m[1]}`] ?? [] });
   if (rest === "/tree" && M === "GET") return answer(res, treeOf(id));
+  if (rest === "/context" && M === "GET" && ux3.context[id]) return answer(res, ux3.context[id]); // ux-t3
+  if (rest === "/label" && M === "PUT") return answer(res, ux3Label(id, await body(req))); // ux-t3
   if (rest === "/context" && M === "GET") return answer(res, { atMessage: 0, atTurn: 0, total: 42900, window: 200000, categories: [{ id: "messages", label: "Messages", tokens: 42900, kind: "used" }, { id: "free", label: "Free space", tokens: 157100, kind: "free" }] });
   if (rest === "/open" && M === "POST") return answer(res);
   if (rest === "/permission" && M === "POST") { await body(req); return answer(res); }
@@ -1176,6 +1257,7 @@ async function apiRoute(req, res, u) {
     if (!exists(dir)) return json(res, { error: `${dir} is not a directory` }, 400);
     return json(res, { path: dir, parent: path.dirname(dir), dirs: TREE[dir] });
   }
+  if (/^\/api\/usage\/[^/]+$/.test(p) && ux3.plan) return json(res, { plan: true, fetchedAt: iso(Date.now() - 3 * MIN), limits: ux3.plan.map((l) => ({ ...l, resetsAt: iso(Date.now() + l.inMs) })) }); // ux-t3
   if (/^\/api\/usage\/[^/]+$/.test(p)) return json(res, { plan: false, note: "The mock has no plan limits.", limits: [], fetchedAt: iso(Date.now()) });
   if (await treeRoute(req, res, p.slice(4), u) !== false) return;
   await body(req);
@@ -1271,6 +1353,23 @@ function badForm(f, whole) {
   return null;
 }
 const wait2 = (k, ms) => wait(k?.delay ?? ms);
+// ux-s2: the certificate a server presents, per host (flags.certs = { "<host>": "AA:BB:… (32 pairs)" }; off unless set, so every other
+// check sees the answers as before). A form (servers.test, servers.add) for such a host is answered by comparing its pin with that certificate.
+const certOf = (f) => {
+  const host = /^https:\/\/([^/:]+)/i.exec(String(f?.address ?? "").trim())?.[1]?.toLowerCase();
+  return host && flags.certs ? Object.entries(flags.certs).find(([h]) => h.toLowerCase() === host)?.[1] ?? null : null;
+};
+const flatPrint = (x) => String(x ?? "").replace(/[:\s]/g, "").toUpperCase();
+const CERT_CHANGED = (fingerprint, pinned) => ({ ok: false, step: 3, outcome: "cert_changed", message: "Certificate changed", fingerprint, ...(pinned !== undefined ? { pinned } : {}) });
+/** The test's answer for a form whose host presents a certificate, or null when flags.certs does not name the host. */
+const certTest = (f) => {
+  const fingerprint = certOf(f);
+  if (!fingerprint) return null;
+  if (!f.pin) return { ok: false, step: 3, outcome: "fingerprint", message: "Compare this fingerprint with the one shown on the other machine, then accept it", fingerprint };
+  if (flatPrint(f.pin) === flatPrint(fingerprint)) return { ok: true, step: 5, outcome: "connected", message: "Connected", version: "1.8.2", agents: ["claude", "cursor"] };
+  return CERT_CHANGED(fingerprint, f.pin);
+};
+// end ux-s2
 const refusedBody = (status, error, code) => ({ status, body: { error, ...(code ? { code } : {}) } });
 /** Every app operation the client was asked for: { op, args }, a form's or a patch's secret told by its length ("<12 characters>"). */
 const appCalls = [];
@@ -1299,10 +1398,14 @@ async function app(op, args) {
       if (bad) return refusedBody(400, bad[0], bad[1]);
       const address = f.address.trim().toLowerCase(), twin = extra.servers.find((x) => x.address?.toLowerCase() === address);
       if (twin) return refusedBody(409, `${twin.name} is already in the list at that address.`, "duplicate");
+      // ux-s2
+      const certs = certTest(f);
+      if (certs && f.pin && !certs.ok) return ok({ saved: false, result: certs });
+      // end ux-s2
       const entry = { id: "s_" + hex12(), name: f.name.trim(), address: f.address.trim(), selfSigned: !!f.selfSigned, ...(f.pin ? { pin: f.pin.toUpperCase() } : {}), state: "connecting" };
       addServer(entry, { lists: OFFERS });
       emit(serversEvent());
-      setTimeout(() => setServerState(entry.id, "connected", { version: "dev" }), 30);
+      setTimeout(() => setServerState(entry.id, "connected", { version: certOf(f) && f.pin ? "1.8.2" : "dev" }), 30); // (ux-s2: 1.8.2 of a certificate flags.certs names)
       return ok({ saved: true, server: viewOf(entry) });
     }
     case "servers.edit": {
@@ -1326,6 +1429,10 @@ async function app(op, args) {
       const e = op === "servers.testSaved" ? find(a.id) : null;
       if (op === "servers.testSaved") { if (!e) return refusedBody(404, "This server is not in the list."); if (local(e, "tested")) return local(e, "tested"); }
       else if (badForm(a.form ?? {}, true)?.[1] === "bad_address") return ok({ ok: false, step: 1, outcome: "bad_address", message: "That is not an address of the form https://host:port." });
+      // ux-s2
+      if (e) { if (e.state === "certificate_changed" && e.fingerprint) return ok(CERT_CHANGED(e.fingerprint, e.pin)); }
+      else if (certTest(a.form ?? {})) return ok(certTest(a.form));
+      // end ux-s2
       return ok({ ok: true, step: 5, outcome: "connected", message: "Connected.", version: "dev", agents: ["claude"] });
     }
     case "servers.accept": {

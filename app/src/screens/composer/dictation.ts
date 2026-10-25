@@ -1,6 +1,6 @@
 // What the composer lends to voice's controls (architecture §8.1, speech mode's send): its text box, as four small things. The composer provides it
 // (Composer.tsx), the control (screens/voice/ComposerVoice.tsx) takes it from the context, so that neither imports the other. No react-native here.
-import { createContext } from "react";
+import { createContext, useSyncExternalStore } from "react";
 
 export type DictationBox = {
   /** The text the box holds now. */
@@ -17,3 +17,24 @@ export type DictationBox = {
 
 /** null outside a composer (a control drawn with no box does nothing). */
 export const DictationBoxContext = createContext<DictationBox | null>(null);
+
+// ux-v1: the live guess of a dictation on the phone. There the box takes the finished words only; the guess (the words the service is not sure of
+// yet) is published here by the control and drawn muted under the text by the box (screens/voice/DictateLine.tsx), and is not the box's value.
+const guesses = new Map<string, string>();
+const listeners = new Set<() => void>();
+
+/** Publishes the live guess of the dictation of `chat` ("" none). */
+export function setDictationGuess(chat: string, text: string): void {
+  if ((guesses.get(chat) ?? "") === text) return;
+  if (text) guesses.set(chat, text); else guesses.delete(chat);
+  for (const l of [...listeners]) l();
+}
+
+/** The live guess of the dictation of `chat`, as it changes. */
+export function useDictationGuess(chat: string): string {
+  return useSyncExternalStore(
+    (l) => { listeners.add(l); return () => { listeners.delete(l); }; },
+    () => guesses.get(chat) ?? "",
+    () => "",
+  );
+}

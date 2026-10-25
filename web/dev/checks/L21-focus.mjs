@@ -11,8 +11,9 @@
 //   (d) An overlay over an overlay: Tab cycles in the top one only, and closing it gives the focus to the one under it (the library's dialog with a question over it: Cancel and Esc give
 //       the focus to the button that asked; a menu's pick that asks gives it to where the menu came from).
 import { callMatcher, check, mockEval, seed, until } from "../shot.mjs";
-import { byTid, longPress, press, showList, tidSel } from "./sel.mjs";
-import { chip, openState } from "./composer.mjs";
+import { back, byTid, longPress, openFoot, press, showList, tidSel } from "./sel.mjs";
+import { pressSheetRow } from "./libphone.mjs";
+import { chip, closeChoice, openChoice, openState, phoneChip } from "./composer.mjs";
 import { firstMsg, menuOfRow, openTree, pressAct, treeRow } from "./fork.mjs";
 
 export const viewports = ["desktop", "tablet", "phone"];
@@ -54,7 +55,8 @@ await check("L21 the overlays' focus: a field opened by a menu keeps it, a menu 
     await until(async () => !await byTid(page, "fk-label-field").count(), 5000);
     await openTree(page);
     await menuOfRow(page, treeRow(page, "text", "Because of the font copy step"));
-    await press(page, byTid(page, "fk-ctx-item", { kind: "label" }).first());
+    // (the phone's row has a sheet of actions, the wide layouts' a menu: both end in the label field)
+    await press(page, layout === "phone" ? byTid(page, "action-row", { action: "label" }).first() : byTid(page, "fk-ctx-item", { kind: "label" }).first());
     await typedInto(page, "fk-label-input", "Tree", say, "Label from a row's menu over the tree popup");
     await page.keyboard.press("Enter");
     if (!await until(async () => !await byTid(page, "fk-label-input").count(), 5000)) say("Enter in the tree's label field did not end it");
@@ -66,10 +68,44 @@ await check("L21 the overlays' focus: a field opened by a menu keeps it, a menu 
   const sel = seeded.find((s) => s.id === "plain-started")?.sel ?? fail("the seed has no state plain-started");
   const fresh = seeded.find((s) => s.id === "plain-new") ?? fail("the seed has no state plain-new");
   await mockEval(`setServers([]); setLibrary("local", ${JSON.stringify(LIBRARY)});`, url);
-  {
+  if (layout === "phone") {
+    // The phone has no library dialog: the library is S4's pushed screens (Settings › Prompt library, `lib-screen`), its "+" a sheet of New prompt / New group, the prompt editor a form
+    // sheet (`prompt-editor`) and a leave with a change a question over it (`confirm-sheet`). Wide-only, so not asserted here (goal 3.1.3: keyboard focus rules are for a keyboard):
+    // the focus a closing overlay gives back to its opener, Tab and Shift+Tab staying in the top overlay, a row's menu with its first entry focused. Kept: a field the press
+    // opens has the focus at once and keeps it, and the question over the form asks, keeps the text on "Keep editing" and ends the form on "Discard changes".
     const { page, ctx } = await open({ sel, wait: tidSel("composer-input") });
-    await showList(page);
-    const button = byTid(page, "library-btn").first();
+    await openFoot(page, "library-btn");
+    await byTid(page, "lib-screen").last().waitFor({ state: "visible", timeout: 15000 });
+    await press(page, byTid(page, "lib-plus").last());
+    await pressSheetRow(page, "action-sheet", "new-prompt");
+    await byTid(page, "prompt-editor").last().waitFor({ state: "visible", timeout: 15000 });
+    await typedInto(page, "editor-name", "fresh", say, "New prompt from the library's \"+\"");
+
+    // (d) a question over the form: unsaved text, then Cancel; the question asks, Keep editing keeps the form and its text, and Discard changes ends it
+    await byTid(page, "editor-text").first().fill("Not saved yet.");
+    for (const how of ["Keep editing", "Discard changes"]) {
+      await press(page, byTid(page, "sheet-left").last());
+      const Q = byTid(page, "confirm-sheet");
+      await Q.last().waitFor({ state: "visible", timeout: 10000 }).catch(() => say(`${how}: Cancel on a changed prompt asked nothing`));
+      if (how === "Keep editing") {
+        await press(page, byTid(page, "confirm-cancel").last());
+        if (!await until(async () => !await Q.count(), 10000)) say("Keep editing left the question open");
+        if (!await byTid(page, "prompt-editor").count()) say("Keep editing closed the form too");
+        else if (await byTid(page, "editor-text").first().inputValue().catch(() => null) !== "Not saved yet.") say("Keep editing lost the text");
+      } else {
+        await press(page, byTid(page, "confirm-go").last());
+        if (!await until(async () => !await byTid(page, "prompt-editor").count() && !await Q.count(), 10000)) say("Discard changes left the form or the question open");
+        if (!await byTid(page, "lib-screen").last().isVisible()) say("Discard changes closed the library screen too");
+      }
+    }
+    await back(page);
+    if (!await until(async () => !await byTid(page, "lib-screen").last().isVisible().catch(() => false), 10000)) say("back did not leave the library screen");
+    note("phone: the library is S4's pushed screens; the focus handed back to the opener, the Tab ring of an overlay, the first entry of a row's menu are wide-only keyboard rules (goal 3.1.3) and are not asserted at the phone; what is: the editor's name field has the focus at once, and the question over the form keeps the text on Keep editing and ends the form on Discard changes");
+    await ctx.close();
+  }
+  if (layout !== "phone") {
+    const { page, ctx } = await open({ sel, wait: tidSel("composer-input") });
+    const button = (await showList(page), byTid(page, "library-btn").first());
     await press(page, button);
     const D = byTid(page, "library-dialog");
     await D.waitFor({ state: "visible", timeout: 15000 });
@@ -125,7 +161,42 @@ await check("L21 the overlays' focus: a field opened by a menu keeps it, a menu 
   }
 
   // ---- (b) a menu gives the focus back to its trigger: Esc, a pick, a press on the dimmed page; (c) Tab stays in it
-  {
+  if (layout === "phone") {
+    // The phone's chips open sheets (the kit's, which own their focus: no focus ring at the phone, goal 3.1.3). What a sheet does with the focus: it takes it in (the top overlay has it
+    // or the page has none), Esc, Done and a press on the dimmed page close it, and a sheet closed leaves the focus on its chip or nowhere, never inside the sheet that is gone. Tab (c) is
+    // the desktop's rule (a hardware keyboard on a tablet), and is not asked of a finger's sheet.
+    const { page, ctx } = await openState(open, fresh, layout, 0);
+    await phoneChip(page, "model").waitFor({ state: "visible", timeout: 15000 });
+    const sheetOpen = () => byTid(page, "model-sheet");
+    const settled = async (how) => { // the focus a closed sheet leaves: its chip, the box or nothing; never an element of a sheet or of a layer
+      if (!await until(async () => !(await sheetOpen().count()), 8000)) return say(`${how}: the model sheet stays open`);
+      await page.evaluate(() => new Promise((ok) => requestAnimationFrame(() => requestAnimationFrame(() => ok()))));
+      const w = await where(page);
+      if (w.over || !["tchip", "nothing", "composer-input"].includes(w.id)) say(`${how}: the model sheet closed with the focus on ${w.id} (${w.over} layer(s) still modal), not on its chip or nowhere`);
+    };
+    for (const how of ["Done", "Esc", "a press outside", "a pick"]) {
+      await openChoice(page, "model");
+      const w = await where(page);
+      if (w.id !== "nothing" && !w.top) say(`${how}: the model sheet opened with the focus on ${w.id}, outside it`);
+      if (how === "Done") await press(page, byTid(page, "sheet-right").first());
+      else if (how === "Esc") await page.keyboard.press("Escape");
+      else if (how === "a press outside") await press(page, byTid(page, "overlay-backdrop").last(), { position: { x: 5, y: 5 } });
+      else { // a model's row keeps the sheet open: Done closes it
+        await press(page, byTid(page, "picker-row").first());
+        if (!await sheetOpen().count()) say("a pick: a model's row closed the sheet: it stays open for the effort");
+        await closeChoice(page);
+      }
+      await settled(how);
+    }
+    // the agent sheet closes with a pick
+    if (await phoneChip(page, "agent").count()) {
+      await openChoice(page, "agent");
+      await press(page, byTid(page, "picker-row").first());
+      if (!await until(async () => !(await byTid(page, "agent-sheet").count()), 8000)) say("a pick in the agent sheet left it open");
+      else { const w = await where(page); if (w.over || !["tchip", "nothing", "composer-input"].includes(w.id)) say(`the agent sheet closed with the focus on ${w.id}, not on its chip or nowhere`); }
+    }
+    await ctx.close();
+  } else {
     const { page, ctx } = await openState(open, fresh, layout, 0);
     const trigger = chip(page, "model").first();
     await trigger.waitFor({ state: "visible", timeout: 15000 });

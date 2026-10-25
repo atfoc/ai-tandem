@@ -5,17 +5,21 @@
 // again by any of it. Ports the board parts of dev/checks/AAC.2-localdown.mjs (B4, S1) to the new build, at all three viewports; the chat parts are
 // the chat view's (S4, AAC.2-localdown.mjs). Deviations: the drawing is made by the viewport's pointer (boarddraw.mjs); the banner and the note
 // are read by their testIDs; the board that was never loaded is opened by the sidebar's row (`openBoard` of sel.mjs). This computer's rows are
-// gone while it is away (read in the sidebar where it stands: on the phone it is the stack's first screen).
+// gone while it is away (read in the sidebar; on the phone (package H1, h1-design.md §4.3, §5) Home shows this computer's problem card above the
+// rows it drew while the server was there, faded: they are not live, which is what is read).
+// The phone (B1) has no reader's bar:
+// "Edit here" is the bottom row's `board-take` (the writer's sign there: the button gone, no "Editing" mark: boarddraw.mjs), and the note of a
+// dropped change is a toast (`toast`, data-kind `board-dropped`, 8 s) instead of the bar's `board-role-dropped`.
 import { callsOf, check, mockEval, seed, until } from "../shot.mjs";
 import { byTid, openBoard } from "./sel.mjs";
 import { drawer, editHere, LIVE } from "./boarddraw.mjs";
-import { sideSeen } from "./side.mjs";
+import { homeOf, sideSeen } from "./side.mjs";
 
 export const viewports = ["desktop", "tablet", "phone"];
 
 const J = JSON.stringify;
 
-await check("AAC.2 a board of this computer that is open when its server drops, and when it is back", async ({ url, open, fail, note }) => {
+await check("AAC.2 a board of this computer that is open when its server drops, and when it is back", async ({ url, layout, open, fail, note, viewport }) => {
   const drop = () => mockEval('setServerState("local", "unreachable", { detail: "connection refused" });', url);
   const back = (first = "") => mockEval(`${first}; setServerState("local", "connected");`, url);
   const here = (code) => mockEval(`return onServer("local", () => { ${code} });`, url);
@@ -27,9 +31,11 @@ await check("AAC.2 a board of this computer that is open when its server drops, 
     await p.page.evaluate(() => { window.__mark = "same page"; });
     return p;
   };
-  const text = (page, id) => byTid(page, id).first().textContent({ timeout: 2000 }).catch(() => "");
-  const says = async (name, page, id, want) => { if (!await until(async () => (await text(page, id)).includes(want), 10000)) fail(`${name}: ${id} says "${await text(page, id)}", not "${want}"`); };
+  const text = (page, id, data) => byTid(page, id, data).first().textContent({ timeout: 2000 }).catch(() => "");
+  const says = async (name, page, id, want, data) => { if (!await until(async () => (await text(page, id, data)).includes(want), 10000)) fail(`${name}: ${id} says "${await text(page, id, data)}", not "${want}"`); };
   const none = (page, id) => until(async () => !(await byTid(page, id).count()), 10000);
+  // the note of a dropped change: the reader bar's line (wide layouts), the toast of the phone, which goes by itself after 8 s
+  const [droppedId, droppedData] = viewport === "phone" ? ["toast", { kind: "board-dropped" }] : ["board-role-dropped"];
 
   // ---- a board, open and drawn on
   {
@@ -51,6 +57,8 @@ await check("AAC.2 a board of this computer that is open when its server drops, 
     if (await count() !== shapes + 1) fail("this computer got a drawing while it was not connected");
     const at = saves().length;
     await back();
+    // (the reconnection takes a moment: until the new stream's first scene the canvas is still the writer's, with no button, and Edit here would be a no-op)
+    if (!await byTid(page, "board-take").first().waitFor({ state: "visible", timeout: 15000 }).then(() => true, () => false)) fail("back, the window holding an unsaved drawing shows no Edit here");
     await editHere(page); // (the new stream holds nothing: the window is a reader, with its unsaved drawing kept; the button saves it where it was made)
     if (!await until(async () => await count() === shapes + 3, 15000)) fail(`back at the same revision, the board's drawing was not saved: ${await count()} shapes, not ${shapes + 3}; the saves: ${J(saves().slice(at).map((c) => [c.path, c.status]))}`);
     if (!await none(page, "save-banner")) fail("back and saved, the banner stays");
@@ -62,12 +70,12 @@ await check("AAC.2 a board of this computer that is open when its server drops, 
     const other = { type: "excalidraw", version: 2, elements: [{ id: "aac_other", type: "ellipse", x: 200, y: 160, width: 140, height: 90 }], appState: {}, files: {} };
     await back(`scenes.b_ui.scene = ${J(other)}; scenes.b_ui.rev += 5`);
     // (the window came back as a reader: the note is the reader bar's, with the words of a dropped change; the outage's own sentence belongs to the note on a held canvas)
-    await says("a board changed while its server was away", page, "board-role-dropped", "A change made here was not saved in time and was dropped.");
+    await says("a board changed while its server was away", page, droppedId, "A change made here was not saved in time and was dropped.", droppedData);
     if (!await none(page, "save-banner")) fail("the edit dropped, the banner stays");
     if (J(await here("return scenes.b_ui.scene.elements.map((e) => e.id);")) !== J(["aac_other"])) fail("the drawing made during the outage replaced the one made meanwhile");
     if (!await page.locator(".excalidraw").count() || !await byTid(page, "board-take").count()) fail("after the dropped edit the board is not shown to a reader with its button");
     await editHere(page);
-    if (!await none(page, "board-role-dropped")) fail("the dropped note stays after Edit here");
+    if (!await until(async () => !(await byTid(page, droppedId, droppedData).count()), 12000)) fail("the dropped note stays after Edit here");
     if (await page.evaluate(() => window.__mark) !== "same page") fail("the page was loaded again");
     await ctx.close();
   }
@@ -75,9 +83,12 @@ await check("AAC.2 a board of this computer that is open when its server drops, 
   // ---- a board that was never loaded here is not opened while the server is away
   {
     const { page, ctx } = await start({});
-    await page.waitForSelector('[data-testid="side-row"][data-kind="board"]', { state: "attached", timeout: 20000 });
+    await page.waitForSelector(layout === "phone" ? '[data-testid="home-row"]' : '[data-testid="side-row"][data-kind="board"]', { state: "attached", timeout: 20000 });
     await drop();
-    if (!await until(async () => !(await sideSeen(page, "local")).outline.length, 10000)) fail("this computer's rows stay while it is away");
+    if (layout === "phone") {
+      // (the card of the unreachable server above the last list, faded: no row of it is live)
+      if (!await until(async () => { const h = await homeOf(page); return h.state === "trouble" && h.card?.word === "unreachable" && h.stale; }, 10000)) fail(`this computer's Home is ${J(await homeOf(page).then((h) => [h.state, h.card, h.stale]))} while it is away, not its problem card above the faded list`);
+    } else if (!await until(async () => !(await sideSeen(page, "local")).outline.length, 10000)) fail("this computer's rows stay while it is away");
     if (await byTid(page, "board-off").count()) fail("a board off screen shows a view for a server that is away");
     await back();
     await openBoard(page, "b_ui", { timeout: 30000 });
@@ -86,5 +97,5 @@ await check("AAC.2 a board of this computer that is open when its server drops, 
     await editHere(page);
     await ctx.close();
   }
-  note("a board drawn on under the banner naming This computer, saved at the same revision (after Edit here) and dropped at another, with the reader bar's note; the page was not loaded again; a board never loaded opened once the server was back");
+  note("a board drawn on under the banner naming This computer, saved at the same revision (after Edit here) and dropped at another, with the reader bar's note (the phone: its toast); the page was not loaded again; a board never loaded opened once the server was back");
 }, { viewports, page: false, allowConsole: [/^saving board /] }); // (a failed save is logged by the board side: the outage is what the check makes)

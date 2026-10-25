@@ -19,8 +19,19 @@
 //   off      B-RO-13: the drawer of a section's subagent whose thread is being fetched when that server drops says why in place of "Loading…"
 //   chip     C-SS-07 and C-SS-11: a refused pick is told under the composer and changes nothing; the chip of a chat whose server is away is fixed
 //            with that reason
+// On the phone (package T2) the subagents are drawn otherwise, and the half of the check that reads them expects the phone's (the three
+// layouts keep the same behaviours; what the phone moved is proved where it went):
+//   rows     one card per call (`sub-card`, its head "7 subagents · in the background", "1 running"), two-line rows with the 28 pt mark (a nested
+//            row is indented under its parent's), the line with the run time ("Running · 2m 00s · …", "Waiting on 1 subagent · 9m"); the model,
+//            tools, time and ring are not on the row but the pills of the subagent's screen (`sub-pills`), where they are asserted; the result
+//            row is the 48 pt "Report from <name>" (`sub-report-row`), its words are the name and, for a failure, the line
+//   screen   the pushed screen: no ×, no Esc, no crumb (its place is "Subagent 3 of 6 · Running" under the title, and the way back is the stack's
+//            back), `sub-screen-prev` and `sub-screen-next` through the tree in order without wrapping (the first has no previous, the last no next),
+//            the steps of an ended subagent folded into one row (`sub-steps`) that a tap opens
 import { callMatcher, callsOf, check, mockEval, seed, until } from "../shot.mjs";
-import { MORE, chip, frame, openAt, playable } from "./composer.mjs";
+import { composerBlock } from "./chat.mjs";
+import { MORE, chip, closeChoice, frame, openAt, openChoice, phoneChip, playable } from "./composer.mjs";
+import { openSubSteps } from "./cards.mjs";
 import { back, byTid, openChat, press, tidSel } from "./sel.mjs";
 
 export const viewports = ["desktop", "tablet", "phone"];
@@ -43,15 +54,18 @@ await check("L19 subagents: the rows in the thread, the drawer, its thread and r
     const q = (id) => r.querySelector(`[data-testid="${id}"]`);
     return { sub: r.dataset.sub, status: r.dataset.status, waiting: r.dataset.waiting === "true", on: r.dataset.on === "true", pressed: r.getAttribute("aria-pressed"), desc: q("sub-desc")?.textContent ?? "", bg: !!q("sub-bg"), type: q("sub-type")?.textContent ?? "",
       agent: q("sub-agent")?.textContent ?? "", line: q("sub-line")?.textContent ?? "", tone: q("sub-line")?.dataset.tone ?? "", model: q("sub-model")?.textContent ?? "", tools: q("sub-tools")?.textContent ?? "", time: q("sub-time")?.textContent ?? "",
-      meter: q("ctx-meter")?.textContent ?? "", dot: !!q("sub-dot"), mark: q("sub-mark")?.textContent ?? "", nested: !!r.closest('[data-testid="sub-children"]') };
+      meter: q("ctx-meter")?.textContent ?? "", dot: !!q("sub-dot"), mark: q("sub-mark")?.textContent ?? "", nested: !!r.closest('[data-testid="sub-children"]') || parseFloat(getComputedStyle(r).paddingLeft) > 13 };
   }));
+  // (the phone's line carries the run time: "Waiting on 1 subagent · 9m", "Running · 2m 00s · Thinking…")
+  const timed = (text) => (phone ? new RegExp(`^${text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}( · \\S+)?$`) : { test: (x) => x === text });
+  const NEXT = phone ? "sub-screen-next" : "sub-next", PREV = phone ? "sub-screen-prev" : "sub-prev";
   const rowOf = (page, sid) => byTid(page, "sub-row", { sub: sid }).first();
   const drawerOf = (page) => page.evaluate(() => {
     const d = document.querySelector('[data-testid="sub-drawer"]');
     if (!d) return null;
     const q = (id) => d.querySelector(`[data-testid="${id}"]`), all = (id) => [...d.querySelectorAll(`[data-testid="${id}"]`)], r = d.getBoundingClientRect();
-    return { sub: d.dataset.sub, status: d.dataset.status, layout: d.dataset.layout, left: Math.round(r.left), right: Math.round(r.right), width: Math.round(r.width), iw: innerWidth, name: q("sub-desc")?.textContent ?? "",
-      crumbs: all("sub-crumb").map((c) => c.textContent), crumbHead: q("sub-crumbs")?.textContent ?? "", pos: q("sub-pos")?.textContent ?? "", line: q("sub-line")?.textContent ?? "",
+    return { sub: d.dataset.sub, status: d.dataset.status, layout: d.dataset.layout, left: Math.round(r.left), right: Math.round(r.right), width: Math.round(r.width), iw: innerWidth, name: q("sub-desc")?.textContent ?? q("sub-screen-title")?.textContent ?? "",
+      crumbs: all("sub-crumb").map((c) => c.textContent), crumbHead: q("sub-crumbs")?.textContent ?? "", pos: q("sub-pos")?.textContent ?? (q("sub-screen-sub")?.textContent.match(/Subagent (\d+) of (\d+)/)?.slice(1).join("/") ?? ""), line: q("sub-line")?.textContent ?? "",
       prompt: q("sub-prompt-text")?.textContent ?? "", clamped: q("sub-prompt-text")?.dataset.clamped ?? "", more: q("sub-prompt-more")?.textContent ?? "", report: q("sub-report")?.textContent ?? "",
       loading: !!q("sub-loading"), starting: !!q("sub-starting"), off: q("sub-off")?.textContent ?? "", msgs: all("msg").length, cards: all("tool-card").length, perms: all("perm").length };
   });
@@ -71,13 +85,27 @@ await check("L19 subagents: the rows in the thread, the drawer, its thread and r
       const rows = await rowsOf(page), by = Object.fromEntries(rows.map((r) => [r.sub, r]));
       if (J(rows.map((r) => r.sub)) !== J(["sa1", "sa1a", "sa1a1", "sa1a2", "sa1b", "sa2"])) fail(`${viewport}: the rows are ${J(rows.map((r) => r.sub))}, not the six subagents with the ones a subagent started under it`);
       if (J(rows.map((r) => r.nested)) !== J([false, true, true, true, true, false])) fail(`${viewport}: the nested rows are ${J(rows.map((r) => r.nested))}`);
-      if (!by.sa1?.waiting || by.sa1.status !== "running" || by.sa1.dot || by.sa1.line !== "Waiting on 1 subagent") fail(`${viewport}: the subagent that waits on the one it started is ${J(by.sa1)}: a ring that stands still, "Waiting on 1 subagent"`);
-      if (by.sa1a?.waiting || !by.sa1a?.dot || by.sa1a.tone !== "live" || !by.sa1a.line.endsWith("…")) fail(`${viewport}: the subagent at work is ${J(by.sa1a)}: a pulsing dot and the activity with "…"`);
+      if (!by.sa1?.waiting || by.sa1.status !== "running" || by.sa1.dot || !timed("Waiting on 1 subagent").test(by.sa1.line)) fail(`${viewport}: the subagent that waits on the one it started is ${J(by.sa1)}: a ring that stands still, "Waiting on 1 subagent"`);
+      if (by.sa1a?.waiting || !by.sa1a?.dot || by.sa1a.tone !== "live" || !by.sa1a.line.endsWith("…") || (phone && !by.sa1a.line.startsWith("Running · "))) fail(`${viewport}: the subagent at work is ${J(by.sa1a)}: a pulsing dot and the activity with "…"`);
       if (by.sa1a2?.mark !== "✓" || by.sa1a2.line !== "Done · Seven callers, two of them in tests." || by.sa1a2.tone !== "muted") fail(`${viewport}: the finished subagent is ${J(by.sa1a2)}`);
-      if (by.sa2?.desc !== "Audit the payment step" || !by.sa2.bg || by.sa2.type || !by.sa2.agent.includes("Claude") || by.sa2.tools !== "8 tools" || by.sa2.time !== "2m 00s" || !by.sa2.model || !/\d+%/.test(by.sa2.meter)) fail(`${viewport}: the name and stats of a finished subagent are ${J(by.sa2)}: glyph and name, "background", 8 tools, 2m 00s, a model, the ring with its percentage`);
-      // the row of a result, in the thread
-      const result = await byTid(page, "sub-result").first().textContent();
-      if (result !== "Subagent result · Audit the payment step · Done · sent to the agent") fail(`${viewport}: the result row says "${result}"`);
+      if (phone) {
+        // (the row has the name and the line; the "background" tag is the card's head, the model, tools, time and ring are the pills of its screen)
+        if (by.sa2?.desc !== "Audit the payment step" || by.sa2.mark !== "✓") fail(`${viewport}: the name and mark of a finished subagent are ${J(by.sa2)}`);
+        const heads = await byTid(page, "sub-card-head").allTextContents();
+        if (!heads.some((h) => /in the background/.test(h)) || !heads.some((h) => /^\d+ subagents?/.test(h))) fail(`${viewport}: the card's head says ${J(heads)}: how many subagents and "in the background"`);
+        await press(page, rowOf(page, "sa2"), LEFT);
+        if (!await at(page, "sa2")) fail(`${viewport}: sa2 did not open`);
+        else {
+          const pills = await page.evaluate(() => { const q = (id) => document.querySelector(`[data-testid="sub-drawer"] [data-testid="${id}"]`)?.textContent ?? ""; return { model: q("sub-model"), tools: q("sub-tools"), time: q("sub-time"), meter: q("ctx-meter") }; });
+          if (!pills.model || pills.tools !== "8 tools" || pills.time !== "2m 00s" || !/\d+% context/.test(pills.meter)) fail(`${viewport}: the pills of a finished subagent are ${J(pills)}: a model, 8 tools, 2m 00s, the ring with its percentage`);
+          await back(page);
+          await shut(page);
+        }
+      } else if (by.sa2?.desc !== "Audit the payment step" || !by.sa2.bg || by.sa2.type || !by.sa2.agent.includes("Claude") || by.sa2.tools !== "8 tools" || by.sa2.time !== "2m 00s" || !by.sa2.model || !/\d+%/.test(by.sa2.meter)) fail(`${viewport}: the name and stats of a finished subagent are ${J(by.sa2)}: glyph and name, "background", 8 tools, 2m 00s, a model, the ring with its percentage`);
+      // the row of a result, in the thread (the phone's is the 48 pt "Report from <name>")
+      const result = await byTid(page, phone ? "sub-report-row" : "sub-result").first().textContent();
+      const wantResult = phone ? "Report fromAudit the payment step" : "Subagent result · Audit the payment step · Done · sent to the agent";
+      if (result !== wantResult) fail(`${viewport}: the result row says "${result}", not "${wantResult}"`);
 
       // a press opens the subagent; the open row is marked; a second press closes
       await press(page, rowOf(page, "sa2"), LEFT);
@@ -90,7 +118,7 @@ await check("L19 subagents: the rows in the thread, the drawer, its thread and r
         else if ((await rowsOf(page)).some((r) => r.on)) fail(`${viewport}: a row is still marked open with no drawer`);
       }
       // a press on a result opens that subagent
-      await press(page, byTid(page, "sub-result").first(), phone ? undefined : LEFT);
+      await press(page, byTid(page, phone ? "sub-report-row" : "sub-result").first(), phone ? undefined : LEFT);
       if (!await at(page, "sa2")) fail(`${viewport}: a press on the result row opened ${J((await drawerOf(page))?.sub)}, not sa2`);
       if (phone) await back(page); else await press(page, byTid(page, "sub-result").first(), LEFT);
       await shut(page);
@@ -115,11 +143,13 @@ await check("L19 subagents: the rows in the thread, the drawer, its thread and r
       await until(async () => (await rowsOf(page)).length === 6, WAIT);
       // sa1a1 runs and has no subagent: its own background work is all it waits on. sa1 waits on sa1a, which runs, and on background work.
       await mockEval(`${mark("sa1a1", { waiting: true, bgWaiting: true })} ${mark("sa1", { bgWaiting: true })}`, url);
-      const lines = async () => Object.fromEntries((await rowsOf(page)).map((r) => [r.sub, r]));
-      if (!await until(async () => (await lines()).sa1a1?.line === "Waiting for background work", WAIT)) fail(`${viewport}: a subagent that waits on background work alone says "${(await lines()).sa1a1?.line}", not "Waiting for background work"`);
+      // (the phone's two-line row (T2) puts its status and time before the line, "Running · 5m · Retrying in 40 s · 2 of 4": the line is what follows them)
+      const lineOf = (r) => viewport === "phone" ? { ...r, line: (r.line ?? "").replace(/^(Running|Done|Failed|Stopped|Paused|Starting…) · \d+\s*(s|m|min|h) · /, "") } : r;
+      const lines = async () => Object.fromEntries((await rowsOf(page)).map((r) => [r.sub, lineOf(r)]));
+      if (!await until(async () => (await lines()).sa1a1?.line !== undefined && timed("Waiting for background work").test((await lines()).sa1a1.line), WAIT)) fail(`${viewport}: a subagent that waits on background work alone says "${(await lines()).sa1a1?.line}", not "Waiting for background work"`);
       const by = await lines();
       if (!by.sa1a1.waiting || by.sa1a1.status !== "running" || by.sa1a1.dot || by.sa1a1.tone !== "muted") fail(`${viewport}: the subagent that waits on background work is ${J(by.sa1a1)}: a ring that stands still, in the muted tone`);
-      if (by.sa1?.line !== "Waiting on 1 subagent and background work") fail(`${viewport}: the subagent that waits on one it started and on background work says "${by.sa1?.line}", not "Waiting on 1 subagent and background work"`);
+      if (!timed("Waiting on 1 subagent and background work").test(by.sa1?.line ?? "")) fail(`${viewport}: the subagent that waits on one it started and on background work says "${by.sa1?.line}", not "Waiting on 1 subagent and background work"`);
       if (by.sa1a?.line.startsWith("Waiting")) fail(`${viewport}: a subagent at work that has no mark of waiting says "${by.sa1a?.line}"`);
     } catch (e) { fail(`${viewport}: background work: ${e.message.split("\n")[0]}`); }
     // (put back: other parts of this check count the waiting subagents of the seed)
@@ -144,26 +174,43 @@ await check("L19 subagents: the rows in the thread, the drawer, its thread and r
       } else if (d.right !== d.iw || d.width !== Math.min(700, Math.round(d.iw * 0.58))) fail(`${viewport}: the drawer lies from ${d.left} to ${d.right} of ${d.iw}, not ${Math.min(700, Math.round(d.iw * 0.58))} px at the right edge`);
       // the header of a nested one: the way back, the step
       if (d.name !== "Trace the rounding in tax.go" || d.status !== "running") fail(`${viewport}: the drawer shows ${J({ name: d.name, status: d.status })}`);
-      if (J(d.crumbs) !== J(["Audit the cart", "Check the cart totals"]) || !d.crumbHead.startsWith("Subagent of")) fail(`${viewport}: the crumb is ${J(d.crumbs)} after "${d.crumbHead}"`);
+      // (the phone's screen has no crumb: its place is "Subagent 3 of 6 · Running", the way back its stack's back and its neighbours)
+      if (phone) { if (d.crumbs.length || d.crumbHead) fail(`${viewport}: the phone's screen has a crumb: ${J(d.crumbs)}`); }
+      else if (J(d.crumbs) !== J(["Audit the cart", "Check the cart totals"]) || !d.crumbHead.startsWith("Subagent of")) fail(`${viewport}: the crumb is ${J(d.crumbs)} after "${d.crumbHead}"`);
       if (d.pos !== "3/6") fail(`${viewport}: the step says "${d.pos}", not 3/6 (sa1, sa1a, sa1a1, …)`);
-      if (!/Grep|Searching|Searched|math\.Round/.test(d.line) && !d.line.endsWith("…")) fail(`${viewport}: the live line is "${d.line}"`);
+      if (!phone && !/Grep|Searching|Searched|math\.Round/.test(d.line) && !d.line.endsWith("…")) fail(`${viewport}: the live line is "${d.line}"`);
       if (d.prompt !== "Trace the rounding in tax.go. Report what is wrong." || d.more) fail(`${viewport}: the prompt is ${J(d.prompt)} with "${d.more}"`);
       if (!await until(async () => { const x = await drawerOf(page); return x.msgs >= 1 && x.cards === 1; }, WAIT)) fail(`${viewport}: its thread shows ${J(await drawerOf(page))}: a reply and a Grep card`);
-      // a crumb opens that subagent, and an outer one has no crumb
-      await press(page, inDrawer(page, "sub-crumb").first());
+      // a crumb opens that subagent, and an outer one has no crumb (the phone has the previous subagent, which is its parent's row here)
+      if (phone) { await press(page, inDrawer(page, PREV)); await at(page, "sa1a"); await press(page, inDrawer(page, PREV)); }
+      else await press(page, inDrawer(page, "sub-crumb").first());
       if (!await at(page, "sa1")) fail(`${viewport}: the crumb opened ${J((await drawerOf(page))?.sub)}, not sa1`);
       d = await drawerOf(page);
       if (d.crumbs.length || d.pos !== "1/6") fail(`${viewport}: the outermost subagent shows ${J({ crumbs: d.crumbs, pos: d.pos })}`);
-      // the steps go through the tree in order and wrap
-      for (const [button, want] of [["sub-next", ["sa1a", "sa1a1", "sa1a2", "sa1b", "sa2", "sa1"]], ["sub-prev", ["sa2"]]]) {
-        for (const sid of want) {
-          await press(page, inDrawer(page, button));
-          if (!await at(page, sid)) { fail(`${viewport}: ${button} went to ${J((await drawerOf(page))?.sub)}, not ${sid}`); break; }
+      // the steps go through the tree in order and wrap (the phone's do not wrap: the first has no previous, the last no next)
+      if (phone) {
+        if (await inDrawer(page, PREV).count()) fail(`${viewport}: the first subagent has a previous one`);
+        for (const sid of ["sa1a", "sa1a1", "sa1a2", "sa1b", "sa2"]) {
+          await press(page, inDrawer(page, NEXT));
+          if (!await at(page, sid)) { fail(`${viewport}: ${NEXT} went to ${J((await drawerOf(page))?.sub)}, not ${sid}`); break; }
+        }
+        if (await inDrawer(page, NEXT).count()) fail(`${viewport}: the last subagent has a next one`);
+        await press(page, inDrawer(page, PREV));
+        if (!await at(page, "sa1b")) fail(`${viewport}: ${PREV} went to ${J((await drawerOf(page))?.sub)}, not sa1b`);
+      } else {
+        for (const [button, want] of [["sub-next", ["sa1a", "sa1a1", "sa1a2", "sa1b", "sa2", "sa1"]], ["sub-prev", ["sa2"]]]) {
+          for (const sid of want) {
+            await press(page, inDrawer(page, button));
+            if (!await at(page, sid)) { fail(`${viewport}: ${button} went to ${J((await drawerOf(page))?.sub)}, not ${sid}`); break; }
+          }
         }
       }
-      // × closes
-      await press(page, inDrawer(page, "sub-close"));
-      if (!await shut(page)) fail(`${viewport}: × did not close the drawer`);
+      // × closes (the phone's screen has none: the stack's back does)
+      if (phone) {
+        if (await inDrawer(page, "sub-close").count()) fail(`${viewport}: the phone's subagent screen has a ×`);
+        await back(page);
+      } else await press(page, inDrawer(page, "sub-close"));
+      if (!await shut(page)) fail(`${viewport}: ${phone ? "the back" : "×"} did not close the drawer`);
       // Esc closes it, and the composer under it does not also stop the chat (a keyboard)
       if (!phone) {
         await press(page, rowOf(page, "sa2"), LEFT);
@@ -255,6 +302,7 @@ await check("L19 subagents: the rows in the thread, the drawer, its thread and r
       // the drawer of s1: the prompt cut over 8 lines, then the whole; the thread; the report
       await press(page, rowOf(page, "s1"), LEFT);
       if (!await at(page, "s1")) throw new Error("the drawer of s1 did not open");
+      if (phone) await openSubSteps(page); // (its steps are folded to one row)
       if (!await until(async () => (await drawerOf(page)).msgs >= 2, WAIT)) fail(`${viewport}: the thread of s1 shows ${J(await drawerOf(page))}`);
       // (B-TH-21, B-QS-05) the drawer's items are not the chat's messages: not quotable, and with no fork, branch or label to act on
       const inside = await page.evaluate(() => { const d = document.querySelector('[data-testid="sub-drawer"]'); return { msgs: d.querySelectorAll('[data-testid="msg"]').length, placed: d.querySelectorAll('[data-testid="msg"][data-item], [data-testid="msg"][data-quotable]').length, acts: d.querySelectorAll('[data-testid="fk-act"], [data-testid="fk-more"], [data-testid="fk-marker"]').length }; });
@@ -279,14 +327,14 @@ await check("L19 subagents: the rows in the thread, the drawer, its thread and r
         else if (J(calls.find((c) => c.method === "POST" && /\/permission/.test(c.path)).body) !== J({ requestId: "q9", allow: true, subagent: "s1" })) fail(`${viewport}: Allow in the drawer sent ${J(calls.find((c) => /\/permission/.test(c.path)).body)}`);
       }
       // a subagent at work with no item yet: "Starting…"; the one whose thread is on its way: "Loading…"
-      await press(page, inDrawer(page, "sub-next"));
+      await press(page, inDrawer(page, NEXT));
       await at(page, "s2");
       if (!await until(async () => (await drawerOf(page)).starting, WAIT)) fail(`${viewport}: a subagent at work with no item shows ${J(await drawerOf(page))}, not "Starting…"`);
       let release;
       const gate = new Promise((ok) => { release = ok; });
       await page.route(callMatcher(/^GET \/api\/chats\/c_subs\/subagents\/s4\/items/), async (route) => { await gate; await route.continue(); });
-      await press(page, inDrawer(page, "sub-next")); await at(page, "s3");
-      await press(page, inDrawer(page, "sub-next")); await at(page, "s4");
+      await press(page, inDrawer(page, NEXT)); await at(page, "s3");
+      await press(page, inDrawer(page, NEXT)); await at(page, "s4");
       if (!await until(async () => (await drawerOf(page)).loading, WAIT)) fail(`${viewport}: a thread being fetched shows ${J(await drawerOf(page))}, not "Loading…"`);
       release();
       if (!await until(async () => !(await drawerOf(page)).loading, WAIT)) fail(`${viewport}: "Loading…" stayed after the thread came`);
@@ -326,7 +374,9 @@ await check("L19 subagents: the rows in the thread, the drawer, its thread and r
       await until(async () => (await rowsOf(page)).length === 6, WAIT);
       // sa1a1 runs (its line is its activity): it is retried, the second attempt in 40 s. sa1b has finished: it is paused, its login failed. sa2: a status of the future.
       await mockEval(`${put("sa1a1", { retry: { attempt: 2, of: 4, at: Date.now() + 40000, kind: "login" } })} ${put("sa1b", { status: "paused", errorKind: "login", error: "Failed to authenticate", delivery: undefined })} ${put("sa2", { status: "frozen" })}`, url);
-      const lines = async () => Object.fromEntries((await rowsOf(page)).map((r) => [r.sub, r]));
+      // (the phone's two-line row (T2) puts its status and time before the line, "Running · 5m · Retrying in 40 s · 2 of 4": the line is what follows them)
+      const lineOf = (r) => viewport === "phone" ? { ...r, line: (r.line ?? "").replace(/^(Running|Done|Failed|Stopped|Paused|Starting…) · \d+\s*(s|m|min|h) · /, "") } : r;
+      const lines = async () => Object.fromEntries((await rowsOf(page)).map((r) => [r.sub, lineOf(r)]));
       // (the page counts the wait down from the clock: 40 s when the row was drawn at once, less when the machine was slow to draw it)
       if (!await until(async () => /^Retrying in (3[6-9]|40) s · 2 of 4$/.test((await lines()).sa1a1?.line ?? ""), WAIT)) fail(`${viewport}: ${name}: the subagent that is retried says "${(await lines()).sa1a1?.line}", not "Retrying in 40 s · 2 of 4"`);
       const by = await lines();
@@ -359,10 +409,11 @@ await check("L19 subagents: the rows in the thread, the drawer, its thread and r
       await press(page, rowOf(page, "r1"), LEFT);
       await at(page, "r1");
       if (!await until(async () => { const s = await scroll(); return !!s && s.end > 200 && s.top >= s.end - 60 && s.follows === "true"; }, WAIT)) fail(`${viewport}: the drawer of a subagent at work is ${J(await scroll())}: at the end of its thread and following it`);
-      await press(page, inDrawer(page, "sub-next"));
+      await press(page, inDrawer(page, NEXT));
       await at(page, "r2");
+      if (phone) await openSubSteps(page); // (the steps of an ended subagent are one row until a tap: opened, they are its thread at its top)
       if (!await until(async () => { const s = await scroll(); return !!s && s.end > 200 && s.top <= 2 && s.follows === "false"; }, WAIT)) fail(`${viewport}: the drawer of a subagent that ended is ${J(await scroll())}: at its top, following nothing`);
-      await press(page, inDrawer(page, "sub-prev"));
+      await press(page, inDrawer(page, PREV));
       await at(page, "r1");
       if (!await until(async () => { const s = await scroll(); return !!s && s.end > 200 && s.top >= s.end - 60; }, WAIT)) fail(`${viewport}: opening the subagent at work again left the drawer at ${J(await scroll())}: the scroll starts over, at its end`);
     } catch (e) { fail(`${viewport}: ${name}: ${e.message.split("\n")[0]}`); }
@@ -383,12 +434,20 @@ await check("L19 subagents: the rows in the thread, the drawer, its thread and r
       try {
         // (the mock's configure knob is for the agent, the model, the effort and the folder: the settings' pick is refused on the way)
         await p.page.route(callMatcher(/^PATCH \/api\/chats\/c_A2_new/), (route) => route.fulfill({ status: 409, contentType: "application/json", body: J({ error: "Refused for the test.", code: "refused" }) }));
-        await reach(p.page);
-        await press(p.page, CHIP(p.page));
+        if (layout === "phone") await openChoice(p.page, "subagents"); // (the sheet "Subagents" of the chip row)
+        else {
+          await reach(p.page);
+          await press(p.page, CHIP(p.page));
+        }
         await byTid(p.page, "sub-opt", { section: "depth", value: 2 }).waitFor({ state: "visible", timeout: WAIT });
-        await press(p.page, byTid(p.page, "sub-opt", { section: "depth", value: 2 }));
+        await press(p.page, byTid(p.page, "sub-opt", { section: "depth", value: 2 })); // (a refused pick: the segment does not turn on, so the phone's pickDepthPhone is not used)
         if (!await until(async () => ((await byTid(p.page, "composer-err").first().textContent().catch(() => "")) ?? "").includes("Refused for the test."), WAIT)) fail(`${viewport}: ${name}: the composer says "${await byTid(p.page, "composer-err").first().textContent().catch(() => "")}" under it, not the refusal`);
-        if ((await says(p.page)).text !== "Subagents1 level") fail(`${viewport}: ${name}: the chip says "${(await says(p.page)).text}" after a refused pick`);
+        if (layout === "phone") {
+          if (await byTid(p.page, "sub-opt", { section: "depth", value: 2, on: "true" }).count()) fail(`${viewport}: ${name}: the sheet marks depth 2 after a refused pick`);
+          await closeChoice(p.page);
+          const text = ((await phoneChip(p.page, "subagents").textContent()) ?? "").replace(/⌄/g, "").trim();
+          if (text !== "Subagents · 1 level") fail(`${viewport}: ${name}: the chip says "${text}" after a refused pick`);
+        } else if ((await says(p.page)).text !== "Subagents1 level") fail(`${viewport}: ${name}: the chip says "${(await says(p.page)).text}" after a refused pick`);
       } catch (e) { fail(`${viewport}: ${name}: ${e.message.split("\n")[0]}`); }
       await p.ctx.close();
     }
@@ -396,9 +455,18 @@ await check("L19 subagents: the rows in the thread, the drawer, its thread and r
     {
       const s = state("plain-off-new"), p = await openAt(open, s, layout, WIDE), name = "a chat whose server is away";
       try {
+        if (layout === "phone") { // (a chat whose server is not connected has no chip row at all at the phone layout: nothing to press, nothing to be refused)
+          if (await byTid(p.page, "composer-chip-row").count() || await byTid(p.page, "tchip").count() || await p.page.locator(MORE).count()) fail(`${viewport}: ${name}: the phone draws a chip row, ${await byTid(p.page, "tchip").count()} chips or a "more" chip: it has none`);
+          // (V1, goal 3.7.1: the phone says it once, in the composer's `composer-block` (kind offline, in the toolbar's place); the old placeholder that said "not connected" is gone,
+          // so the box has none. The words the goal asks of the block: it names the server and says it is offline.)
+          if (!await until(async () => { const b = await composerBlock(p.page); return b?.kind === "offline" && b.place === "toolbar" && /is offline/i.test(b.text); }, WAIT)) fail(`${viewport}: ${name}: the page does not say that the server is not connected: the composer's block is ${J(await composerBlock(p.page))}`);
+          const ph = (await byTid(p.page, "composer-input").first().getAttribute("data-placeholder").catch(() => "")) ?? "";
+          if (ph) fail(`${viewport}: ${name}: the empty box also says ${J(ph)}: the block says it once`);
+        } else {
         await reach(p.page);
         const c = await says(p.page);
         if (!c.fixed || !/not connected/.test(c.title)) fail(`${viewport}: ${name}: the chip is ${J(c)}: fixed, with the reason that the server is not connected`);
+        }
       } catch (e) { fail(`${viewport}: ${name}: ${e.message.split("\n")[0]}`); }
       await p.ctx.close();
     }

@@ -141,7 +141,8 @@ export async function startMock({ dist, port, env = {}, script = path.join(WEB, 
     log = "";
     p.stdout.on("data", (d) => (log += d)); p.stderr.on("data", (d) => (log += d));
     ended = new Promise((ok) => p.on("exit", () => { if (p === proc) gone = true; ok(); }));
-    for (let i = 0; i < 600 && !gone; i++) { // (half a minute at most: it listens within a second, and ends at once when the port is taken)
+    // (90 s at most: it listens within a second alone, but a loaded machine can take far longer to start Node; it ends at once when the port is taken)
+    for (const until = Date.now() + 90_000; Date.now() < until && !gone;) {
       // (the pid tells this mock from another server that holds the port)
       if (await fetch(url + "/mock/state").then((r) => r.json()).then((h) => h.pid === p.pid, () => false)) return;
       await sleep(50);

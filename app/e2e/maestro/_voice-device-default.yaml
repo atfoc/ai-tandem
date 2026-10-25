@@ -1,0 +1,25 @@
+# Shared by `voice-devices`: on the Voice screen, opens the device sheet of one kind (the Microphone or Speaker cell, ${CELL}; its sheet ${SHEET}), picks
+# "System default" (the sheet lists only while open, and with its test inside it stays open on a pick), Done closes it, and the cell then says ${WORD}, System default.
+appId: ${APP_ID}
+---
+- scrollUntilVisible:
+    element:
+      id: ${CELL}
+- tapOn:
+    id: ${CELL}
+- extendedWaitUntil:
+    visible:
+      id: ${SHEET}
+    timeout: 30000
+- tapOn:
+    id: "picker-row"
+    text: "System default.*"
+- tapOn:
+    id: "sheet-right"
+- extendedWaitUntil:
+    notVisible:
+      id: ${SHEET}
+    timeout: 30000
+- assertVisible:
+    id: ${CELL}
+    text: "${WORD}, System default.*"

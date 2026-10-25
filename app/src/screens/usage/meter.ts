@@ -37,6 +37,12 @@ export function ringOf(used: number, win: number): { pct: number; tone: RingTone
   return { pct, tone: pct > 0.8 ? "danger" : pct > 0.5 ? "warn" : "ok" };
 }
 
+/** The phone's ring (goal 3.6): accent below 80%, amber from 80%; no danger tone. The wide layouts keep `ringOf`. */
+export function phoneRingOf(used: number, win: number): { pct: number; tone: "ok" | "warn" } {
+  const pct = win ? Math.min(1, used / win) : 0;
+  return { pct, tone: pct >= 0.8 ? "warn" : "ok" };
+}
+
 /** The popup's lines for the context: the ring's numbers and what the context holds, or, before the first reply, the window and when
  *  usage shows. */
 export function contextLines({ used, win }: Pick<Context, "used" | "win">): string[] {

@@ -1,6 +1,6 @@
 // The lines and bars around the composer's box (the old page's Composer.tsx): the context row of a board chat (its board, the boards its text
-// mentions, the count of quotes, the note, the reference buttons), the note about a model that is not the conversation's, and the bars
-// that stand for the box when a chat is archived or uses the old board connection.
+// mentions, the count of quotes, the note, the reference buttons) and the note about a model that is not the conversation's. The bars that
+// stand for the box when a chat is archived or uses the old board connection are in Blocked.tsx.
 import type { ReactNode } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
 
@@ -12,7 +12,6 @@ import { branchState, shownView } from "@aiwb/core/state/store.ts";
 import type { Board } from "@aiwb/core/types.ts";
 
 import { useStore } from "../../state/useStore.ts";
-import { Button } from "../../ui/Button.tsx";
 import { BoardIcon } from "../../ui/icons.tsx";
 import { Text } from "../../ui/Text.tsx";
 import { useTheme } from "../../ui/theme.tsx";
@@ -92,43 +91,27 @@ function Act({ kind, disabled, on, onPress, title, hint, children }: { kind: str
   );
 }
 
-/** The note above the composer's box when the model chosen is not the one the conversation so far ran on: for a pending move against its
- *  source, for a fork without a message of its own against the branch it was forked from. What it says is modelNotice's. */
-export function ModelNotice({ chatId }: { chatId: string }) {
+/** What the composer tells about a model that is not the conversation's: for a pending move against its source, for a fork without a message of
+ *  its own against the branch it was forked from (core's modelNotice); null when it tells nothing. */
+export function useModelNotice(chatId: string): { text: string; warn: boolean } | null {
   const c = useStore((s) => shownView(s, chatId));
   const move = useStore((s) => s.moves[chatId]);
   const cat = useStore((s) => (c ? catalogFor(s, serverOf(c), c.agent) : undefined));
   const parent = useStore((s) => (c?.fresh && c.forkedFrom ? branchState(s, c.forkedFrom, c.forkedBranch) : undefined));
   if (!c || !c.agent) return null;
-  const n = move
+  return move
     ? modelNotice({ agent: c.agent, choice: moveChoice(move, c), parent: c, at: move.at, ctxIn: c.usage?.ctxIn, cat })
     // A fork is fresh only with a prefix: the server leaves forkedAt out when it does not know the count.
     : c.fresh ? modelNotice({ agent: c.agent, choice: c, parent, at: c.forkedAt || 1, ctxIn: c.usage?.ctxIn, cat }) : null;
+}
+
+/** The note above the composer's box when the model chosen is not the one the conversation so far ran on: for a pending move against its
+ *  source, for a fork without a message of its own against the branch it was forked from. What it says is modelNotice's. `plain`: the phone,
+ *  where the warning (a model too small) is the composer's blocked-state card (Blocked.tsx) and only the plain note stands here. */
+export function ModelNotice({ chatId, plain }: { chatId: string; plain?: boolean }) {
+  const n = useModelNotice(chatId);
+  if (n && plain && n.warn) return null;
   return n ? <Text {...tid("model-notice", { warn: !!n.warn })} size={11.5} tone={n.warn ? "warn" : "muted"} style={styles.notice}>{n.text}</Text> : null;
-}
-
-/** The bar that stands for the box of an archived chat: "Archived — unarchive to continue" with an Unarchive button, or, while its server is
- *  not connected, "Archived." and the reason with no button. */
-export function ArchivedBar({ off, why, onUnarchive }: { off: boolean; why: string; onUnarchive(): void }) {
-  const { tokens: t } = useTheme();
-  return (
-    <View {...tid("archived-bar")} style={[styles.bar, { backgroundColor: t.panel, borderColor: t.line }]}>
-      {off ? <Text size={12.5} tone="muted" style={styles.barText}>Archived. {why}</Text> : <>
-        <Text size={12.5} tone="muted" style={styles.barText}>Archived — unarchive to continue</Text>
-        <Button {...tid("unarchive")} size="sm" label="Unarchive" onPress={onUnarchive} />
-      </>}
-    </View>
-  );
-}
-
-/** The bar of a chat that used the old board connection. */
-export function LegacyBar() {
-  const { tokens: t } = useTheme();
-  return (
-    <View {...tid("archived-bar", { legacy: true })} style={[styles.bar, { backgroundColor: t.panel, borderColor: t.line }]}>
-      <Text size={12.5} tone="muted" style={styles.barText}>This chat used the old board connection — start a new chat to continue</Text>
-    </View>
-  );
 }
 
 const styles = StyleSheet.create({
@@ -141,6 +124,4 @@ const styles = StyleSheet.create({
   act: { flexDirection: "row", alignItems: "center", gap: 5, paddingVertical: 1, paddingHorizontal: 5, borderRadius: 5 },
   kbd: { opacity: 0.9 },
   notice: { marginBottom: 6, paddingHorizontal: 2 },
-  bar: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10, paddingVertical: 9, paddingHorizontal: 12, borderWidth: 1, borderRadius: 10 },
-  barText: { flexShrink: 1 },
 });

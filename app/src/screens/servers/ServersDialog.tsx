@@ -17,11 +17,14 @@ import { Button } from "../../ui/Button.tsx";
 import { DialogActions, DialogError, DialogTitle } from "../../ui/Dialog.tsx";
 import { Overlay } from "../../ui/Overlay.tsx";
 import { Text } from "../../ui/Text.tsx";
+import { usePhone } from "../../ui/useLayout.ts";
 import { useTheme } from "../../ui/theme.tsx";
 import { tid } from "../../ui/tid.ts";
 import { editForm, ownerThings, rowsOf } from "./model.ts";
 import { ServerForm } from "./ServerForm.tsx";
 import { ServerRow } from "./ServerRow.tsx";
+import { pushedScreens } from "../shell/screens.ts";
+import { SCREEN, openAddServer, openServer, openServerEdit, openServersList } from "./open.ts";
 import { said } from "./parts.tsx";
 
 export const SERVERS_DIALOG_ID = "servers-dialog";
@@ -33,20 +36,33 @@ export function ServersDialog() {
   const dlg = useStore((s) => s.serversDialog);
   const servers = useStore((s) => s.servers);
   const notice = useStore((s) => s.serversNotice);
-  const shown = !!dlg;
+  const phone = usePhone();
+  const shown = !!dlg && !phone;
   // n counts the forms opened, so that a second one starts from its own values.
   const [open, setOpen] = useState<{ form: Form; n: number } | null>(() => (dlg?.form ? { form: dlg.form, n: 0 } : null));
   const [err, setErr] = useState("");
   const [mcp, setMcp] = useState(""); // the state of this computer's MCP listener, read when the dialog opens
   const owner = ownerThings();
   const close = () => { setOpen(null); setErr(""); setState({ serversDialog: null }); };
+  // On the phone the dialog is never drawn: what opened it goes on to the pushed screens and sheets (open.ts), once per opening.
+  useEffect(() => {
+    if (!phone || !dlg) return;
+    setState({ serversDialog: null });
+    const form = dlg.form;
+    if (!form) {
+      if (pushedScreens().at(-1)?.name !== SCREEN.servers) openServersList();
+    } else if (form.id) {
+      openServer(form.id);
+      openServerEdit(form.id);
+    } else openAddServer("choose");
+  }, [phone, dlg]);
   // A form the dialog was opened with is taken once: it stays in this component alone.
   useEffect(() => {
     const form = dlg?.form;
-    if (!form) return;
+    if (phone || !form) return;
     setOpen((o) => ({ form, n: (o?.n ?? 0) + 1 }));
     setState({ serversDialog: {} });
-  }, [dlg?.form]);
+  }, [phone, dlg?.form]);
   // The notice, which no snapshot carries. The entries are the stream's.
   useEffect(() => {
     if (!shown) return;
@@ -60,7 +76,7 @@ export function ServersDialog() {
     appCall("owner.status").then((r) => { if (live) setMcp(mcpLine(r)); }, () => { if (live) setMcp(""); });
     return () => { live = false; };
   }, [shown, owner]);
-  if (!dlg) return null;
+  if (!dlg || phone) return null;
   return (
     <Overlay open kind="dialog" label="Servers" width={560} testID={SERVERS_DIALOG_ID} closeOnBackdrop={!open} onClose={() => (open ? setOpen(null) : close())}>
       {open ? <ServerForm key={open.n} initial={open.form} onClose={() => setOpen(null)} /> : (

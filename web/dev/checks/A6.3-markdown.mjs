@@ -14,7 +14,7 @@
 // composer's states and the tool cards of every kind P7.1.
 import { atRest, check, contrastAudit, mockEval, seed } from "../shot.mjs";
 import { openCards } from "./cards.mjs";
-import { byTid, press } from "./sel.mjs";
+import { byTid, openFoot, press } from "./sel.mjs";
 import { openTree } from "./fork.mjs";
 
 export const viewports = ["desktop", "tablet", "phone"];
@@ -26,12 +26,13 @@ const CLAUDE = "#d97757"; // the Claude agent's colour in the light theme, which
 const PART = '[data-testid="chat"]';
 
 async function body({ url, viewport, open, fail, note }) {
+  const phone = viewport === "phone"; // (the phone has no sidebar: Home is its list, and the theme is chosen on the Appearance screen of Settings)
   await seed(url, "A1", "A6");
   // (the pages' clock stands a second after the mock's start: a label that tells a time is the same in every theme)
   const clock = await mockEval("return T0;", url) + 1000;
   /** One stage in one theme: { element → its least ratio }. */
   const read = async (theme, stage) => {
-    const { ctx, page } = await open({ sel: stage.chat ? { chat: stage.chat } : {}, ls: { "aiwb.theme": theme }, clock, still: true, wait: stage.chat ? '[data-testid="chat-head"]' : '[data-testid="side-tree"]' });
+    const { ctx, page } = await open({ sel: stage.chat ? { chat: stage.chat } : {}, ls: { "aiwb.theme": theme }, clock, still: true, wait: stage.chat ? '[data-testid="chat-head"]' : phone ? '[data-testid="home"]' : '[data-testid="side-tree"]' });
     try {
       await stage.show(page, theme);
       if (!await atRest(page, 8)) fail(`${theme}, ${stage.name}: the page did not come to rest`);
@@ -53,7 +54,9 @@ async function body({ url, viewport, open, fail, note }) {
       if (await byTid(page.locator(PART), "perm", { state: "pending" }).count() !== 1 || await byTid(page.locator(PART), "perm").count() !== 3) fail(`${theme}, a chat with code: the chat does not show its three permission cards, one of them waiting`);
     } },
     { name: "the tree popup", chat: "c_A6_tree", part: '[data-testid="tree-popup"]', min: 10, async show(page) { await openTree(page); } },
-    { name: "the picker's menu", part: '[data-testid="theme-menu"]', min: 10, async show(page) {
+    { name: "the picker's menu", part: phone ? '[data-testid="appearance-screen"]' : '[data-testid="theme-menu"]', min: 10, async show(page) {
+      // (phone: the choice is the screen Home's gear > Appearance pushes, which openFoot brings to rest; the wide layouts press the foot's button for the menu)
+      if (phone) { await openFoot(page, "theme-btn"); return; }
       await press(page, byTid(page, "theme-btn").first());
       await byTid(page, "theme-menu").first().waitFor({ state: "visible", timeout: 15000 });
     } },

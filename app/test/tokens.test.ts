@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { DARK, targets } from "@aiwb/core/logic/canvastheme.ts";
-import { PALETTE } from "@aiwb/core/logic/flavours.ts";
+import { contrast, PALETTE } from "@aiwb/core/logic/flavours.ts";
 import { FLAVOURS, THEME_PREFS, type Flavour, type Theme } from "@aiwb/core/logic/theme.ts";
 import { fontMono, fontSans, radius, resolveTokens, THEME_TOKENS, tokenName, tokensFor, type Tokens } from "../src/ui/tokens.ts";
 
@@ -83,4 +83,28 @@ test("a choice resolves to its theme, flavour and tokens", () => {
   assert.equal(resolveTokens("latte", true).theme, "light");
   assert.equal(resolveTokens("mocha", false).flavour, "mocha");
   assert.equal(resolveTokens("mocha", false).theme, "dark");
+});
+
+test("warnText is warning-toned text that reads: 4.5:1 on the ground, the panel and the warning's tint, in every theme and flavour", () => {
+  assert.equal(THEME_TOKENS.light.warnText, "#9a6700");
+  assert.equal(THEME_TOKENS.dark.warnText, THEME_TOKENS.dark.warn);
+  assert.ok(contrast(THEME_TOKENS.light.warn, THEME_TOKENS.light.bg) < 3, "the light warn is a mark, not text");
+  for (const [key, tokens] of Object.entries(ours())) {
+    for (const ground of ["bg", "panel", "warnSoft"] as const) {
+      const c = contrast(tokens.warnText, tokens[ground]);
+      assert.ok(c >= 4.5, `${key}: warnText on ${ground} is ${c.toFixed(2)}:1`);
+    }
+  }
+});
+
+test("okText is ok-toned text that reads: 4.5:1 on the ground and the panel, in every theme and flavour (a state word is 13 pt)", () => {
+  assert.equal(THEME_TOKENS.light.okText, "#1b7332");
+  assert.equal(THEME_TOKENS.dark.okText, THEME_TOKENS.dark.ok);
+  assert.ok(contrast(THEME_TOKENS.light.ok, THEME_TOKENS.light.bg) < 4.5, "the light ok is a mark, not text");
+  for (const [key, tokens] of Object.entries(ours())) {
+    for (const ground of ["bg", "panel"] as const) {
+      const c = contrast(tokens.okText, tokens[ground]);
+      assert.ok(c >= 4.5, `${key}: okText on ${ground} is ${c.toFixed(2)}:1`);
+    }
+  }
 });

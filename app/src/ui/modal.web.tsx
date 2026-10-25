@@ -4,7 +4,10 @@
 // had the focus when the overlay opened, whatever has the focus by then (so a field or a row that took it as the overlay closed lost it to the menu's
 // trigger). The screens had timers and microtasks to get around both. This file is the rule the old page's popups kept (the old page's source), and the one place it lives:
 //
-//   - an overlay that opens takes the focus: what the screen autofocuses inside it, else its first focusable;
+//   - an overlay that opens takes the focus: what the screen autofocuses inside it, else its first focusable. At the phone layout (read when it
+//     opens) the focus goes to the overlay's own root instead (`tabIndex={-1}`, no outline), never to its first row: Chromium draws a ring on a
+//     script's focus when nothing, or a control the keyboard focused, had the focus before, and the phone never draws one (goal 3.1.3). A screen
+//     reader and Esc still land in the overlay, and Tab from the root goes to the first control;
 //   - Tab and Shift+Tab cycle inside the top overlay only, never through the dimmed page (the keys are the only thing that moves the focus here: nothing
 //     listens to `focus`, so nothing pulls a focus that a screen gave to an element outside);
 //   - when it closes, the focus goes back to the control that had it when the overlay opened, only if the focus is still inside the overlay or nowhere
@@ -21,6 +24,7 @@ import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { StyleSheet, View } from "react-native";
 
+import { layoutOf } from "./breakpoints.ts";
 import type { OverlayModalProps } from "./modal.types.ts";
 import { webStyle } from "./webstyle.ts";
 
@@ -58,7 +62,7 @@ function onTab(e: KeyboardEvent) {
   const els = tabbables(root);
   const at = document.activeElement, out = !at || !root.contains(at);
   const edge = e.shiftKey ? els[0] : els[els.length - 1];
-  if (els.length && !out && at !== edge) return;
+  if (els.length && !out && at !== edge && at !== root) return; // (from the root itself, Shift+Tab goes to the last control, not out of the overlay)
   e.preventDefault();
   e.stopPropagation();
   (e.shiftKey ? els[els.length - 1] : els[0])?.focus({ preventScroll: true });
@@ -78,13 +82,14 @@ function Layer({ children, returnTo, ...rest }: Omit<OverlayModalProps, "visible
     document.body.appendChild(host.current);
   }
   const root = useRef<HTMLElement | null>(null);
+  const [phone] = useState(() => layoutOf(window.innerWidth) === "phone");
   useLayoutEffect(() => {
     const layer = root.current, container = host.current!;
     if (layer) {
       open.push(layer);
       openers.set(layer, opener);
       if (open.length === 1) window.addEventListener("keydown", onTab, true);
-      if (!layer.contains(document.activeElement)) tabbables(layer)[0]?.focus({ preventScroll: true });
+      if (!layer.contains(document.activeElement)) (phone ? layer : tabbables(layer)[0])?.focus({ preventScroll: true });
     }
     return () => {
       const at = document.activeElement;
@@ -95,15 +100,19 @@ function Layer({ children, returnTo, ...rest }: Omit<OverlayModalProps, "visible
         if (nowhere(at) || layer.contains(at)) {
           const to = controlOf(opener) ?? focusableIn(returnTo?.current);
           if (to && !layer.contains(to)) to.focus({ preventScroll: true });
-          else if (open.length) tabbables(open[open.length - 1]!)[0]?.focus({ preventScroll: true }); // (the control is gone: the overlay under this one has the focus)
+          else if (open.length) { // (the control is gone: the overlay under this one has the focus; at the phone its root, as when it opened)
+            const under = open[open.length - 1]!;
+            (phone ? under : tabbables(under)[0])?.focus({ preventScroll: true });
+          }
         }
       }
       container.remove();
       host.current = null;
     };
-  }, [opener]);
+  }, [opener, phone]);
   return createPortal(
-    <View {...rest} ref={root as never} aria-modal role="dialog" style={[styles.layer, webStyle({ position: "fixed", zIndex: 9999 })]}>
+    <View {...rest} ref={root as never} aria-modal role="dialog" tabIndex={phone ? -1 : undefined}
+      style={[styles.layer, webStyle({ position: "fixed", zIndex: 9999, ...(phone ? { outlineStyle: "none" } : {}) })]}>
       <View style={styles.container}>{children}</View>
     </View>,
     host.current,

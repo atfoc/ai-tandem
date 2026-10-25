@@ -9,3 +9,6 @@ export { ImageLarge } from "./ImageLarge.tsx";
 export { ImageThumb, type ImageThumbProps } from "./ImageThumb.tsx";
 export { MessageImages } from "./MessageImages.tsx";
 export { fitInside, shownPictures, swipeOf, type ShownPicture } from "./shown.ts";
+export { askAboutImage } from "./ask.ts";
+export { IMAGE_TID } from "./ids.ts";
+export { askWhy, clampPan, clampScale, pageDots, viewerActions, viewerSub, PHONE_THUMB } from "./viewer.ts";

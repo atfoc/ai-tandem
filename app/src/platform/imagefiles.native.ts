@@ -10,3 +10,9 @@ export async function pickImageFiles(): Promise<{ files: Picked[]; skipped: Refu
   if (!pick) throw new Error("this device has no picker for images");
   return fromDesktop(await pick(), { asBytes: true });
 }
+
+/** Take photo (the "+" sheet): the camera's picture, answered as the picker answers. The camera is the app's own (expo-image-picker), not the transport's. */
+export async function takePhotoFiles(): Promise<{ files: Picked[]; skipped: Refused[] }> {
+  const { takePhoto } = await import("./imagepick.native.ts"); // (loaded when used: the module reaches the native modules, which a Node test has none of)
+  return fromDesktop(await takePhoto(), { asBytes: true });
+}

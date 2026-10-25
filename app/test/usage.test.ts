@@ -5,7 +5,7 @@ import { test } from "node:test";
 
 import type { Catalog } from "@aiwb/core/types.ts";
 
-import { contextLines, contextOf, ctxShare, ctxText, ctxTitle, fmtK, ringOf } from "../src/screens/usage/meter.ts";
+import { contextLines, contextOf, ctxShare, ctxText, ctxTitle, fmtK, phoneRingOf, ringOf } from "../src/screens/usage/meter.ts";
 
 test("tokens in k and M: one decimal below 10k, none to a million, one decimal in millions", () => {
   assert.deepEqual([950, 1000, 4200, 9999, 10_000, 42_000, 999_999, 1_000_000, 1_500_000].map(fmtK), ["950", "1k", "4.2k", "10k", "10k", "42k", "1000k", "1M", "1.5M"]);
@@ -46,4 +46,10 @@ test("the window is the usage's own, else the model's in the catalog; the error 
   assert.deepEqual(contextOf({ usage: { ...usage, ctxWindow: 200_000 }, model: "opus" }, cat), { used: 120, win: 200_000, error: undefined });
   assert.deepEqual(contextOf({ usage: { ...usage, ctxError: "no report" }, model: "x" }, cat), { used: 120, win: 0, error: "no report" });
   assert.deepEqual(contextOf({ usage: undefined as never, model: "x" }), { used: 0, win: 0, error: undefined });
+});
+
+test("the phone's ring: normal below 80%, amber from 80%, never danger; no window is no ring", () => {
+  assert.deepEqual([0.5, 0.79, 0.8, 0.85, 1].map((p) => phoneRingOf(p * 1000, 1000).tone), ["ok", "ok", "warn", "warn", "warn"]);
+  assert.deepEqual(phoneRingOf(100, 0), { pct: 0, tone: "ok" });
+  assert.equal(phoneRingOf(5000, 1000).pct, 1);
 });

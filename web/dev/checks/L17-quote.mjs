@@ -1,7 +1,7 @@
 // L17 (new; package K5): quotes — what no old check proved (the inventory's `none` rows B-QS-04, B-QS-05, B-QS-07 and C-QT-03, C-QT-07, C-QT-08, C-QT-12,
 // C-QT-16, C-QT-22, and the part of B-QS-01, B-QS-06, B-QS-08, C-QT-01, C-QT-05, C-QT-06, C-QT-11 and C-QT-14 to C-QT-17 that P7.4 and SEC.10 do not reach), on the
 // real chat view and composer, with the way a quote is taken on the viewport (AD-64, goal 4.2):
-//   phone   the sheet path, which the browser runs as the app does: a long press on a message opens the Quote sheet with the message's displayed text; the
+//   phone   the sheet path, which the browser runs as the app does: a long press on a message opens its sheet, whose Quote (or Select text) opens the Quote sheet with the message's displayed text; the
 //           words selected in it are quoted with "Quote", the whole message with "Quote whole message"; the comment field is a sheet too (Add, Cancel,
 //           Remove; closing it keeps what was typed). A reply still being written says so in the sheet's place; the cards of a sent message's quotes are no
 //           part of what its sheet holds.
@@ -9,6 +9,10 @@
 //           on a mark opens its field; Esc drops what was typed (with the subagent drawer open it closes the field first and the drawer
 //           on the next Esc: B-SA-16), a press elsewhere keeps it; words beside a message's own (its fork actions, the cards of its
 //           quotes) are left out of a quote, and a selection of them alone is no quote.
+//           At the phone (ux-improvements C1) the count is the context row's chip "❝ N quote(s)" (the words do not depend on the comments), and it opens the
+//           sheet "Quoted in this message": a card for each quote (`quote-card`: the passage, where it is from, the comment as an editable field or a dashed
+//           "+ Add a comment") with a trash (`quote-remove`) that takes the quote out of the message only; the last trash closes the sheet. A card does not
+//           scroll the thread to its passage (the sheet covers it): that step of the wide list is run at the desktop only.
 // On both: the quote's stored position is the place of its words in the message's displayed text (screens/markdown/displayed.ts), across the blocks of a message
 // (a list, a code block whose header is no part of the text); a passage already in the draft opens for editing; several passages of one message each with their
 // own comment; the count and its list (a press on a quote opens its field, the × removes it); a message of quotes alone is sent; its card shows where it is from
@@ -57,13 +61,19 @@ await check("L17 quotes: the Quote sheet, the float, the marks, the count and it
     if (!await until(async () => want((d = await saved())), 10000)) fail(`${name}: the saved draft has ${J(d)}`);
     return d;
   };
-  const countIs = (n) => (s) => !s.float && new RegExp(`^❝ ${n}( comments?)?$`).test(s.count.replace(/ ▾$/, ""));
+  const countIs = (n) => (s) => !s.float && (sheetPath ? new RegExp(`^❝ ${n} quotes?$`) : new RegExp(`^❝ ${n}( comments?)?$`)).test(s.count.replace(/ ▾$/, ""));
   const key = (k) => page.keyboard.press(k);
   const hold = (loc) => holdOn(page, loc, fail);
+  /** A hold on a message opens its sheet (the phone's way to the Quote sheet); `row` is the quick-row button pressed there: "quote" or "select" (Select text). */
+  const holdRow = async (loc, row) => {
+    await hold(loc);
+    await byTid(page, "msg-sheet").waitFor({ state: "visible", timeout: 10000 });
+    await press(page, byTid(page, "action-row", { action: row }).first());
+  };
   /** Takes the words `from` … `to` of the reply (item 1) and opens the comment field on them: in the Quote sheet on the phone, by ⌘L on the desktop. */
   const take = async (from, to = from, how = "words") => {
     if (sheetPath) {
-      await hold(reply);
+      await holdRow(reply, "quote");
       const text = byTid(page, "quote-text");
       await text.waitFor({ state: "visible", timeout: 10000 });
       if (how === "whole") await press(page, byTid(page, "quote-whole").first());
@@ -161,13 +171,41 @@ await check("L17 quotes: the Quote sheet, the float, the marks, the count and it
   }
 
   // ---- the list the count opens: every quote with its comment or "No comment", the hint, a press on one opens its field, the × removes
+  //      (the phone: the sheet "Quoted in this message": a card for each, its comment edited in place, a trash for each)
+  if (sheetPath) {
+    await press(page, byTid(page, "qcount").first());
+    await byTid(page, "quote-card").first().waitFor({ state: "visible", timeout: 10000 });
+    const cards = byTid(page, "quote-card");
+    const comments = () => cards.evaluateAll((els) => els.map((e) => e.querySelector('[data-testid="quote-comment"]')?.value ?? null));
+    const items = await cards.count(), lines = await comments();
+    if (items !== 3 || J(lines) !== J(["which step exactly?", null, "kept"])) fail(`the sheet has ${items} quotes with the comments ${J(lines)}, not three with ["which step exactly?",null,"kept"] (null: "+ Add a comment")`);
+    const hint = await byTid(page, "quotes-hint").textContent();
+    if (hint !== "Press and hold a reply to quote more.") fail(`the sheet's hint reads ${J(hint)}`);
+    if (await byTid(page, "quote-remove").count() !== 3) fail(`the sheet has ${await byTid(page, "quote-remove").count()} remove controls, not 3`);
+    // a comment typed in the card goes into the draft, and the card of a quote without one has "+ Add a comment"
+    await byTid(cards.nth(2), "quote-comment").fill("kept in the sheet");
+    await draftIs("a comment typed in the sheet", (d) => d.length === 3 && d[2].comment === "kept in the sheet");
+    await press(page, byTid(page, "quotes-done").first());
+    if (!await until(async () => !(await byTid(page, "quotes-sheet").count()), 5000)) fail("Done did not close the sheet");
+    await press(page, byTid(page, "qcount").first());
+    await byTid(page, "quote-card").first().waitFor({ state: "visible", timeout: 10000 });
+    await press(page, byTid(page, "quote-remove").nth(1));
+    await draftIs("the sheet's trash", (d) => d.length === 2 && d.every((q) => q.quote !== across?.quote));
+    await press(page, byTid(page, "quote-remove").nth(1));
+    await draftIs("the sheet's trash again", (d) => d.length === 1);
+    if (await byTid(page, "quote-card").count() !== 1) fail("the sheet does not stay open, with the last quote, after the trash of the one before it");
+    await press(page, byTid(page, "quote-remove").first());
+    await draftIs("the trash of the last quote", (d) => d.length === 0);
+    if (!await until(async () => !(await byTid(page, "quotes-sheet").count()), 5000)) fail("the sheet stays open after the trash of its last quote");
+    await shows("the last quote removed", (s) => !s.count);
+  } else {
   await press(page, byTid(page, "qcount").first());
   await byTid(page, "qlist-item").first().waitFor({ state: "visible", timeout: 10000 });
   const items = await byTid(page, "qlist-item").count();
   const lines = await byTid(page, "qlist-comment").allTextContents();
   if (items !== 3 || J(lines) !== J(["which step exactly?", "No comment", "kept"])) fail(`the list has ${items} quotes with the comments ${J(lines)}, not three with ["which step exactly?","No comment","kept"]`);
   const hint = await byTid(page, "qlist-hint").textContent();
-  if (hint !== (sheetPath ? "tap one to edit it" : "click one to edit it")) fail(`the list's hint reads ${J(hint)}`);
+  if (hint !== "click one to edit it") fail(`the list's hint reads ${J(hint)}`);
   if (await byTid(page, "qlist-x").count() !== 3) fail(`the list has ${await byTid(page, "qlist-x").count()} remove controls, not 3`);
   await press(page, byTid(page, "qlist-item").nth(2));
   await byTid(page, "qfloat-comment").waitFor({ state: "visible", timeout: 10000 });
@@ -186,6 +224,7 @@ await check("L17 quotes: the Quote sheet, the float, the marks, the count and it
   await draftIs("the × of the last quote", (d) => d.length === 0);
   if (await byTid(page, "qlist-item").count()) fail("the list stays open after the × of its last quote");
   await shows("the last quote removed", (s) => !s.count);
+  }
 
   // ---- the quote of the whole message (phone: "Quote whole message"; desktop: select it all), and a Remove in its field
   await take(REPLY.slice(0, 12), "words to quote.", sheetPath ? "whole" : "words");
@@ -214,13 +253,14 @@ await check("L17 quotes: the Quote sheet, the float, the marks, the count and it
   if (sheetPath) {
     // a reply still being written says so in the sheet's place (C-QT-03, B-QS-04)
     await hold(msg(3));
-    await byTid(page, "quote-why").waitFor({ state: "visible", timeout: 10000 });
-    if ((await byTid(page, "quote-why").textContent()) !== "Wait for the reply to finish, then quote it" || await byTid(page, "quote-selection").count()) fail("the sheet of a reply being written does not say to wait");
+    await byTid(page, "msg-sheet").waitFor({ state: "visible", timeout: 10000 });
+    const quoteRow = byTid(page, "action-row", { action: "quote" }).first();
+    if (!/Wait for the reply to finish, then quote it/.test(await quoteRow.getAttribute("aria-label") ?? "") || await quoteRow.getAttribute("aria-disabled") !== "true") fail(`the Quote row of a reply being written says ${J(await quoteRow.getAttribute("aria-label"))}, and is not off`);
     await page.waitForTimeout(700); // (a press on the dimmed page closes nothing for a moment after the sheet opens: the finger that held the message may still click)
     await press(page, byTid(page, "overlay-backdrop").last());
-    if (!await until(async () => !(await byTid(page, "quote-sheet").count()), 5000)) fail("a press on the dimmed page did not close the Quote sheet");
+    if (!await until(async () => !(await byTid(page, "msg-sheet").count()), 5000)) fail("a press on the dimmed page did not close the message sheet");
     // the cards of a sent message's quotes are no part of what its sheet holds (B-QS-05)
-    await hold(msg(2));
+    await holdRow(msg(2), "select");
     const text = byTid(page, "quote-text");
     await text.waitFor({ state: "visible", timeout: 10000 });
     if (await text.inputValue() !== "Fix it.") fail(`the sheet of a message with quote cards holds ${J(await text.inputValue())}, not "Fix it."`);
@@ -324,6 +364,17 @@ await check("L17 quotes: the Quote sheet, the float, the marks, the count and it
   await until(async () => (await p3.evaluate(() => document.querySelector('[data-testid="thread-scroll"]')?.scrollTop ?? 0)) > 500, 10000);
   if (await byTid(p3, "msg", { item: 1 }).count()) fail("the quoted reply is drawn although it is far above the window: the check does not test a message the list has not drawn");
   await press(p3, byTid(p3, "qcount").first());
+  if (sheetPath) {
+    // (the sheet's card does not scroll the thread: it shows the quote, where it is from and its comment)
+    await byTid(p3, "quote-card").first().waitFor({ state: "visible", timeout: 5000 });
+    const card = byTid(p3, "quote-card").first();
+    if (!/font copy step/.test(await byTid(card, "quote-passage").textContent())) fail(`the sheet's card quotes ${J(await byTid(card, "quote-passage").textContent())}, not "font copy step"`);
+    if (!/Claude Code|Your message|reply/.test(await byTid(card, "quote-from").textContent())) fail(`the sheet's card says where the quote is from as ${J(await byTid(card, "quote-from").textContent())}`);
+    if (await byTid(card, "quote-comment").inputValue() !== "which step?") fail("the sheet's card has not the quote's comment");
+    note("the Quote sheet: the sheet \"Quoted in this message\" showed the quote of the draft, where it is from and its comment");
+    await list.ctx.close();
+    return note("the Quote sheet: quotes taken, edited, listed, removed and sent; a card showed where it is from");
+  }
   await byTid(p3, "qlist-item").first().waitFor({ state: "visible", timeout: 5000 });
   await press(p3, byTid(p3, "qlist-item").first());
   const inView = async () => {

@@ -608,6 +608,32 @@ describe("the voices and the preview", () => {
     await again;
   });
 
+  test("stopPreview ends the clip in play and shows no problem", async () => {
+    f.net.previewBytes.set("https://previews.example/v1.mp3", pcm(10));
+    await voices();
+    const preview = playPreview("vsv1");
+    await waitFor(() => f.audio.clips.length === 1, "the clip");
+    voice.stopPreview();
+    await preview; // the clip never ends by itself: only the stop can have resolved this
+    assert.equal(problem(), null);
+    voice.stopPreview(); // nothing in play: nothing happens
+  });
+
+  test("stopPreview leaves a message read aloud alone", async () => {
+    serveVoice(f.net, { manual: true, ttsChunks: 2 });
+    await voices();
+    const reading = readAloud(msg(FIVE));
+    await waitFor(() => f.net.to(TTS).length === 2, "requests");
+    voice.stopPreview();
+    assert.ok(f.net.to(TTS).every((q) => !q.aborted), "the reading's requests are still open");
+    f.net.to(TTS)[0].release(1);
+    f.net.to(TTS)[1].release(1);
+    f.net.to(TTS)[0].end();
+    f.net.to(TTS)[1].end();
+    stopReading();
+    await reading;
+  });
+
   test("a preview that cannot be fetched shows the popover on its control", async () => {
     await voices();
     await playPreview("vsv3"); // no bytes for its url: the fake fails like a missing network

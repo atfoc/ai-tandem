@@ -1,0 +1,124 @@
+# aiwb-e2e: needs=server,agent,control app=1
+# ux-table (ux-improvements package T1 chunk 9, "tables on the phone"; PLAN §3 T1 Device, goal 3.5/6.3): what only a device shows of a wide Markdown table
+# in a chat: its pinned first column and "Open full table" in the thread, the viewer pushed by the tap, the viewer turned to landscape with its pinned
+# header row and first column still on the screen and its title, Copy's toast, and the way back (portrait, the back control). iOS only (the platform guard
+# below; the wide table is the phone's, and the device turn is Maestro's setOrientation). The viewer's own view (`table-screen`) is a plain container that
+# iOS does not list among its accessibility elements, so the flow knows the viewer is up by its title and its Copy button (`table-copy`).
+# A chat is made on the scratch server through the control API and the stand-in agent answers a message by repeating it ("FAKE(sonnet): <the message>"), so the
+# message is the Markdown: a line, a heading, and a table of 7 columns and 4 rows. The user's own message is drawn as Markdown too, so the thread holds the
+# table twice (the message, then the answer): the flow takes the answer's, the last one on the screen.
+appId: ${APP_ID}
+---
+- runFlow:
+    when:
+      platform: iOS
+    commands:
+      - runFlow: _open-app.yaml
+      - runFlow: _forget-servers.yaml
+      - runScript:
+          file: _ctl.js
+          env:
+            METHOD: POST
+            ROUTE: /chat?name=Table-chat
+      - evalScript: ${output.chat = output.ctl.id}
+      - runFlow: _add-server.yaml
+      - extendedWaitUntil:
+          visible: "Table-chat"
+          timeout: 60000
+      - takeScreenshot: t1-00-home
+      - tapOn: "Table-chat"
+      - extendedWaitUntil:
+          visible:
+            id: "chat-head"
+          timeout: 60000
+      # ---- the message: its answer is the same text after "FAKE(sonnet): ", so the answer opens with a line and holds the heading and the table
+      - runScript:
+          file: _ctl.js
+          env:
+            METHOD: POST
+            ROUTE: /say?chat=${output.chat}&text=Quarterly%20figures%0A%0A%23%23%20Results%0A%0A%7C%20Region%20%7C%20Q1%20%7C%20Q2%20%7C%20Q3%20%7C%20Q4%20%7C%20Total%20%7C%20Share%20%7C%0A%7C%20---%20%7C%20---%20%7C%20---%20%7C%20---%20%7C%20---%20%7C%20---%20%7C%20---%20%7C%0A%7C%20North%20%7C%2011%20%7C%2012%20%7C%2013%20%7C%2014%20%7C%2050%20%7C%2025%25%20%7C%0A%7C%20South%20%7C%2021%20%7C%2022%20%7C%2023%20%7C%2024%20%7C%2090%20%7C%2045%25%20%7C%0A%7C%20East%20%7C%2031%20%7C%2032%20%7C%2033%20%7C%2034%20%7C%20130%20%7C%2065%25%20%7C%0A%7C%20West%20%7C%2041%20%7C%2042%20%7C%2043%20%7C%2044%20%7C%20170%20%7C%2085%25%20%7C
+      # (the user's own table is on the screen at once; the answer's comes with the agent's reply, whose first line says it is there)
+      - extendedWaitUntil:
+          visible: "FAKE.*Quarterly figures"
+          timeout: 120000
+      - waitForAnimationToEnd
+      - takeScreenshot: t1-01-thread
+
+      # ---- in the thread: the pinned first column, the hint, "Open full table"; the answer's (the last) is pressed
+      - assertVisible:
+          id: "md-table-pin"
+      - assertVisible:
+          id: "md-table-hint"
+      - assertVisible: "Open full table"
+      # (the thread is still settling as the answer's table is measured and the first touch only stops it, as the README says of a first tap just after a chat
+      # opens: when the viewer is not up, the button is pressed once more)
+      - tapOn:
+          id: "md-table-open"
+          index: 1
+      - runFlow:
+          when:
+            notVisible:
+              id: "table-copy"
+          commands:
+            - waitForAnimationToEnd
+            - tapOn:
+                id: "md-table-open"
+                index: 1
+      - extendedWaitUntil:
+          visible:
+            id: "table-copy"
+          timeout: 30000
+      - waitForAnimationToEnd
+      - assertVisible: "Table · 7 columns, 4 rows"
+      - assertVisible: "Region"
+      - assertVisible: "North"
+      - assertVisible: "Q1"
+      - takeScreenshot: t1-02-viewer-portrait
+
+      # ---- turned to landscape: the viewer stays, its title and its pinned header row and first column are still on the screen
+      - setOrientation: LANDSCAPE_LEFT
+      - waitForAnimationToEnd
+      - assertVisible:
+          id: "table-copy"
+      - assertVisible: "Table · 7 columns, 4 rows"
+      - assertVisible: "Region"
+      - assertVisible: "North"
+      - assertVisible: "Q1"
+      - takeScreenshot: t1-03-viewer-landscape
+      # (a swipe sideways over the body scrolls the other columns under the pinned one: the first column and the header row stay)
+      - swipe:
+          start: 80%,60%
+          end: 20%,60%
+      - waitForAnimationToEnd
+      - assertVisible: "Region"
+      - assertVisible: "North"
+      - assertVisible: "West"
+      - takeScreenshot: t1-04-viewer-landscape-scrolled
+
+      # ---- Copy: the toast
+      - tapOn:
+          id: "table-copy"
+      - extendedWaitUntil:
+          visible: "Table copied"
+          timeout: 10000
+      - takeScreenshot: t1-05-copied
+
+      # ---- back to portrait and back to the thread
+      - setOrientation: PORTRAIT
+      - waitForAnimationToEnd
+      - assertVisible:
+          id: "table-copy"
+      - assertVisible: "Table · 7 columns, 4 rows"
+      - takeScreenshot: t1-06-viewer-portrait-again
+      - tapOn:
+          id: "nav-back"
+      - extendedWaitUntil:
+          visible:
+            id: "chat-head"
+          timeout: 30000
+      - waitForAnimationToEnd
+      - assertNotVisible:
+          id: "table-copy"
+      - assertVisible:
+          id: "md-table-open"
+      - takeScreenshot: t1-07-thread-again
