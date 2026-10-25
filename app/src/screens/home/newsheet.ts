@@ -1,6 +1,6 @@
 // "+ New" of Home and of a group's screen (ux-improvements goal 3.4, package H1; plans/ux-improvements/h1-design.md §4). STUB until package H2:
 // `openNewSheet(place)` opens a P1 sheet "New" (New chat, New whiteboard, New group) at the place; H2 replaces this file and keeps the name.
-// The sheet itself is NewSheetHost (NewSheet.tsx), mounted once by Home.
+// The sheet itself is NewSheetHost (NewSheet.tsx), mounted once through the shell's Overlays slot (index.ts), so it shows over whichever screen opened it.
 import { useSyncExternalStore } from "react";
 
 export type NewPlace = {

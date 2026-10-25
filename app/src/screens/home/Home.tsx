@@ -26,7 +26,6 @@ import { FirstRun } from "./FirstRun.tsx";
 import { HomeList } from "./HomeList.tsx";
 import { H1_TID } from "./ids.ts";
 import { lastPlace, rememberPlace } from "./lastsync.ts";
-import { NewSheetHost } from "./NewSheet.tsx";
 import { openNewSheet } from "./newsheet.ts";
 import { offlineToast } from "./offline.ts";
 import { openItem } from "./open.ts";
@@ -103,7 +102,6 @@ export function Home() {
       </View>}
       <StopgapServerSheet />
       <SettingsStopgap />
-      <NewSheetHost />
       <DragGhost />
     </View>
   );
