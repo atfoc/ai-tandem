@@ -417,7 +417,8 @@ async function pageHalf({ url, layout, open, fail, note }) {
       // The phone: the pick is made in the model sheet. The fork's agent is told to start, so the row goes with it while the pick is held (a started chat has no chip row):
       // the thread says that the agent is starting, and the chip is back on the model picked when the pick ends.
       await openChoice(page, "model");
-      await press(page, byTid(page, "picker-row").filter({ hasText: "Sonnet 5.5" }).first());
+      await press(page, byTid(page, "model-menu-row").filter({ hasText: "Sonnet 5.5" }).first());
+      await press(page, byTid(page, "model-menu-done").first()); // (a row drafts the model, Done applies it: plans/model-effort-menu/design.md 2.2)
       try {
         const starts = await until(async () => { const s = await waitsSeen(page, { composer: true }); return [...s.typing, ...s.lines.map((l) => l[1])].some((t) => t.startsWith("Starting the agent")); }, WAIT);
         if (starts) note("a model pick on a fresh fork, held for 1.5 s: meanwhile the thread says that the agent is starting");
@@ -429,7 +430,8 @@ async function pageHalf({ url, layout, open, fail, note }) {
     // (the model's chip is in the toolbar's row, or, where the row has no room for it, in the "more" popup, opened for it and left open)
     if (!await byTid(page, "tchip", { kind: "model" }).count() && await byTid(page, "more-chip").count()) { await press(page, byTid(page, "more-chip").first()); await byTid(page, "more-pop").first().waitFor({ state: "visible", timeout: WAIT }); }
     await press(page, byTid(page, "tchip", { kind: "model" }).first());
-    await press(page, byTid(page, "pick-row").filter({ hasText: "Sonnet 5.5" }).first());
+    await press(page, byTid(page, "model-menu-row").filter({ hasText: "Sonnet 5.5" }).first());
+    await press(page, byTid(page, "model-menu-done").first()); // (the model and effort menu: a row drafts the model, Done applies it)
     try {
       const during = await (await page.waitForFunction((sel) => { const e = document.querySelector(sel); return e?.dataset.fixed === "true" && (e.getAttribute("title") ?? "").startsWith("Starting the agent") ? e.textContent : false; }, tidSel("tchip", { kind: "model" }), { timeout: WAIT })).jsonValue();
       if (during.includes("Sonnet 5.5")) note(`a model pick on a fresh fork, held for 1.5 s: meanwhile the chip says "${during.trim()}"`);

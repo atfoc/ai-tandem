@@ -21,10 +21,14 @@
 // "<model> · <effort>"; the agent, model, folder and subagents chips each open a sheet (composer.mjs' phoneChip, openChoice and the pick helpers), so the
 // chips the fixture lists for a state are held at the phone without its effort chip, and the picks are made through the sheets (the folder sheet's
 // dir-item "docs" and dir-use "Use docs").
+// The wide layouts' toolbar (plans/model-effort-menu/design.md 2.5) has no effort chip either: the model chip says "<model> · <effort>" and opens
+// the model and effort menu (model-menu), where a row or an effort segment changes a draft that Done applies; the effort pick is made there, the
+// list that changes place with its chip is that menu, and the list open from "more" while a control leaves the row for it is that menu opened
+// from the model chip in the popup.
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { check, mockEval, seed, until } from "../shot.mjs";
-import { MORE, POP, blockHeld, blocked, chip, closeChoice, frame, isNarrow, openAt, openChoice, phoneChip, pickAgentPhone, pickEffortPhone, pickFolderPhone, pickModelPhone, placesOf, playable, resizeTo } from "./composer.mjs";
+import { MORE, POP, blockHeld, blocked, chip, closeChoice, frame, isNarrow, openAt, openChoice, phoneChip, pickInMenu, pickAgentPhone, pickEffortPhone, pickFolderPhone, pickModelPhone, placesOf, playable, resizeTo } from "./composer.mjs";
 import { byTid, press, tidSel } from "./sel.mjs";
 
 export const viewports = ["desktop", "tablet", "phone"];
@@ -105,9 +109,10 @@ await check("A2.3 every choice is a chip in the toolbar or in the open popup, an
    *  folder's browser has no list of options). */
   const pickInPopup = async (p, name, kind, option, saved, says, phonePick) => {
     if ((await places(p.page)).phone) { // the phone's chip row: the chip is in the row, its list is a sheet (the model sheet, with the effort in it, stays open until Done)
-      const on = kind === "effort" ? "model" : kind; // (the effort is picked in the model sheet; the model chip says it)
+      const on = kind; // (the effort is picked in the model sheet; the model chip says it)
       await openChoice(p.page, on);
       await phonePick(p.page);
+      if (on === "model") await closeChoice(p.page); // (the model sheet's picks are a draft: Done applies it)
       if (!await until(async () => await mockEval(saved, url) && (await places(p.page)).chips.some((c) => c.kind === on && c.label.includes(says)), 10000)) return fail(`${name}: the pick was not saved, or the chip does not say "${says}": ${JSON.stringify((await places(p.page)).chips)}`);
       await frame(p.page);
       const after = await places(p.page);
@@ -134,7 +139,7 @@ await check("A2.3 every choice is a chip in the toolbar or in the open popup, an
     // The long model, in the popup of a 380 px page (the old page's 400: this toolbar's widths differ by a few px): "Opus 5.5" is so much
     // shorter that its chip fits the row.
     const s = state("plain-new-long"), p = await openAt(open, s, layout, 380), name = "a model pick in the popup that shortens the label";
-    if (await pickInPopup(p, name, "model", /^Opus 5\.5/, 'return chats.c_A2_new_long.model !== "long";', "Opus 5.5", (page) => pickModelPhone(page, "opus"))) {
+    if (await pickInPopup(p, name, "model", (page) => pickInMenu(page, { text: /^Opus 5\.5/ }), 'return chats.c_A2_new_long.model !== "long";', "Opus 5.5", (page) => pickModelPhone(page, "opus"))) {
       const phone = (await places(p.page)).phone;
       if (!phone) await closeMore(p.page, name);
       const closed = await places(p.page);
@@ -145,7 +150,7 @@ await check("A2.3 every choice is a chip in the toolbar or in the open popup, an
   }
   {
     const s = state("plain-new"), p = await openAt(open, s, layout, 300), name = "an effort pick in the popup";
-    if (await pickInPopup(p, name, "effort", /^Low/, 'return chats.c_A2_new.effort === "low";', "Low", (page) => pickEffortPhone(page, "low"))) note("an effort pick in the popup (in the model sheet at the phone, the model chip saying it): saved, the chip says it");
+    if (await pickInPopup(p, name, "model", (page) => pickInMenu(page, { effort: "low" }), 'return chats.c_A2_new.effort === "low";', "Low", (page) => pickEffortPhone(page, "low"))) note("an effort pick in the popup (in the model and effort menu, the model sheet at the phone; the model chip saying it): saved, the chip says it");
     await close(p);
   }
   await seed(url, "A2");
@@ -168,7 +173,7 @@ await check("A2.3 every choice is a chip in the toolbar or in the open popup, an
     // The wide layout's popup, which the pages above no longer reach (a page's window is under 700 px, the phone layout, or the page is some 540 px
     // at the least): the board's panel of 300 px has every choice in it. The effort, then the agent (which changes the choices after it).
     const s = state("board-new"), p = await openAt(open, s, layout, 300);
-    if (await pickInPopup(p, "an effort pick in the popup of a panel", "effort", /^Low/, 'return chats.c_A2_board_new.effort === "low";', "Low")
+    if (await pickInPopup(p, "an effort pick in the popup of a panel", "model", (page) => pickInMenu(page, { effort: "low" }), 'return chats.c_A2_board_new.effort === "low";', "Low")
       && await pickInPopup(p, "an agent pick in the popup of a panel", "agent", /^Cursor/, 'return chats.c_A2_board_new.agent === "cursor";', "Cursor")) note("an effort and an agent pick in the popup of a panel of 300 px: saved, the focus on the chip, the chip in the popup");
     await close(p);
     await seed(url, "A2");
@@ -180,7 +185,7 @@ await check("A2.3 every choice is a chip in the toolbar or in the open popup, an
     for (let i = 0; i < 6; i++) { await frame(page); const now = await places(page); if (now.lists.length > kept) return fail(`${name}: ${what}, a list is open: ${JSON.stringify(now.lists)}`); }
   };
   {
-    const s = state("plain-new"), p = await openAt(open, s, layout, 560), name = "the effort's list open, the window narrowed";
+    const s = state("plain-new"), p = await openAt(open, s, layout, 560), name = "the model and effort menu open, the window narrowed";
     if ((await places(p.page)).phone) {
       // The phone's chips stay in the row at every width (there is no effort chip and no "more" chip to change place), and a sheet a chip opened
       // is held where it is by a resize: the model sheet (the effort's control is in it) and the folder sheet, narrowed and widened, stay open
@@ -213,15 +218,16 @@ await check("A2.3 every choice is a chip in the toolbar or in the open popup, an
       await close(p);
       note("a sheet open from the chip row (the model sheet with the effort, the folder sheet): the chips stay in the row at every width, no \"more\" chip and no effort chip, nothing else opens");
     } else {
-      await press(p.page, chip(p.page, "effort").first());
-      if (!(await places(p.page)).lists.some((l) => l.head === "Effort" && l.where === "row")) fail(`${name}: the effort's list did not open from the toolbar`);
-      await resizeTo(p.page, s, layout, 480);
-      let now = await places(p.page);
-      if (inRow(now, "effort")) fail(`${name}: at 480 px the effort's chip is still in the row`);
+      await press(p.page, chip(p.page, "model").first());
+      if (!(await places(p.page)).lists.some((l) => l.head === "Model and effort" && l.where === "row")) fail(`${name}: the model and effort menu did not open from the toolbar`);
+      // (the model's chip leaves the row after the folder's: the window is narrowed by steps until it does)
+      let now = await places(p.page), gone = 0;
+      for (const w of [480, 440, 400, 360, 330, 300]) { await resizeTo(p.page, s, layout, w); now = await places(p.page); if (!inRow(now, "model")) { gone = w; break; } }
+      if (!gone) fail(`${name}: at 300 px the model's chip is still in the row`);
       await quiet(p.page, name, "its chip gone into the popup", 0);
       await resizeTo(p.page, s, layout, 560);
       now = await places(p.page);
-      if (!inRow(now, "effort")) fail(`${name}: at 560 px again the effort's chip is not back in the row`);
+      if (!inRow(now, "model")) fail(`${name}: at 560 px again the model's chip is not back in the row`);
       await quiet(p.page, name, "its chip back in the row", 0);
       // the folder's browser, which was a state of its own chip
       await press(p.page, chip(p.page, "folder").first());
@@ -233,24 +239,27 @@ await check("A2.3 every choice is a chip in the toolbar or in the open popup, an
       if (!inRow(await places(p.page), "folder")) fail(`${name}: at 560 px again the folder's chip is not back in the row`);
       await quiet(p.page, name, "the folder's chip back in the row", 0);
       await close(p);
-      note("a list and the folder's browser open in the toolbar: gone when the window sends the chip into the popup, and not back with it");
+      note("the model and effort menu and the folder's browser open in the toolbar: gone when the window sends the chip into the popup, and not back with it");
     }
   }
   fromMore: {
-    // "more" open with the effort's list open from it (a page of 486 px: the popup has the effort's chip and the Subagents chip); then the
-    // toolbar gives more controls to the popup: the page is narrowed by steps until it does.
+    // "more" open with the model and effort menu open from it (the page narrowed by steps from 486 px until the model's chip is in the popup); then
+    // the toolbar gives more controls to the popup: the page is narrowed by steps until it does.
     const s = state("plain-new"), name = 'a list open from "more", the window narrows the page';
     const p = await openAt(open, s, layout, 486);
     if ((await places(p.page)).phone) { await close(p); note('a list open from "more": not played at the phone, which has no "more" popup (the chip row keeps every chip)'); break fromMore; }
+    let start = 486;
+    for (const w of [486, 440, 400, 370, 340, 310]) { await resizeTo(p.page, s, layout, w); start = w; if (!inRow(await places(p.page), "model")) break; }
     await openMore(p.page, name);
     const before = await places(p.page), held = (x) => x.chips.filter((c) => c.where === "popup").length;
-    await press(p.page, chip(byTid(p.page, "more-pop"), "effort").first());
-    if (!(await places(p.page)).lists.some((l) => l.head === "Effort" && l.where === "popup")) fail(`${name}: the effort's list did not open from the popup`);
+    if (!inPopup(before, "model")) { fail(`${name}: at ${start} px the model's chip is not in the popup: ${JSON.stringify(before.chips)}`); await close(p); break fromMore; }
+    await press(p.page, chip(byTid(p.page, "more-pop"), "model").first());
+    if (!await until(async () => (await places(p.page)).lists.some((l) => l.head === "Model and effort" && l.where === "popup"), 5000)) fail(`${name}: the model and effort menu did not open from the popup`);
     let now = before;
-    for (const w of [440, 400, 370, 340, 310]) { await resizeTo(p.page, s, layout, w); now = await places(p.page); if (held(now) > held(before)) break; }
+    for (const w of [440, 400, 370, 340, 310, 280, 250, 220].filter((x) => x < start)) { await resizeTo(p.page, s, layout, w); now = await places(p.page); if (held(now) > held(before)) break; }
     if (held(now) <= held(before)) fail(`${name}: the popup holds ${held(now)} chips, ${held(before)} before: nothing left the toolbar for it`);
     if (!now.more) fail(`${name}: the popup closed`);
-    if (now.lists.length !== 1 || now.lists[0].head !== "Effort" || now.lists[0].where !== "popup") fail(`${name}: the lists open are ${JSON.stringify(now.lists)}, not the effort's alone, in the popup`);
+    if (now.lists.length !== 1 || now.lists[0].head !== "Model and effort" || now.lists[0].where !== "popup") fail(`${name}: the lists open are ${JSON.stringify(now.lists)}, not the model and effort menu alone, in the popup`);
     await close(p);
     note("a control that leaves the toolbar for the open popup: the popup and the list opened from it stay, and it has no list");
   }

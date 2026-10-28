@@ -12,8 +12,9 @@
 // started chat and the server's chip are not drawn there (a started chat's settings are in Chat info, the server is named in the header), so those cases
 // are left out of a phone-layout page and held by the desktop's pages of 1100 px and its panel of 300 px (board-long).
 // The phone's menus (ux-improvements C2) are the chip sheets: the folder's chip opens folder-sheet, whose "Use <name>" button (dir-use) names the folder
-// whole, and the model's chip model-sheet, whose row (picker-row) names the model whole; each opens from its chip with composer.mjs' openChoice and closes
-// with closeChoice. The chip says "<model> · <effort>" there, the whole name in the chip's accessibility label.
+// whole, and the model's chip model-sheet, whose row (model-menu-row) names the model whole; each opens from its chip with composer.mjs' openChoice and closes
+// with closeChoice. The chip says "<model> · <effort>" there, the whole name in the chip's accessibility label. So does the wide toolbar's model chip
+// (plans/model-effort-menu/design.md 2.5), whose menu is the model and effort menu (model-menu), its rows model-menu-row.
 import { check, seed, until } from "../shot.mjs";
 import { MORE, POP, closeChoice, frame, openAt, openChoice, openState, playable } from "./composer.mjs";
 import { byTid, press, tidSel } from "./sel.mjs";
@@ -25,7 +26,7 @@ const FOLDER = "storefront-monorepo-with-a-very-long-folder-name", MODEL = "Clau
 // the element of the menu that names it]
 const CHIPS = {
   folder: [{ kind: "folder", fixed: false }, "dirs", tidSel("dir-use")],
-  model: [{ kind: "model", fixed: false }, "picker", tidSel("pick-row")],
+  model: [{ kind: "model", fixed: false }, "model-menu", tidSel("model-menu-row")], // (the model and effort menu: plans/model-effort-menu/design.md 2.5)
   "folder, fixed": [{ kind: "folder", fixed: true }, null, null],
   "model, fixed": [{ kind: "model", fixed: true }, null, null],
   "server, fixed": [{ kind: "server", fixed: true }, null, null],
@@ -42,7 +43,7 @@ const CASES = [
 ];
 
 // The same at the phone: the sheet each chip opens, and the element of it that names the choice
-const PHONE_MENUS = { folder: ["folder-sheet", tidSel("dir-use")], model: ["model-sheet", tidSel("picker-row")] };
+const PHONE_MENUS = { folder: ["folder-sheet", tidSel("dir-use")], model: ["model-sheet", tidSel("model-menu-row")] };
 
 /** In the page: the chip that [kind, fixed] names under `root`, its name's element and what is drawn beside the name. */
 function chipInPage([root, kind, fixed]) {

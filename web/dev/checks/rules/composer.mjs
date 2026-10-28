@@ -273,13 +273,13 @@ export const recipes = [
       { name: "Model and effort", go: async (page) => { await openChoice(page, "model"); },
         check: async (page, h) => {
           const sheet = byTid(page, "model-sheet");
-          if (!await byTid(sheet, "sheet-right").count()) h.fail("Model and effort has no Done");
-          if (await byTid(sheet, "sheet-left").count()) h.fail("Model and effort has a Cancel");
-          const rows = byTid(sheet, "picker-row");
+          if (!await byTid(sheet, "model-menu-done").count()) h.fail("Model and effort has no Done");
+          if (!await byTid(sheet, "model-menu-cancel").count()) h.fail("Model and effort has no Cancel (its picks are a draft: plans/model-effort-menu/design.md 2.1)");
+          const rows = byTid(sheet, "model-menu-row");
           if (await rows.count() > 1) {
             await press(page, rows.nth(1));
             await page.waitForTimeout(400);
-            if (!await byTid(page, "model-sheet").count()) h.fail("a tap on a model closed the sheet: only Done closes Model and effort");
+            if (!await byTid(page, "model-sheet").count()) h.fail("a tap on a model closed the sheet: only Done and Cancel close Model and effort");
           }
         } },
       { name: "Subagents", go: async (page) => { await leave(page); await openChoice(page, "subagents"); },

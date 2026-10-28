@@ -9,7 +9,7 @@
 // A sheet over another sheet is for a picker or a confirm over a form only: it says so with `over="form"`, and in development any
 // other one warns.
 import { useContext, useEffect, useRef, useState, type MutableRefObject, type ReactNode } from "react";
-import { Animated, Easing, Platform, Pressable, ScrollView, StyleSheet, useWindowDimensions, View, type NativeScrollEvent, type NativeSyntheticEvent } from "react-native";
+import { Animated, Easing, Platform, Pressable, ScrollView, StyleSheet, useWindowDimensions, View, type LayoutChangeEvent, type NativeScrollEvent, type NativeSyntheticEvent } from "react-native";
 import { Gesture, GestureDetector, GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaInsetsContext } from "react-native-safe-area-context";
 
@@ -45,6 +45,8 @@ export type SheetProps = {
   scrollRef?: MutableRefObject<ScrollView | null>;
   /** Called as the content scrolls (with `scrollRef`, to keep the place). */
   onScroll?(e: NativeSyntheticEvent<NativeScrollEvent>): void;
+  /** The height of the part of the content that shows (with `scrollRef` and `onScroll`, to keep a row in sight: the model and effort menu). */
+  onViewport?(height: number): void;
   children: ReactNode;
 };
 
@@ -59,7 +61,7 @@ const FIT_SHARE = 0.5;
 
 let sheetsOpen = 0; // how many sheets are open, for the development warning below
 
-export function Sheet({ open, onClose, label, testID = TID.sheet, dataSet, closeOnBackdrop = true, detent, head, lift: lifted, over, scrollRef: outerRef, onScroll, children }: SheetProps) {
+export function Sheet({ open, onClose, label, testID = TID.sheet, dataSet, closeOnBackdrop = true, detent, head, lift: lifted, over, scrollRef: outerRef, onScroll, onViewport, children }: SheetProps) {
   const { tokens: t } = useTheme();
   const win = useWindowDimensions();
   const insets = useContext(SafeAreaInsetsContext);
@@ -116,6 +118,7 @@ export function Sheet({ open, onClose, label, testID = TID.sheet, dataSet, close
                 <SheetFooterProvider value={Platform.OS === "web" ? null : setFooter}>
                   <ScrollView ref={(r) => { scrollRef.current = r; if (outerRef) outerRef.current = r; }} {...scrollProps}
                     {...(onScroll ? { onScroll: (e: NativeSyntheticEvent<NativeScrollEvent>) => { scrollProps.onScroll?.(e); onScroll(e); }, scrollEventThrottle: 16 } : null)}
+                    {...(onViewport ? { onLayout: (e: LayoutChangeEvent) => { scrollProps.onLayout?.(e); onViewport(e.nativeEvent.layout.height); } } : null)}
                     keyboardShouldPersistTaps="handled" bounces={false}
                     contentContainerStyle={{ paddingBottom: footer ? 0 : bottom }}>
                     <View testID={TID.sheetBody}>{children}</View>

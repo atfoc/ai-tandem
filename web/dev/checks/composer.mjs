@@ -2,8 +2,10 @@
 // `composerProbe`, `toolbarWidths` and of the seed's `see` selectors, which read the old page's classes). No dash in the name: the runner
 // does not take it for a check. The testIDs of screens/composer, with their dataSet in brackets:
 //   composer [chat, branch] · composer-box [readonly] · composer-input (the chip input) · composer-tools [more, meter, insert, voice] (the toolbar's
-//   row) · tool [control: server | agent | folder | model | effort | subagents] (a control of the row; a fixed folder's `lock` stands before
-//   its chip) · tchip [kind, fixed, connected?] (a chip: a button, or static) · more-chip · part [part: more | meter | insert | attach | stop |
+//   row) · tool [control: server | agent | folder | model | subagents] (a control of the row; a fixed folder's `lock` stands before
+//   its chip) · tchip [kind, fixed, connected?] (a chip: a button, or static; the model's, "<model> · <effort>", has [effort] and opens model-menu,
+//   the model and effort menu: model-menu-search, model-menu-clear, effort-seg with segment [value, on], effort-line, model-menu-row [model, on,
+//   active], model-menu-empty, model-menu-held, model-menu-done, model-menu-keys; plans/model-effort-menu/design.md 3.3) · more-chip · part [part: more | meter | insert | attach | stop |
 //   send | voice] (what stands in the row besides the controls) · tool-grow · ctx-meter [tone: error, compact] · send [sending] · stop · insert-btn ·
 //   voice-dictate [on] · voice-speech [on] (voice's pair, Dictate and Speech mode, after the row's spacer, before the attach button: they are in `part` "voice", one
 //   child of the row, and `composer-tools` says where the pair is in its `voice`: row | more) · more-row [control: dictate | speech] with more-dictate [on] and more-speech [on]
@@ -21,13 +23,14 @@
 // The phone's chip row (ux-improvements C2): `tchip` [kind: agent | folder | model | subagents, missing] in composer-chip-row, with no effort chip (the
 // effort is in the model sheet; the model chip says "<model> · <effort>") and no "more" chip; a fork with no message of its own has the model chip
 // alone and chip-note. Each chip opens a sheet: agent-sheet (kit PickerSheet: picker-row [value], picker-check, picker-foot; a tap picks and closes) ·
-// model-sheet (picker-row [value = the model's id], effort-seg with segment [value, on], Done = sheet-right; a model or effort pick keeps it open) ·
+// model-sheet (model-menu-row [model = the model's id, on], effort-seg with segment [value, on], model-menu-done and model-menu-cancel; a model or
+// effort pick is a draft and keeps it open, Done applies it) ·
 // folder-sheet (dir-up, dir-path (a tap shows dir-input), dir-item [aria-label = the name], dir-use "Use <name>", dir-err, dir-empty, dir-browser;
 // Cancel = sheet-left; a pick closes it) · sub-sheet (sub-depth with sub-opt [section, value, on], the cap's slider sub-cap (slider.mjs), sub-cap-line; Done = sheet-right). The helpers of the
 // phone, all taking the page: `phoneChip(page, kind)` the chip's locator in the row; `openChoice(page, kind)` presses it and answers the sheet's locator
 // once it is open; `pickModelPhone(page, id)`, `pickEffortPhone(page, effort)`, `pickAgentPhone(page, agent)`, `pickFolderPhone(page, name)`,
 // `pickDepthPhone(page, n)`, `setCapPhone(page, n)` (a tap on the cap slider's track at the place of n, 1 to 100) open the sheet when it is not open, make the pick and leave the sheet as the app does (the model,
-// effort, depth and cap picks keep it open; an agent or a folder pick closes it); `closeChoice(page)` closes the open sheet (Done, else Cancel, else a
+// effort, depth and cap picks keep it open, the model and effort ones a draft until Done; an agent or a folder pick closes it); `closeChoice(page)` closes the open sheet (Done, else Cancel, else a
 // press on the backdrop) and waits until none is open; `openSheetKind(page)` says which is open.
 import { byTid, tidSel } from "./sel.mjs";
 import { tapSlider } from "./slider.mjs";
@@ -78,8 +81,8 @@ export function composersInPage() {
 /** The fit of every composer on the page (see composersInPage). */
 export const measureComposer = (page) => page.evaluate(composersInPage);
 
-/** In the page: the controls of the first composer's toolbar, left to right, each with its kind (server, agent, lock, folder, model, effort,
- *  model-effort: the fixed chip of both, loading, subagents, more: the chip of the popup that holds what the row has no room for, meter,
+/** In the page: the controls of the first composer's toolbar, left to right, each with its kind (server, agent, lock, folder, model: the
+ *  chip of the model and its effort that opens their menu, model-effort: the fixed chip of both, loading, subagents, more: the chip of the popup that holds what the row has no room for, meter,
  *  insert, attach, stop, send), its label, whether it is a fixed chip, its width and its own margin (the lock has one); gap: the row's;
  *  chrome: what the box takes besides the row (padding and border); sum: the controls with their margins and the gaps between them on one
  *  line, the row's spacer among them at no width; reason: the line under the controls, when the toolbar has one. A control's wrapper in the
@@ -138,7 +141,7 @@ export const SEES = {
   "plain-noagent-installed": [{ tid: "agent-reason", data: { tone: "missing" }, text: "No agent is installed on Bare box" }],
   "plain-off-new": [{ tid: "agent-reason", data: { tone: "missing" } }],
   "plain-off-started": [{ tid: "composer-box" }, { tid: "ctx-meter" }],
-  "plain-fork-fresh": [{ tid: "tchip", data: { kind: "effort" } }],
+  "plain-fork-fresh": [{ tid: "tchip", data: { kind: "model", fixed: false } }],
   "plain-fork-notice": [{ tid: "model-notice", text: "Another model" }],
   "plain-branches": [{ tid: "composer-box" }],
   "board-started": [{ tid: "tchip", data: { kind: "model", fixed: true } }],
@@ -182,6 +185,65 @@ export const chip = (page, kind, data = {}) => byTid(page, "tchip", { kind, ...d
 export const MORE = tidSel("more-chip"), POP = tidSel("more-pop");
 export const moreRow = (page, control) => byTid(page, "more-row", { control });
 
+// ---- the wide layouts' model and effort menu (plans/model-effort-menu/design.md 2.5; the testIDs: the header)
+
+/** The model and effort menu (the desktop's and the tablet's popover), and its search field. */
+export const MENU = tidSel("model-menu"), MENU_SEARCH = tidSel("model-menu-search");
+const MENU_MS = 8000;
+
+/** Opens the model and effort menu from the model chip, the row's or the "more" popup's (the popup is opened first when the chip is in it);
+ *  answers the menu's locator once it is open. */
+export async function openModelMenu(page) {
+  const menu = page.locator(MENU);
+  // (open, or opening: its chip was pressed and says so)
+  if (await menu.count() || await page.locator(`${tidSel("tchip", { kind: "model" })}[aria-expanded="true"]`).count()) { await menu.first().waitFor({ state: "visible", timeout: MENU_MS }); return menu; }
+  const inRow = byTid(page, "composer-tools").locator(tidSel("tchip", { kind: "model", fixed: "false" }));
+  if (!await inRow.count() && !await page.locator(POP).count() && await page.locator(MORE).count()) {
+    await press(page, page.locator(MORE).first());
+    await page.locator(POP).first().waitFor({ state: "visible", timeout: MENU_MS });
+  }
+  await press(page, page.locator(tidSel("tchip", { kind: "model", fixed: "false" })).first());
+  await menu.first().waitFor({ state: "visible", timeout: MENU_MS });
+  return menu;
+}
+
+/** Drafts in the model and effort menu (opened from the chip when it is not open) and applies the draft with Done: `model` a model's id (its
+ *  row's data-model) or `text` what its row says (a string or a RegExp), then `effort` an effort's id (its segment's value); waits until the
+ *  menu is closed. */
+export async function pickInMenu(page, { model, text, effort } = {}) {
+  const menu = await openModelMenu(page);
+  if (model || text) {
+    const rows = byTid(menu, "model-menu-row", model ? { model } : {});
+    await press(page, (text ? rows.filter({ hasText: text }) : rows).first());
+  }
+  if (effort) {
+    const seg = byTid(menu, "effort-seg");
+    await press(page, byTid(seg, "segment", { value: effort }));
+    await byTid(seg, "segment", { value: effort, on: "true" }).waitFor({ state: "attached", timeout: MENU_MS });
+  }
+  await press(page, byTid(menu, "model-menu-done"));
+  await menu.first().waitFor({ state: "detached", timeout: MENU_MS });
+}
+
+/** In the page: the open model and effort menu as it is drawn, or null: the search's text and whether it has the focus, the drafted model's
+ *  id (the row with data-on), the efforts of the effort control with the one drafted, the effort line's text, the rows' models in their order,
+ *  whether Done is enabled, the empty line, the key hints. */
+export const menuOf = (page) => page.evaluate(() => {
+  const m = document.querySelector('[data-testid="model-menu"]');
+  if (!m) return null;
+  const q = (id) => m.querySelector(`[data-testid="${id}"]`), all = (id) => [...m.querySelectorAll(`[data-testid="${id}"]`)];
+  const search = q("model-menu-search"), done = q("model-menu-done");
+  return {
+    query: search?.value ?? null, focused: !!search && document.activeElement === search,
+    model: all("model-menu-row").find((r) => r.dataset.on === "true")?.dataset.model ?? "",
+    rows: all("model-menu-row").map((r) => r.dataset.model),
+    efforts: all("segment").map((s) => s.dataset.value), effort: all("segment").find((s) => s.dataset.on === "true")?.dataset.value ?? "",
+    line: q("effort-line")?.textContent ?? "",
+    done: !!done && done.getAttribute("aria-disabled") !== "true" && !done.hasAttribute("disabled"),
+    empty: !!q("model-menu-empty"), keys: q("model-menu-keys")?.textContent ?? "",
+  };
+});
+
 // ---- the phone's chips and their sheets (ux-improvements C2; the header says what each sheet holds)
 
 /** The sheet each phone chip opens. */
@@ -210,14 +272,14 @@ export async function openChoice(page, kind) {
 /** The sheet of a kind, opened from its chip when it is not open. */
 const sheetOf = async (page, kind) => ((await byTid(page, CHOICE_SHEETS[kind]).count()) ? byTid(page, CHOICE_SHEETS[kind]) : openChoice(page, kind));
 
-/** Taps the model `id` (the option's data-value) in the model sheet; the sheet stays open. */
+/** Taps the model `id` (its row's data-model) in the model sheet; the sheet stays open, the model drafted (Done applies it: closeChoice). */
 export async function pickModelPhone(page, id) {
   const sheet = await sheetOf(page, "model");
-  await press(page, byTid(sheet, "picker-row", { value: id }));
-  await byTid(sheet, "picker-row", { value: id }).locator(tidSel("picker-check")).waitFor({ state: "attached", timeout: SETTLE_MS }); // (the ✓ moves to the row once the pick is saved)
+  await press(page, byTid(sheet, "model-menu-row", { model: id }));
+  await byTid(sheet, "model-menu-row", { model: id, on: "true" }).waitFor({ state: "attached", timeout: SETTLE_MS });
 }
 
-/** Taps the effort `effort` in the model sheet's effort control; the sheet stays open. */
+/** Taps the effort `effort` in the model sheet's effort control; the sheet stays open, the effort drafted (Done applies it: closeChoice). */
 export async function pickEffortPhone(page, effort) {
   const sheet = await sheetOf(page, "model");
   const seg = byTid(sheet, "effort-seg");
@@ -254,11 +316,12 @@ async function pickSubOpt(page, section, n) {
   await byTid(sheet, "sub-opt", { section, value: n, on: "true" }).waitFor({ state: "attached", timeout: SETTLE_MS });
 }
 
-/** Closes the sheet that is open (Done, else Cancel, else a press on the backdrop above the sheet) and waits until none is. */
+/** Closes the sheet that is open (Done, else Cancel, else a press on the backdrop above the sheet) and waits until none is. (The model sheet's
+ *  Done applies its draft, model-menu-done; its Cancel is model-menu-cancel.) */
 export async function closeChoice(page) {
   const kind = await openSheetKind(page);
   if (!kind) return;
-  const done = byTid(page, "sheet-right"), cancel = byTid(page, "sheet-left");
+  const done = page.locator(`${tidSel("sheet-right")}, ${tidSel("model-menu-done")}`), cancel = page.locator(`${tidSel("sheet-left")}, ${tidSel("model-menu-cancel")}`);
   if (await done.count()) await press(page, done.first());
   else if (await cancel.count()) await press(page, cancel.first());
   else await press(page, byTid(page, "overlay-backdrop").last(), { position: { x: 5, y: 5 } });
@@ -421,7 +484,7 @@ function placesInPage() {
   const open = chips.find((c) => c.open);
   // (the phone's lists are the chip sheets: agent-sheet, model-sheet, folder-sheet, sub-sheet, each with its title for the head)
   const sheets = ["agent-sheet", "model-sheet", "folder-sheet", "sub-sheet"].flatMap((id) => q(id));
-  const lists = [...q("picker"), ...q("dirs"), ...sheets].map((m) => ({ head: m.querySelector('[data-testid="menu-head"], [data-testid="sheet-title"]')?.textContent ?? (m.dataset.testid === "dirs" ? "dirs" : ""), where: open?.where ?? (sheets.includes(m) ? "row" : "") }));
+  const lists = [...q("picker"), ...q("model-menu"), ...q("dirs"), ...sheets].map((m) => ({ head: m.querySelector('[data-testid="menu-head"], [data-testid="sheet-title"]')?.textContent ?? (m.dataset.testid === "dirs" ? "dirs" : ""), where: open?.where ?? (sheets.includes(m) ? "row" : "") }));
   return { phone, chips, lists, more: !!pop, focus: at?.closest?.('[data-testid="more-pop"]') ? "popup" : at?.dataset?.testid === "more-chip" ? "more" : at?.closest?.('[data-testid="composer-tools"], [data-testid="composer-chip-row"]') ? "row" : at?.dataset?.testid ?? "" };
 }
 

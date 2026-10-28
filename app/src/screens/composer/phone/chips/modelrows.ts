@@ -1,8 +1,9 @@
 // What the phone's Model and effort sheet lists (ux-improvements goal 3.6, mockup co-03a, co-03e): the model's note and its context size as the
 // row's second line, and the provider headings of a catalog that names more than one (pi). The wide picker's order is kept: the provider-less
-// models first, then the providers in the order they appear (core's groupModels). No React and no react-native here, so Node loads it
+// models first, then the providers in the order they appear (core's groupModels). The model and effort menu (ModelEffortMenu.tsx) lists the same
+// way under its search: `menuSections`. No React and no react-native here, so Node loads it
 // (app/test/c2-modelrows.test.ts).
-import { groupModels } from "@aiwb/core/logic/models.ts";
+import { filterModels, groupModels } from "@aiwb/core/logic/models.ts";
 import type { CatalogModel } from "@aiwb/core/types.ts";
 
 /** "200k context", "1M context"; "" when the window is not known. */
@@ -27,4 +28,14 @@ export function modelRows(models: CatalogModel[]): ModelRow[] {
   return groups.flatMap((g) => g.models.map((m): ModelRow => ({
     value: m.id, label: m.label, note: modelNote(m) || undefined, section: sections ? g.provider || undefined : undefined,
   })));
+}
+
+/** One run of the model and effort menu's list: the provider's heading ("" for none) and its models. */
+export type MenuSection = { provider: string; models: CatalogModel[] };
+
+/** The model and effort menu's list for a query, in core's listedModels order: the matching models in runs of one provider. A run is headed
+ *  only when the whole catalog names more than one provider (as modelRows), so a search does not make the headings come and go. */
+export function menuSections(models: CatalogModel[], query: string): MenuSection[] {
+  const headed = groupModels(models).length > 1;
+  return groupModels(filterModels(models, query)).map((g) => ({ provider: headed ? g.provider : "", models: g.models }));
 }

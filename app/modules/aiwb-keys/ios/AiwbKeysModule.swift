@@ -42,6 +42,7 @@ let keysShortcuts: [KeysShortcut] = [
   KeysShortcut(code: "KeyL", key: "l", mod: true, shift: false, label: "Quote the selection or add it to the message"),
   KeysShortcut(code: "KeyL", key: "l", mod: true, shift: true, label: "Pick a point on the board"),
   KeysShortcut(code: "KeyP", key: "p", mod: true, shift: false, label: "Insert a prompt"),
+  KeysShortcut(code: "KeyE", key: "e", mod: true, shift: false, label: "Model and effort"),
   KeysShortcut(code: "Enter", key: "Enter", mod: true, shift: false, label: "Save"),
   KeysShortcut(code: "Escape", key: "Escape", mod: false, shift: false, label: "Close"),
 ]

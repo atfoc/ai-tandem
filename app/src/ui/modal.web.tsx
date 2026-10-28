@@ -8,7 +8,7 @@
 //     opens) the focus goes to the overlay's own root instead (`tabIndex={-1}`, no outline), never to its first row: Chromium draws a ring on a
 //     script's focus when nothing, or a control the keyboard focused, had the focus before, and the phone never draws one (goal 3.1.3). A screen
 //     reader and Esc still land in the overlay, and Tab from the root goes to the first control;
-//   - Tab and Shift+Tab cycle inside the top overlay only, never through the dimmed page (the keys are the only thing that moves the focus here: nothing
+//   - Tab and Shift+Tab cycle inside the top overlay only (but in an element marked `data-keeps-tab`, whose own handler takes Tab), never through the dimmed page (the keys are the only thing that moves the focus here: nothing
 //     listens to `focus`, so nothing pulls a focus that a screen gave to an element outside);
 //   - when it closes, the focus goes back to the control that had it when the overlay opened, only if the focus is still inside the overlay or nowhere
 //     (`document.body`) at that moment. A screen that already focused something else (a field that opens as a menu closes) keeps that focus. The cleanup
@@ -57,6 +57,7 @@ function focusableIn(node: unknown): HTMLElement | null {
 /** Tab inside the top overlay: from its last control to its first, and back, and from outside it in. Where the browser would go on inside it, it does. */
 function onTab(e: KeyboardEvent) {
   if (e.key !== "Tab" || e.altKey || e.ctrlKey || e.metaKey || e.isComposing) return;
+  if ((e.target as Element | null)?.closest?.("[data-keeps-tab]")) return; // (a control that takes Tab itself: the model menu's search steps the effort)
   const root = open[open.length - 1];
   if (!root) return;
   const els = tabbables(root);

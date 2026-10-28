@@ -46,6 +46,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
   { code: "KeyL", key: "l", mod: true, shift: false, label: "Quote the selection or add it to the message" },
   { code: "KeyL", key: "l", mod: true, shift: true, label: "Pick a point on the board" },
   { code: "KeyP", key: "p", mod: true, shift: false, label: "Insert a prompt" },
+  { code: "KeyE", key: "e", mod: true, shift: false, label: "Model and effort" },
   { code: "Enter", key: "Enter", mod: true, shift: false, label: "Save" },
   { code: "Escape", key: "Escape", mod: false, shift: false, label: "Close" },
 ];

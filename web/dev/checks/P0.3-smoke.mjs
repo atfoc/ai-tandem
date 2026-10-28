@@ -270,7 +270,7 @@ export const DRAWN = {
     phoneSee: [SUB("offline"), { tid: "empty-thread" }, { tid: "composer-block", data: { kind: "offline", place: "toolbar" }, text: "is offline" }, { tid: "composer-box" }] },
   "A2.plain-off-started": { see: [{ tid: "remote-bar", data: { kind: "off" } }, { tid: "remote-bar-text", text: "lab-gpu-box.tailnet-1234.ts.net is not connected" }, { tid: "msg" }, { tid: "ctx-meter" }, { tid: "composer-box" }],
     phoneSee: [SUB("offline"), { tid: "msg" }, { tid: "composer-box" }] }, // T3: no bar on the phone
-  "A2.plain-fork-fresh": { see: [{ tid: "chat-head" }, { tid: "forked-from" }, { tid: "tchip", data: { kind: "effort" } }],
+  "A2.plain-fork-fresh": { see: [{ tid: "chat-head" }, { tid: "forked-from" }, { tid: "tchip", data: { kind: "model", fixed: false } }], // (the model and its effort: one chip)
     phoneSee: [{ tid: "chat-head" }, { tid: "forked-from" }, { tid: "tchip", data: { kind: "model" } }, { tid: "chip-note", text: "Only the model can change" }] }, // (C2: the phone's row has no effort chip: the model chip alone, "<model> · <effort>", and its note)
   "A2.plain-fork-notice": { see: [{ tid: "chat-head" }, { tid: "forked-from" }, { tid: "model-notice", text: "Another model" }] },
   // (the wide header's branch crumb `fk-crumb` has no phone counterpart: the phone names no branch in its header, the Tree button carries the count)

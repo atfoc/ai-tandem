@@ -10,7 +10,8 @@
 //   C-MN-01/02/03/04/06  "@" in a board chat opens the list of the other boards of its server (six at most), by what follows; "a@b" opens none; a plain chat
 //            has none; the arrows move the highlight, Enter and Tab pick, Esc closes and leaves the text, a press on an option picks it and the box keeps the
 //            focus; a pick makes "@Name " and the context row shows the mentioned board; the same name again replaces the pick
-//   C-CH-12/14  the model's list searches ("Search models"), its arrows and Enter pick; the effort follows the model
+//   C-CH-12/14  the model and effort menu searches ("Search models"), ↑ ↓ and Tab / Shift+Tab draft, Enter applies, Esc applies nothing; the effort
+//            follows the model (the menu of plans/model-effort-menu/design.md: the popover at the wide layouts, the sheet at the phone)
 //   C-RO-07/08  an archived chat draws no box but its bar ("Archived — unarchive to continue", Unarchive), and a chat of the old board connection its own bar
 //   C-RO-14  the note beside the context row goes by itself after 2.5 s
 //   (sweep, rn-sw-webtest) the folder of a chat that has not started, changed from elsewhere, is the composer's at once (web/test/sectionviews.test.ts)
@@ -20,7 +21,7 @@
 // words are read from `aria-label`; the @ list is the dock above the composer (`mention-dock`, four rows at most, names without "@"); the context row's
 // chips are `ctx-chip` with `data-kind` (board: "Open the board <name>"; ref: the name and a "Remove <name> from the message" ×).
 import { atRest, callMatcher, callsOf, check, mockEval, seed, until } from "../shot.mjs";
-import { MORE, POP, chip, closeChoice, frame, openAt, openChoice, openState, phoneChip, placesOf } from "./composer.mjs";
+import { MENU as MENU_SEL, chip, closeChoice, frame, menuOf, openAt, openChoice, openModelMenu, openState, phoneChip, placesOf } from "./composer.mjs";
 import { byTid, openChat, press, tidSel } from "./sel.mjs";
 
 export const viewports = ["desktop", "tablet", "phone"];
@@ -49,17 +50,6 @@ await check("L16 the composer: Enter, trim, refusals, growth, focus, the @ list,
   const posts = (calls, from = 0) => calls.slice(from).filter((c) => c.method === "POST" && POST.test(c.path));
   /** The phone's folder path as the user reads it: its text without the embedding marks that keep its characters in order. */
   const pathText = async (page) => ((await byTid(page, "dir-path").first().textContent()) ?? "").replace(/[\u202A-\u202E]/g, "");
-  /** The effort's chip, wherever the toolbar's fit puts it: in the row in a wide page, in the "more" popup at the tablet's width, where voice's pair
-   *  keeps the room and Effort leaves early (core's LEAVING). The popup is opened when the chip is not in the row, and stays open through a pick. */
-  const effortChipOf = async (page) => {
-    if (await chip(page, "effort").count() && !await chip(byTid(page, "more-pop"), "effort").count()) return chip(page, "effort").first();
-    if (!await page.locator(POP).count()) {
-      if (!await page.locator(MORE).count()) return fail("the effort's chip is neither in the toolbar's row nor behind a \"more\" chip"), null;
-      await press(page, page.locator(MORE));
-      if (!await until(() => page.locator(POP).count(), 5000)) return fail("the \"more\" chip did not open its popup"), null;
-    }
-    return chip(byTid(page, "more-pop"), "effort").first();
-  };
   const type = async (page, s) => { await press(page, box(page)); await page.keyboard.type(s); };
 
   // ---- the box: placeholder, Enter, Shift+Enter, trim, Send's state, the draft
@@ -140,26 +130,19 @@ await check("L16 the composer: Enter, trim, refusals, growth, focus, the @ list,
     if (!await byTid(page, "composer-err").count()) fail("the refusal's sentence went by itself");
     const pickOther = async (kind) => {
       await atRest(page, 12);
-      if (phone) { // (the model sheet: a model's row without the ✓, or the effort control's other segment; Done closes it)
-        const sheet = await openChoice(page, "model");
-        const other = kind === "model" ? byTid(sheet, "picker-row").filter({ hasNot: page.locator(tidSel("picker-check")) }).first() : byTid(byTid(sheet, "effort-seg"), "segment", { on: "false" }).first();
-        if (!await until(() => other.count(), 5000)) { fail(`the ${kind}'s sheet has no other ${kind === "model" ? "row" : "segment"} to pick`); await closeChoice(page); return false; }
-        const from = calls.length;
-        await press(page, other);
-        const saved = await until(() => calls.slice(from).some((c) => c.method === "PATCH" && /\/chats\/c_A2_new/.test(c.path) && (c.body?.[kind])), 10000);
-        if (!saved) fail(`a pick of the ${kind} made no PATCH`);
-        await closeChoice(page);
-        return saved;
-      }
-      if (!await chip(page, kind).first().isVisible()) await press(page, byTid(page, "more-chip").first());
-      await press(page, chip(page, kind).first());
-      const rows = byTid(page, "pick-row"), other = rows.and(page.locator('[aria-selected="false"]')).first();
-      if (!await until(() => other.count(), 5000)) { fail(`the ${kind}'s list has no other row to pick`); return false; }
+      // (the model and effort menu, the wide layouts' popover and the phone's sheet: a row without data-on, or the effort control's other segment,
+      // drafts it, and Done applies it)
+      const menu = phone ? await openChoice(page, "model") : await openModelMenu(page);
+      const other = kind === "model" ? byTid(menu, "model-menu-row", { on: "false" }).first() : byTid(byTid(menu, "effort-seg"), "segment", { on: "false" }).first();
+      if (!await until(() => other.count(), 5000)) { fail(`the menu has no other ${kind === "model" ? "row" : "segment"} to pick`); if (phone) await closeChoice(page); else await page.keyboard.press("Escape"); return false; }
       const from = calls.length;
       await press(page, other);
-      if (!await until(() => calls.slice(from).some((c) => c.method === "PATCH" && /\/chats\/c_A2_new/.test(c.path) && (c.body?.[kind])), 10000)) { fail(`a pick of the ${kind} made no PATCH`); return false; }
+      await press(page, byTid(menu, "model-menu-done"));
+      const saved = await until(() => calls.slice(from).some((c) => c.method === "PATCH" && /\/chats\/c_A2_new/.test(c.path) && (c.body?.[kind])), 10000);
+      if (!saved) fail(`a pick of the ${kind} made no PATCH`);
+      if (phone) await closeChoice(page);
       if (await byTid(page, "more-pop").count()) { await page.keyboard.press("Escape"); await until(async () => !await byTid(page, "more-pop").count(), 5000); } // (the popup that held the chip stays open under a pick)
-      return true;
+      return saved;
     };
     if (await pickOther("model")) {
       if (!await until(async () => !await byTid(page, "composer-err").count(), 5000)) fail(`a model chosen left the refusal's sentence: "${await byTid(page, "composer-err").first().textContent()}"`);
@@ -398,112 +381,118 @@ await check("L16 the composer: Enter, trim, refusals, growth, focus, the @ list,
     await ctx.close();
   }
 
-  // ---- the model's list: it searches, the arrows and Enter pick, the effort follows the model
-  if (phone) { // the model sheet: the kit's search field comes only past 8 models, the plain chat's catalog has fewer (UX.C2 proves it with the pi seed's many); the rows are the catalog's; the effort is its control, not a second list
+  // ---- the model and effort menu (plans/model-effort-menu/design.md): it searches, ↑ ↓ draft a model and Tab / Shift+Tab an effort, Enter or Done
+  // applies the draft in one write, Esc applies nothing; the effort follows the drafted model. (ME.1 holds ⌘E and the keys' wrap-around at the desktop.)
+  const patches = (calls, from, field) => calls.slice(from).filter((c) => c.method === "PATCH" && /\/chats\/c_A2_new/.test(c.path) && c.body?.[field] !== undefined).map((c) => c.body[field]);
+  if (phone) { // the model sheet: the search, the rows of the catalog, the drafted model alone on; a row drafts and Done applies
     const { page, ctx } = await fresh("plain-new");
     const calls = callsOf(page);
     const sheet = await openChoice(page, "model");
-    if (await byTid(sheet, "picker-search").count()) fail("the model sheet of a catalog of four models has a search field: it comes past 8");
-    const rows = await byTid(sheet, "picker-row").evaluateAll((els) => els.map((e) => e.dataset.value));
+    if (!await byTid(sheet, "model-menu-search").count()) fail("the model sheet has no search field (it is always shown)");
+    const rows = await byTid(sheet, "model-menu-row").evaluateAll((els) => els.map((e) => e.dataset.model));
     if (J(rows) !== J(["opus", "sonnet", "haiku", "long"])) fail(`the model sheet lists ${J(rows)}, not the catalog's ["opus","sonnet","haiku","long"]`);
-    if (await byTid(sheet, "picker-row").filter({ has: page.locator(tidSel("picker-check")) }).count() !== 1) fail("the model sheet does not tick the chosen model alone");
+    if (await byTid(sheet, "model-menu-row", { on: "true" }).count() !== 1) fail("the model sheet does not mark the chosen model alone");
     const from = calls.length;
-    await press(page, byTid(sheet, "picker-row", { value: "sonnet" }));
-    if (!await until(() => calls.slice(from).some((c) => c.method === "PATCH" && /\/chats\/c_A2_new/.test(c.path) && c.body?.model === "sonnet"), 10000)) fail("a press on a model's row made no PATCH with the model");
-    if (!await byTid(page, "model-sheet").count()) fail("the model sheet closed with a model pick: it stays open for the effort (Done closes it)");
+    await press(page, byTid(sheet, "model-menu-row", { model: "sonnet" }));
+    if (!await until(() => byTid(sheet, "model-menu-row", { model: "sonnet", on: "true" }).count(), 5000)) fail("a press on a model's row did not draft it");
+    await page.waitForTimeout(300);
+    if (patches(calls, from, "model").length) fail("a press on a model's row wrote at once: it is a draft until Done");
     // the effort follows the model: it keeps the effort the new model offers, else its default
     const on = await until(async () => (await byTid(byTid(sheet, "effort-seg"), "segment", { on: "true" }).evaluateAll((els) => els.map((e) => e.dataset.value)))[0] ?? null, 5000);
-    if (!on) fail("after a model pick the effort control has no segment on: this model offers efforts");
-    await closeChoice(page);
-    if (!((await phoneChip(page, "model").textContent()) ?? "").includes("Sonnet 5.5")) fail(`the model chip says ${J(await phoneChip(page, "model").textContent())} after Sonnet 5.5 was picked`);
+    if (!on) fail("after a model was drafted the effort control has no segment on: this model offers efforts");
+    await closeChoice(page); // (Done)
+    if (!await until(() => patches(calls, from, "model").includes("sonnet"), 10000)) fail("Done made no PATCH with the drafted model");
+    if (!await until(async () => ((await phoneChip(page, "model").textContent()) ?? "").includes("Sonnet 5.5"), 5000)) fail(`the model chip says ${J(await phoneChip(page, "model").textContent())} after Sonnet 5.5 was applied`);
     await ctx.close();
   }
   if (keys) {
     const { page, ctx } = await fresh("plain-new");
     const calls = callsOf(page);
-    await press(page, chip(page, "model").first());
-    const search = byTid(page, "picker-search").first();
-    if (!await until(() => search.count(), 5000)) fail("the model's list has no search field");
+    await openModelMenu(page);
+    const search = byTid(page, "model-menu-search").first();
+    if (!await until(async () => (await menuOf(page))?.focused, 5000)) fail("the menu opened by a click on the chip has no focus in its search field");
+    if (await search.getAttribute("placeholder") !== "Search models") fail(`the search says "${await search.getAttribute("placeholder")}", not "Search models"`);
+    await search.fill("zzz");
+    if (!await until(async () => (await menuOf(page))?.empty, 5000)) fail('a search that matches nothing does not say "No matching models"');
     else {
-      if (await search.getAttribute("placeholder") !== "Search models") fail(`the search says "${await search.getAttribute("placeholder")}", not "Search models"`);
-      await search.fill("zzz");
-      if (!await until(async () => (await byTid(page, "picker").first().textContent()).includes("No matching models"), 5000)) fail('a search that matches nothing does not say "No matching models"');
-      await search.fill("son");
-      const rows = await until(async () => { const r = await byTid(page, "pick-row").allTextContents(); return r.length && r.every((x) => /son/i.test(x)) ? r : null; }, 5000);
-      if (!rows) fail(`the search "son" lists ${J(await byTid(page, "pick-row").allTextContents())}`);
+      if ((await menuOf(page)).done) fail("Done is enabled while the search lists no model");
       const from = calls.length;
       await page.keyboard.press("Enter");
-      if (!await until(() => calls.slice(from).some((c) => c.method === "PATCH" && /\/chats\/c_A2_new/.test(c.path) && c.body?.model), 10000)) fail("Enter in the search picked no model");
-      if (!await until(() => byTid(page, "picker").count().then((n) => !n), 5000)) fail("the list stays open after a pick");
-      // the effort follows the model: it keeps the effort the new model offers, else its default
-      const at = await effortChipOf(page);
-      const effort = at && await until(async () => (await at.textContent().catch(() => "")) || null, 5000);
-      if (!effort) fail("after a model pick the toolbar has no effort chip: this model offers efforts");
+      await page.waitForTimeout(300);
+      if (patches(calls, from, "model").length || !await page.locator(MENU_SEL).count()) fail("Enter with no model listed applied something or closed the menu");
     }
+    await search.fill("son");
+    const rows = await until(async () => { const r = await byTid(page, "model-menu-row").allTextContents(); return r.length && r.every((x) => /son/i.test(x)) ? r : null; }, 5000);
+    if (!rows) fail(`the search "son" lists ${J(await byTid(page, "model-menu-row").allTextContents())}`);
+    const from = calls.length;
+    await page.keyboard.press("Enter");
+    if (!await until(() => patches(calls, from, "model")[0], 10000)) fail("Enter in the search applied no model");
+    if (!await until(() => page.locator(MENU_SEL).count().then((n) => !n), 5000)) fail("the menu stays open after Enter");
+    // the effort follows the model: it keeps the effort the new model offers, else its default; the chip says both
+    const said = await until(async () => { const t = (await chip(page, "model").first().textContent().catch(() => "")) ?? ""; return /Sonnet 5\.5 · \S/.test(t) ? t : null; }, 5000);
+    if (!said) fail(`after Sonnet 5.5 was applied the model chip says ${J(await chip(page, "model").first().textContent().catch(() => ""))}, not "Sonnet 5.5 · <effort>": this model offers efforts`);
     await ctx.close();
   }
 
-  // ---- the effort's list has no search field: the arrows, Enter and Esc act on it from the keyboard (C-CH-25); the arrows go around the ends (C-CH-12)
-  if (phone) { // the model sheet's effort control: no search, the chosen segment alone is on, a press on another saves it and the sheet stays open
+  // ---- the effort: no list of its own; in the menu the segments (a press, at the phone) or Tab / Shift+Tab (the keys) draft it, around the ends;
+  // Enter or Done applies it, Esc applies nothing (C-CH-12, C-CH-25)
+  if (phone) { // the model sheet's effort control: the drafted segment alone is on, a press on another drafts it, Done applies it
     const { page, ctx } = await fresh("plain-new");
     const calls = callsOf(page);
     const sheet = await openChoice(page, "model"), seg = byTid(sheet, "effort-seg");
     const state = () => byTid(seg, "segment").evaluateAll((els) => ({ ids: els.map((e) => e.dataset.value), on: els.map((e, i) => (e.dataset.on === "true" ? i : -1)).filter((i) => i >= 0) }));
-    if (await byTid(seg, "picker-search").count() || await byTid(sheet, "picker-search").count()) fail("the effort control has a search field");
     const st = await state();
     if (st.ids.length < 3 || st.on.length !== 1) fail(`the effort control is ${J(st)}: it has three segments at least and the chosen one alone is on`);
-    else for (const want of [st.ids[(st.on[0] + 1) % st.ids.length], st.ids[st.on[0]]]) { // (the next one, then back to the chosen one)
-      const from = calls.length;
+    else {
+      const want = st.ids[(st.on[0] + 1) % st.ids.length], from = calls.length;
       await press(page, byTid(seg, "segment", { value: want }));
-      const got = await until(() => calls.slice(from).filter((c) => c.method === "PATCH" && /\/chats\/c_A2_new/.test(c.path) && c.body?.effort).map((c) => c.body.effort)[0], 10000);
-      if (got !== want) fail(`a press on the effort ${want} saved ${J(got)}`);
-      else if (!await until(async () => J((await state()).on) === J([st.ids.indexOf(want)]), 5000)) fail(`after a press on ${want} the segments are ${J(await state())}: it alone is on`);
-      if (!await byTid(page, "model-sheet").count()) fail("the model sheet closed with an effort pick: Done closes it");
+      if (!await until(async () => J((await state()).on) === J([st.ids.indexOf(want)]), 5000)) fail(`after a press on ${want} the segments are ${J(await state())}: it alone is on`);
+      await page.waitForTimeout(300);
+      if (patches(calls, from, "effort").length) fail("a press on an effort wrote at once: it is a draft until Done");
+      if (!await byTid(page, "model-sheet").count()) fail("the model sheet closed with an effort press: Done closes it");
+      await closeChoice(page);
+      const got = await until(() => patches(calls, from, "effort")[0], 10000);
+      if (got !== want) fail(`Done after a press on the effort ${want} saved ${J(got)}`);
     }
-    await closeChoice(page);
     await ctx.close();
   }
   if (keys) {
     const { page, ctx } = await fresh("plain-new");
     const calls = callsOf(page);
-    const picks = (from) => calls.slice(from).filter((c) => c.method === "PATCH" && /\/chats\/c_A2_new/.test(c.path) && c.body?.effort).map((c) => c.body.effort);
-    const listGone = () => until(() => byTid(page, "pick-row").count().then((c) => !c), 5000);
-    /** Opens the effort's list: the ids of its rows, the chosen one (which is ticked, alone), or null. */
+    const gone = () => until(() => page.locator(MENU_SEL).count().then((c) => !c), 5000);
+    /** Opens the menu: its efforts and the drafted one, or null. */
     const open = async () => {
-      const at = await effortChipOf(page);
-      if (!at) return null;
-      await press(page, at);
-      if (!await until(() => byTid(page, "pick-row").count(), 5000)) { fail("the effort's chip opened no list"); return null; }
-      if (await byTid(page, "picker-search").count()) fail("the effort's list has a search field");
-      // (the list starts its highlight on the chosen row a moment after it opens, drawn as a ring: the keys are pressed once it is there)
-      if (!await until(() => byTid(page, "pick-row").evaluateAll((els) => els.some((e) => getComputedStyle(e).boxShadow !== "none")), 5000)) fail("the effort's list highlights no row when it opens");
-      const st = await byTid(page, "pick-row").evaluateAll((els) => ({ ids: els.map((e) => e.dataset.optionId), on: els.findIndex((e) => e.getAttribute("aria-selected") === "true"), ticks: els.map((e) => e.textContent.includes("✓")) }));
-      if (st.ticks.filter(Boolean).length !== 1 || !st.ticks[st.on]) fail(`the effort's list ticks ${J(st.ticks)}: the chosen row alone, ${st.on}`);
-      return st;
+      await openModelMenu(page);
+      if (!await until(async () => (await menuOf(page))?.focused, 5000)) fail("the menu's search has no focus");
+      const m = await menuOf(page);
+      return m && { ids: m.efforts, on: m.efforts.indexOf(m.effort) };
     };
-    /** An arrow and Enter in the list: the pick is the row after (or before) the chosen one, around the ends. */
-    const stepBy = async (arrow) => {
+    /** Tab (or Shift+Tab) and Enter in the menu: the effort applied is the one after (or before) the chosen one, around the ends. */
+    const stepBy = async (key) => {
       const now = await open();
-      if (!now || now.on < 0 || now.ids.length < 3) { fail(`the effort's list is ${J(now)}: it has no chosen row, or fewer than three rows to move over`); return false; }
-      const want = now.ids[(now.on + (arrow === "ArrowDown" ? 1 : -1) + now.ids.length) % now.ids.length], from = calls.length;
-      await page.keyboard.press(arrow);
+      if (!now || now.on < 0 || now.ids.length < 3) { fail(`the menu's efforts are ${J(now)}: none is chosen, or fewer than three to move over`); return false; }
+      const want = now.ids[(now.on + (key === "Tab" ? 1 : -1) + now.ids.length) % now.ids.length], from = calls.length;
+      await page.keyboard.press(key);
+      if (!await until(async () => (await menuOf(page))?.effort === want, 5000)) fail(`${key} drafted ${J((await menuOf(page))?.effort)}, not ${want}`);
+      if (!(await menuOf(page))?.focused) fail(`${key} took the focus out of the search field`);
       await page.keyboard.press("Enter");
-      const got = await until(() => picks(from)[0], 10000);
-      if (!got) fail(`${arrow}, Enter in the effort's list picked nothing (the list is ${J(now.ids)}, ${now.ids[now.on]} chosen)`);
-      else if (got !== want) fail(`${arrow}, Enter in the effort's list picked ${got}, not ${want}, the row ${arrow === "ArrowDown" ? "after" : "before"} ${now.ids[now.on]} in ${J(now.ids)}`);
-      if (!await listGone()) fail("the effort's list stays open after a pick by Enter");
+      const got = await until(() => patches(calls, from, "effort")[0], 10000);
+      if (!got) fail(`${key}, Enter in the menu applied nothing (the efforts are ${J(now.ids)}, ${now.ids[now.on]} chosen)`);
+      else if (got !== want) fail(`${key}, Enter in the menu applied ${got}, not ${want}, the one ${key === "Tab" ? "after" : "before"} ${now.ids[now.on]} in ${J(now.ids)}`);
+      if (!await gone()) fail("the menu stays open after Enter");
       return !!got;
     };
-    // (the list opens on the chosen row: down, down from the last row to the first, up from the first to the last, up)
-    if (await stepBy("ArrowDown") && await stepBy("ArrowDown") && await stepBy("ArrowUp") && await stepBy("ArrowUp")) {
-      // Esc closes the list and picks nothing
+    // (from the chosen one: on, on from the last to the first, back from the first to the last, back)
+    if (await stepBy("Tab") && await stepBy("Tab") && await stepBy("Shift+Tab") && await stepBy("Shift+Tab")) {
+      // Esc closes the menu and applies nothing
       if (await open()) {
         const from = calls.length;
+        await page.keyboard.press("Tab");
         await page.keyboard.press("ArrowDown");
         await page.keyboard.press("Escape");
-        if (!await listGone()) fail("Esc did not close the effort's list");
+        if (!await gone()) fail("Esc did not close the menu");
         await page.waitForTimeout(400);
-        if (picks(from).length) fail(`Esc in the effort's list picked ${J(picks(from))}`);
+        if (calls.slice(from).some((c) => c.method === "PATCH")) fail(`Esc in the menu applied ${J(calls.slice(from).filter((c) => c.method === "PATCH").map((c) => c.body))}`);
       }
     }
     await ctx.close();
@@ -756,10 +745,16 @@ await check("L16 the composer: Enter, trim, refusals, growth, focus, the @ list,
     const { page, ctx } = await fresh("plain-new");
     // (the phone's chips are in its own row, `composer-chip-row`, which placesOf does not look into: read the chip itself)
     const label = async (kind) => phone ? (await chip(page, kind).first().textContent({ timeout: 2000 }).catch(() => null))?.replace(/▾/g, "").trim() ?? null : (await placesOf(page))?.chips.find((c) => c.kind === kind)?.label ?? null;
-    if (!phone && await label("folder") === null) await press(page, byTid(page, "more-chip").first()); // (a narrow toolbar keeps the folder in the "more" popup)
-    const folderWas = await label("folder");
+    // (a narrow toolbar keeps the folder in the "more" popup, and a longer name can send it there: the popup is opened when the chip is not in sight)
+    const shown = async (kind) => {
+      const now = await label(kind);
+      if (now !== null || phone || !await byTid(page, "more-chip").count() || await byTid(page, "more-pop").count()) return now;
+      await press(page, byTid(page, "more-chip").first());
+      return label(kind);
+    };
+    const folderWas = await shown("folder");
     await mockEval(`Object.assign(chats.c_A2_new, { cwd: "/srv/other-place" }); send({ type: "chat", chat: chats.c_A2_new });`, url);
-    if (!await until(async () => ((await label("folder")) ?? "").includes("other-place"), 10000)) fail(`the folder chip of a chat that has not started says "${await label("folder")}" after its folder was changed from elsewhere, not "other-place" (it said "${folderWas}")`);
+    if (!await until(async () => ((await shown("folder")) ?? "").includes("other-place"), 10000)) fail(`the folder chip of a chat that has not started says "${await label("folder")}" after its folder was changed from elsewhere, not "other-place" (it said "${folderWas}")`);
     await ctx.close();
   }
 

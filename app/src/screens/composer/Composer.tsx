@@ -59,6 +59,7 @@ import { ContextRow, ModelNotice } from "./Notices.tsx";
 import { composerParts, useComposerParts } from "./parts.tsx";
 import { Toolbar } from "./Toolbar.tsx";
 import { keyPlatform } from "../shell/keyplatform.ts";
+import { underDialog } from "./underdialog.ts";
 import { MentionList } from "./Mention.tsx";
 import { useEscLayer } from "../../ui/useEscLayer";
 import { SendButton, StopButton } from "./Send.tsx";
@@ -67,12 +68,6 @@ import { sendMessage } from "./send.ts";
 /** The chat whose composer had the focus as it went away for the composer of another branch (the chat is on that one now): the one that
  *  opens takes the focus, as if it were the same. */
 let refocus: string | null = null;
-
-/** Whether a dialog or a popup is open: ⌘Enter sends nothing under one (the library's edit form saves with it). */
-const underDialog = () => {
-  const s = getState();
-  return !!(s.confirm || s.serversDialog || s.libraryDialog || s.insertPopup || s.treeNav);
-};
 
 /** The composer the chat view draws: the one of the branch the chat is on (another branch has another composer, with its own draft). */
 export function Composer({ chat }: { chat: string }) {

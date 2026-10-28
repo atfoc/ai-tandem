@@ -27,7 +27,7 @@ setFocusComposer(() => focusSelectedBox(30, (chat) => windowLayout() === "phone"
 export { Composer } from "./Composer.tsx";
 export { sendMessage } from "./send.ts";
 export { setComposerPart, composerParts, useComposerParts, type ComposerParts, type SubagentsProps, type ImageStripProps, type AttachButtonProps, type ComposerQuotes, type QuotesHook, type QuoteSelection } from "./parts.tsx";
-export { TChip, ChipName, Caret, NAME_CAP, MODEL_CAP, UNTIL_FIRST_MESSAGE } from "./Chip.tsx";
+export { TChip, ChipName, Caret, NAME_CAP, UNTIL_FIRST_MESSAGE } from "./Chip.tsx";
 export { Picker, type PickerOption, type PickerProps } from "./Picker.tsx";
 export { effortLabel, modelLabel, modelOf, subline } from "./model.ts";
 export { recentDirs } from "./recent.ts";

@@ -1,5 +1,5 @@
-// A2.5 ported (AD-80; package K3): what the e2e scripts address is where they address it. In a 1400 px window each of the four chip
-// selectors (the agent's, the model's, the effort's and the folder's chip, by their testID `tchip` and the start of their title) matches one
+// A2.5 ported (AD-80; package K3): what the e2e scripts address is where they address it. In a 1400 px window each of the three chip
+// selectors (the agent's, the model and effort's and the folder's chip, by their testID `tchip` and the start of their title) matches one
 // chip of the toolbar's row, which says what it said and opens its list; so do the fixed chips of a started chat. A chat's server is no choice:
 // one on another server names it in the fixed chip of kind `server`, and one on this computer has no such chip. In a board's 400 px panel Agent
 // and Model do (the Agent chip in the row, the Model chip in the "more" popup, which voice's pair keeps room from), and each opens its list there. innerText of the meter (`ctx-meter`) gives the share in percent while only the ring
@@ -12,6 +12,8 @@
 // In a window of the phone's width the chips are the phone's (ux-improvements C2): a `tchip` of the chip row (no `title`: a chip is known by its
 // accessibility label, "Agent: Claude Code", "Folder: shop", "Model and effort: Opus 5.5 · High", "Subagents: …"), and a press opens its sheet: the
 // agent's and the model's rows (the model's also the effort's segments), the folder's path, the subagents' options.
+// The model and its effort are one chip at every width (plans/model-effort-menu/design.md 2.5): titled "Model and effort (⌘E): <model> · <effort> — …",
+// it opens the model and effort menu (model-menu, its rows model-menu-row); the old effort chip's selector matches nothing.
 // In a window of the phone's width (any viewport: under 700 px) the composer is the phone's (ux-improvements C1): the chips are in its chip row
 // (`composer-chip-row`), the ring is a 44 pt target with no text seen and no hover title (its words are its accessible name), and the error
 // meter is its icon alone at every width.
@@ -43,23 +45,25 @@ await check("A2.5 the scripts' chip selectors and the meter's text", async ({ ur
     if (!at.hit) fail(`${name}: ${sel} is not the element at its own centre`);
     return at.text;
   };
-  /** A click on the chip opens its list, with options; Esc closes it. */
+  /** A click on the chip opens its list (the model and effort menu for the model's chip), with options; Esc closes it. */
   const opens = async (page, name, sel) => {
     await press(page, page.locator(sel));
-    if (!await until(() => byTid(page, "pick-row").count(), 5000)) return fail(`${name}: a click on ${sel} opened no list`);
+    const rows = page.locator(`${tidSel("pick-row")}, ${tidSel("model-menu-row")}`), lists = page.locator(`${tidSel("picker")}, ${tidSel("model-menu")}`);
+    if (!await until(() => rows.count(), 5000)) return fail(`${name}: a click on ${sel} opened no list`);
     await page.keyboard.press("Escape");
-    if (!await until(async () => !await byTid(page, "picker").count(), 5000)) fail(`${name}: Esc did not close the list of ${sel}`);
+    if (!await until(async () => !await lists.count(), 5000)) fail(`${name}: Esc did not close the list of ${sel}`);
   };
 
-  if (wide) { // a 1400 px window: all four, as before
+  if (wide) { // a 1400 px window: the three, as before (the model and the effort one chip)
     const p = await openState(open, state("plain-new"), layout, 0, { size: [1400, 800] }), name = "an unstarted chat in a 1400 px window";
-    for (const [title, says] of [["Agent", "Claude Code"], ["Working directory", "shop"], ["Model", "Opus 5.5"], ["Effort", "EffortHigh"]]) {
+    for (const [title, says] of [["Agent", "Claude Code"], ["Working directory", "shop"], ["Model and effort", "Opus 5.5 · High"]]) {
       const text = await one(p.page, name, chipSel(title));
       if (text !== undefined && text !== says) fail(`${name}: ${chipSel(title)} says "${text}", not "${says}"`);
       if (title !== "Working directory") await opens(p.page, name, chipSel(title));
     }
     if (await p.page.locator(SERVER).count()) fail(`${name}: a chat on this computer names a server in its toolbar`);
     if (await p.page.locator(tidSel("more-chip")).count()) fail(`${name}: the toolbar has a "more" chip`);
+    if (await p.page.locator(chipSel("Effort")).count() || await p.page.locator(tidSel("tchip", { kind: "effort" })).count()) fail(`${name}: the toolbar has an effort chip`);
     // the folder's chip opens its browser
     await press(p.page, p.page.locator(chipSel("Working directory")));
     if (!await until(() => byTid(p.page, "dir-input").count(), 5000)) fail(`${name}: a click on the folder's chip opened no browser`);
@@ -72,7 +76,7 @@ await check("A2.5 the scripts' chip selectors and the meter's text", async ({ ur
     await one(p.page, name, chipSel("Folder on"));
     await close(p);
     const q = await openState(open, state("plain-new-long"), layout, 0, { size: [1400, 800] }), long = "an unstarted chat with long names in a 1400 px window";
-    for (const title of ["Agent", "Working directory", "Model", "Effort"]) await one(q.page, long, chipSel(title));
+    for (const title of ["Agent", "Working directory", "Model and effort"]) await one(q.page, long, chipSel(title));
     if (await q.page.locator(SERVER).count()) fail(`${long}: a chat on this computer names a server in its toolbar`);
     // (the paid script looks the model's chip up by the label it shows)
     if (!await q.page.locator(chipSel("Model"), { hasText: "Claude Opus 5.5 (1M context, extended thinking)" }).count()) fail(`${long}: the model's chip is not found by its whole label`);
@@ -97,7 +101,7 @@ await check("A2.5 the scripts' chip selectors and the meter's text", async ({ ur
       // (the row scrolls sideways: the chips past the window's edge are brought in first)
       for (const [kind, start] of [["folder", "Folder: "], ["subagents", "Subagents"]]) { await p.page.locator(label(kind, start)).scrollIntoViewIfNeeded(); await one(p.page, name, label(kind, start)); }
       if (await p.page.locator(tidSel("tchip", { kind: "effort" })).count() || await p.page.locator(tidSel("more-chip")).count()) fail(`${name}: the phone's row has an effort chip or a "more" chip`);
-      const rows = ["picker-row", ["picker-row", "segment"], "dir-path", "sub-opt"];
+      const rows = ["picker-row", ["model-menu-row", "segment"], "dir-path", "sub-opt"];
       for (const [i, kind] of ["agent", "model", "folder", "subagents"].entries()) {
         await openChoice(p.page, kind);
         for (const part of [rows[i]].flat()) if (!await until(() => byTid(p.page, part).count(), 5000)) fail(`${name}: a press on the ${kind} chip opened a sheet with no ${part}`);
@@ -116,8 +120,8 @@ await check("A2.5 the scripts' chip selectors and the meter's text", async ({ ur
       if (!await until(() => byTid(p.page, "more-pop").count(), 5000)) fail(`${name}: the "more" chip did not open its popup`);
       const at = await p.page.locator(`${tidSel("more-pop")} ${model}`);
       if (await at.count() !== 1) fail(`${name}: the "more" popup holds ${await at.count()} chips that match ${model}`);
-      else if ((await at.evaluate((e) => e.textContent.replace(/[▾⌄]/g, "").trim())) !== "Opus 5.5") fail(`${name}: the model's chip in the popup does not say "Opus 5.5"`);
-    } else if (await one(p.page, name, model) !== "Opus 5.5") fail(`${name}: the model's chip does not say "Opus 5.5"`);
+      else if ((await at.evaluate((e) => e.textContent.replace(/[▾⌄]/g, "").trim())) !== "Opus 5.5 · High") fail(`${name}: the model's chip in the popup does not say "Opus 5.5 · High"`);
+    } else if (await one(p.page, name, model) !== "Opus 5.5 · High") fail(`${name}: the model's chip does not say "Opus 5.5 · High"`);
     if (!inRow) { await p.page.keyboard.press("Escape"); if (!await until(async () => !await byTid(p.page, "more-pop").count(), 5000)) fail(`${name}: Esc did not close the "more" popup`); }
     await opens(p.page, name, chipSel("Agent"));
     if (!inRow) await press(p.page, p.page.locator(tidSel("more-chip")));
@@ -125,7 +129,7 @@ await check("A2.5 the scripts' chip selectors and the meter's text", async ({ ur
     await close(p);
     }
   }
-  note("the chip selectors: all five in a 1400 px window (the desktop), Agent and Model in a 400 px panel, each one chip of the row that opens its list (at the phone: the four chips of the row, each opening its sheet)");
+  note("the chip selectors: Agent, Working directory and Model and effort in a 1400 px window (the desktop), Agent and Model in a 400 px panel, each one chip of the row that opens its list (at the phone: the four chips of the row, each opening its sheet)");
 
   // ---- the meter's text
   /** In the page: the composer's meter, as a script reads it and as it is seen. */

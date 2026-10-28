@@ -601,13 +601,16 @@ export async function send(p, text) {
 
 export const msgs = async (p) => ({ user: await p.locator(q.msgUser).allInnerTexts(), assistant: await p.locator(q.msgAssistant).allInnerTexts() });
 
-/** A chip of the composer's toolbar by what it is: "folder", "model", "effort", "agent". */
+/** A chip of the composer's toolbar by what it is: "folder", "model", "agent" (the effort has no chip: the model's says "<model> · <effort>"). */
 export const chip = (p, kind) => p.locator(`${T("tchip")}[data-kind=${JSON.stringify(kind)}]`);
 /** The same for the folder of a chat of another server. */
 export const folderChip = (p, serverName) => chip(p, "folder");
 /** The phone's chip row (C2): agent, folder, model and subagents, each opening its sheet; the effort has no chip, it is in the model sheet and
- *  the model chip says "<model> · <effort>". */
+ *  the model chip says "<model> · <effort>". The wide toolbar the same: its model chip opens the model and effort menu (model-menu), a popover
+ *  (plans/model-effort-menu/design.md 2.5). In both a row or a segment is a draft, which Done applies (closeMore). */
 const PHONE_CHIP = { effort: "model" };
+/** The wide toolbar's model and effort menu. */
+const MENU = T("model-menu");
 const PHONE_SHEET = { agent: "agent-sheet", folder: "folder-sheet", model: "model-sheet", effort: "model-sheet", subagents: "sub-sheet" };
 /** The phone: the sheet a chip of `kind` opens. */
 export const chipSheet = (p, kind) => p.locator(T(PHONE_SHEET[kind] ?? `${kind}-sheet`)).last();
@@ -615,12 +618,16 @@ export const chipSheet = (p, kind) => p.locator(T(PHONE_SHEET[kind] ?? `${kind}-
 /** Presses a chip of the composer. The wide toolbar has room for some of them: the others are in the popup of the "more" chip, which opens first.
  *  On the phone the chip's sheet opens (the effort's is the model sheet). */
 export async function openChip(p, kind, serverName) {
-  const c = onPhone(p) ? chip(p, PHONE_CHIP[kind] ?? kind) : serverName ? folderChip(p, serverName) : chip(p, kind);
+  const c = serverName && !onPhone(p) ? folderChip(p, serverName) : chip(p, PHONE_CHIP[kind] ?? kind);
   if (!onPhone(p) && !(await c.count())) {
     await click(p, p.locator(T("more-chip")));
     await c.first().waitFor();
   }
-  if (!onPhone(p)) return click(p, c.first());
+  if (!onPhone(p)) {
+    await click(p, c.first());
+    if ((PHONE_CHIP[kind] ?? kind) === "model") await p.locator(MENU).first().waitFor({ state: "visible", timeout: WAIT });
+    return;
+  }
   // (the phone's composer is drawn again while a chat that was just opened on a remote server loads: a press on a chip that goes away is made again on the new one)
   for (let i = 0; ; i++) {
     try { await click(p, c.first(), i ? { timeout: 10000 } : undefined); break; }
@@ -651,13 +658,17 @@ export const decidedCards = async (p) => (onPhone(p)
 /** Closes the "more" popup of the composer's toolbar if a pick left it open (the narrow toolbar's pick of a chip that is in it: the list closes, the
  *  popup stays); on the phone the chip's sheet that a pick left open (the model sheet: Done). */
 export async function closeMore(p) {
+  if (!onPhone(p) && await p.locator(MENU).count()) { // (the model and effort menu: Done applies the draft and closes it)
+    await click(p, p.locator(MENU).first().locator(T("model-menu-done")));
+    await p.locator(MENU).first().waitFor({ state: "detached", timeout: WAIT });
+  }
   if (onPhone(p)) {
     // (a pick that closes its sheet leaves it going for a moment; a model with no effort leaves the model sheet with neither Done nor Cancel:
     // then the dimmed page above it closes it)
     const sheet = p.locator(Object.values(PHONE_SHEET).map((id) => T(id)).join(", "));
     if (!(await sheet.count())) return;
     if (await sheet.first().waitFor({ state: "detached", timeout: 1500 }).then(() => true, () => false)) return;
-    const done = sheet.last().locator(`${T("sheet-right")}:visible`), cancel = sheet.last().locator(`${T("sheet-left")}:visible`);
+    const done = sheet.last().locator(`${T("sheet-right")}:visible, ${T("model-menu-done")}:visible`), cancel = sheet.last().locator(`${T("sheet-left")}:visible, ${T("model-menu-cancel")}:visible`);
     if (await done.count()) await click(p, done.first());
     else if (await cancel.count()) await click(p, cancel.first());
     else await click(p, p.locator(T("overlay-backdrop")).last(), { position: { x: 5, y: 5 } });
@@ -683,20 +694,20 @@ export async function closeDirs(p) {
 
 /** The words on a chip, read from the row or, when the chip is in the "more" popup, from there (the popup is closed again). */
 export async function chipLabel(p, kind) {
-  if (onPhone(p)) { // (the model chip says "<model> · <effort>": each is its part)
-    const words = await chipName(chip(p, PHONE_CHIP[kind] ?? kind).first());
+  // (the model chip says "<model> · <effort>": each is its part)
+  const part = (words) => {
     const at = words.lastIndexOf(" · ");
     if (kind === "model") return at < 0 ? words : words.slice(0, at);
     if (kind === "effort") return at < 0 ? "" : words.slice(at + 3);
     return words;
-  }
-  const c = chip(p, kind);
-  if (await c.count()) return chipName(c.first());
+  };
+  const c = chip(p, PHONE_CHIP[kind] ?? kind);
+  if (onPhone(p) || await c.count()) return part(await chipName(c.first()));
   await click(p, p.locator(T("more-chip")));
   await c.first().waitFor();
   const name = await chipName(c.first());
   await closeMore(p);
-  return name;
+  return part(name);
 }
 
 /** The words on a chip. */
@@ -706,21 +717,26 @@ export async function shows(p) {
   const title = (await chip(p, "folder").getAttribute("title").catch(() => "")) ?? "";
   return {
     folder: title.replace(/ — .*$/, "").replace(/^Working directory: /, ""),
-    model: (await chip(p, "model").innerText().catch(() => "")).replace(/[▾\s]+$/, "").trim(),
+    // (the model chip says "<model> · <effort>" when the model has efforts, its data-effort set: the model's part)
+    model: await chip(p, "model").first().evaluate((e) => { const t = e.innerText.replace(/[▾\s]+$/, "").trim(), at = t.lastIndexOf(" · "); return e.dataset.effort && at >= 0 ? t.slice(0, at) : t; }).catch(() => ""),
   };
 }
 
-/** The list a chip opened, its options not on, not off. On the phone the sheet of `kind`: the model sheet's rows without the ✓, the effort's segments
- *  not on. */
+/** The list a chip opened, its options not on, not off. The model and effort menu (the wide popover, the phone's model sheet): the rows of the
+ *  models not drafted, the effort's segments not on; the wide agent's list: its rows not chosen; the phone's agent sheet: its rows without the ✓. */
 export const otherOption = (p, kind) => {
+  if ((PHONE_CHIP[kind] ?? kind) === "model") {
+    const menu = onPhone(p) ? chipSheet(p, kind) : p.locator(MENU).first();
+    if (kind === "effort") return menu.locator(T("effort-seg")).locator(`${T("segment")}:not([data-on="true"])`).first();
+    return menu.locator(`${T("model-menu-row")}:not([data-on="true"]):not([aria-disabled="true"])`).first();
+  }
   if (!onPhone(p)) return p.locator(`${T("pick-row")}:not([aria-selected="true"]):not([aria-disabled="true"])`).first();
-  const sheet = chipSheet(p, kind);
-  if (kind === "effort") return sheet.locator(T("effort-seg")).locator(`${T("segment")}:not([data-on="true"])`).first();
-  return sheet.locator(`${T("picker-row")}:not(:has(${T("picker-check")})):not([aria-disabled="true"])`).first();
+  return chipSheet(p, kind).locator(`${T("picker-row")}:not(:has(${T("picker-check")})):not([aria-disabled="true"])`).first();
 };
-/** The id of an option of `otherOption`: the wide list's option id, the phone sheet's value. */
-export const optionId = async (loc) => (await loc.getAttribute("data-option-id")) ?? loc.getAttribute("data-value");
-export const modelOption = (p, id) => p.locator(T("pick-row", { optionId: id }));
+/** The id of an option of `otherOption`: the wide list's option id, a sheet's or a segment's value, a model row's model. */
+export const optionId = async (loc) => (await loc.getAttribute("data-option-id")) ?? (await loc.getAttribute("data-value")) ?? loc.getAttribute("data-model");
+/** A model's row in the model and effort menu (a draft: closeMore applies it). */
+export const modelOption = (p, id) => p.locator(T("model-menu-row", { model: id }));
 
 /** The folder picker of the composer, opened by its chip (the phone: its sheet). */
 export const dirs = (p) => (onPhone(p) ? chipSheet(p, "folder") : p.locator(q.dirs));

@@ -8,14 +8,20 @@
 // Where model and effort write is pickerMode's, as in the toolbar: a pending move's choice, else the session (PATCH; a fork's pick starts its
 // agent again, pickOnFork, and until that ends the model chip names the choice and takes no press). While the composer sends, or a change is
 // being saved, or the chat's message is on its way (State.waits), the chips take no press.
-import { useState, type ReactElement } from "react";
+//
+// The model chip opens the Model and effort sheet (phone/chips/ModelSheet.tsx, plans/model-effort-menu/design.md 2.6), which holds a draft: a tap
+// on a row or a segment changes the draft only, Done applies it in one write (the move's choice, or one configure call carrying the fields that
+// differ), Cancel, a swipe and the dimmed page apply nothing. ⌘E (Ctrl+E off Apple's platforms; a hardware keyboard, through the keys port) opens
+// it on the selected chat with the search focused, and closes it (cancel) when it is open; only while the chip takes a press and no dialog is up.
+import { useEffect, useRef, useState, type ReactElement } from "react";
 import { Pressable, ScrollView, StyleSheet, View } from "react-native";
 
 import { api } from "@aiwb/core/api.ts";
+import { isModelMenuKey } from "@aiwb/core/logic/modeleffort.ts";
 import { catalogFor, usableAgents } from "@aiwb/core/logic/agentlist.ts";
 import { agentChoiceOn, sendOff, toolbarLine } from "@aiwb/core/logic/chatserver.ts";
 import { ONLY_MODEL, chipKinds, type ChipKind } from "@aiwb/core/logic/chiprow.ts";
-import { moveChoice, pickerMode, withEffort, withModel, type Choice } from "@aiwb/core/logic/models.ts";
+import { moveChoice, pickerMode, type Choice } from "@aiwb/core/logic/models.ts";
 import { serverOf } from "@aiwb/core/logic/serverlists.ts";
 import { subChipLabel, subSettings } from "@aiwb/core/logic/subsettings.ts";
 import { SENDING, heldReason, pickOn, startingOn } from "@aiwb/core/logic/waits.ts";
@@ -23,6 +29,7 @@ import { pickOnFork, setMoveChoice } from "@aiwb/core/state/actions.ts";
 import { chatTitle, getState, shownBranch, shownView, threadOf } from "@aiwb/core/state/store.ts";
 import type { AgentKind, ChatView } from "@aiwb/core/types.ts";
 
+import { onKey as onKeyPort, type KeyLike } from "../../platform/keys";
 import { useStore } from "../../state/useStore.ts";
 import { AgentGlyph, Folder, WarnIcon, agentName } from "../../ui/icons.tsx";
 import { PHONE, TYPE } from "../../ui/metrics.ts";
@@ -31,12 +38,14 @@ import { useTheme } from "../../ui/theme.tsx";
 import { tid } from "../../ui/tid.ts";
 import { webStyle } from "../../ui/webstyle.ts";
 import { base, useWhere } from "../chat/hooks.ts";
+import { keyPlatform } from "../shell/keyplatform.ts";
 import { effortLabel, modelLabel, modelOf, subline } from "./model.ts";
 import { AgentSheet } from "./phone/chips/AgentSheet.tsx";
 import { FolderSheet } from "./phone/chips/FolderSheet.tsx";
 import { C2_IDS } from "./phone/chips/ids.ts";
 import { ModelSheet } from "./phone/chips/ModelSheet.tsx";
 import { SubagentsSheet } from "./phone/chips/SubagentsSheet.tsx";
+import { underDialog } from "./underdialog.ts";
 
 export type ChipRowProps = {
   chatId: string;
@@ -63,11 +72,29 @@ function Row({ c, chatId, sending, onError }: ChipRowProps & { c: ChatView }) {
   const usable = useStore((s) => usableAgents(s, where.server));
   const [open, setOpen] = useState<ChipKind | null>(null);
   const [patching, setPatching] = useState(false);
+  const [byKey, setByKey] = useState(false); // the model sheet was opened by ⌘E: its search takes the focus
 
   const frozen = sendOff(where) || gone;
   // (while a fork's pick starts its agent again the chat reads as busy, which fixes its model: the chip stays, naming the choice, and takes no press)
   const asked = chipKinds(c, { frozen, move: !!move });
   const kinds: ChipKind[] = pick && !frozen && !!c.agent && !asked.includes("model") ? [...asked.filter((k) => k !== "subagents"), "model", ...asked.filter((k) => k === "subagents")] : asked;
+
+  // ⌘E: while the model chip takes a press, open the sheet with its search focused, or close it (cancel) when it is open.
+  const keyable = kinds.includes("model") && !!cat && !patching && !sending && !heldReason(waits, "choice") && !pick;
+  const openNow = useRef(open);
+  openNow.current = open;
+  useEffect(() => {
+    if (!keyable) return;
+    return onKeyPort((e: KeyLike) => {
+      if (e.repeat || !isModelMenuKey(e, keyPlatform())) return;
+      if (getState().sel.chat !== chatId || underDialog()) return;
+      if (openNow.current && openNow.current !== "model") return; // (another of the row's sheets is up)
+      e.preventDefault(); e.stopPropagation();
+      if (openNow.current === "model") setOpen(null);
+      else { setByKey(true); setOpen("model"); }
+    });
+  }, [keyable, chatId]);
+
   if (!kinds.length) return null;
 
   const held = heldReason(waits, "choice") || ""; // why the model and the effort take no pick now
@@ -88,9 +115,9 @@ function Row({ c, chatId, sending, onError }: ChipRowProps & { c: ChatView }) {
     return call.then(() => onError(""), (e) => onError(e.message)).finally(() => setPatching(false));
   };
   const setChoice = (ch: Choice) => { onError(""); setMoveChoice(chatId, ch); };
-  const pickModel = (id: string) => { const ch = withModel(shown, id, cat); if (mode === "move") setChoice(ch); else void configure({ model: id }, ch); };
-  const pickEffort = (id: string) => { const ch = withEffort(shown, id); if (mode === "move") setChoice(ch); else void configure({ effort: id }, ch); };
-  const opens = (k: ChipKind) => () => setOpen(k);
+  // the model and effort menu's draft, applied in one write (only the fields that differ)
+  const apply = (patch: { model?: string; effort?: string }, ch: Choice) => { if (mode === "move") setChoice(ch); else void configure(patch, ch); };
+  const opens = (k: ChipKind) => () => { setByKey(false); setOpen(k); };
   const close = () => setOpen(null);
 
   const m = modelOf(shown, cat);
@@ -146,7 +173,7 @@ function Row({ c, chatId, sending, onError }: ChipRowProps & { c: ChatView }) {
       ) : null}
       {kinds.includes("model") && cat ? (
         <ModelSheet open={open === "model"} onClose={close} c={c} sub={c.agent ? `${name} · ${agentName(c.agent as AgentKind)}` : name} cat={cat} value={shown}
-          onPickModel={pickModel} onPickEffort={pickEffort} held={busy ? "Saving your choice…" : held} />
+          held={busy ? "Saving your choice…" : held} focusSearch={byKey} onApply={apply} />
       ) : null}
       {kinds.includes("subagents") ? (
         <SubagentsSheet open={open === "subagents"} onClose={close} c={c} sub={name} disabled={busy || !!held} onBusy={setPatching} onError={onError} />

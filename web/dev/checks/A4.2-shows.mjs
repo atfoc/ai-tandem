@@ -13,7 +13,8 @@
 // its "⋯"); the tree's row is opened by a double click with a mouse and by a tap on the picked row with a finger; the 300 px page is the
 // desktop's. The composer is the real one (K3): the message is typed in the box and sent with Enter, and what is read of it is the loading line of a branch
 // whose events come late (the page's move draft), Send's spinner and its title, the empty box, the pickers (the model pick on a fresh fork of each kind,
-// the effort pick: B-FK-19) and Send while the agent starts.
+// the effort pick: B-FK-19) and Send while the agent starts. The model and the effort are picked in the model and effort menu (the wide layouts' popover
+// model-menu, the phone's model-sheet; plans/model-effort-menu/design.md): a row or a segment is a draft, which Done applies.
 import { check, holds, mockEval, paneSize, release, sampleFrames, seed, until } from "../shot.mjs";
 import { byTid, press, tidSel } from "./sel.mjs";
 import { actsSeen, firstMsg, openRow, openTree, endRow, pressAct, send as sendMsg, startMove, treeRow, waitsSeen as seenNow } from "./fork.mjs";
@@ -235,10 +236,12 @@ await check("A4.2 each wait of the fork flows shows something", async ({ url, vi
     await knob(`flags.configure = { chat: "${id}", hold: true };`);
     const { page, ctx } = await openChat(id, tidSel("tchip", { kind: "model" }));
     const before = await waitsSeen(page);
-    // (the phone: the model sheet's row, which stays open under the pick (Done closes it); the pick is held by the mock, so no ✓ moves yet)
-    const row = phone ? byTid(await openChoice(page, "model"), "picker-row", { value: model }) : (await press(page, await chipOf(page, "model")), byTid(page, "pick-row", { optionId: model }));
-    const label = ((await row.first().textContent()) ?? "").replace("✓", "").replace(/\d+k context.*$/, "").trim().split("\n")[0]; // (the phone's row has the model's sub-line after its name)
+    // (the menu's row drafts the model, Done applies it; the pick is held by the mock)
+    const menu = phone ? await openChoice(page, "model") : (await press(page, await chipOf(page, "model")), byTid(page, "model-menu"));
+    const row = byTid(menu, "model-menu-row", { model });
+    const label = (await row.first().getAttribute("aria-label")) ?? ""; // (the row's label is the model's; its sub-line is not in it)
     await press(page, row.first());
+    await press(page, byTid(menu, "model-menu-done"));
     await held(name, "configure");
     if (phone) await leaveSheet(page);
     // (at the phone the chip has no fixed look: it takes no press, and names the pick)
@@ -261,11 +264,10 @@ await check("A4.2 each wait of the fork flows shows something", async ({ url, vi
     if (kind === "pi") {
       // an effort pick: the same picture, with the effort in the chip
       const effort = "an effort pick on a fresh pi fork";
-      if (phone) await press(page, byTid(byTid(await openChoice(page, "model"), "effort-seg"), "segment", { value: "high" })); // (the effort is the model sheet's control; the pick is held, so its segment does not turn on yet)
-      else {
-        await press(page, await chipOf(page, "effort"));
-        await press(page, byTid(page, "pick-row", { optionId: "high" }).first());
-      }
+      // (the effort is the menu's control: its segment drafts it, Done applies it)
+      const menu = phone ? await openChoice(page, "model") : (await press(page, await chipOf(page, "model")), byTid(page, "model-menu"));
+      await press(page, byTid(byTid(menu, "effort-seg"), "segment", { value: "high" }));
+      await press(page, byTid(menu, "model-menu-done"));
       await held(effort, "configure");
       if (phone) await leaveSheet(page);
       seen = await when(page, effort, picking);
@@ -274,10 +276,9 @@ await check("A4.2 each wait of the fork flows shows something", async ({ url, vi
       await release(url, "configure");
       if (phone) await when(page, `${effort}, started`, (s) => !!s.model && /High/.test(s.model.text)); // (the phone has no effort chip: the model chip says "<model> · High")
       else {
-      // (the effort chip is in the "more" popup where voice's pair has no room in the row and brought the chip, which closes with the pick: it is opened to read it)
+      // (the model chip says "<model> · High" once the agent has started on it)
       await when(page, `${effort}, started: the model chip is the picker again`, (s) => !s.fixed && !!s.model && !s.model.disabled);
-      await chipOf(page, "effort");
-      await when(page, `${effort}, started`, (s) => !s.fixed && /High/.test(s.effort?.text ?? ""));
+      await when(page, `${effort}, started`, (s) => !s.fixed && /High/.test(s.model?.text ?? "") && s.model.text.includes(label));
       }
     }
     await knob(`delete flags.configure;`);

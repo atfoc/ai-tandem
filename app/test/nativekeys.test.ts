@@ -9,6 +9,7 @@ import { isNewChatKey } from "@aiwb/core/logic/newchatwhere.ts";
 import { isSideKey } from "@aiwb/core/logic/layout.ts";
 import { isInsertKey } from "@aiwb/core/logic/insert.ts";
 import { isTreeKey } from "@aiwb/core/logic/treepopup.ts";
+import { isModelMenuKey } from "@aiwb/core/logic/modeleffort.ts";
 
 import { eventOf, SHORTCUTS, type KeyEvent } from "../modules/aiwb-keys/src/AiwbKeys.ts";
 import { createFakeAiwbKeys } from "../modules/aiwb-keys/src/fake.ts";
@@ -99,6 +100,7 @@ test("each shortcut of the list is a key the page reads, on its platform, and no
     KeyN: (e: KeyEvent, p: string) => isNewChatKey(e, p),
     KeyB: (e: KeyEvent, p: string) => (e.shiftKey ? isTreeKey(e) : isSideKey(e, p)),
     KeyP: (e: KeyEvent, p: string) => isInsertKey(e, p),
+    KeyE: (e: KeyEvent, p: string) => isModelMenuKey(e, p),
   } as Record<string, (e: KeyEvent, p: string) => boolean>;
   for (const [platform, name] of [["ios", "iPad"], ["android", "Android"]] as const) {
     for (const s of SHORTCUTS) {
@@ -110,6 +112,8 @@ test("each shortcut of the list is a key the page reads, on its platform, and no
     }
     // The wrong command key for the platform is not the page's.
     assert.ok(!isSideKey({ ...eventOf(SHORTCUTS[1], platform), metaKey: platform === "android", ctrlKey: platform === "ios" }, name));
+    const menu = eventOf(SHORTCUTS.find((s) => s.code === "KeyE")!, platform);
+    assert.ok(!isModelMenuKey({ ...menu, metaKey: platform === "android", ctrlKey: platform === "ios" }, name), `${platform}: the other command key is not the menu's`);
   }
 });
 

@@ -9,7 +9,7 @@ import Svg, { Path } from "react-native-svg";
 
 import { api } from "@aiwb/core/api.ts";
 import { catalogFor } from "@aiwb/core/logic/agentlist.ts";
-import { moveChoice, pickerMode, withEffort, withModel, type Choice } from "@aiwb/core/logic/models.ts";
+import { moveChoice, pickerMode, type Choice } from "@aiwb/core/logic/models.ts";
 import { serverOf } from "@aiwb/core/logic/serverlists.ts";
 import { heldReason, pickOn } from "@aiwb/core/logic/waits.ts";
 import { pickOnFork, setMoveChoice } from "@aiwb/core/state/actions.ts";
@@ -144,15 +144,15 @@ function PickModel({ chatId }: { chatId: string }) {
     const call: Promise<unknown> = c.fresh ? pickOnFork(chatId, body, ch, subline({ ...c, model: ch.model, effort: ch.effort }, cat)) : api.configure(chatId, shownBranch(getState(), chatId), body);
     return call.catch(() => {}).finally(() => setBusy(false));
   };
-  const pickModel = (id: string) => { const ch = withModel(shown, id, cat); if (mode === "move") setMoveChoice(chatId, ch); else void configure({ model: id }, ch); };
-  const pickEffort = (id: string) => { const ch = withEffort(shown, id); if (mode === "move") setMoveChoice(chatId, ch); else void configure({ effort: id }, ch); };
+  // the model and effort menu's draft, applied in one write (only the fields that differ)
+  const apply = (patch: { model?: string; effort?: string }, ch: Choice) => { if (mode === "move") setMoveChoice(chatId, ch); else void configure(patch, ch); };
   const name = chatTitle(c, items);
   return (
     <>
       <Button {...tid("block-pick-model")} size="touch" label="Pick a model" disabled={!cat || busy || !!held || !!fork} onPress={() => setOpen(true)} />
       {cat ? (
         <ModelSheet open={open} onClose={() => setOpen(false)} c={c} sub={c.agent ? `${name} · ${agentName(c.agent)}` : name} cat={cat} value={shown}
-          onPickModel={pickModel} onPickEffort={pickEffort} held={busy ? "Saving your choice…" : held} />
+          held={busy ? "Saving your choice…" : held} focusSearch={false} onApply={apply} />
       ) : null}
     </>
   );

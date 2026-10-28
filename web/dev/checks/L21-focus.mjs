@@ -178,11 +178,11 @@ await check("L21 the overlays' focus: a field opened by a menu keeps it, a menu 
       await openChoice(page, "model");
       const w = await where(page);
       if (w.id !== "nothing" && !w.top) say(`${how}: the model sheet opened with the focus on ${w.id}, outside it`);
-      if (how === "Done") await press(page, byTid(page, "sheet-right").first());
+      if (how === "Done") await press(page, byTid(page, "model-menu-done").first());
       else if (how === "Esc") await page.keyboard.press("Escape");
       else if (how === "a press outside") await press(page, byTid(page, "overlay-backdrop").last(), { position: { x: 5, y: 5 } });
-      else { // a model's row keeps the sheet open: Done closes it
-        await press(page, byTid(page, "picker-row").first());
+      else { // a model's row keeps the sheet open (a draft): Done applies it and closes it
+        await press(page, byTid(page, "model-menu-row").first());
         if (!await sheetOpen().count()) say("a pick: a model's row closed the sheet: it stays open for the effort");
         await closeChoice(page);
       }
@@ -200,26 +200,29 @@ await check("L21 the overlays' focus: a field opened by a menu keeps it, a menu 
     const { page, ctx } = await openState(open, fresh, layout, 0);
     const trigger = chip(page, "model").first();
     await trigger.waitFor({ state: "visible", timeout: 15000 });
-    const picker = byTid(page, "picker");
+    // (the model and effort menu, plans/model-effort-menu/design.md: its search field has the focus as it opens; a pick is a row and Done)
+    const picker = byTid(page, "model-menu");
     const reopen = async (how) => {
       await press(page, trigger);
-      if (!await until(() => picker.count(), 5000)) return say(`${how}: a press on the model's chip opened no list`);
-      if (!await until(async () => (await where(page)).top, 5000)) say(`${how}: the model's list opened with the focus on ${(await where(page)).id}, outside it`);
+      if (!await until(() => picker.count(), 5000)) return say(`${how}: a press on the model's chip opened no menu`);
+      if (!await until(async () => (await where(page)).top, 5000)) say(`${how}: the model's menu opened with the focus on ${(await where(page)).id}, outside it`);
+      if (!await until(async () => (await where(page)).id === "model-menu-search", 5000)) say(`${how}: the model's menu opened with the focus on ${(await where(page)).id}, not its search field`);
     };
     const backToChip = async (how) => { if (!await until(async () => (await where(page)).id === "tchip", 5000)) say(`${how}: the list closed with the focus on ${(await where(page)).id}, not on its chip`); };
     await reopen("Esc");
-    const ring = await tabRing(page, byTid(page, "picker").first());
+    const ring = await tabRing(page, byTid(page, "model-menu").first());
     if (!ring.ok) say(`Tab and Shift+Tab in the model's list reach ${JSON.stringify(ring.out)}, outside it`);
     await page.keyboard.press("Escape");
     await picker.waitFor({ state: "detached", timeout: 10000 });
     await backToChip("Esc");
     await reopen("a pick");
-    await press(page, byTid(page, "pick-row").first());
+    await press(page, byTid(page, "model-menu-row").first());
+    await press(page, byTid(page, "model-menu-done").first());
     await picker.waitFor({ state: "detached", timeout: 10000 });
     await backToChip("a pick");
     if (layout !== "phone") { // (the phone's sheet has the backdrop too: a press at its top)
       await reopen("a press outside");
-      await press(page, byTid(page, "overlay-backdrop").last());
+      await press(page, byTid(page, "overlay-backdrop").last(), { position: { x: 5, y: 5 } }); // (the menu may lie over the backdrop's centre)
       await picker.waitFor({ state: "detached", timeout: 10000 });
       await backToChip("a press outside");
     }

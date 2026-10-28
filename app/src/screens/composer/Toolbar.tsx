@@ -1,12 +1,16 @@
 // The composer's toolbar (the old page's Composer.tsx Toolbar / Tools): the name of the server of a chat of a section (showsServer; it is no choice),
-// the agent while it can be changed (agentOpen; ChatChoices.tsx), then folder, model, effort, the Subagents chip (S7: open on a new chat alone,
-// else fixed) and the context meter (S9's `ContextMeter`) of the branch shown; after the row's spacer the insert button, the attach button (K4), Stop and Send.
+// the agent while it can be changed (agentOpen; ChatChoices.tsx), then folder, the model and its effort as one chip, the Subagents chip (S7: open on
+// a new chat alone, else fixed) and the context meter (S9's `ContextMeter`) of the branch shown; after the row's spacer the insert button, the attach button (K4), Stop and Send.
 // Where the model and effort controls write is pickerMode's: with a pending move they show and set the move's choice, which goes with its
 // message; on a new chat and on a fork without a message of its own they change the session (PATCH); else they are fixed. While the composer
 // sends a message (sending) they take no pick: a move's choice has gone with the message, and the server refuses a fork's PATCH. The same holds
 // while the chat's message is on its way and this composer was opened since (State.waits): they are disabled and say why. A pick on a fork
 // starts its agent again, which the chat is told of (pickOnFork): until that call ends the model is a fixed chip that names the choice the
 // agent is starting on, whatever the agent kind tells meanwhile.
+// The model chip says "<model> · <effort>" and opens the model and effort menu (ModelEffortMenu.tsx, plans/model-effort-menu/design.md 2.5): a
+// draft of both, applied in one write on Enter or Done. ⌘E (Ctrl+E off the Mac) opens it too, with its search focused, from anywhere in the
+// window while this is the selected chat's composer, no dialog is up and a pick can be taken; again, it closes it. When the fit has put the
+// chip into the "more" popup, ⌘E hangs the menu from the "more" chip and leaves that popup closed.
 //
 // The row never holds more than fits it (logic/composerfit.ts): as room runs out the controls leave for the popup of a "more" chip (the meter's text
 // goes after all of them but the agent), where each
@@ -18,21 +22,23 @@
 // while the controls and the meter's text give way, and only where even the narrowest row has no room are they two entries of the popup, after the insert
 // entry (fitWithTail brings the "more" chip if the row had none).
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { ScrollView, StyleSheet, View } from "react-native";
+import { Platform, ScrollView, StyleSheet, View } from "react-native";
 
 import { api } from "@aiwb/core/api.ts";
 import { agentOpen, catalogFor, usableAgents } from "@aiwb/core/logic/agentlist.ts";
 import { notConnectedLine, sendOff, showsServer, toolbarLine } from "@aiwb/core/logic/chatserver.ts";
 import { CONTROLS, fitWithInsert, fitWithTail, widthKey, type Control, type Fit, type InsertPlace, type VoicePlace } from "@aiwb/core/logic/composerfit.ts";
-import { moveChoice, pickerMode, withEffort, withModel, type Choice } from "@aiwb/core/logic/models.ts";
+import { isModelMenuKey, modelMenuKeyName } from "@aiwb/core/logic/modeleffort.ts";
+import { moveChoice, pickerMode, type Choice } from "@aiwb/core/logic/models.ts";
 import { goneText } from "@aiwb/core/logic/remoteview.ts";
 import { serverOf } from "@aiwb/core/logic/serverlists.ts";
 import { DEFAULT_SUB_CAP, DEFAULT_SUB_DEPTH, subChip, subChipLabel, subSettings } from "@aiwb/core/logic/subsettings.ts";
-import { heldReason, pickOn } from "@aiwb/core/logic/waits.ts";
+import { SENDING, heldReason, pickOn } from "@aiwb/core/logic/waits.ts";
 import { pickOnFork, setMoveChoice } from "@aiwb/core/state/actions.ts";
 import { getState, shownBranch, shownView } from "@aiwb/core/state/store.ts";
 import type { ChatView } from "@aiwb/core/types.ts";
 
+import { onKey as onKeyPort } from "../../platform/keys";
 import { Sized } from "../../platform/sized";
 import { useZoom } from "../../platform/zoom";
 import { useStore } from "../../state/useStore.ts";
@@ -48,12 +54,14 @@ import { webStyle } from "../../ui/webstyle.ts";
 import { Pressable } from "react-native";
 import { base, useWhere } from "../chat/hooks.ts";
 import { AgentPick, AgentReason, ServerChip, useAgentChip, useServerChip } from "./ChatChoices.tsx";
-import { ChipName, LockMark, MODEL_CAP, TChip } from "./Chip.tsx";
+import { Caret, ChipName, LockMark, TChip, UNTIL_FIRST_MESSAGE } from "./Chip.tsx";
 import { DirPicker } from "./Folder.tsx";
 import { PHONE_IDS } from "./phone/ids.ts";
 import { Measure, MeasureEpoch, MeasuringLayer, widths } from "./measure.tsx";
 import { effortLabel, modelLabel, modelOf, subline } from "./model.ts";
-import { Picker } from "./Picker.tsx";
+import { ModelEffortPopover } from "./ModelEffortMenu.tsx";
+import { keyPlatform } from "../shell/keyplatform.ts";
+import { underDialog } from "./underdialog.ts";
 import { useComposerParts } from "./parts.tsx";
 import { ContextMeter } from "../usage/ContextMeter.tsx";
 import { CtxError, CtxRing } from "../usage/CtxRing.tsx";
@@ -109,8 +117,11 @@ function Tools({ c, chatId, ...p }: ToolbarProps & { c: ChatView }) {
   const waits = useStore((s) => s.waits[chatId]);
   const pick = useStore((s) => pickOn(s.waits[chatId], shownBranch(s, chatId))); // the choice a fork's agent is being started on
   const held = heldReason(waits, "choice"); // why the model and the effort take no pick now
-  // One open list at a time for Agent, Folder, Model, Effort and Subagents (the checks: C-CH-20).
+  // One open list at a time for Agent, Folder, Model and Subagents (the checks: C-CH-20).
   const [openPicker, setOpenPicker] = useState<Control | null>(null);
+  // The model and effort menu hung from the "more" chip (⌘E while the model chip is in the closed popup); from its own chip it is openPicker "model".
+  const [menuOnMore, setMenuOnMore] = useState(false);
+  const [menuByKey, setMenuByKey] = useState(false); // the menu was opened by ⌘E: its search takes the focus, also off the web
   const [patching, setPatching] = useState(false); // a fork's PATCH starts its agent again, which takes seconds
   const where = useWhere(c);
   // The chat is shown as it was, and takes no change: its server is not connected, or no longer has it. Every choice is then a fixed chip.
@@ -125,6 +136,7 @@ function Tools({ c, chatId, ...p }: ToolbarProps & { c: ChatView }) {
   const [more, setMore] = useState(false); // the "more" popup is open
   const drawn = useRef<{ fit: Fit; more: boolean; insert: InsertPlace; voice: VoicePlace | "" } | null>(null); // where the last commit drew each control, the way to the insert popup and voice's pair, and whether the popup was open
   const moreChip = useRef<View>(null);
+  const modelChip = useRef<View>(null);
   const zoomNow = useZoom(); // a change of the screen's zoom drops the kept widths: the measuring layer is made anew
   const epoch = useRef({ zoom: zoomNow, n: 0 });
   if (epoch.current.zoom !== zoomNow) epoch.current = { zoom: zoomNow, n: epoch.current.n + 1 };
@@ -141,23 +153,28 @@ function Tools({ c, chatId, ...p }: ToolbarProps & { c: ChatView }) {
   };
   // A refusal's text was about the choice before this one.
   const setChoice = (ch: Choice) => { onError(""); setMoveChoice(chatId, ch); };
-  const pickModel = (id: string) => { const ch = withModel(shown, id, cat); if (mode === "move") setChoice(ch); else void configure({ model: id }, ch); };
-  const pickEffort = (id: string) => { const ch = withEffort(shown, id); if (mode === "move") setChoice(ch); else void configure({ effort: id }, ch); };
+  const applyChoice = (patch: { model?: string; effort?: string }, ch: Choice) => { if (mode === "move") setChoice(ch); else void configure(patch, ch); };
   const folderOpen = !frozen && (!c.locked || !!c.folderMissing);
   const agentPick = agentOpen(c) && !frozen;
   const m = modelOf(shown, cat);
   const choices = mode !== "fixed" && !!c.agent; // the model and the effort are choices, once their catalog is here
   const fixedTitle = frozen ? frozenWhy : c.fresh ? "Starting the agent on this model…" : "Model and effort are fixed once the chat has started";
   const u = contextOf(c, cat);
+  const keyName = modelMenuKeyName(keyPlatform());
+  // The model chip's label: "<model> · <effort>", the model alone when it has no efforts.
+  const effortShown = m?.efforts?.length ? shown.effort ?? "" : "";
+  const modelChipLabel = cat ? (effortShown ? `${modelLabel(shown, cat)} · ${effortLabel(effortShown, m)}` : modelLabel(shown, cat)) : "";
+  const pickHeld = patching || sending || !!held;
+  // What the open menu says while a pick cannot be taken (design 2.1.5): the held reason, else the phone's words for a send or a save in progress.
+  const menuHeld = held || (sending ? SENDING : patching ? "Saving your choice…" : "");
 
   // What the chat has, each with what decides its width.
   const keys: Partial<Record<Control, string>> = { folder: widthKey("folder", base(c.cwd) || "/", { fixed: !folderOpen, lock: !folderOpen }) };
   if (showsServer(where)) keys.server = serverKey;
   if (agentPick) keys.agent = agentKey;
   if (mode === "fixed") keys.model = widthKey("model", subline(fixed, cat), { fixed: true, lock: folderOpen });
-  else if (choices && cat) keys.model = widthKey("model", modelLabel(shown, cat));
+  else if (choices && cat) keys.model = widthKey("model", modelChipLabel);
   else if (choices) keys.model = widthKey("model", "Loading models…", { fixed: true });
-  if (choices && cat && m?.efforts?.length) keys.effort = widthKey("effort", effortLabel(shown.effort, m));
   const subsOf = subChip(c, !!move); // the subagent settings: a choice on a new chat alone, else fixed
   const subs = frozen && subsOf.kind === "open" ? { kind: "fixed" as const, why: frozenWhy } : subsOf;
   const limits = subSettings(c);
@@ -190,12 +207,44 @@ function Tools({ c, chatId, ...p }: ToolbarProps & { c: ChatView }) {
   // one that went into the popup, when the popup is opened next.
   const placeOf = (x: { fit: Fit; more: boolean }, id: Control) => (x.fit.toolbar.includes(id) ? "row" : x.fit.popup.includes(id) && x.more ? "popup" : "");
   const open = only ? openPicker : openPicker && drawn.current && (!placeOf({ fit: f, more }, openPicker) || placeOf(drawn.current, openPicker) !== placeOf({ fit: f, more }, openPicker)) ? null : openPicker;
-  const opens = (id: Control) => ({ open: open === id, onOpenChange: (o: boolean) => setOpenPicker(o ? id : null) });
+  const opens = (id: Control) => ({ open: open === id, onOpenChange: (o: boolean) => { setMenuOnMore(false); setOpenPicker(o ? id : null); } });
+  // The model and effort menu: open from its chip, or from the "more" chip. It can be opened while the model and effort are a choice and a pick is
+  // taken; once open it stays open while a pick is held (it says why, and takes none), and closes when they stop being a choice or the catalog goes.
+  const menuAvail = !only && choices && !!cat;
+  const canMenu = menuAvail && !pickHeld;
+  const modelPlace = f.toolbar.includes("model") ? "row" : f.popup.includes("model") ? (more ? "popup" : "closed") : "";
+  const menuOpen = open === "model" || (menuOnMore && modelPlace === "closed");
+  // (opened by a click or by ⌘E, the search field has the focus: design 2.3)
+  const openMenu = (byKey: boolean) => {
+    setMenuByKey(byKey);
+    if (modelPlace === "closed") { setOpenPicker(null); setMenuOnMore(true); } else { setMenuOnMore(false); setOpenPicker("model"); }
+  };
+  const closeMenu = () => { setMenuOnMore(false); setOpenPicker((o) => (o === "model" ? null : o)); };
+  // ⌘E: the selected chat's composer, under no dialog, when the menu can be opened and the model chip is drawn (in the row or the popup); again,
+  // it closes the menu (also while a pick is held).
+  const menuKey = useRef((): boolean => false);
+  menuKey.current = () => (menuOpen ? (closeMenu(), true) : canMenu ? (openMenu(true), true) : false);
+  const keyed = (canMenu || menuOpen) && modelPlace !== "";
+  useEffect(() => {
+    if (!keyed) return;
+    return onKeyPort((e) => {
+      if (e.repeat || !isModelMenuKey(e, keyPlatform()) || underDialog() || getState().sel.chat !== chatId) return;
+      if (!menuKey.current()) return;
+      e.preventDefault(); e.stopPropagation();
+    });
+  }, [keyed, chatId]);
+  // (a tap focuses the search only on the web: on an iPad without a keyboard the soft one would cover the popover; ⌘E always does)
+  const menuProps = cat ? {
+    cat, value: shown, held: menuHeld, focusSearch: Platform.OS === "web" || menuByKey, keyName,
+    onApply: applyChoice, onClose: closeMenu,
+  } : null;
 
   useLayoutEffect(() => {
     drawn.current = { fit: f, more, insert, voice: voicePlace };
     if (open !== openPicker) setOpenPicker(null);
     if (more && !f.more) setMore(false); // nothing is left in it
+    if (menuOnMore && (modelPlace !== "closed" || !menuAvail)) setMenuOnMore(false); // the chip came back to the row, or the popup was opened
+    if (openPicker === "model" && !menuAvail) setOpenPicker(null); // the model and effort are no longer a choice (fixed, frozen, gone) or the catalog went
   });
   useEffect(() => { if (voiceOn && voicePlace === "more") setMore(false); }, [voiceOn]);
 
@@ -213,13 +262,16 @@ function Tools({ c, chatId, ...p }: ToolbarProps & { c: ChatView }) {
     ) : !c.agent ? null : !cat ? (
       <TChip kind="model" title="Loading models…"><ChipName muted>Loading models…</ChipName></TChip>
     ) : (
-      <Picker kind="model" label={modelLabel(shown, cat)} title="Model" value={shown.model} searchable cap={MODEL_CAP} disabled={patching || sending || !!held} hint={held || undefined}
-        options={cat.models} {...opens("model")} onPick={pickModel} />
+      <>
+        <TChip kind="model" title={`Model and effort (${keyName}): ${modelChipLabel} — ${held || UNTIL_FIRST_MESSAGE}`} chipRef={modelChip} disabled={pickHeld}
+          expanded={open === "model"} popup="dialog" data={{ effort: effortShown }} onPress={() => (open === "model" ? closeMenu() : openMenu(false))}>
+          <ChipName>{modelChipLabel}</ChipName>
+          <Caret />
+        </TChip>
+        {menuProps ? <ModelEffortPopover open={open === "model" && menuAvail} anchor={modelChip} {...menuProps} /> : null}
+      </>
     ),
-    effort: choices && !!cat && !!m?.efforts?.length ? (
-      <Picker kind="effort" label={effortLabel(shown.effort, m)} title="Effort" prefix="Effort" value={shown.effort ?? ""} disabled={patching || sending || !!held} hint={held || undefined}
-        options={m.efforts.map((e) => ({ id: e, label: effortLabel(e, m) }))} {...opens("effort")} onPick={pickEffort} />
-    ) : null,
+    effort: null, // (the effort is the model chip's: design 2.5)
     subagents: <parts.SubagentsChip c={c} fixed={subs.kind === "fixed" ? subs.why : ""} disabled={patching || sending || !!held} {...opens("subagents")} onBusy={setPatching} onError={onError} />,
   };
   // The meter in the row is S9's (its popup is the one the row's press opens); what is measured in the hidden layer is its ring alone, drawn the same
@@ -238,7 +290,7 @@ function Tools({ c, chatId, ...p }: ToolbarProps & { c: ChatView }) {
     // fixed one that names the choice), in a row that scrolls sideways. A started chat, a chat that is frozen or gone: none, and no strip.
     const asked = frozen ? "fixed" : pickerMode(c, !!move);
     const isChoice = (id: Control) => id === "agent" ? agentPick : id === "folder" ? folderOpen : id === "model" ? asked !== "fixed" && !!c.agent
-      : id === "effort" ? choices && !!cat && !!m?.efforts?.length : id === "subagents" && subs.kind === "open";
+      : id === "subagents" && subs.kind === "open";
     const ids = CONTROLS.filter((id) => isChoice(id) && chips[id] !== null);
     if (!ids.length) return null;
     return (
@@ -289,6 +341,8 @@ function Tools({ c, chatId, ...p }: ToolbarProps & { c: ChatView }) {
         {stop && widths.get(STOP) === undefined ? <Measure k={STOP} onKept={kept}>{tail.stop}</Measure> : null}
         {hasAttach && widths.get(ATTACH) === undefined ? <Measure k={ATTACH} onKept={kept}>{tail.attach}</Measure> : null}
       </MeasuringLayer>
+
+      {menuProps && !only ? <ModelEffortPopover open={menuOnMore && modelPlace === "closed" && menuAvail} anchor={moreChip} {...menuProps} /> : null}
 
       <Overlay open={more && f.more} onClose={() => { setMore(false); setOpenPicker(null); (moreChip.current as unknown as { focus?: () => void } | null)?.focus?.(); }}
         label="More of the toolbar" kind="popover" anchor={moreChip} up testID="more-pop">

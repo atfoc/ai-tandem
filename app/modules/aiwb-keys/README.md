@@ -33,6 +33,7 @@ predicates which of the two to read.
 | mod+L | `KeyL` | quote the selection / add the board's selection to the message |
 | mod+Shift+L | `KeyL` + shift | pick a point on the board |
 | mod+P | `KeyP` | insert a prompt |
+| mod+E | `KeyE` | open or close the composer's model and effort menu |
 | mod+Enter | `Enter` | save (the library's edit form) |
 | Escape | `Escape` | close a popup |
 

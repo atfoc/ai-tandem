@@ -16,6 +16,8 @@
 // The phone's popups are the chip sheets (ux-improvements C2): agent-sheet, folder-sheet, model-sheet (the effort's list is its effort-seg control, held
 // the same: inside the window, the element at its own corners), sub-sheet; each opens from its chip (composer.mjs' openChoice), is read at rest, and
 // closes with Done or Cancel or a press outside (closeChoice); the usage popover opens from the ring.
+// The wide layouts' model chip opens the model and effort menu (model-menu, the effort's segments in it; plans/model-effort-menu/design.md 2.5): the
+// model's list and the effort's list of the old check are that one popover, held the same.
 import { check, seed, until } from "../shot.mjs";
 import { HEIGHT, MORE, POP, SIDE, chip, closeChoice, frame, openAt, openChoice, openState, phoneChip, placesOf, playable } from "./composer.mjs";
 import { byTid, press, tidSel } from "./sel.mjs";
@@ -26,8 +28,7 @@ export const viewports = ["desktop", "tablet", "phone"];
 const OPENERS = [
   ["the agent's list", "agent", "picker"],
   ["the folder's browser", "folder", "dirs"],
-  ["the model's list", "model", "picker"],
-  ["the effort's list", "effort", "picker"],
+  ["the model and effort menu", "model", "model-menu"], // (the effort is in it: plans/model-effort-menu/design.md 2.5)
   ["the usage popover", "meter", "usage-pop"],
 ];
 // The phone's: [name, the chip's kind ("meter": the context ring), the popup's testID, a part of it held on its own]

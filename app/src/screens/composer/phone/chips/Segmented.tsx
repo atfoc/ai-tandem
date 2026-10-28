@@ -1,6 +1,7 @@
 // A segmented control of the phone's pickers (ux-improvements goal 3.6, mockup "03 The pickers" co-03a effort, co-03c depth and running at
 // once): one value of a few, side by side in a 44-point track; the chosen segment is raised on the track. Each segment's target is the
 // track's full height. Disabled (depth Off greys running at once): faded, and it takes no press. A radio group for a screen reader.
+// `size="sm"`: the desktop's model and effort popover (ModelEffortMenu.tsx), a 30-point track and 12-pt text.
 import { Pressable, StyleSheet, View } from "react-native";
 
 import { PHONE } from "../../../../ui/metrics.ts";
@@ -24,22 +25,29 @@ export type SegmentedProps<T extends string | number> = {
   /** testID of each segment (dataSet `value`, `on` and `segData`). */
   segmentTestID?: string;
   segData?: DataSet;
+  /** "sm": the wide layouts' popover (a shorter track, smaller text). */
+  size?: "sm";
 };
+
+/** The track's height (with its border): what a slot that holds one keeps when it has none (the model and effort menu). */
+export const segmentedHeight = (size?: "sm"): number => (size === "sm" ? SM_TRACK : PHONE.target + 2 * StyleSheet.hairlineWidth);
+const SM_TRACK = 30;
 
 export function Segmented<T extends string | number>(p: SegmentedProps<T>) {
   const { tokens: t } = useTheme();
+  const sm = p.size === "sm";
   return (
     <View {...tid(p.testID ?? C2_IDS.segmented, { disabled: !!p.disabled, ...p.data })} role="radiogroup" aria-label={p.label}
-      aria-disabled={p.disabled || undefined} style={[styles.track, { backgroundColor: t.hover2, borderColor: t.line }, p.disabled && styles.off]}>
+      aria-disabled={p.disabled || undefined} style={[styles.track, sm && styles.trackSm, { backgroundColor: t.hover2, borderColor: t.line }, p.disabled && styles.off]}>
       {p.options.map((o) => {
         const on = o.value === p.value;
         return (
           <Pressable key={String(o.value)} {...tid(p.segmentTestID ?? C2_IDS.segment, { value: String(o.value), on, ...p.segData })} role="radio"
             aria-checked={on} accessibilityLabel={o.accessibilityLabel ?? o.label} accessibilityState={{ checked: on, disabled: !!p.disabled }}
             disabled={p.disabled} onPress={() => { if (!on) p.onChange(o.value); }}
-            style={[styles.segment, webStyle({ cursor: p.disabled ? "default" : "pointer" })]}>
-            <View style={[styles.face, on && { backgroundColor: t.bg, borderColor: t.line2 }]}>
-              <Text size={15} weight={on ? "600" : "400"} numberOfLines={1}>{o.label}</Text>
+            style={[styles.segment, sm && styles.segmentSm, webStyle({ cursor: p.disabled ? "default" : "pointer" })]}>
+            <View style={[styles.face, sm && styles.faceSm, on && { backgroundColor: t.bg, borderColor: t.line2 }]}>
+              <Text size={sm ? 12 : 15} weight={on ? "600" : "400"} numberOfLines={1}>{o.label}</Text>
             </View>
           </Pressable>
         );
@@ -52,5 +60,8 @@ const styles = StyleSheet.create({
   track: { flexDirection: "row", height: PHONE.target + 2 * StyleSheet.hairlineWidth, borderRadius: 10, borderWidth: StyleSheet.hairlineWidth, alignSelf: "stretch" }, // (inside its border, each segment is 44 pt)
   segment: { flex: 1, minWidth: 0, height: "100%", padding: 3 },
   face: { flex: 1, alignItems: "center", justifyContent: "center", borderRadius: 8, borderWidth: StyleSheet.hairlineWidth, borderColor: "transparent", paddingHorizontal: 4 },
+  trackSm: { height: SM_TRACK, borderRadius: 7 },
+  segmentSm: { padding: 2 },
+  faceSm: { borderRadius: 5 },
   off: { opacity: 0.4 },
 });

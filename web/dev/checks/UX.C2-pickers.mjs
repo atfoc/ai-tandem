@@ -13,10 +13,19 @@
 //   2 Agent         `agent-sheet` titled "Agent", sub "New chat"; a `picker-row` per agent with its note; the chosen one tinted with ✓ (`picker-check`);
 //                   `picker-foot` "A new agent starts with its own default model and effort."; no Done, no Cancel; a tap on another agent sends the
 //                   configure call with that agent and closes the sheet; the chip names the new agent.
-//   3 Model         `model-sheet` titled "Model and effort", sub "New chat · Claude Code", Done (`sheet-right`); rows ≥ 50 px with "… context" notes;
-//                   `effort-seg` with the model's efforts and `effort-line`; a tap on another model sends configure {model} and the sheet STAYS open;
-//                   a tap on an effort segment sends configure {effort}; Done closes; the chip says the new pair. In `pi` (ten models, three
-//                   providers): `menu-head` sections with the providers, the search field (a part of a name: the rows filter).
+//   3 Model         the Model and effort sheet (plans/model-effort-menu/design.md 2.1, 2.2, 2.4, 2.6): `model-sheet` with the head Cancel
+//                   (`model-menu-cancel`) · "Model and effort" over the sub "New chat · Claude Code" · Done (`model-menu-done`); the search field
+//                   (`model-menu-search`, ≥ 44 px, "Search models") shown with three models, above the effort, not focused by a tap on the chip;
+//                   `model-menu-row`s (dataSet model, on) ≥ 50 px with "… context" notes, the chat's model drafted; `effort-seg` with the drafted
+//                   model's efforts and `effort-line`. A tap on another row or on a segment changes the draft only (the row's `on`, the segments
+//                   follow the drafted model, the effort kept when it offers it): no configure call, the chip unchanged. Cancel, a tap on the dimmed
+//                   page and a swipe down of the handle close and write nothing, and the next opening drafts the chat's choice again; Done writes
+//                   one configure call {model, effort} and closes, and the chip says the new pair. ⌘E (Ctrl+E where the page's platform is not
+//                   Apple's) opens the sheet with the search focused, on the chat's choice; again, it closes it and writes nothing; on a started chat
+//                   it opens nothing. In `pi` (ten models, three providers): `menu-head` sections with the providers; scrolling the list leaves the
+//                   effort where it is; drafting a model without efforts (Haiku 4.5) says "This model has no effort setting." in a slot of the same
+//                   height (the list does not move); typing filters ("gemini": 3 rows) and moves the draft to the first listed; a search with no
+//                   match shows `model-menu-empty` and Done disabled; × (`model-menu-clear`) brings the ten rows back.
 //   4 Folder        `folder-sheet`: Cancel at the left (`sheet-left`), the title "Start the agent in", the server's name as sub; `dir-up` and `dir-path`
 //                   each ≥ 44 px; the path's text ends with the folder's name; `dir-item` rows ≥ 52 px; a tap goes in (`dir-use` says "Use <name>");
 //                   `dir-up` goes back; a tap on `dir-path` shows `dir-input` (a path + Enter lists it); an empty folder shows `dir-empty` with
@@ -32,7 +41,7 @@
 //                   control too: SEG_MIN; the track is its 44 and its border).
 // Run: `cd web && npm run uicheck -- UX.C2`, or alone: node web/dev/checks/UX.C2-pickers.mjs (VIEWPORT=phone, DIST=… as README.md says).
 import { callsOf, check, mockEval, seed, until } from "../shot.mjs";
-import { byTid, press, tidSel } from "./sel.mjs";
+import { byTid, press, tidSel, touchDrag } from "./sel.mjs";
 
 export const viewports = ["phone"];
 
@@ -208,69 +217,174 @@ await check("UX.C2-pickers the phone's chip row, its four pickers and the empty 
     note(`Agent: "${title}" / "${sub}", rows ${values.join(", ")} with notes, ✓ on claude, the foot, no Done/Cancel; a tap on ${other} sends {agent} and closes; the chip says ${J(await chip(page, "agent").getAttribute("aria-label"))}`);
   });
 
-  // ================= 3: the Model sheet
+  // ================= 3: the Model and effort sheet (plans/model-effort-menu/design.md 2.1, 2.2, 2.4, 2.6)
+  const rowsOf = (sheet) => tid(sheet, "model-menu-row");
+  const drafted = (sheet) => rowsOf(sheet).evaluateAll((els) => els.filter((e) => e.dataset.on === "true").map((e) => e.dataset.model));
+  const segsOf = (sheet) => tid(tid(sheet, "effort-seg"), "segment").evaluateAll((els) => els.map((e) => ({ v: e.dataset.value, on: e.dataset.on, h: e.getBoundingClientRect().height })));
+  const onSeg = async (sheet) => (await segsOf(sheet)).find((x) => x.on === "true")?.v ?? null;
+  const focused = (page) => page.evaluate(() => document.activeElement?.getAttribute("data-testid") ?? "");
+  const chipSays = async (page) => text(tid(chip(page, "model"), "chip-name"));
+  const modelPatches = (calls) => patches(calls, NEW, "model").length + patches(calls, NEW, "effort").length;
+  /** The Model sheet's own close: Cancel, the dimmed page, a swipe of the handle or ⌘E again; nothing is written. */
+  const cancels = async (page, calls, how, act) => {
+    const before = modelPatches(calls);
+    await act();
+    if (!(await closed(page, how, "model-sheet"))) return;
+    await page.waitForTimeout(500);
+    if (modelPatches(calls) !== before) fail(`${how} wrote: ${J(patches(calls, NEW, "model").concat(patches(calls, NEW, "effort")).slice(before).map((c) => c.body))}`);
+    const now = await chipSays(page);
+    if (now !== "Opus 5.5 · High") fail(`after ${how} the model chip says ${J(now)}, not the chat's "Opus 5.5 · High"`);
+  };
+  // the platform the page reports decides the modifier of ⌘E (core's isMac: Mac, iPhone, iPad)
+  const modE = async (page) => (/Mac|iPhone|iPad|iPod/.test(await page.evaluate(() => navigator.platform)) ? "Meta+KeyE" : "Control+KeyE");
   await session({ chat: NEW }, async (page, calls) => {
     const sheet = await open_(page, "model", "model-sheet");
     if (!sheet) return;
+    // the head: Cancel · "Model and effort" over the sub-line · Done
     const title = await text(tid(sheet, "sheet-title")), sub = await text(tid(sheet, "sheet-sub"));
     if (title !== "Model and effort") fail(`the Model sheet's title is ${J(title)}, not "Model and effort"`);
     if (sub !== "New chat · Claude Code") fail(`the Model sheet's sub is ${J(sub)}, not "New chat · Claude Code"`);
-    if ((await text(tid(sheet, "sheet-right"))) !== "Done") fail(`the Model sheet's right is ${J(await text(tid(sheet, "sheet-right")))}, not "Done"`);
-    const rows = tid(sheet, "picker-row"), n = await rows.count();
+    if ((await text(tid(sheet, "model-menu-done"))) !== "Done") fail(`the Model sheet's Done says ${J(await text(tid(sheet, "model-menu-done")))}`);
+    if ((await text(tid(sheet, "model-menu-cancel"))) !== "Cancel") fail(`the Model sheet's Cancel says ${J(await text(tid(sheet, "model-menu-cancel")))}`);
+    const [cb, db, hb] = [await box(tid(sheet, "model-menu-cancel").first()), await box(tid(sheet, "model-menu-done").first()), await box(tid(sheet, "sheet-title").first())];
+    if (!cb || !db || !hb || !(cb.x + cb.width <= hb.x + 1 && hb.x + hb.width <= db.x + 1)) fail(`the head is not Cancel · title · Done from left to right: ${J({ cb, hb, db })}`);
+    // the search field, always (three models), above the effort; a tap on the chip does not focus it (the soft keyboard would cover the sheet)
+    const search = tid(sheet, "model-menu-search").first();
+    if (!(await search.count())) return fail("the Model sheet has no model-menu-search");
+    const sf = await box(search), eb = await box(tid(sheet, "effort-seg").first());
+    if (!sf || sf.height < 43.5) fail(`the search field is ${sf && Math.round(sf.height)} px high, under 44`);
+    if (!sf || !eb || sf.y + sf.height > eb.y) fail(`the search field is not above the effort: ${J({ sf, eb })}`);
+    if ((await focused(page)) === "model-menu-search") fail("a tap on the chip focused the search field: only ⌘E does (design 2.3)");
+    if ((await search.getAttribute("placeholder")) !== "Search models") fail(`the search field's placeholder is ${J(await search.getAttribute("placeholder"))}`);
+    // the rows: ≥ 50 px with "… context" notes, the chat's model drafted
+    const rows = rowsOf(sheet), n = await rows.count();
     if (n !== 3) fail(`the Model sheet has ${n} rows, not the 3 models of Claude Code`);
     for (let i = 0; i < n; i++) {
       const b = await box(rows.nth(i));
       if (!b || b.height < 49.5) fail(`row ${i + 1} of the Model sheet is ${b && Math.round(b.height)} px high, under 50`);
       if (!/ context/.test(await text(rows.nth(i)))) fail(`row ${i + 1} of the Model sheet says ${J(await text(rows.nth(i)))}: no "… context" note`);
     }
-    const seg = tid(sheet, "effort-seg");
-    if (!(await seg.count())) return fail("the Model sheet has no effort-seg");
-    const segs = async () => tid(seg, "segment").evaluateAll((els) => els.map((e) => ({ v: e.dataset.value, on: e.dataset.on, h: e.getBoundingClientRect().height, text: e.textContent.trim() })));
-    let s = await segs();
+    if (J(await drafted(sheet)) !== J(["opus"])) fail(`the drafted rows are ${J(await drafted(sheet))}, not opus alone`);
+    let s = await segsOf(sheet);
     if (J(s.map((x) => x.v)) !== J(["low", "medium", "high", "max"])) fail(`opus's effort segments are ${J(s.map((x) => x.v))}, not low, medium, high, max`);
-    if (s.find((x) => x.on === "true")?.v !== "high") fail(`the chosen effort is ${J(s.find((x) => x.on === "true")?.v)}, not high`);
-    if (!(await text(tid(sheet, "effort-line")))) fail("the Model sheet has no effort-line");
+    if ((await onSeg(sheet)) !== "high") fail(`the chosen effort is ${J(await onSeg(sheet))}, not high`);
+    if ((await text(tid(sheet, "effort-line"))) !== "More effort thinks longer and uses more of your plan.") fail(`the effort-line says ${J(await text(tid(sheet, "effort-line")))}`);
     await sweep(page, "model-sheet", "the Model sheet");
-    // another model: configure {model}, the sheet stays
-    await press(page, tid(sheet, "picker-row", { value: "sonnet" }).first());
-    if (!(await sent(calls, NEW, "model", "sonnet"))) fail(`a tap on Sonnet sent no configure {model: "sonnet"}: ${J(patches(calls, NEW, "model").map((c) => c.body))}`);
-    await page.waitForTimeout(700);
-    if (!(await tid(page, "model-sheet").first().isVisible().catch(() => false))) fail("a tap on a model closed the sheet: it holds Done and stays open");
-    if (!(await until(async () => (await tid(sheet, "picker-row", { value: "sonnet" }).locator('[data-testid="picker-check"]').count()) === 1, WAIT))) fail("the chosen row did not move to Sonnet");
-    s = await segs();
+    // a tap on a row and on a segment change the draft only: no configure call, the sheet stays
+    await press(page, tid(sheet, "model-menu-row", { model: "sonnet" }).first());
+    if (!(await until(async () => J(await drafted(sheet)) === J(["sonnet"]), WAIT))) fail(`a tap on Sonnet drafted ${J(await drafted(sheet))}`);
+    s = await segsOf(sheet);
     if (J(s.map((x) => x.v)) !== J(["low", "medium", "high"])) fail(`sonnet's effort segments are ${J(s.map((x) => x.v))}, not low, medium, high`);
+    if ((await onSeg(sheet)) !== "high") fail(`the draft's effort after Sonnet is ${J(await onSeg(sheet))}, not high (kept: Sonnet offers it)`);
     for (const x of s) if (x.h < SEG_MIN) fail(`the ${x.v} effort segment is ${Math.round(x.h)} px high, under ${SEG_MIN}`);
-    const track = await box(seg.first());
+    const track = await box(tid(sheet, "effort-seg").first());
     if (!track || track.height < 43.5) fail(`the effort track is ${track && Math.round(track.height)} px high, under 44`);
-    // an effort: configure {effort}
-    await press(page, tid(seg, "segment", { value: "low" }).first());
-    if (!(await sent(calls, NEW, "effort", "low"))) fail(`a tap on Low sent no configure {effort: "low"}: ${J(patches(calls, NEW, "effort").map((c) => c.body))}`);
-    if (!(await until(async () => (await tid(seg, "segment", { value: "low" }).first().getAttribute("data-on")) === "true", WAIT))) fail("the Low segment is not the chosen one after its tap");
-    await press(page, tid(sheet, "sheet-right").first());
+    await press(page, tid(tid(sheet, "effort-seg"), "segment", { value: "low" }).first());
+    if (!(await until(async () => (await onSeg(sheet)) === "low", WAIT))) fail(`a tap on Low left the effort ${J(await onSeg(sheet))}`);
+    await page.waitForTimeout(700);
+    if (modelPatches(calls)) fail(`a tap on a row or a segment wrote before Done: ${J(patches(calls, NEW, "model").concat(patches(calls, NEW, "effort")).map((c) => c.body))}`);
+    if (!(await tid(page, "model-sheet").first().isVisible().catch(() => false))) fail("a tap on a row or a segment closed the sheet");
+    if ((await chipSays(page)) !== "Opus 5.5 · High") fail(`the chip says ${J(await chipSays(page))} while the draft is open, not the chat's "Opus 5.5 · High"`);
+    // Cancel: nothing written, the chip as it was; the next opening drafts the chat's choice again
+    await cancels(page, calls, "Cancel", () => press(page, tid(sheet, "model-menu-cancel").first()));
+    let again = await open_(page, "model", "model-sheet");
+    if (!again) return;
+    if (J(await drafted(again)) !== J(["opus"]) || (await onSeg(again)) !== "high") fail(`after Cancel the sheet opens on ${J(await drafted(again))} · ${await onSeg(again)}, not opus · high`);
+    await press(page, tid(again, "model-menu-row", { model: "sonnet" }).first());
+    await cancels(page, calls, "a tap on the dimmed page", () => press(page, tid(page, "overlay-backdrop").first(), { position: { x: 20, y: 40 } }));
+    again = await open_(page, "model", "model-sheet");
+    if (!again) return;
+    await press(page, tid(again, "model-menu-row", { model: "haiku" }).first());
+    await cancels(page, calls, "a swipe down of the handle", async () => {
+      const h = await box(tid(again, "sheet-handle").first());
+      if (h) await touchDrag(page, { x: h.x + h.width / 2, y: h.y + h.height / 2 }, { x: h.x + h.width / 2, y: h.y + 400 }, { hold: 60 });
+    });
+    // Done: one configure call carrying the model and the effort, then the sheet closes and the chip says the pair
+    again = await open_(page, "model", "model-sheet");
+    if (!again) return;
+    await press(page, tid(again, "model-menu-row", { model: "sonnet" }).first());
+    await press(page, tid(tid(again, "effort-seg"), "segment", { value: "low" }).first());
+    await until(async () => (await onSeg(again)) === "low", WAIT);
+    await press(page, tid(again, "model-menu-done").first());
     await closed(page, "Done", "model-sheet");
-    const now = await text(tid(chip(page, "model"), "chip-name"));
-    if (!/^Sonnet 5\.5 · Low$/i.test(now)) fail(`the model chip says ${J(now)} after the picks, not "Sonnet 5.5 · Low"`);
-    note(`Model: "${title}" / "${sub}", Done, 3 rows ≥ 50 px with context notes, efforts ${J(["low", "medium", "high", "max"])} then ${J(["low", "medium", "high"])}; {model} keeps the sheet open, {effort} sent, Done closes; the chip says "${now}"`);
+    await until(async () => modelPatches(calls) > 0, WAIT);
+    await page.waitForTimeout(700);
+    const writes = calls.filter((c) => c.method === "PATCH" && c.path.split("?")[0] === `/api/chats/${NEW}`).map((c) => c.body);
+    if (J(writes) !== J([{ model: "sonnet", effort: "low" }])) fail(`Done wrote ${J(writes)}, not the one configure call {"model":"sonnet","effort":"low"}`);
+    const now = await until(async () => /^Sonnet 5\.5 · Low$/.test(await chipSays(page)), WAIT);
+    if (!now) fail(`the model chip says ${J(await chipSays(page))} after Done, not "Sonnet 5.5 · Low"`);
+    note(`Model: Cancel · "${title}" / "${sub}" · Done; the search (not focused by a tap) above the effort; 3 rows ≥ 50 px; a row and a segment change the draft only; Cancel, the dimmed page and a swipe write nothing; Done writes ${J(writes)}`);
+
+    // ⌘E (a hardware keyboard): opens the sheet with the search focused; again: closes it, writing nothing
+    const key = await modE(page);
+    await page.keyboard.press(key);
+    if (!(await shows(page, `${key}`, "model-sheet"))) return;
+    await settle(page, "model-sheet");
+    if (!(await until(async () => (await focused(page)) === "model-menu-search", 3000))) fail(`${key} opened the sheet with the focus on ${J(await focused(page))}, not the search field`);
+    const k = tid(page, "model-sheet").first();
+    if (J(await drafted(k)) !== J(["sonnet"]) || (await onSeg(k)) !== "low") fail(`${key} opened the sheet on ${J(await drafted(k))} · ${await onSeg(k)}, not the chat's sonnet · low`);
+    await press(page, tid(k, "model-menu-row", { model: "opus" }).first());
+    const before = writes.length;
+    await page.keyboard.press(key);
+    if (!(await closed(page, `${key} again`, "model-sheet"))) return;
+    await page.waitForTimeout(500);
+    const after = calls.filter((c) => c.method === "PATCH" && c.path.split("?")[0] === `/api/chats/${NEW}`).length;
+    if (after !== before) fail(`${key} closing the sheet wrote ${after - before} configure call(s): it cancels`);
+    note(`${key}: opens the sheet with model-menu-search focused, on the chat's choice; again: closes it, nothing written`);
+  });
+  await session({ chat: "c_UXC2_started" }, async (page) => {
+    const key = await modE(page);
+    await page.keyboard.press(key);
+    await page.waitForTimeout(800);
+    if (await tid(page, "model-sheet").count()) fail(`${key} on a started chat opened the model sheet: its model is fixed`);
+    note(`${key} on a started chat: no sheet`);
   });
   await session({ chat: `${BOX}~c_UXC2_pi` }, async (page) => {
     const sheet = await open_(page, "model", "model-sheet");
     if (!sheet) return;
     const heads = await tid(sheet, "menu-head").evaluateAll((els) => els.map((e) => e.textContent.trim()));
-    if (J(heads) !== J(["Anthropic", "OpenAI", "Google"])) fail(`the pi sheet's section heads are ${J(heads)}, not Anthropic, OpenAI, Google`);
-    const rows = tid(sheet, "picker-row"), n = await rows.count();
+    if (J(heads.map((h) => h.toLowerCase())) !== J(["anthropic", "openai", "google"])) fail(`the pi sheet's section heads are ${J(heads)}, not Anthropic, OpenAI, Google`);
+    const rows = rowsOf(sheet), n = await rows.count();
     if (n !== 10) fail(`the pi sheet lists ${n} models, not 10`);
-    if (!(await tid(sheet, "search-field").count())) return fail("a catalog of ten models has no search field");
-    const sf = await box(tid(sheet, "search-field").first());
-    if (!sf || sf.height < 43.5) fail(`the search field is ${sf && Math.round(sf.height)} px high, under 44`);
-    await tid(sheet, "search-field").first().fill("gemini");
+    // the effort stays where it is while the list scrolls (it is in the sheet's pinned head; the list is the body)
+    const effortY = async () => (await box(tid(sheet, "effort-seg").first()))?.y ?? null;
+    const firstY = async () => (await box(rows.first()))?.y ?? null;
+    const [e0, r0] = [await effortY(), await firstY()];
+    await rows.first().evaluate((el) => {
+      for (let p = el.parentElement; p; p = p.parentElement) if (p.scrollHeight > p.clientHeight + 1 && /(auto|scroll)/.test(getComputedStyle(p).overflowY)) { p.scrollTop = 300; return; }
+    });
+    await page.waitForTimeout(300);
+    const [e1, r1] = [await effortY(), await firstY()];
+    if (r0 === null || r1 === null || r0 - r1 < 100) fail(`the list did not scroll: its first row went from ${r0} to ${r1}`);
+    if (e0 === null || e1 === null || Math.abs(e1 - e0) > 0.5) fail(`the effort moved with the list: ${e0} → ${e1}`);
+    await rows.first().evaluate((el) => {
+      for (let p = el.parentElement; p; p = p.parentElement) if (p.scrollHeight > p.clientHeight + 1 && /(auto|scroll)/.test(getComputedStyle(p).overflowY)) { p.scrollTop = 0; return; }
+    });
+    await page.waitForTimeout(300);
+    // the effort slot keeps its height for a model with no efforts (the list does not jump)
+    const listTop = await firstY();
+    await press(page, tid(sheet, "model-menu-row", { model: "claude-haiku-4-5" }).first());
+    if (!(await until(async () => J(await drafted(sheet)) === J(["claude-haiku-4-5"]), WAIT))) fail(`a tap on Haiku 4.5 drafted ${J(await drafted(sheet))}`);
+    if (await tid(sheet, "effort-seg").count()) fail("Haiku 4.5 (no efforts) still shows the effort control");
+    if ((await text(tid(sheet, "effort-line"))) !== "This model has no effort setting.") fail(`with Haiku 4.5 the effort slot says ${J(await text(tid(sheet, "effort-line")))}`);
+    const listTop2 = await firstY();
+    if (listTop === null || listTop2 === null || Math.abs(listTop2 - listTop) > 0.5) fail(`the list moved as the draft went to a model without efforts: ${listTop} → ${listTop2}`);
+    // the search filters; none listed: "No matching models" and Done off
+    const search = tid(sheet, "model-menu-search").first();
+    await search.fill("gemini");
     if (!(await until(async () => (await rows.count()) === 3, WAIT))) fail(`a search for "gemini" leaves ${await rows.count()} rows, not 3`);
-    else for (const v of await rows.evaluateAll((els) => els.map((e) => e.dataset.value))) if (!/gemini/.test(v)) fail(`the search for "gemini" leaves ${v}`);
-    await tid(sheet, "search-field").first().fill("zzzz");
-    if (!(await shows(page, "a search with no match", "picker-empty"))) return;
-    await tid(sheet, "search-field").first().fill("");
+    else {
+      for (const v of await rows.evaluateAll((els) => els.map((e) => e.dataset.model))) if (!/gemini/.test(v)) fail(`the search for "gemini" leaves ${v}`);
+      if (J(await drafted(sheet)) !== J(["gemini-2.5-pro"])) fail(`typing moved the draft to ${J(await drafted(sheet))}, not the first listed, gemini-2.5-pro`);
+    }
+    await search.fill("zzzz");
+    if (!(await shows(page, "a search with no match", "model-menu-empty"))) return;
+    if ((await tid(sheet, "model-menu-done").first().getAttribute("aria-disabled")) !== "true") fail("Done is not disabled while the search lists no model");
+    if (!(await tid(sheet, "model-menu-clear").count())) fail("the search field holds text and has no × (model-menu-clear)");
+    else await press(page, tid(sheet, "model-menu-clear").first());
     if (!(await until(async () => (await rows.count()) === 10, WAIT))) fail("clearing the search did not bring the ten rows back");
     await sweep(page, "model-sheet", "the pi Model sheet");
-    note(`pi: section heads ${J(heads)}, 10 rows, the search field filters ("gemini": 3 rows, "zzzz": none) and clears`);
+    note(`pi: section heads ${J(heads)}, 10 rows; the effort stays put (${e0}) while the list scrolls (${r0} → ${r1}); a model without efforts keeps the slot; "gemini": 3 rows, the draft the first; "zzzz": none and Done off; × clears`);
   });
 
   // ================= 4: the Folder sheet

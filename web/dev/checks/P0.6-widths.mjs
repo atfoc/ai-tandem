@@ -8,6 +8,9 @@
 // viewports' devices have their own (the fit at them is A2.2's). The three narrow controls are shown by the board's panel at 300 px: a chat page of that
 // width is a window under 700 px, the phone layout (ux-improvements C1), whose row has no "more" chip and whose ring is a 44 pt target, so the page's
 // widths of the fixture (every row of it is a wide row) are not shown there; the panel is the wide layout at every width. (The error meter's icon has no panel state: it is read on the page of plain-ctxerr at 300 px, where the phone draws the same icon, CtxError's.)
+// The model and its effort are one chip now ("<model> · <effort>", plans/model-effort-menu/design.md 2.5), where G1 measured two: G1's sums of the
+// states with that chip are held with G1's two chips in place of the one (the rest of the row is G1's as before), and the chip is held against
+// its own width as it is drawn now; the long one is capped at a chat toolbar's 160, as the fixed chip of both is.
 //   WRITE=1 PORT=4900 node web/dev/checks/P0.6-widths.mjs    writes the fixture from the page as it is
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -27,12 +30,16 @@ const G1_SUMS = { "plain-started": 338.5, "plain-quotes": 338.5, "plain-ctxerr":
   "board-started": 338.5, "board-quotes": 338.5, "board-longname": 338.5, "board-move": 412.7, "board-new": 433 };
 // G1's chip widths: [state, kind, whether the chip is a fixed one, width]
 const G1_CHIPS = [
-  ["plain-new", "agent", false, 115.2], ["plain-new", "folder", false, 70.2], ["plain-started", "folder", true, 53.8], ["plain-new", "model", false, 77.3], ["plain-new", "effort", false, 90.4],
+  ["plain-new", "agent", false, 115.2], ["plain-new", "folder", false, 70.2], ["plain-started", "folder", true, 53.8], 
   ["plain-started", "model-effort", true, 97.4], ["plain-new", "meter", false, 28], ["plain-started", "meter", false, 125.3], ["plain-ctxerr", "meter", false, 135.8],
   ["plain-started", "send", false, 28], ["plain-busy", "stop", false, 28], ["plain-started", "lock", false, 10]];
-// The chips with a long name, each as wide as its name's cap lets it be (screens/composer/Chip.tsx: 160 pt, the model choice's 76):
-// [state, kind, fixed, width, what G1 measured for it uncapped].
-const CAPPED = [["plain-new-long", "folder", false, 202.4, 337], ["plain-new-long", "model", false, 102.4, 302.6], ["plain-started-long", "folder", true, 186, 320.6], ["plain-started-long", "model-effort", true, 170, 319.9],
+// G1's model chip and effort chip of a chat whose model is a choice, with the gap between them: what one chip of both stands for in G1's sums.
+const G1_PAIR = 77.3 + 4 + 90.4;
+// The chip of the model and its effort, as it is drawn now (no G1 number: G1 had two chips): [state, width].
+const BOTH = [["plain-new", 114.3]];
+// The chips with a long name, each as wide as its name's cap lets it be (screens/composer/Chip.tsx: 160 pt):
+// [state, kind, fixed, width, what G1 measured for it uncapped (the model's alone, for the chip of both)].
+const CAPPED = [["plain-new-long", "folder", false, 202.4, 337], ["plain-new-long", "model", false, 186.8, 302.6], ["plain-started-long", "folder", true, 186, 320.6], ["plain-started-long", "model-effort", true, 170, 319.9],
   ["plain-remote-new", "server", true, 170, 188], ["plain-remote-started", "server", true, 170, 188]]; // (the server's chip is a fixed one, started or not)
 // What a narrow toolbar has beside its chips: [the fixture's field, the state and the page's width that show it, its selector]
 const NARROW = [["more", "board-new", 300, tidSel("more-chip")], ["ring", "board-started", 300, `${tidSel("ctx-meter")}[data-compact]:not([data-tone="error"])`], ["icon", "plain-ctxerr", 300, `${tidSel("ctx-meter")}[data-compact][data-tone="error"]`]];
@@ -67,7 +74,7 @@ await check("P0.6 the fixture of toolbar widths, with the chips' caps", async ({
   }
   if (gaps.size !== 1 || chromes.size !== 1) fail(`the toolbars do not share one gap and one box chrome: gaps ${[...gaps]}, chromes ${[...chromes]}`);
   const now = {
-    about: "The width each control of a composer's toolbar asks for, in px, per seeded state of section A2 (web/dev/mock-ui.js), as the web build of the app (app/) draws it in headless Chromium with the system font. Written by `WRITE=1 node web/dev/checks/P0.6-widths.mjs`, which also fails when the page no longer agrees with this file. A chip's name is capped (a chat toolbar's: 160, the model choice's 76), and each state is measured in a pane wide enough for all of its controls.",
+    about: "The width each control of a composer's toolbar asks for, in px, per seeded state of section A2 (web/dev/mock-ui.js), as the web build of the app (app/) draws it in headless Chromium with the system font. Written by `WRITE=1 node web/dev/checks/P0.6-widths.mjs`, which also fails when the page no longer agrees with this file. A chip's name is capped (a chat toolbar's: 160), and each state is measured in a pane wide enough for all of its controls.",
     gap: [...gaps][0], chrome: [...chromes][0], ...narrow,
     legend: "gap: between two controls of the toolbar (its spacer is one of them, at no width); chrome: the box's padding and border, so a row of `sum` px needs a box of sum + chrome; more: the chip that opens the popup of the controls the row has no room for; ring: the context meter cut to its ring; icon: the error meter cut to its icon. A state: g1, the name of G1's case it is, where its names are short; pane, where it is shown; sum, its controls and gaps on one line; reason, it has a line under its controls; controls, left to right: kind, label, fixed (a chip that takes no pick), w, and margin where the control has one of its own (the lock): it needs w + margin.",
     states,
@@ -75,7 +82,9 @@ await check("P0.6 the fixture of toolbar widths, with the chips' caps", async ({
 
   // G1 measured the toolbar before it had the Subagents chip, the Insert button, the attach button and voice's pair (Dictate and Speech mode, one
   // child of the row: kind "voice"): its sums are held against the row without them and their gaps.
-  const g1Sum = (st) => Math.round((st.sum - st.controls.filter((c) => c.kind === "subagents" || c.kind === "insert" || c.kind === "voice" || c.kind === "attach").reduce((n, c) => n + c.w + now.gap, 0)) * 10) / 10;
+  // The chip of the model and its effort (kind "model": a choice) stands for G1's two.
+  const g1Sum = (st) => Math.round((st.sum - st.controls.filter((c) => c.kind === "subagents" || c.kind === "insert" || c.kind === "voice" || c.kind === "attach").reduce((n, c) => n + c.w + now.gap, 0)
+    + st.controls.filter((c) => c.kind === "model").reduce((n, c) => n + G1_PAIR - c.w, 0)) * 10) / 10;
   for (const [id, sum] of Object.entries(G1_SUMS)) {
     if (!states[id]) { if (seeded.some((s) => s.id === id)) fail(`the seed has no state for G1's case ${id}`); continue; }
     if (Math.abs(g1Sum(states[id]) - sum) > NEAR_G1) fail(`${id}: the controls and gaps are ${g1Sum(states[id])} px on one line${states[id].sum === g1Sum(states[id]) ? "" : " without the Subagents chip, the Insert button, voice's pair and the attach button"}; G1 measured ${sum}`);
@@ -91,6 +100,11 @@ await check("P0.6 the fixture of toolbar widths, with the chips' caps", async ({
     const c = states[id]?.controls.find((x) => x.kind === kind && !!x.fixed === fixed);
     if (!c) fail(`${id}: no ${fixed ? "fixed " : ""}${kind} control to hold against G1's ${w} px`);
     else if (Math.abs(c.w - w) > NEAR_G1) fail(`${id}: the ${fixed ? "fixed " : ""}${kind} control "${c.label}" is ${c.w} px wide, G1 measured ${w}`);
+  }
+  for (const [id, w] of BOTH) {
+    const c = states[id]?.controls.find((x) => x.kind === "model" && !x.fixed);
+    if (!c) fail(`${id}: no chip of the model and its effort`);
+    else if (Math.abs(c.w - w) > NEAR_G1) fail(`${id}: the chip of the model and its effort "${c.label}" is ${c.w} px wide, it was ${w}`);
   }
   if (now.gap !== 4) fail(`the toolbar's gap is ${now.gap} px, G1 measured 4`);
 

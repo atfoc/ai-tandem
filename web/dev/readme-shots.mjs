@@ -147,8 +147,8 @@ const SHOTS = {
     await ev(`chats.c_new = chat("c_new", { group: "g_co", cwd: CO_DIR, created: iso(Date.now()), ...fresh }); items.c_new = []; send({ type: "chat", chat: chats.c_new }); return 1;`.replace("CO_DIR", JSON.stringify(CO)));
     const { ctx, page } = await open({ sel: { board: null, chat: "c_new" }, ls: REMOTES_FOLDED });
     await byTid(page, "tchip").first().waitFor();
-    await press(page, byTid(page, "tchip").filter({ hasText: "Opus 5.5" }).first());
-    await byTid(page, "pick-row").first().waitFor();
+    await press(page, byTid(page, "tchip", { kind: "model" }).filter({ hasText: "Opus 5.5" }).first());
+    await byTid(page, "model-menu-row").first().waitFor(); // (the model and effort menu)
     await page.mouse.move(W - 5, 5);
     await settle(page);
     await shot(page, "model-picker.png");

@@ -152,11 +152,10 @@ await check("A4.4 every wait of the fork flows ends", async ({ url, layout, open
       if (!await byTid(page, "tchip", { kind }).count() && await byTid(page, "more-chip").count()) { await press(page, byTid(page, "more-chip").first()); await byTid(page, "more-pop").first().waitFor({ state: "visible", timeout: 10000 }); }
       return byTid(page, "tchip", { kind }).first();
     };
-    if (phone) await press(page, byTid(await openChoice(page, "model"), "picker-row", { value: "gpt-5.4" }));
-    else {
-      await press(page, await chip("model"));
-      await press(page, byTid(page, "pick-row", { optionId: "gpt-5.4" }).first());
-    }
+    // (the model and effort menu, plans/model-effort-menu/design.md: the row drafts the model, Done applies it)
+    const menu = phone ? await openChoice(page, "model") : (await press(page, await chip("model")), byTid(page, "model-menu"));
+    await press(page, byTid(menu, "model-menu-row", { model: "gpt-5.4" }));
+    await press(page, byTid(menu, "model-menu-done"));
     await held(name, "configure");
     if (phone) { if (!await until(async () => !(await byTid(page, "model-sheet").count()), 1500)) await closeChoice(page); } // (Done; the sheet may close by itself as the agent starts)
     await when(page, name, phone ? (s) => s.lines.length > 0 : (s) => s.fixed); // (the phone: the thread tells that the agent is starting; its chip has no fixed look)

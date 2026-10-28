@@ -46,7 +46,8 @@ export const sideSaved = (hidden: boolean) => (hidden ? "hidden" : "shown");
  *  list that is not connected: that is the Servers button's own dot. page: the page's version. */
 export const sideNotice = (s: { servers: readonly ServerView[]; restart: Restart }, page: string): boolean => localNotice(s, page);
 
-const isMac = (platform: string) => /Mac|iPhone|iPad/.test(platform);
+/** macOS, iOS and iPadOS (navigator.platform): where the shortcuts take ⌘ rather than Ctrl. */
+export const isMac = (platform: string) => /Mac|iPhone|iPad/.test(platform);
 
 /** ⌘B on macOS, Ctrl+B elsewhere, with nothing else held: hides the sidebar, or shows it. platform: navigator.platform.
  *  Never with Shift: ⌘⇧B is the chat's tree (logic/treepopup.ts). Ctrl+B is not taken on macOS: there it moves the caret

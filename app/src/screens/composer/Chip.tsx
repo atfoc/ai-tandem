@@ -15,8 +15,8 @@ import { useMeasuring } from "./measure.tsx";
 /** What a setting's chip says about when it can be changed. */
 export const UNTIL_FIRST_MESSAGE = "can be changed until you send the first message";
 
-/** The cap of a chip's name in the toolbar and its "more" popup, in points (the model's is narrower). */
-export const NAME_CAP = 160, MODEL_CAP = 76;
+/** The cap of a chip's name in the toolbar and its "more" popup, in points. */
+export const NAME_CAP = 160;
 
 /** A chip's name, in an element of its own. */
 export function ChipName({ children, cap = NAME_CAP, missing, muted, full }: { children: ReactNode; cap?: number; missing?: boolean; muted?: boolean; full?: string }) {
@@ -68,7 +68,8 @@ export type ChipProps = {
 export function TChip({ kind, title, children, onPress, disabled, missing, expanded, popup, chipRef, testID = "tchip", data, square }: ChipProps) {
   const { tokens: t } = useTheme();
   const measuring = useMeasuring();
-  const ref = useMergedRef(title, chipRef, onPress ? !!disabled : undefined);
+  // (the measuring layer's copy takes no caller's ref: it would take an anchor away from the chip that is drawn, and null it as it goes)
+  const ref = useMergedRef(title, measuring ? undefined : chipRef, onPress ? !!disabled : undefined);
   const ids = measuring ? {} : tid(testID, { kind, fixed: !onPress, ...data });
   if (!onPress) {
     return (

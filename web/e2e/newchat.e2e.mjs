@@ -265,6 +265,7 @@ async function step2() {
   await waitFor("the chat's folder is the picked one", async () => (await chatOn(first))?.cwd === PICKED);
   await ui.click(page, modelChip(page));
   await ui.click(page, ui.modelOption(page, other.id));
+  await ui.closeMore(page); // (the model and effort menu: the row is a draft, Done applies it)
   await waitFor("the chat's model is the picked one", async () => (await chatOn(first))?.model === other.id);
   const c1 = await chatOn(first);
   await holds("the composer shows the picked model", async () => (await shows(page)).model === label(other.id), { timeout: 5000 });

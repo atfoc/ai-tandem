@@ -24,14 +24,16 @@ const nav = file("screens/shell/nav.ts"), sidebarActions = file("screens/sidebar
 
 // ---- the toolbar: the server's name, then the four choices
 
-test("the toolbar has the server's name, then agent, folder, model, effort, in this order", () => {
-  const at = ["server: showsServer(where)", "agent: agentPick", "folder: <>", "model: mode ===", "effort: choices"].map((mark) => {
+test("the toolbar has the server's name, then agent, folder, model (with its effort), in this order", () => {
+  const at = ["server: showsServer(where)", "agent: agentPick", "folder: <>", "model: mode ==="].map((mark) => {
     assert.equal(toolbar.split(mark).length, 2, `${mark} is in the toolbar once`);
     return toolbar.indexOf(mark);
   });
   assert.deepEqual(at, [...at].sort((a, b) => a - b));
   assert.equal(count(toolbar, /<DirPicker /g), 1);
-  assert.ok(toolbar.includes('title="Model"') && toolbar.includes('title="Effort"'));
+  // one chip for the model and the effort, which opens the model and effort menu (design 2.5); no effort chip of its own
+  assert.ok(toolbar.includes("Model and effort (${keyName})") && count(toolbar, /<ModelEffortPopover /g) === 2);
+  assert.ok(!toolbar.includes('kind="effort"') && !toolbar.includes("keys.effort"));
   assert.equal(count(choices, /title="Agent"/g), 1);
 });
 

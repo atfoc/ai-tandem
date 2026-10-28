@@ -24,7 +24,7 @@ export async function notice(page) {
 }
 
 /** The testIDs of the composer (K3), which the old checks read by class: the package that draws the composer names them here. */
-export const COMPOSER_IDS = { input: "composer-input", send: "send", stop: "stop", err: "composer-err" }; // (the model's and the effort's chips are `tchip` with dataSet kind: composerSeen)
+export const COMPOSER_IDS = { input: "composer-input", send: "send", stop: "stop", err: "composer-err" }; // (the model chip, which says the effort too, is `tchip` with dataSet kind "model": composerSeen)
 
 /** What a message says: its text with the controls of the fork extras (`fk-…`) left out. */
 const MSG_TEXT = `(e) => { const c = e.cloneNode(true); c.querySelectorAll('[data-testid^="fk-"]').forEach((x) => x.remove()); return (c.textContent ?? "").replace(/\\s+/g, " ").trim(); }`;

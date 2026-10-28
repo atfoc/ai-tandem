@@ -57,8 +57,7 @@ const CLAUDE = "#d97757"; // the Claude agent's colour in the light theme, which
 const OPENERS = [
   ["the agent's list", "agent", "picker"],
   ["the folder's browser", "folder", "dirs"],
-  ["the model's list", "model", "picker"],
-  ["the effort's list", "effort", "picker"],
+  ["the model and effort menu", "model", "model-menu"], // (the effort's segments in it: plans/model-effort-menu/design.md 2.5)
   ["the usage popover", "meter", "usage-pop"],
 ];
 // The phone's: [name, the chip's kind ("meter": the context ring), the sheet's or popup's testID]
