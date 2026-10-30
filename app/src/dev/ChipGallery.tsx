@@ -1,11 +1,13 @@
 // The chip input on the gallery (package K1): the box with its handle's actions, a stand-in for the board it points at
 // (three shapes to select, a layer to pick a point on, ⌘L and ⌘⇧L as the composer will wire them), a stand-in for the insert
-// popup, and the readouts web/dev/checks/L4-chips.mjs and P7.4-keys.mjs read. It is part of no screen: the composer (K3)
+// popup, and the readouts web/dev/checks/L4-chips.mjs, P7.4-keys.mjs and ED1-editing.mjs read (ED1: the code-editor editing, off
+// until a press on "Tab" or "2 spaces", and "Enter: line" that leaves a plain Enter to the box, as the phone's composer does). It is part of no screen: the composer (K3)
 // builds the real thing from the same ChipInput.
 import { useEffect, useRef, useState } from "react";
 import { Pressable, StyleSheet, TextInput, View } from "react-native";
 
 import type { FmtElement } from "@aiwb/core/format.ts";
+import type { EditingSettings } from "@aiwb/core/logic/editing.ts";
 import { onInsertPopup, type InsertTarget } from "@aiwb/core/logic/insert.ts";
 import { pointRef, selectionRef, serializeRef } from "@aiwb/core/logic/refs.ts";
 import { onKey } from "../platform/keys";
@@ -34,6 +36,10 @@ export function ChipGallery() {
   const [note, setNote] = useState("");
   const [locked, setLocked] = useState(false);
   const [readOnly, setReadOnly] = useState(false);
+  const [editing, setEditing] = useState<EditingSettings | undefined>(undefined);
+  const [enterLine, setEnterLine] = useState(false); // a plain Enter is the box's (a line break), not "sent"
+  const enterLineRef = useRef(false);
+  enterLineRef.current = enterLine;
   const [picked, setPicked] = useState<string[]>([]);
   const [picking, setPicking] = useState(false);
   const [popup, setPopup] = useState<InsertTarget | null>(null);
@@ -81,10 +87,11 @@ export function ChipGallery() {
             setKeys(`${e.key}${e.shiftKey ? "+shift" : ""}`);
             // the @ list's Tab: completes the name being typed
             if (e.key === "Tab" && /@bo$/.test(beforeRef.current)) { box.current?.replaceBeforeCaret(3, "@board "); return true; }
-            if (e.key === "Enter" && !e.shiftKey) { setSent((n) => n + 1); return true; }
+            if (e.key === "Enter" && !e.shiftKey && !enterLineRef.current) { setSent((n) => n + 1); return true; }
             return e.key === "Escape";
           }}
           onImages={(files) => setImages(files.map((f) => f.name).join(", "))}
+          editing={editing}
         />
       </View>
       <View style={styles.row}>
@@ -94,6 +101,13 @@ export function ChipGallery() {
         <Button size="sm" testID="gallery-chip-clear" label="Clear" onPress={() => box.current?.set("")} />
         <Button size="sm" testID="gallery-chip-insert-point" label="Insert a point" onPress={() => box.current?.insertRef(pointRef(120.4, -39.6))} />
         <Button size="sm" testID="gallery-chip-open-insert" label="Insert…" onPress={() => box.current?.openInsert()} />
+      </View>
+      <View style={styles.row}>
+        <Button size="sm" testID="gallery-chip-editing-tab" label="Tab" on={editing?.tabInserts === "tab"}
+          onPress={() => setEditing((e) => (e?.tabInserts === "tab" ? undefined : { tabInserts: "tab", tabWidth: 4 }))} />
+        <Button size="sm" testID="gallery-chip-editing-spaces" label="2 spaces" on={editing?.tabInserts === "spaces"}
+          onPress={() => setEditing((e) => (e?.tabInserts === "spaces" ? undefined : { tabInserts: "spaces", tabWidth: 2 }))} />
+        <Button size="sm" testID="gallery-chip-enter-line" label="Enter: line" on={enterLine} onPress={() => setEnterLine((x) => !x)} />
       </View>
       {popup ? (
         <View key={popups} style={styles.row} testID="gallery-chip-popup">

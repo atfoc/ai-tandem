@@ -89,7 +89,7 @@ function failedSend(s: DraftSaver, text: string, e: ApiError, during: () => void
 function failedSendWith(s: DraftSaver, sent: { text: string; images: ChatImage[] }, e: ApiError, during: (held: { text: string; images: ChatImage[] }) => void = () => {}) {
   const held = { text: "", images: [] as ChatImage[] };
   const answered = s.sending(20);
-  s.change("", [], [], []);
+  s.change("", [], []);
   during(held);
   const refused = sentNothing(e.status, e.code);
   const lost = e.images?.length ? sent.images.filter((x) => e.images!.includes(x.id)) : [];
@@ -98,7 +98,7 @@ function failedSendWith(s: DraftSaver, sent: { text: string; images: ChatImage[]
   if (putsBack(removed)) {
     held.images = withImages(back, held.images);
     if (!held.text.trim()) held.text = sent.text;
-    s.change(held.text, [], [], held.images);
+    s.change(held.text, [], held.images);
   }
   return { held, gone: putsBack(removed) ? goneLine(lost.map((x) => x.name)) : "", refused };
 }
@@ -115,7 +115,7 @@ test("a section's chat before its first message has the composer of any chat: it
   assert.notEqual(pickerMode(NEW, false), "fixed");
   assert.deepEqual(subChip(NEW, false), { kind: "open" });
   assert.equal(sendOff(THERE), false);
-  assert.equal(sendTitleOn(THERE, ["claude"], NEW, false), "Send (Enter)");
+  assert.equal(sendTitleOn(THERE, ["claude"], NEW, false), "Send");
   assert.equal(emptyReason(THERE, ["claude"], NEW), "");
   // started, it is fixed like a started local chat
   assert.equal(agentOpen(STARTED), false);
@@ -290,12 +290,12 @@ test("an image is removed from the draft as its server drops: the save fails, th
   const A = img(1), B = img(2);
   const { x, s } = saver(3, { text: "see", images: [A, B] });
   x.away = true;
-  s.change("see", [], [], [A]); s.flush(); // B's remove control
+  s.change("see", [], [A]); s.flush(); // B's remove control
   await tick();
   assert.deepEqual([x.drafts, x.stored, x.put], [[{ text: "see", images: [A] }], { text: "see", images: [A, B] }, []]);
   assert.deepEqual([x.local, x.base], [{ text: "see", images: [A] }, 3], "the unsaved copy names the image that is left, on the counter it was typed on");
   // the text is deleted too: a draft of an image alone is a draft, kept and saved as one
-  s.change("", [], [], [A]); s.flush();
+  s.change("", [], [A]); s.flush();
   await tick();
   assert.deepEqual([x.local, x.stored], [{ text: "", images: [A] }, { text: "see", images: [A, B] }]);
   x.away = false;
@@ -304,7 +304,7 @@ test("an image is removed from the draft as its server drops: the save fails, th
   assert.deepEqual([x.stored, x.rev, x.local, x.put], [{ text: "", images: [A] }, 4, null, []]);
   // the last image is removed while the server is away: the emptied draft is what is saved when it is back
   x.away = true;
-  s.change("", [], [], []); s.flush();
+  s.change("", [], []); s.flush();
   await tick();
   assert.deepEqual([x.local, x.stored], [{ text: "" }, { text: "", images: [A] }]);
   x.away = false;
@@ -327,14 +327,14 @@ test("a Send that fails, or whose arrival is not known, keeps the images with th
     assert.deepEqual([a.x.stored, a.x.put, a.x.local], [{ text: "see", images: [A, B] }, [], null], e.code);
     // a message of images alone is no empty one: it goes back, and is saved as the draft
     const b = saver(3);
-    b.s.change("", [], [], [A]);
+    b.s.change("", [], [A]);
     const r2 = failedSendWith(b.s, { text: "", images: [A] }, e);
     assert.deepEqual(r2.held, { text: "", images: [A] }, e.code);
     await tick(40);
     assert.deepEqual(b.x.stored, { text: "", images: [A] }, e.code);
     // an image added and a text typed while it was sent stay: the sent images stand before the new one, each once
     const c = saver(3, { text: "see", images: [A, B] });
-    const r3 = failedSendWith(c.s, { text: "see", images: [A, B] }, e, (held) => { held.text = "next"; held.images = [C, A]; c.s.change("next", [], [], [C, A]); });
+    const r3 = failedSendWith(c.s, { text: "see", images: [A, B] }, e, (held) => { held.text = "next"; held.images = [C, A]; c.s.change("next", [], [C, A]); });
     assert.deepEqual(r3.held, { text: "next", images: [A, B, C] }, e.code);
     await tick(40);
     assert.deepEqual(c.x.stored, { text: "next", images: [A, B, C] }, e.code);
@@ -351,7 +351,7 @@ test("a Send with no answer whose draft that server removed meanwhile: the messa
   assert.deepEqual([a.x.drafts, a.x.stored, a.x.put, a.x.local], [[], undefined, [], null], "nothing is saved again, and no draft comes back");
   // an image added while it was sent is kept and saved on that server's counter
   const b = saver(3, { text: "see", images: [A] });
-  const r2 = failedSendWith(b.s, { text: "see", images: [A] }, lost, (held) => { b.x.stored = undefined; b.x.rev = 4; b.s.arrived(4, null); held.images = [B]; b.s.change("", [], [], [B]); });
+  const r2 = failedSendWith(b.s, { text: "see", images: [A] }, lost, (held) => { b.x.stored = undefined; b.x.rev = 4; b.s.arrived(4, null); held.images = [B]; b.s.change("", [], [B]); });
   assert.deepEqual(r2.held, { text: "", images: [B] });
   await tick(40);
   assert.deepEqual([b.x.stored, b.x.puts.at(-1)], [{ text: "", images: [B] }, { text: "", base: 4 }]);
@@ -384,7 +384,7 @@ test("two clients in one draft, the user's page and that server's own page or an
   // that server's counter, as text is (an emptied draft would show the server's instead)
   const b = saver(3);
   b.x.stored = { text: "typed there" }; b.x.rev = 4;
-  b.s.change("", [], [], [A]); b.s.flush();
+  b.s.change("", [], [A]); b.s.flush();
   await tick(40);
   assert.deepEqual([b.x.puts.map((p) => p.base), b.x.stored, b.x.put, b.x.local], [[3, 4], { text: "", images: [A] }, [], null]);
   // the other page sent or cleared the draft: a saved draft of an image alone goes from this composer, as saved text does
@@ -521,7 +521,7 @@ test("a page open while that server tells of the draft again loses nothing: the 
   f.x.rev = 10; f.x.stored = { text: "kept here", images: [img(1)] };
   f.s.arrived(10, { text: "kept here", images: [img(1)] });
   assert.deepEqual(f.x.put, [{ text: "kept here", images: [img(1)] }]);
-  f.s.change("kept here", [], [], [img(1), img(2)]); f.s.flush();
+  f.s.change("kept here", [], [img(1), img(2)]); f.s.flush();
   await tick();
   assert.deepEqual([f.x.puts.at(-1), f.x.stored], [{ text: "kept here", base: 10 }, { text: "kept here", images: [img(1), img(2)] }]);
 });

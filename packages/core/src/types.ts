@@ -250,7 +250,6 @@ export type BranchState = {
 /** The message typed in a chat's composer and not sent yet; the server clears it on send. */
 export type Draft = {
   text: string;                               // the composer's value, with its reference tags
-  mentions?: { name: string; id: string }[];  // boards picked from the @ menu
   references?: Reference[];                   // the quotes the message will carry (⌘L)
   images?: ChatImage[];                       // the images the message will carry
 };
@@ -316,9 +315,9 @@ export type TreeView = { current: string; branches: TreeBranchView[]; labels: Tr
 /** A point a message is sent to: a branch, an item count, and whether a new branch is asked for. */
 export type Target = { branch: string; at: number; new: boolean };
 
-/** What a composer holds: its text, the boards picked in it, its quotes and its images (the uploaded ones: an upload that
+/** What a composer holds: its text, its quotes and its images (the uploaded ones: an upload that
  *  runs is not held yet). */
-export type Held = { text: string; mentions: { name: string; id: string }[]; references: Reference[]; images: ChatImage[] };
+export type Held = { text: string; references: Reference[]; images: ChatImage[] };
 
 /** A move chosen and not sent yet: held is what the composer held before it (for Back), put what
  *  the move put there (Branch and edit: the message, its quotes and its images), null when it put nothing.

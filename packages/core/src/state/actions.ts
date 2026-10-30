@@ -90,7 +90,7 @@ const composerOf = (chat: string, branch: string): ComposerBridge | undefined =>
   const open = composers.get(chat);
   return open?.branch === branch ? open.b : undefined;
 };
-const NOTHING: Held = { text: "", mentions: [], references: [], images: [] };
+const NOTHING: Held = { text: "", references: [], images: [] };
 
 /** Whether a composer of a chat's branch is open: its own saver then has the branch's draft (keptdrafts.ts). */
 export const composerOpen = (chat: string, branch: string): boolean => !!composerOf(chat, branch);
@@ -298,7 +298,7 @@ export async function startMove(chat: string, target: Target, edit?: number): Pr
   const b = composerOf(chat, from);
   if (edit !== undefined) {
     if (composerUploads(chat)) { goBack(chat); return; } // an upload began while the branch's list was fetched
-    const put: Held = { text: items[edit]?.text ?? "", mentions: [], references: items[edit]?.references ?? [], images: items[edit]?.images ?? [] };
+    const put: Held = { text: items[edit]?.text ?? "", references: items[edit]?.references ?? [], images: items[edit]?.images ?? [] };
     setMove(chat, { ...getState().moves[chat], put: b ? putInto(b, put) : put });
   } else if (b) {
     // The composer's quotes point into the thread shown before: beyond what the two share, or past the point, an index names another message.

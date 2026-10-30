@@ -18,6 +18,12 @@ import { TableBlock } from "./Table.tsx";
 /** The width of a list's marker column on the phone, in points (the wide layouts keep 20). */
 const LIST_INDENT = 24;
 
+/** A list item's content beside its marker. `flex: 1` is a basis of 0: in a box as wide as its content (a user's bubble), Yoga counts the
+ *  item's text as no width at all, so the bubble took the width of the rest and the items wrapped a letter to a line (iOS). In a user's
+ *  message the basis is the content's own width, which shrinks to fit (the page's flexbox measures the content either way). */
+const FILL = { flex: 1, minWidth: 0 } as const;
+const FILL_FITTED = { flexGrow: 1, flexShrink: 1, flexBasis: "auto", minWidth: 0 } as const;
+
 /** A text line's height: the thread's 1.45 of the size, the phone's reading body 1.5 (TYPE.bodyLine). */
 const lineOf = (look: Look): number => Math.round(look.size * (look.phone ? TYPE.bodyLine : 1.45) * 100) / 100;
 
@@ -84,7 +90,7 @@ function ListView({ block, mt, caret }: { block: Extract<Block, { k: "list" }>; 
               {block.ordered ? `${block.start + i}.` : "•"}
             </RNText>
           )}
-          <View style={{ flex: 1, minWidth: 0 }}><Blocks kids={li.kids} inside="li" caret={caret && i === items.length - 1} /></View>
+          <View style={look.user ? FILL_FITTED : FILL}><Blocks kids={li.kids} inside="li" caret={caret && i === items.length - 1} /></View>
         </View>
       ))}
     </View>

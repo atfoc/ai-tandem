@@ -15,8 +15,7 @@
 //   search field will). A text goes in where the caret was when the popup opened: in the middle of typed text, in
 //   place of a selection, in an empty box, with its line breaks; what was before and after is unchanged, the box has
 //   the focus and the caret is right after the text (what is typed next stands there); ⌘Z takes the text out again.
-//   Reference chips stay the very elements they were, and Backspace still removes one whole; a mention being typed
-//   is still completed. What the box tells its composer (the value that is saved as the draft and sent) has the text.
+//   Reference chips stay the very elements they were, and Backspace still removes one whole. What the box tells its composer (the value that is saved as the draft and sent) has the text.
 //   Closed with nothing inserted, the box has the focus and the caret or the selection it had. A box filled anew
 //   while the popup is open gets the text at its end; a selection that ends inside a chip, and a browser that does
 //   not do the insertion, leave the box as test/insert.test.ts says all the same.// At the phone (ux-improvements C1) the composer is the phone's (a window under 700 px, also in the desktop and tablet runs' narrow windows): the Insert button is
@@ -272,11 +271,6 @@ await check("PL5.1 a text put into a composer's text box, and ⌘P in it and els
         await page.keyboard.press("Delete"); // the chip right after the caret goes whole
         if (!await until(async () => bare(await value()) === `Look at this:  and ${TAGS[1]} please`, 5000)) fail(`Delete before a chip after an insertion: the box holds ${JSON.stringify(await value())}`);
       }
-      // a mention being typed is still completed (the composer's @ list)
-      await lineEdge("Right");
-      await page.keyboard.type(" @ar");
-      await handle("replaceBeforeCaret", 3, "@arch ");
-      if (!await until(async () => bare(await value()).endsWith("please @arch "), 5000)) fail(`a mention completed after an insertion: the box holds ${JSON.stringify(await value())}`);
 
       // closed with nothing inserted: the focus, and the caret or the selection, are back
       await clear();

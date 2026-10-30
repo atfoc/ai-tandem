@@ -5,7 +5,7 @@
 // body). For this computer (no server, or LOCAL_SERVER) every function gives back what it was
 // given. DOM-free.
 import { LOCAL_SERVER, type Board, type BranchState, type ChatView, type Draft, type Group, type SectionTree } from "../types.ts";
-import { keyOn, ownId, serverOfKey } from "./keys.ts";
+import { keyOn } from "./keys.ts";
 
 type Server = string | null | undefined;
 
@@ -14,12 +14,6 @@ const local = (server: Server): boolean => !server || server === LOCAL_SERVER;
 const opt = <T extends string | undefined>(server: Server, id: T): T => (id ? keyOn(server, id) as T : id);
 
 // ---- in: the page's keys
-
-/** A draft: the boards picked in it (`mentions`) are that server's. */
-export function draftIn<D extends Draft | null | undefined>(server: Server, d: D): D {
-  if (local(server) || !d?.mentions?.length) return d;
-  return { ...d, mentions: d.mentions.map((m) => ({ ...m, id: keyOn(server, m.id) })) };
-}
 
 /** A group of a section (whether it is collapsed is the page's own matter, kept in the browser). */
 export function groupIn(server: Server, g: Group): Group {
@@ -36,13 +30,12 @@ export function chatIn(server: Server, c: ChatView): ChatView {
   if (c.group) out.group = keyOn(server, c.group);
   if (c.board) out.board = keyOn(server, c.board);
   if (c.forkedFrom) out.forkedFrom = keyOn(server, c.forkedFrom);
-  if (c.draft) out.draft = draftIn(server, c.draft);
   return out;
 }
 
 export function stateIn(server: Server, st: BranchState): BranchState {
   if (local(server)) return st;
-  return { ...st, chat: keyOn(server, st.chat), ...(st.draft ? { draft: draftIn(server, st.draft) } : {}) };
+  return { ...st, chat: keyOn(server, st.chat) };
 }
 
 /** A section's tree with the page's keys. A list the server left out or sent as null is empty. The defaults are
@@ -66,12 +59,9 @@ export function toolCallIn<C extends { chat?: string; board?: string; target?: s
 
 // ---- out: the server's own ids
 
-/** A draft as its server takes it: the boards picked in it by their own ids. server: the entry id of the server the
- *  draft is saved on. A board of another server is left out of the picks: its id means nothing there, or names
- *  another board (the text keeps its "@name", which that server reads by name as any typed one). */
-export function draftOut(server: Server, d: Draft): Draft {
-  if (!d.mentions?.length) return d;
-  const on = server || LOCAL_SERVER, own = d.mentions.filter((m) => serverOfKey(m.id) === on);
-  const { mentions: _, ...rest } = d;
-  return own.length ? { ...rest, mentions: own.map((m) => ({ ...m, id: ownId(m.id) })) } : rest;
+/** A draft as its server takes it: without the boards a build that had the @ list picked in it (`mentions`, which a
+ *  draft saved by one may still carry; the server takes a draft without them). */
+export function draftOut(d: Draft): Draft {
+  const { mentions, ...rest } = d as Draft & { mentions?: unknown };
+  return mentions === undefined ? d : rest;
 }

@@ -20,9 +20,8 @@ import type { BoardChannel, FromView } from "./channel.ts";
 import { RpcError, bbox, expandIds, keyOf, live, refMatch, sceneVersion, toFmt, type Box, type El } from "./scene.ts";
 import { formatElement, formatScene, formatViewport, type FmtElement, type FmtViewport } from "../format.ts";
 import { boardRef, contextBlock } from "../logic/context.ts";
-import { resolveMentions, type Picked } from "../logic/mentions.ts";
-import { plainText, pointRef, selectionRef, type Ref } from "../logic/refs.ts";
-import { boardsOn, flash, getState, markBusy, markGone, reloadScene, setDropped, setOutage, setRole, setSaveSaid, setState, setWriter, subscribe } from "../state/store.ts";
+import { pointRef, selectionRef, type Ref } from "../logic/refs.ts";
+import { flash, getState, markBusy, markGone, reloadScene, setDropped, setOutage, setRole, setSaveSaid, setState, setWriter, subscribe } from "../state/store.ts";
 import { ownId, sameServer, serverOfKey } from "../logic/keys.ts";
 import { reachable } from "../logic/sections.ts";
 import { api as serverApi, ApiError } from "../api.ts";
@@ -113,7 +112,7 @@ export type BoardApp = BoardSide & {
   selectionRefOn(board: string): Ref | null;
   pointRefOn(board: string, x: number, y: number): Ref;
   showRef(board: string, ref: Ref, agent: AgentKind | string): void;
-  buildContext(chat: string, text: string, picked?: Picked[]): string;
+  buildContext(chat: string): string;
 };
 
 const SAVE_DEBOUNCE = 500;
@@ -823,18 +822,16 @@ export function createBoardSide(options: BoardSideOptions = {}): BoardApp {
   }
 
   /**
-   * The block put in front of a board chat's message: the chat's board and the
-   * boards @-mentioned in the text. The selection is not sent unless the user
-   * put it in the message as a reference.
+   * The block put in front of a board chat's message: the chat's board. The
+   * selection is not sent unless the user put it in the message as a reference.
    */
-  function buildContext(chat: string, text: string, picked: Picked[] = []): string {
+  function buildContext(chat: string): string {
     const s = getState();
     const c = s.chats[chat];
     const own = c?.board ? s.boards[c.board] : undefined;
     if (!c?.board) return "";
-    // (the boards a chat names are of its own server, and go out under that server's own ids: boardRef)
-    const referenced = resolveMentions(plainText(text), boardsOn(s, serverOfKey(chat)), picked).filter((b) => b.id !== c.board).map(boardRef);
-    return contextBlock({ board: own ? boardRef(own) : ownId(c.board), referenced });
+    // (the board goes out under its server's own id: boardRef)
+    return contextBlock({ board: own ? boardRef(own) : ownId(c.board) });
   }
 
   // ---- the engine for one board: the view that shows it when it is on screen, else the engine with the kept scene

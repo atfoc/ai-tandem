@@ -13,8 +13,7 @@
 //   the way to the library, and nothing done in it changes the library. The text is in the draft the server holds, in
 //   the box after a reload, and in the message that is sent, as typed.
 //   A chat beside a board. A reference chip in the box is the element it was after an insertion beside it, and the
-//   saved draft still has its tag; a mention typed afterwards is completed from its list; the message sent has the
-//   reference, the mention and the text.
+//   saved draft still has its tag; the message sent has the reference and the text.
 //   An empty library: the popup says so and its button opens the library popup; closed, the box has the focus and
 //   its cursor again. The popup's "Edit the library" does the same.
 //   Another server (PL4.1 has the library popup's side): its prompts are in the list under its name, and a search for
@@ -364,7 +363,7 @@ await check("PL5.2 the insert popup: ⌘P in a composer, the list, an insertion,
   }
   if (await library() !== start) fail("the library changed while only the insert popup was used");
 
-  // ---- reference chips and mentions, in a chat beside a board (the canvas under the chat is the wide layouts')
+  // ---- reference chips, in a chat beside a board (the canvas under the chat is the wide layouts')
   if (layout !== "desktop") note(`a chat beside a board is not played at the ${layout}: its shapes are selected by a click and ⌘A on the canvas, which a mouse does and a finger does not (composer.mjs playable), so no chip can be made for the box; the box's chips beside an insertion are L4-chips'`);
   else {
     const name = "a chat beside a board", c = await openBox(name, selOf("board-selected"), () => mockEval("return chats.c_A2_sketch.draft?.text ?? '';", url)), { page } = c;
@@ -392,25 +391,18 @@ await check("PL5.2 the insert popup: ⌘P in a composer, the list, an insertion,
       await c.holds("an insertion beside a reference", bare(before) + (before.endsWith(" ") ? "" : " ") + REVIEW);
       const chip = await page.evaluate(() => [...document.querySelectorAll('[data-testid="composer-input"] [data-testid="ref-chip"]')].map((e) => [e.__was === true, e.dataset.ref]));
       if (chip.length !== 1 || !chip[0][0] || chip[0][1] !== tag) fail(`${name}: after an insertion the box's references are ${JSON.stringify(chip)}, not the one element that was there`);
-      // a mention typed after the insertion is completed from its list
-      await page.keyboard.type(" @ar");
-      if (!await until(() => byTid(page, "mention-item").count().then((n) => n > 0), 10000)) fail(`${name}: typing @ar after an insertion opened no list of boards`);
-      else {
-        await page.keyboard.press("Enter");
-        let v;
-        if (!await until(async () => /@arch $/.test((v = await mockEval("return chats.c_A2_sketch.draft?.text ?? '';", url))), 10000)) fail(`${name}: the mention picked after an insertion left the draft ${JSON.stringify(v)}`);
-      }
-      // one more insertion, after the mention; then the message is sent as it stands
-      await c.popup("after a mention");
+      // one more insertion, after typed text; then the message is sent as it stands
+      await page.keyboard.type(" and ");
+      await c.popup("after typed text");
       await page.keyboard.type("todo");
       await page.keyboard.press("Enter");
       let text;
-      if (!await until(async () => (text = await mockEval("return chats.c_A2_sketch.draft?.text ?? '';", url)).endsWith("@arch " + TODO), 10000)) fail(`${name}: an insertion after a mention left the draft ${JSON.stringify(text)}`);
+      if (!await until(async () => (text = await mockEval("return chats.c_A2_sketch.draft?.text ?? '';", url)).endsWith(" and " + TODO), 10000)) fail(`${name}: an insertion after typed text left the draft ${JSON.stringify(text)}`);
       await press(page, byTid(page, "send").first());
       let m;
       if (!await until(async () => (m = await mockEval("return items.c_A2_sketch.filter((x) => x.kind === 'user').at(-1) ?? null;", url))?.text?.includes(REVIEW), 10000)) fail(`${name}: the message sent is ${JSON.stringify(m)}`);
-      else if (m.text.trim() !== text.trim() || !m.text.includes(tag) || !m.text.includes("@arch")) fail(`${name}: the message sent is ${JSON.stringify(m)}, not the draft ${JSON.stringify(text)} with its reference`);
-      note(`${name}: a reference chip stays the element it was and stays in the draft, a mention is completed after an insertion, and the message has them and the text`);
+      else if (m.text.trim() !== text.trim() || !m.text.includes(tag)) fail(`${name}: the message sent is ${JSON.stringify(m)}, not the draft ${JSON.stringify(text)} with its reference`);
+      note(`${name}: a reference chip stays the element it was and stays in the draft, and the message has it and the text`);
     } catch (e) { fail(`${name}: ${e.message.split("\n")[0]}`); }
     await c.p.ctx.close();
   }

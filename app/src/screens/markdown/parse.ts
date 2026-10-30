@@ -1,7 +1,7 @@
 // Parsing a message's Markdown (AD-75): remark, as the page does today (react-markdown's remark half): CommonMark and GFM
 // (tables, task lists, strikethrough, autolinks, footnotes) to mdast; in a user's message single line breaks are kept
-// (remark-breaks). Raw HTML stays in the tree as `html` nodes, which doc.ts shows as text. No React and no
-// react-native here, so Node loads it.
+// (remark-breaks) and so are its lines' indents (indent.ts). Raw HTML stays in the tree as `html` nodes, which doc.ts shows
+// as text. No React and no react-native here, so Node loads it.
 //
 // A message is cut into top-level blocks (core splitBlocks) and each block is parsed on its own, once: `prepare` keeps the
 // trees of the blocks it has seen (a bounded cache), so a growing answer parses only its last block again, and a
@@ -15,14 +15,16 @@ import { unified } from "unified";
 import { splitBlocks, stashRefs, trimPartialRef } from "@aiwb/core/logic/markdown.ts";
 
 import { lower, type Doc } from "./doc.ts";
+import { keepIndent, noIndentedCode } from "./indent.ts";
 
 const plain = unified().use(remarkParse).use(remarkGfm).freeze();
-const user = unified().use(remarkParse).use(remarkGfm).use(remarkBreaks).freeze();
+// (a user's indented lines are shown as typed: no indented code, and the indent of a paragraph's lines kept; indent.ts)
+const user = unified().use(remarkParse).use(remarkGfm).use(noIndentedCode).use(keepIndent).use(remarkBreaks).freeze();
 
 /** The mdast of a text (one block of a message, or any Markdown). */
 export function parse(text: string, forUser = false): Root {
   const p = forUser ? user : plain;
-  return p.runSync(p.parse(text)) as Root;
+  return p.runSync(p.parse(text), text) as Root;
 }
 
 /** The blocks a message is drawn in: a reference tag still being written at its end is left out while the agent streams. */

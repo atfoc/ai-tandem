@@ -94,7 +94,7 @@ await check("AAC.2 a chat of this computer that is open when its server drops, a
     if (await box.getAttribute("aria-readonly") !== "true") fail(`${viewport}: the box of a chat whose server dropped is not marked read-only`);
     const was = calls.length;
     await box.click({ force: true }).catch(() => {}); await page.keyboard.press("End"); await page.keyboard.type(" never");
-    await page.keyboard.press("Enter");
+    await page.keyboard.press("ControlOrMeta+Enter"); // (Send by the key: nothing is sent)
     await page.waitForTimeout(700); // (longer than a draft's save waits)
     if ((await box.textContent()) !== all) fail(`${viewport}: the read-only box took what was typed during the outage: "${await box.textContent()}"`);
     if (calls.slice(was).some((c) => c.method !== "GET")) fail(`${viewport}: a call was made for a chat whose server is not connected: ${J(calls.slice(was).filter((c) => c.method !== "GET").map((c) => `${c.method} ${c.path}`))}`);

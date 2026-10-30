@@ -18,7 +18,8 @@ import expo.modules.kotlin.modules.ModuleDefinition
 
 // The Android side of `aiwb-keys` (package N3, AD-73): the hardware keyboard's shortcuts of the desktop page, taken in the
 // dispatchKeyEvent of the activity's window (the first place a key is offered, before the focused view and the keyboard of the
-// system) and emitted as "onKey". While nobody listens the window's own callback is put back. The contract it implements is
+// system) and emitted as "onKey". While nobody listens the window's own callback is put back. Tab and Shift+Tab are taken there too,
+// on request only (`setTabKeys(true)`: the composer's box has the focus and code editing is on). The contract it implements is
 // README.md at the root of the module; the TypeScript of it is src/AiwbKeys.ts.
 
 /** One shortcut the module takes. The list below is the one of src/AiwbKeys.ts `SHORTCUTS` (app/test/nativekeys.test.ts compares them). */
@@ -55,12 +56,21 @@ fun shortcutOf(event: KeyEvent): Shortcut? {
   return shortcuts.firstOrNull { it.keyCode == keyCode && it.mod == event.isCtrlPressed && it.shift == event.isShiftPressed }
 }
 
+/** Whether an event is Tab or Shift+Tab (src/AiwbKeys.ts `TAB_KEYS`): no Ctrl, Alt or Meta. */
+fun isTabKey(event: KeyEvent): Boolean =
+  event.keyCode == KeyEvent.KEYCODE_TAB && !event.isCtrlPressed && !event.isAltPressed && !event.isMetaPressed
+
 /**
  * The window's callback with dispatchKeyEvent changed: a key down of a shortcut is emitted and taken (so the focused view does not
- * also get it), its key up with it; every other key, and every other call, is the callback it wraps. Written out, not `by`: a
- * Java interface's default methods (onProvideKeyboardShortcuts, onPointerCaptureChanged, ...) are not delegated by `by`.
+ * also get it), its key up with it; so is Tab or Shift+Tab while `tabOn()` (asked for by `setTabKeys`); every other key, and every
+ * other call, is the callback it wraps. Written out, not `by`: a Java interface's default methods (onProvideKeyboardShortcuts,
+ * onPointerCaptureChanged, ...) are not delegated by `by`.
  */
-class KeysWindowCallback(val wrapped: Window.Callback, private val emit: (Map<String, Any?>) -> Unit) : Window.Callback {
+class KeysWindowCallback(
+  val wrapped: Window.Callback,
+  private val emit: (Map<String, Any?>) -> Unit,
+  private val tabOn: () -> Boolean,
+) : Window.Callback {
   /** The key codes whose key down was taken and whose key up has not come yet. */
   private val taken = HashSet<Int>()
 
@@ -73,6 +83,15 @@ class KeysWindowCallback(val wrapped: Window.Callback, private val emit: (Map<St
         emit(mapOf(
           "key" to s.eventKey, "code" to s.code,
           "metaKey" to false, "ctrlKey" to s.mod, "shiftKey" to s.shift, "altKey" to false,
+          "repeat" to (event.repeatCount > 0),
+        ))
+        return true
+      }
+      if (tabOn() && isTabKey(event)) {
+        taken.add(event.keyCode)
+        emit(mapOf(
+          "key" to "Tab", "code" to "Tab",
+          "metaKey" to false, "ctrlKey" to false, "shiftKey" to event.isShiftPressed, "altKey" to false,
           "repeat" to (event.repeatCount > 0),
         ))
         return true
@@ -112,6 +131,8 @@ class KeysWindowCallback(val wrapped: Window.Callback, private val emit: (Map<St
 class AiwbKeysModule : Module() {
   private var listening = false
   private var installed: Pair<Window, KeysWindowCallback>? = null
+  /** Tab and Shift+Tab are asked for (`setTabKeys`); read on the UI thread by the callback, so taken only while somebody listens too. */
+  @Volatile private var tabOn = false
 
   private fun emit(event: Map<String, Any?>) = sendEvent("onKey", event)
 
@@ -122,7 +143,7 @@ class AiwbKeysModule : Module() {
       val window = activity.window
       if (!listening || installed?.first === window) return@runOnUiThread
       detach()
-      val mine = KeysWindowCallback(window.callback, ::emit)
+      val mine = KeysWindowCallback(window.callback, ::emit) { tabOn }
       window.callback = mine
       installed = window to mine
     }
@@ -149,6 +170,10 @@ class AiwbKeysModule : Module() {
       listening = false
       appContext.currentActivity?.runOnUiThread { detach() } ?: detach()
     }
+
+    // Tab and Shift+Tab, on request (README.md "Tab, on request"); the flag outlives a stop: the callback that reads it is
+    // there only while somebody listens.
+    Function("setTabKeys") { on: Boolean -> tabOn = on }
 
     // A new activity (the app comes back after the system ended the first) has a window without our callback.
     OnActivityEntersForeground { if (listening) attach() }

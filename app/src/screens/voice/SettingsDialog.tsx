@@ -31,6 +31,7 @@ import { confirm } from "../shell/confirm.ts";
 import { SECRET_INPUT } from "../servers/parts.tsx";
 import { Choice, Disclosure, Picker, Row, Section, SwitchRow, type Option } from "./SettingsParts.tsx";
 import { DevicesSection } from "./DevicesSection.tsx";
+import { EditingSection } from "../settings/EditingSection.tsx";
 import { VoiceChoice } from "./VoiceChoice.tsx";
 import { openVoicePhone, voiceScreenShown } from "./open.ts";
 
@@ -74,6 +75,7 @@ function SettingsPage() {
       <DevicesSection hasKey={hasKey} />
       <AutoSendSection />
       <AdvancedSection />
+      <EditingSection />
       <DialogActions>
         <Button size="sm" label={SETTINGS_CLOSE} testID="vs-close" autoFocus onPress={closeVoiceSettings} />
       </DialogActions>

@@ -11,10 +11,8 @@ export const PHONE_IDS = {
   dictate: "composer-dictate",
   /** The Add to message sheet; its rows are the kit's `action-row` with dataSet `action` (camera, library, files, prompt, selection, point). */
   plusSheet: "plus-sheet",
-  /** The context row of 34-point chips; each chip `ctx-chip` with dataSet `kind` (board, ref, quotes, selected). */
+  /** The context row of 34-point chips; each chip `ctx-chip` with dataSet `kind` (board, quotes, selected). */
   contextRow: "context-row",
-  /** The @ suggestions docked above the composer; each row `mention-item` with dataSet `board`, `on`. */
-  atDock: "mention-dock",
   /** The chip row of a new chat (package C2 draws its chips). */
   chipRow: "composer-chip-row",
 } as const;

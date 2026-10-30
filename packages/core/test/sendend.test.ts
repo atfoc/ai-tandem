@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { SERVER_UNREACHABLE, putsBack, refusalShown, sentNothing, underComposer } from "../src/logic/sendend.ts";
+import { SERVER_UNREACHABLE, putsBack, refusalShown, sentNothing, sentText, underComposer } from "../src/logic/sendend.ts";
 
 test("refusalShown: a Send refused for a server not connected says so only while that server is not connected (the browser run T109)", () => {
   // the Send woke the connection, and the news of it was here before the refusal: nothing would take the sentence away
@@ -46,4 +46,15 @@ test("underComposer: the last refusal's sentence, else the chat's own error, and
 test("putsBack: a failed Send's message goes back unless its draft was removed on the server meanwhile", () => {
   assert.equal(putsBack(false), true);
   assert.equal(putsBack(true), false); // another window sent that draft, or the Send was taken after all
+});
+
+test("sentText: the blank lines before and the whitespace after are taken off, the first line's indent is kept", () => {
+  assert.equal(sentText("\tfoo()\n\tbar()"), "\tfoo()\n\tbar()");
+  assert.equal(sentText("\n\n  x  \n"), "  x");
+  assert.equal(sentText("  \n\t\n    if (a) {\n      b()\n    }\n\n"), "    if (a) {\n      b()\n    }");
+  assert.equal(sentText("\r\n  y"), "  y");
+  assert.equal(sentText("plain"), "plain");
+  // whitespace only: blank
+  assert.equal(sentText(""), "");
+  assert.equal(sentText(" \n\t\n  "), "");
 });

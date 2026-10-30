@@ -9,7 +9,7 @@
 // Ports dev/checks/A4.4-ends.mjs (S8) at desktop, tablet and phone: same seeds and knobs, same assertions and words, the page read over testIDs
 // (checks/fork.mjs). Deviations: a message's actions are read one message at a time, the way the viewport shows them; a row of the tree opens by a
 // double click with a mouse and by a tap on the picked row with a finger; the archived chat is told by the wait's ending, not by the composer's bar.
-// The composer is the real one (K3): the message is typed in the box and sent with Enter, and what is read of it is the text back in the box with the error
+// The composer is the real one (K3): the message is typed in the box and sent with ⌘/Ctrl+Enter, and what is read of it is the text back in the box with the error
 // under it, Send live again, the pickers live; the pick on a fresh fork whose agent fails to start (B-FK-19); the draft the failed Send leaves.
 import { callMatcher, callOfRequest, check, holds, hostCall, mockEval, release, sampleFrames, seed, until } from "../shot.mjs";
 import { byTid, openChat, press } from "./sel.mjs";
@@ -79,7 +79,7 @@ await check("A4.4 every wait of the fork flows ends", async ({ url, layout, open
     expect(`${name}: the pending move stays: the banner tells of the new branch again`, /your message starts it/.test(seen.banner), seen.banner);
     const acts = await actsSeen(page);
     expect(`${name}: the controls are live again: Back, the message's actions`, !seen.back.disabled && acts.length > 0 && acts.every((a) => !a.disabled), [seen.back, acts]);
-    expect(`${name}: the controls are live again: Send, the pickers`, !seen.send.disabled && !seen.send.spin && (phone ? seen.send.label === "Send" : seen.send.title === "Send (Enter)") && !seen.model?.disabled && !seen.effort?.disabled, seen);
+    expect(`${name}: the controls are live again: Send, the pickers`, !seen.send.disabled && !seen.send.spin && (phone ? seen.send.label === "Send" : /^Send \((⌘|Ctrl\+)Enter\)$/.test(seen.send.title ?? "")) && !seen.model?.disabled && !seen.effort?.disabled, seen);
     if (answer) {
       // the next Send goes through, from the same point
       await knob(`delete flags.send;`);

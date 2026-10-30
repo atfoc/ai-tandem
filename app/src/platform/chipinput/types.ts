@@ -16,6 +16,7 @@
 //    be selected and copied.
 // Undo of a chip is not required (C-RF-20).
 import type { Picked } from "@aiwb/core/logic/chatimage.ts";
+import type { EditingSettings } from "@aiwb/core/logic/editing.ts";
 import type { Ref } from "@aiwb/core/logic/refs.ts";
 
 import type { KeyLike } from "../keys.types.ts";
@@ -43,6 +44,10 @@ export type ChipInputHandle = {
   select(at: { start: number; end: number }): void;
   /** Gives the box the focus. atEnd: the caret goes to the end of what it holds (the composer a sent move went to takes it so). */
   focus(atEnd?: boolean): void;
+  /** Tab (false) or Shift+Tab (true) at the caret or over the selection, as `editing` says (core logic/indent.ts): the soft
+   *  keyboard's key row and a hardware Tab on iOS and Android. Native only (the web box takes Tab itself); nothing without
+   *  `editing`, or while locked or read-only; the focus stays where it is. */
+  indent?(outdent: boolean): void;
 };
 
 export type ChipInputProps = {
@@ -50,7 +55,7 @@ export type ChipInputProps = {
   /** The new value, and the text of the caret's node before the caret (for @ mentions): "" when the caret is right
    *  after a chip, or is not in the text. Called after every change of the text, of the chips and of the caret. */
   onChange(value: string, beforeCaret: string): void;
-  /** The composer's keys in the box (Enter to send, Esc, ↑ ↓ and Tab of the mention list …), after the box has taken its
+  /** The composer's keys in the box (⌘Enter / Ctrl+Enter to send, Esc to stop …), after the box has taken its
    *  own (⌘P, Backspace / Delete next to a chip). True = handled: the box then does not act on the key (on web it
    *  calls preventDefault). The box never lets a key it was given go on to the page's own shortcuts. A key pressed
    *  while an input method composes text is not given. */
@@ -71,4 +76,11 @@ export type ChipInputProps = {
   /** The box's size. Unset: today's (13 pt, three lines to six, or 40% of the window on web). "phone": 17 pt text (the placeholder too), one line
    *  high when empty, growing to six lines and then scrolling inside (ux-improvements goal 3.6). */
   size?: "phone";
+  /** Code-editor editing (core logic/indent.ts), for keys `onKey` did not handle: Tab indents (a tab character or spaces, as the
+   *  settings say), Shift+Tab outdents, Enter and Shift+Enter add a line that keeps the indent of the caret's line and continues a
+   *  markdown list. `tabWidth` is also how wide a tab character is drawn. Unset: Tab and Enter are the platform's own (focus, a bare
+   *  line break). Nothing is edited while `locked` or `readOnly`. On web, a Tab or Shift+Tab right after Esc is the browser's: it moves the
+   *  focus out of the box (the keyboard's way out; any other key, a press in the box or a blur in between ends that). Esc itself still
+   *  goes to `onKey` as before. */
+  editing?: EditingSettings;
 };

@@ -11,8 +11,8 @@
 //   child of the row, and `composer-tools` says where the pair is in its `voice`: row | more) · more-row [control: dictate | speech] with more-dictate [on] and more-speech [on]
 //   (the pair as two entries of the popup) · voice-problem (the popover of a voice problem) ·
 //   agent-reason [tone: missing] · more-pop (the popup, over the page) with more-row [control: …] and more-insert · picker (a list) with
-//   picker-search, pick-row [optionId] · dirs (the folder browser) with dir-input, dir-item, dir-use, dir-err · context-row · ctx-chip [ref] ·
-//   ctx-act [kind: selection | point, on] · ctx-note · mention-pop with mention-item [board] · composer-err · model-notice [warn] · archived-bar ·
+//   picker-search, pick-row [optionId] · dirs (the folder browser) with dir-input, dir-item, dir-use, dir-err · context-row · ctx-chip ·
+//   ctx-act [kind: selection | point, on] · ctx-note · composer-err · model-notice [warn] · archived-bar ·
 //   voice-notice (voice devices VD-14: the one-sentence line of a device that was missing or went away, above the box, the speech bar or the archived
 //   bar; empty at rest) · speech-paused and speech-continue (the speech bar's pause sentence and its Continue).
 // At the phone layout (a window under 700 px, whatever the viewport; ux-improvements C1) the composer is another tree: composer-phone-tools (the

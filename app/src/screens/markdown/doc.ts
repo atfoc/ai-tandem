@@ -19,6 +19,8 @@ import { slotText, unstash } from "@aiwb/core/logic/markdown.ts";
 export type Inline =
   | { k: "text"; v: string }
   | { k: "br" }
+  /** The white space a line of a user's message starts with, as typed (indent.ts): drawn as it is, never collapsed. */
+  | { k: "indent"; v: string }
   | { k: "em" | "strong" | "del" | "sup"; kids: Inline[] }
   | { k: "code"; v: string }
   /** href is a safe address, or "#…" (a footnote, which opens nothing). */
@@ -122,13 +124,19 @@ function trimHead(n: Inline): Inline {
   return n;
 }
 
-/** The inline content of a node. */
-function inlines(nodes: PhrasingContent[], ctx: Ctx, skip: boolean): Inline[] {
+/** The inline content of a node; `first`: it starts a line (a paragraph's). */
+function inlines(nodes: PhrasingContent[], ctx: Ctx, skip: boolean, first = false): Inline[] {
   const out: Inline[] = [];
   nodes.forEach((n, i) => {
     const got = inline(n, ctx, skip);
-    // after a hard break the next text loses its leading white space
-    if (i && nodes[i - 1].type === "break" && got.length) got[0] = trimHead(got[0]);
+    const starts = i ? nodes[i - 1].type === "break" : first;
+    // in a user's message a line's white space at its start is its indent (indent.ts put it back), else after a hard break the next
+    // text loses its leading white space
+    const ws = ctx.mentions && starts && got[0]?.k === "text" ? /^[ \t]+/.exec(got[0].v)?.[0] : undefined;
+    if (ws && got[0].k === "text") {
+      const rest = got[0].v.slice(ws.length);
+      got.splice(0, 1, { k: "indent", v: ws }, ...(rest ? [{ k: "text", v: rest } as Inline] : []));
+    } else if (i && !ctx.mentions && nodes[i - 1].type === "break" && got.length) got[0] = trimHead(got[0]);
     out.push(...got);
   });
   return out;
@@ -193,7 +201,7 @@ function blocks(nodes: RootContent[], ctx: Ctx, parent?: { loose: boolean }): Bl
   const out: Block[] = [];
   for (const n of nodes) {
     switch (n.type) {
-      case "paragraph": out.push({ k: "p", kids: inlines(n.children, ctx, false), tight: parent ? !parent.loose : undefined }); break;
+      case "paragraph": out.push({ k: "p", kids: inlines(n.children, ctx, false, true), tight: parent ? !parent.loose : undefined }); break;
       case "heading": out.push({ k: "h", depth: n.depth, kids: inlines(n.children, ctx, false) }); break;
       case "thematicBreak": out.push({ k: "hr" }); break;
       case "blockquote": out.push({ k: "quote", kids: wrap(blocks(n.children, ctx), true) }); break;

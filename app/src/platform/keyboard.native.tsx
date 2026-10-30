@@ -36,15 +36,18 @@ export function KeyboardLift({ children, gap, inside = 0 }: { children: ReactNod
   return <View ref={root} collapsable={false} style={{ paddingBottom: lift }}>{children}</View>;
 }
 
-/** Whether the soft keyboard is up (the phone's chip row hides while it is: ux-improvements goal 3.6). [not verified on a device] */
+/** Whether the soft keyboard is up (the phone's chip row hides while it is: ux-improvements goal 3.6; the composer's key row of Indent and
+ *  Outdent shows while it is). It starts from whether the keyboard is up now: Android sends no keyboardDidShow for a keyboard that was
+ *  already up when the hook mounted (a composer drawn anew while typing). [not verified on a device] */
 export function useKeyboardUp(): boolean {
-  const [up, setUp] = useState(false);
+  const [up, setUp] = useState(() => Keyboard.isVisible());
   useEffect(() => {
     const ios = Platform.OS === "ios";
     const subs = [
       Keyboard.addListener(ios ? "keyboardWillShow" : "keyboardDidShow", () => setUp(true)),
       Keyboard.addListener(ios ? "keyboardWillHide" : "keyboardDidHide", () => setUp(false)),
     ];
+    setUp(Keyboard.isVisible()); // (what changed between the first render and the listeners)
     return () => subs.forEach((s) => s.remove());
   }, []);
   return up;

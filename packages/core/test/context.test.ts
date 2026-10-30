@@ -12,21 +12,9 @@ test("boardRef names a section's board by its own id on its server: the page's k
   assert.equal(boardRef({ name: "a ~ b", id: "s_1~b_1" }), "a ~ b (b_1)", "the name is the board's, whatever is in it");
 });
 
-test("block without references names only the board", () => {
+test("the block names only the board", () => {
   assert.equal(
-    contextBlock({ board: "arch (b_aaaaaaaa)", referenced: [] }),
+    contextBlock({ board: "arch (b_aaaaaaaa)" }),
     ["<ui-context>", "active_board: arch (b_aaaaaaaa)", "</ui-context>"].join("\n"),
-  );
-});
-
-test("block with references", () => {
-  assert.equal(
-    contextBlock({ board: "arch (b_aaaaaaaa)", referenced: ["flows (b_bbbbbbbb)", "flows (b_cccccccc)"] }),
-    [
-      "<ui-context>",
-      "active_board: arch (b_aaaaaaaa)",
-      "referenced_boards: flows (b_bbbbbbbb), flows (b_cccccccc)",
-      "</ui-context>",
-    ].join("\n"),
   );
 });

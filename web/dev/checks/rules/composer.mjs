@@ -249,12 +249,11 @@ export const recipes = [
           const ids = await page.evaluate(() => [...document.querySelectorAll('[data-testid="plus-sheet"] [data-testid="action-row"]')].map((e) => e.dataset.action));
           for (const want of ["files", "prompt", "selection", "point"]) if (!ids.includes(want)) h.fail(`a board chat's + sheet has no ${want} row (${ids.join(", ")})`);
         } },
-      { name: "the @ dock", go: async (page) => { await leave(page); await typeIn(page, "@r"); }, ready: tidSel("mention-dock") },
     ] },
 
-  { id: "composer.board-draft", goal: "3.6 · 05 A board chat's context (a mention and two quotes)", seed: ["UXC1"], state: "UXC1.board-draft", wait: tidSel("composer-input"),
+  { id: "composer.board-draft", goal: "3.6 · 05 A board chat's context (two quotes)", seed: ["UXC1"], state: "UXC1.board-draft", wait: tidSel("composer-input"),
     steps: [
-      { name: "context row: board chip, @, 2 quotes", ready: tidSel("qcount") },
+      { name: "context row: board chip, 2 quotes", ready: tidSel("qcount") },
       { name: "Quoted in this message", go: async (page) => { await press(page, byTid(page, "qcount").first()); }, ready: tidSel("quotes-sheet") },
     ] },
 

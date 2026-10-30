@@ -43,7 +43,7 @@ const CURRENT = "a1b2c3d4";
 const RUNNING: Item[] = [{ kind: "user", text: "more" }, { kind: "text", text: "on it" }];
 
 const q = (item: number, quote = "x"): Reference => ({ quote, item, start: 0, end: quote.length });
-const held = (text: string, references: Reference[] = [], mentions: Held["mentions"] = [], images: Held["images"] = []): Held => ({ text, mentions, references, images });
+const held = (text: string, references: Reference[] = [], images: Held["images"] = []): Held => ({ text, references, images });
 const move = (t: Target, h: Held, put: Held | null = null): PendingMove => ({ ...t, from: "main", held: h, put });
 
 /** The banner of a move on the example, built as the composer builds it. */
@@ -177,7 +177,7 @@ test("moveDropped: a turn the app starts on the move's source leaves the move as
 // ---- Back (A6)
 
 test("afterBack: a composer that still holds what the move put there gets back what it held", () => {
-  const before = held("my draft", [q(5, "later")], [{ name: "Board", id: "b1" }]);
+  const before = held("my draft", [q(5, "later")]);
   const put = held("redis", [q(1, "opt")]);
   const m = move({ branch: "main", at: 3, new: true }, before, put);
   // limit 0: what it held keeps its own quotes whatever the limit
@@ -197,9 +197,9 @@ test("Back keeps a quote added during the move when the text was not changed", (
   const added = { ...q(4), comment: "my comment" }; // quoted, with a comment, after the move began
   assert.deepEqual(afterBack(m, held("", [added]), 6), held("", [added]));
   // after what the composer held, and only below the limit
-  const before = held("my draft", [q(1)], [{ name: "Board", id: "b1" }]);
+  const before = held("my draft", [q(1)]);
   const kept = move({ branch: "main", at: 6, new: true }, before);
-  assert.deepEqual(afterBack(kept, held("my draft", [q(1), added, q(5)]), 5), held("my draft", [q(1), added], before.mentions));
+  assert.deepEqual(afterBack(kept, held("my draft", [q(1), added, q(5)]), 5), held("my draft", [q(1), added]));
   assert.equal(afterBack(kept, held("my draft", [q(1), q(5)]), 5), before);
 });
 
@@ -216,10 +216,9 @@ test("Back after Branch and edit keeps a quote added to the unedited message", (
 test("afterBack: text typed during the move is kept, with the quotes below the limit only", () => {
   const before = held("my draft", [q(5)]);
   const m = move({ branch: "main", at: 6, new: true }, before, held("redis", [q(1)]));
-  const mentions = [{ name: "Board", id: "b1" }];
-  const now = held("redis, but in memory", [q(1), q(2), q(3), q(4)], mentions);
-  assert.deepEqual(afterBack(m, now, 3), held("redis, but in memory", [q(1), q(2)], mentions));
-  assert.deepEqual(afterBack(m, now, 0), held("redis, but in memory", [], mentions));
+  const now = held("redis, but in memory", [q(1), q(2), q(3), q(4)]);
+  assert.deepEqual(afterBack(m, now, 3), held("redis, but in memory", [q(1), q(2)]));
+  assert.deepEqual(afterBack(m, now, 0), held("redis, but in memory", []));
   // without put: typed over what it held
   assert.deepEqual(afterBack(move({ branch: "main", at: 6, new: true }, before), held("other", [q(5), q(6)]), 6), held("other", [q(5)]));
 });
@@ -255,17 +254,16 @@ test("Back and every drop of a move use the limit of the branch returned to", ()
   assert.deepEqual(afterBack(m, now, quoteLimit(undefined, m.at, m.branch, CURRENT)).references, []);
 });
 
-// ---- Back, the quotes of a plain move one by one: the draft before is "my draft" @Board [1, 2:old, 7], the
+// ---- Back, the quotes of a plain move one by one: the draft before is "my draft" [1, 2:old, 7], the
 // move at 6 hid 7, and the composer began with [1, 2:old]
 
 const c = (item: number, comment: string): Reference => ({ ...q(item), comment });
-const BOARD = [{ name: "Board", id: "b1" }];
-const DRAFT = held("my draft", [q(1), c(2, "old"), q(7)], BOARD);
+const DRAFT = held("my draft", [q(1), c(2, "old"), q(7)]);
 const PLAIN = move({ branch: "main", at: 6, new: true }, DRAFT);
-const refsBack = (m: PendingMove, text: string, now: Reference[], limit = 6) => afterBack(m, held(text, now, BOARD), limit).references;
+const refsBack = (m: PendingMove, text: string, now: Reference[], limit = 6) => afterBack(m, held(text, now), limit).references;
 
 test("Back does not bring back a quote that was removed during the move", () => {
-  assert.deepEqual(afterBack(PLAIN, held("my draft", [q(1)], BOARD), 6), held("my draft", [q(1), q(7)], BOARD));
+  assert.deepEqual(afterBack(PLAIN, held("my draft", [q(1)]), 6), held("my draft", [q(1), q(7)]));
   // removed, and another added
   assert.deepEqual(refsBack(PLAIN, "my draft", [q(1), c(3, "new")]), [q(1), q(7), c(3, "new")]);
   // all removed: what the move hid is all that comes back
@@ -273,15 +271,15 @@ test("Back does not bring back a quote that was removed during the move", () => 
 });
 
 test("Back: every other way a plain move's quotes change, with the text unchanged, changed and emptied", () => {
-  assert.equal(afterBack(PLAIN, held("my draft", [q(1), c(2, "old")], BOARD), 6), DRAFT);
-  assert.equal(afterBack(PLAIN, held("my draft", [{ ...q(1) }, c(2, "old")], [...BOARD]), 6), DRAFT); // copies of the same quotes
+  assert.equal(afterBack(PLAIN, held("my draft", [q(1), c(2, "old")]), 6), DRAFT);
+  assert.equal(afterBack(PLAIN, held("my draft", [{ ...q(1) }, c(2, "old")]), 6), DRAFT); // copies of the same quotes
   assert.deepEqual(refsBack(PLAIN, "my draft", [q(1), c(2, "old"), c(3, "new")]), [q(1), c(2, "old"), q(7), c(3, "new")]);
   assert.deepEqual(refsBack(PLAIN, "my draft", [q(1), c(2, "edited")]), [q(1), c(2, "edited"), q(7)]);
   assert.deepEqual(refsBack(PLAIN, "my draft", [q(1), q(2)]), [q(1), q(2), q(7)]);
   // removed and quoted again: it is the composer's
   assert.deepEqual(refsBack(PLAIN, "my draft", [q(1), c(2, "again")]), [q(1), c(2, "again"), q(7)]);
   for (const text of ["my draft, more", ""]) {
-    assert.deepEqual(afterBack(PLAIN, held(text, [q(1), c(2, "old")], BOARD), 6), held(text, [q(1), c(2, "old"), q(7)], BOARD));
+    assert.deepEqual(afterBack(PLAIN, held(text, [q(1), c(2, "old")]), 6), held(text, [q(1), c(2, "old"), q(7)]));
     assert.deepEqual(refsBack(PLAIN, text, [q(1), c(2, "old"), c(3, "new")]), [q(1), c(2, "old"), c(3, "new"), q(7)]);
     assert.deepEqual(refsBack(PLAIN, text, [q(1)]), [q(1), q(7)]);
     assert.deepEqual(refsBack(PLAIN, text, [q(1), c(3, "new")]), [q(1), c(3, "new"), q(7)]);
@@ -327,10 +325,10 @@ test("Back brings back what the move hid when the limit is another than at its s
 // ---- a sent move
 
 test("afterSent: the draft that Branch and edit put aside comes back into the empty composer", () => {
-  const before = held("my draft", [q(1), q(4)], [{ name: "Board", id: "b1" }]);
+  const before = held("my draft", [q(1), q(4)]);
   const m = move({ branch: "main", at: 3, new: true }, before, held("redis"));
-  assert.deepEqual(afterSent(m, held(""), 3), held("my draft", [q(1)], before.mentions));
-  assert.deepEqual(afterSent(m, held(" \n"), 0), held("my draft", [], before.mentions));
+  assert.deepEqual(afterSent(m, held(""), 3), held("my draft", [q(1)]));
+  assert.deepEqual(afterSent(m, held(" \n"), 0), held("my draft", []));
   // a draft of quotes alone, all past the limit: nothing is left of it
   assert.equal(afterSent(move(m, held("", [q(4)]), m.put), held(""), 3), null);
 });
@@ -451,12 +449,12 @@ test("bannerOf: a message that is only quotes is named by its first quote", () =
 const im = (n: number): Held["images"][number] => ({ id: String(n).padStart(64, "0"), name: `i${n}.png`, type: "image/png", size: 1000 });
 
 test("afterBack: Branch and edit put a message with its images; Back gives the composer its own draft and images again", () => {
-  const mine = held("my draft", [], [], [im(1)]), put = held("the message", [], [], [im(7), im(8)]);
+  const mine = held("my draft", [], [im(1)]), put = held("the message", [], [im(7), im(8)]);
   const m = move({ branch: "main", at: 3, new: true }, mine, put);
   // untouched: exactly what it held
   assert.equal(afterBack(m, put, 3), mine);
   // an image added during the move (an upload that was answered, a paste) comes along, after its own
-  assert.deepEqual(afterBack(m, { ...put, images: [im(7), im(8), im(9)] }, 3), held("my draft", [], [], [im(1), im(9)]));
+  assert.deepEqual(afterBack(m, { ...put, images: [im(7), im(8), im(9)] }, 3), held("my draft", [], [im(1), im(9)]));
   // one of the message's images removed meanwhile changes nothing of the draft it gets back
   assert.equal(afterBack(m, { ...put, images: [im(8)] }, 3), mine);
   // an image that both have is one image
@@ -464,25 +462,25 @@ test("afterBack: Branch and edit put a message with its images; Back gives the c
 });
 
 test("afterBack: what was typed during the move keeps the images the composer holds now", () => {
-  const mine = held("my draft", [], [], [im(1)]), put = held("the message", [], [], [im(7)]);
+  const mine = held("my draft", [], [im(1)]), put = held("the message", [], [im(7)]);
   const m = move({ branch: "main", at: 3, new: true }, mine, put);
-  assert.deepEqual(afterBack(m, held("the message, edited", [], [], [im(7), im(9)]), 3), held("the message, edited", [], [], [im(7), im(9)]));
-  assert.deepEqual(afterBack(m, held("", [], [], []), 3), held(""));
+  assert.deepEqual(afterBack(m, held("the message, edited", [], [im(7), im(9)]), 3), held("the message, edited", [], [im(7), im(9)]));
+  assert.deepEqual(afterBack(m, held("", [], []), 3), held(""));
 });
 
 test("afterBack: a move that put nothing took no image out, so the composer's images are as they are now", () => {
-  const mine = held("my draft", [q(1)], [], [im(1), im(2)]);
+  const mine = held("my draft", [q(1)], [im(1), im(2)]);
   const m = move({ branch: "main", at: 3, new: true }, mine);
   assert.equal(afterBack(m, mine, 3), mine);
-  assert.deepEqual(afterBack(m, { ...mine, images: [im(2)] }, 3), held("my draft", [q(1)], [], [im(2)])); // one removed during the move stays removed
-  assert.deepEqual(afterBack(m, { ...mine, images: [im(1), im(2), im(3)] }, 3), held("my draft", [q(1)], [], [im(1), im(2), im(3)])); // one added stays
-  assert.deepEqual(afterBack(m, held("", [], [], [im(1)]), 3), held("", [], [], [im(1)])); // the text emptied: the image is still what it holds
+  assert.deepEqual(afterBack(m, { ...mine, images: [im(2)] }, 3), held("my draft", [q(1)], [im(2)])); // one removed during the move stays removed
+  assert.deepEqual(afterBack(m, { ...mine, images: [im(1), im(2), im(3)] }, 3), held("my draft", [q(1)], [im(1), im(2), im(3)])); // one added stays
+  assert.deepEqual(afterBack(m, held("", [], [im(1)]), 3), held("", [], [im(1)])); // the text emptied: the image is still what it holds
 });
 
 test("afterSent: a draft of images alone that was put aside comes back; a composer that holds an image again gets nothing", () => {
-  const aside = held("", [], [], [im(1)]), put = held("the message", [], [], [im(7)]);
+  const aside = held("", [], [im(1)]), put = held("the message", [], [im(7)]);
   const m = move({ branch: "main", at: 3, new: true }, aside, put);
   assert.deepEqual(afterSent(m, held(""), 3), aside); // images alone are a draft to give back
-  assert.equal(afterSent(m, held("", [], [], [im(9)]), 3), null); // an image was added after the Send: the composer holds something
+  assert.equal(afterSent(m, held("", [], [im(9)]), 3), null); // an image was added after the Send: the composer holds something
   assert.equal(afterSent(move({ branch: "main", at: 3, new: true }, held(""), put), held(""), 3), null);
 });

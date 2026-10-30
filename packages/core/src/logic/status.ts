@@ -83,9 +83,9 @@ export const headStatus = (c: Pick<ChatView, "agent" | "archived">, legacy: bool
   c.archived ? "Archived" : legacy ? "Disabled" : c.agent === "" || off ? "" : status;
 
 /** The title of the composer's Send: why no message is taken when blocked (composerControls), with
- *  noAgent the reason of a chat with no agent. */
+ *  noAgent the reason of a chat with no agent. The app adds the send key's name to "Send" (composer/keys.ts sendTitleFor). */
 export const sendTitle = (c: Pick<ChatView, "status" | "fresh"> & Partial<Pick<ChatView, "agent">>, blocked: boolean, noAgent: string): string =>
-  !blocked ? "Send (Enter)" : c.agent === "" ? noAgent : starting(c) ? "The agent is starting" : "The agent is working";
+  !blocked ? "Send" : c.agent === "" ? noAgent : starting(c) ? "The agent is starting" : "The agent is working";
 
 /** A Send was refused: whether the chat is read again. 409: the branch the message goes to is busy
  *  by now. 429 `cap` (too many turns run), 409 `window` (the model chosen cannot take the

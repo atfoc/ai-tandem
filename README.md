@@ -30,8 +30,8 @@ Every whiteboard has its own chats, and the agent of such a chat has tools for t
 - **It draws directly on the board.** New and changed elements appear as the agent works,
   marked with the agent's name. When your window is editing the board, each change the agent makes is
   one undo step, so ⌘Z takes it back; a change it made with no window editing has none.
-- **It works across boards.** Mention another board with `@` to bring it into the message. When
-  you ask for it, an agent creates a new board or brings a board to your screen.
+- **It works across boards.** When you ask for it, an agent creates a new board or brings a
+  board to your screen.
 
 You keep drawing while the agent works, and a pill on the board says which agent is working on it.
 

@@ -3,8 +3,9 @@ import UIKit
 
 // The iOS side of `aiwb-keys` (package N3, AD-73): the hardware keyboard's shortcuts of the desktop page as UIKeyCommands added to
 // the root view controller of every window, so they are found along the responder chain from whatever has the focus (a text box,
-// the board's web view). While nobody listens to "onKey" no command is added and the keyboard is the system's. The contract it
-// implements is ../README.md; the TypeScript of it is ../src/AiwbKeys.ts.
+// the board's web view). While nobody listens to "onKey" no command is added and the keyboard is the system's. Tab and Shift+Tab are
+// taken too, on request only (`setTabKeys(true)`: the composer's box has the focus and code editing is on), with two more commands
+// kept apart from the shortcuts'. The contract it implements is ../README.md; the TypeScript of it is ../src/AiwbKeys.ts.
 
 /// One shortcut the module takes. The list below is the one of src/AiwbKeys.ts `SHORTCUTS` (app/test/nativekeys.test.ts compares them).
 struct KeysShortcut {
@@ -47,6 +48,10 @@ let keysShortcuts: [KeysShortcut] = [
   KeysShortcut(code: "Escape", key: "Escape", mod: false, shift: false, label: "Close"),
 ]
 
+/// Tab and Shift+Tab, taken while `setTabKeys(true)` (src/AiwbKeys.ts `TAB_KEYS`). Their commands' `propertyList` is "tab0" / "tab1",
+/// never a number, so a shortcut's index and a Tab are told apart.
+let tabKeys: [(shift: Bool, label: String)] = [(false, "Indent"), (true, "Outdent")]
+
 extension UIViewController {
   /// The action of every command (the system sends it along the responder chain to the first responder that has it).
   @objc func aiwbKeysFire(_ command: UIKeyCommand) {
@@ -54,7 +59,8 @@ extension UIViewController {
   }
 }
 
-/// Adds the commands to the root view controllers while there is a listener, and turns a fired command into an event.
+/// Adds the commands to the root view controllers while there is a listener (the Tab ones while they are asked for, too), and turns a
+/// fired command into an event.
 final class KeyCommandCenter {
   static let shared = KeyCommandCenter()
 
@@ -70,7 +76,11 @@ final class KeyCommandCenter {
 
   private var emit: (([String: Any]) -> Void)?
   private let commands = NSMapTable<UIViewController, NSArray>.weakToStrongObjects()
-  private var lastFire: [Int: CFTimeInterval] = [:]
+  /// Tab and Shift+Tab are asked for (`setTabKeys`); they are taken while this is on and somebody listens.
+  private var tabOn = false
+  private let tabCommands = NSMapTable<UIViewController, NSArray>.weakToStrongObjects()
+  /// The last firing of each command, by its `propertyList` ("0", "1", ..., "tab0", "tab1").
+  private var lastFire: [String: CFTimeInterval] = [:]
   private var observers: [NSObjectProtocol] = []
   private var recheck: Timer?
 
@@ -103,8 +113,27 @@ final class KeyCommandCenter {
         for c in (self.commands.object(forKey: vc) as? [UIKeyCommand]) ?? [] { vc.removeKeyCommand(c) }
       }
       self.commands.removeAllObjects()
+      self.removeTab()
       self.lastFire = [:]
     }
+  }
+
+  /// Takes Tab and Shift+Tab (while somebody listens), or gives them back. The flag outlives a stop: a listener that comes again
+  /// while it is on gets them with the shortcuts.
+  func setTab(_ on: Bool) {
+    DispatchQueue.main.async {
+      self.trace("tab \(on)")
+      self.tabOn = on
+      if on { self.install() } else { self.removeTab() }
+    }
+  }
+
+  private func removeTab() {
+    for vc in tabCommands.keyEnumerator().allObjects as! [UIViewController] {
+      for c in (tabCommands.object(forKey: vc) as? [UIKeyCommand]) ?? [] { vc.removeKeyCommand(c) }
+    }
+    tabCommands.removeAllObjects()
+    lastFire = lastFire.filter { !$0.key.hasPrefix("tab") }
   }
 
   private func rootViewControllers() -> [UIViewController] {
@@ -132,19 +161,48 @@ final class KeyCommandCenter {
       commands.setObject(made as NSArray, forKey: vc)
       trace("installed \(made.count) commands on \(type(of: vc))")
     }
+    guard tabOn else { return }
+    for vc in rootViewControllers() where tabCommands.object(forKey: vc) == nil {
+      var made: [UIKeyCommand] = []
+      for (i, t) in tabKeys.enumerated() {
+        let c = UIKeyCommand(title: t.label, image: nil, action: #selector(UIViewController.aiwbKeysFire(_:)), input: "\t",
+                             modifierFlags: t.shift ? [.shift] : [], propertyList: "tab\(i)", alternates: [], discoverabilityTitle: t.label,
+                             attributes: [], state: .off)
+        // Asked for while the composer's box edits code: they win over the text view's own tab and over the focus system's Tab.
+        c.wantsPriorityOverSystemBehavior = true
+        vc.addKeyCommand(c)
+        made.append(c)
+      }
+      tabCommands.setObject(made as NSArray, forKey: vc)
+      trace("installed the Tab commands on \(type(of: vc))")
+    }
+  }
+
+  /// Whether `id` fired less than `repeatWithin` ago (a held key), and notes this firing.
+  private func repeating(_ id: String) -> Bool {
+    let now = CACurrentMediaTime()
+    defer { lastFire[id] = now }
+    return lastFire[id].map { now - $0 < KeyCommandCenter.repeatWithin } ?? false
   }
 
   func fire(_ command: UIKeyCommand) {
     trace("fired \(command.input ?? "?") \(command.propertyList ?? "")")
-    guard let emit = emit, let id = (command.propertyList as? String).flatMap({ Int($0) }), keysShortcuts.indices.contains(id) else { return }
+    guard let emit = emit, let name = command.propertyList as? String else { return }
+    if name.hasPrefix("tab") {
+      guard tabOn, let i = Int(name.dropFirst(3)), tabKeys.indices.contains(i) else { return }
+      emit([
+        "key": "Tab", "code": "Tab",
+        "metaKey": false, "ctrlKey": false, "shiftKey": tabKeys[i].shift, "altKey": false,
+        "repeat": repeating(name),
+      ])
+      return
+    }
+    guard let id = Int(name), keysShortcuts.indices.contains(id) else { return }
     let s = keysShortcuts[id]
-    let now = CACurrentMediaTime()
-    let repeating = lastFire[id].map { now - $0 < KeyCommandCenter.repeatWithin } ?? false
-    lastFire[id] = now
     emit([
       "key": s.eventKey, "code": s.code,
       "metaKey": s.mod, "ctrlKey": false, "shiftKey": s.shift, "altKey": false,
-      "repeat": repeating,
+      "repeat": repeating(name),
     ])
   }
 }
@@ -161,6 +219,11 @@ public class AiwbKeysModule: Module {
 
     OnStopObserving {
       KeyCommandCenter.shared.stop()
+    }
+
+    // Tab and Shift+Tab, on request (README.md "Tab, on request").
+    Function("setTabKeys") { (on: Bool) in
+      KeyCommandCenter.shared.setTab(on)
     }
   }
 }

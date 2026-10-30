@@ -8,6 +8,8 @@ import { pointRef, selectionRef, serializeRef } from "@aiwb/core/logic/refs.ts";
 import { THEME_TOKENS } from "../src/ui/tokens.ts";
 import { safeUrl, trimLines, type Block, type Inline } from "../src/screens/markdown/doc.ts";
 import { forget, blocksOf, prepare, stats } from "../src/screens/markdown/parse.ts";
+import { messageText } from "../src/screens/markdown/displayed.ts";
+import { expandIndent } from "../src/screens/markdown/indent.ts";
 import { highlightRuns, MAX_HIGHLIGHTED, type SyntaxTone } from "../src/screens/markdown/highlight.ts";
 import { marginsOf, spaced } from "../src/screens/markdown/layout.ts";
 
@@ -77,6 +79,51 @@ test("inside code and links a reference tag and an @name stay as typed text (B-M
 test("a user's single line breaks are kept, an answer's are not", () => {
   assert.deepEqual(inlinesOf("a\nb", true).map((n) => n.k), ["text", "br", "text"]);
   assert.deepEqual(inlinesOf("a\nb").map((n) => n.k), ["text"]);
+});
+
+/** A user's message as lines: each paragraph line's indent (or "") and its text; a list item as "• " and its text. */
+function linesOf(text: string): string[] {
+  const out: string[] = [];
+  const flat = (kids: Inline[]): string => kids.map((n) => (n.k === "text" || n.k === "indent" || n.k === "code" ? n.v : n.k === "br" ? "\n" : "kids" in n ? flat(n.kids) : "")).join("");
+  const walk = (b: Block, bullet = "") => {
+    if (b.k === "p") flat(b.kids).split("\n").forEach((l: string, i: number) => out.push((i ? "" : bullet) + l));
+    else if (b.k === "li") b.kids.filter((k) => k.k !== "nl").forEach((k, i) => walk(k, i ? "" : "• "));
+    else if (b.k === "code") out.push("```" + b.text);
+    else if (b.k === "quote" || b.k === "list" || b.k === "group") b.kids.forEach((k) => walk(k));
+  };
+  docOf(text, true).forEach((b) => walk(b));
+  return out;
+}
+
+test("a user's indented lines keep their indent as typed; lists and fences are drawn as before (an answer's are not)", () => {
+  assert.deepEqual(linesOf("a:\n\tone\n\ttwo\n- three\n- four"), ["a:", "\tone", "\ttwo", "• three", "• four"]);
+  assert.deepEqual(linesOf("if x:\n    y = 1\n    z = 2"), ["if x:", "    y = 1", "    z = 2"]);
+  assert.deepEqual(linesOf("steps:\n  - one\n    - nested"), ["steps:", "• one", "• nested"]);
+  // a run of indented lines is no code block, its first line's indent kept too
+  assert.deepEqual(linesOf("    y = 1\n    z = 2"), ["    y = 1", "    z = 2"]);
+  assert.deepEqual(linesOf("a\n\n\tb\n\t\tc"), ["a", "\tb", "\t\tc"]);
+  // the indent is past the container's own column: a list item's continuation, a quote's lines; a lazy line has none
+  assert.deepEqual(linesOf("- one\n  more\n    deeper"), ["• one", "more", "  deeper"]);
+  assert.deepEqual(linesOf("> q\n>   r"), ["q", "  r"]);
+  assert.deepEqual(linesOf("- one\nlazy"), ["• one", "lazy"]);
+  // a line that starts with an inline: its indent stands before it
+  assert.deepEqual(linesOf("x\n  `code` and *em*"), ["x", "  code and em"]);
+  // fenced code is as it was
+  assert.deepEqual(linesOf("```\n\tcode\n```"), ["```\tcode\n"]);
+  // an indent is its own node, and the displayed text (quotes) has it
+  assert.deepEqual(inlinesOf("a\n\tb", true), [{ k: "text", v: "a" }, { k: "br" }, { k: "indent", v: "\t" }, { k: "text", v: "b" }]);
+  assert.equal(messageText("if x:\n    y = 1", true), "if x:\n    y = 1");
+  // an answer is drawn as before
+  assert.deepEqual(docOf("    y = 1\n    z = 2").map((b) => b.k), ["code"]);
+  assert.deepEqual(inlinesOf("if x:\n    y = 1"), [{ k: "text", v: "if x:\ny = 1" }]);
+});
+
+test("expandIndent draws an indent's tabs as spaces to the next tab stop", () => {
+  assert.equal(expandIndent("\t", 4), "    ");
+  assert.equal(expandIndent("  \t", 4), "    ");
+  assert.equal(expandIndent("\t \t", 2), "    ");
+  assert.equal(expandIndent("\t", 8), " ".repeat(8));
+  assert.equal(expandIndent("   ", 4), "   ");
 });
 
 test("trimLines drops the white space at the ends of lines, not of the text", () => {

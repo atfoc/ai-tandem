@@ -1,0 +1,94 @@
+# aiwb-e2e: needs=server,agent,control app=1
+# ux-editkeys (composer editing on iOS and Android, branch cit-native): the box edits like code with the soft keyboard. A plain chat "Edit-chat" on a scratch
+# server with the stand-in agent; the app is given the server and opens the chat (the phone's composer; the editing settings are the defaults: Tab puts in a tab).
+#   key row         with the box focused and the soft keyboard up, the row of edit keys (`composer-editkeys`: Indent `composer-indent`, Outdent `composer-outdent`) is
+#                   on the screen above the keyboard's "return" key; with the keyboard lowered it is gone
+#   Indent          a tap on Indent puts a tab at the caret and the keyboard stays up (the typing after it goes on in the box)
+#   Enter           the keyboard's return key on an indented line starts the new line with the same indent (ChipDocInput's enterChange); on a list item it puts the
+#                   next marker ("- ")
+#   Outdent         a tap on Outdent takes the indent of the caret's line away
+# ASSERTED: the row visible / not visible; the message the server holds after Send, exactly "a:", "\tone", "\ttwo", "- three", "- four" on five lines (`_ux-c1-sent.js`; the
+# composer trims the message, so its first line has no indent). The screenshots show the box before Send.
+appId: ${APP_ID}
+---
+- runFlow: _open-app.yaml
+- runFlow: _forget-servers.yaml
+- runScript:
+    file: _ctl.js
+    env:
+      METHOD: POST
+      ROUTE: /chat?name=Edit-chat
+- evalScript: ${output.chat = output.ctl.id}
+- runFlow: _add-server.yaml
+- extendedWaitUntil:
+    visible: "Edit-chat"
+    timeout: 90000
+- tapOn: "Edit-chat"
+- extendedWaitUntil:
+    visible:
+      id: "composer-input"
+    timeout: 60000
+- waitForAnimationToEnd
+# ---- the keyboard down: no key row
+- runFlow: _ux-c1-lower.yaml
+- assertNotVisible:
+    id: "composer-editkeys"
+# ---- a tap on the box: the keyboard is up and the key row stands above it
+- tapOn:
+    id: "composer-input"
+- extendedWaitUntil:
+    visible: "(?i)return"
+    timeout: 30000
+- waitForAnimationToEnd
+- assertVisible:
+    id: "composer-editkeys"
+    above: "(?i)return"
+- assertVisible:
+    id: "composer-indent"
+- assertVisible:
+    id: "composer-outdent"
+- takeScreenshot: edit-01-row
+# ---- "a:", Enter, Indent, "one", Enter (keeps the tab), "two", Enter, Outdent, "- three", Enter (the next "- "), "four"
+- inputText: "a:"
+- pressKey: Enter
+- tapOn:
+    id: "composer-indent"
+- inputText: "one"
+- pressKey: Enter
+- inputText: "two"
+- pressKey: Enter
+- tapOn:
+    id: "composer-outdent"
+- inputText: "- three"
+- pressKey: Enter
+- inputText: "four"
+- waitForAnimationToEnd
+- assertVisible: "(?i)return"
+- takeScreenshot: edit-02-typed
+- runScript:
+    file: _ux-c1-sent.js
+    env:
+      CHAT: ${output.chat}
+      N: "0"
+- tapOn:
+    id: "send"
+- extendedWaitUntil:
+    visible: "FAKE.*a:.*"
+    timeout: 90000
+- runScript:
+    file: _ux-c1-sent.js
+    env:
+      CHAT: ${output.chat}
+      N: "1"
+      LINES: "a:|\tone|\ttwo|- three|- four"
+- takeScreenshot: edit-03-sent
+# ---- the keyboard lowered: the row is gone (a tap on the thread's empty part above the messages: _ux-c1-lower's point is on the sent message here)
+- tapOn:
+    point: "50%,20%"
+- extendedWaitUntil:
+    notVisible: "(?i)return"
+    timeout: 10000
+- waitForAnimationToEnd
+- assertNotVisible:
+    id: "composer-editkeys"
+- takeScreenshot: edit-04-lowered

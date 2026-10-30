@@ -10,7 +10,7 @@
 //            pulsing dot) and one with a status no client knows (its word): each says so in its row, and the other rows of the list still draw
 //   drawer   its place (beside the page at most 700 points and 58 % of the window; on the phone the pushed screen, whose back closes it),
 //            the crumb of a nested subagent and the way back through it, "‹ n/N ›" through the tree in order and wrapping, ×, Esc (the composer's
-//            Esc does not stop the chat; with the composer's @ list open the list takes the first Esc and the drawer the next, B-SA-16;
+//            Esc does not stop the chat: with the drawer open it takes the first Esc and the composer the next, B-SA-16;
 //            a keyboard, so not the phone, whose drawer is a screen with the back), the prompt cut over 8 lines with Show all and Show less, the thread and the Report, "Loading…" while
 //            the thread is fetched and "Starting…" for one with no item yet, a permission card asked by the subagent answered from the drawer,
 //            the drawer closed with the chat (another chat opens)
@@ -234,8 +234,8 @@ await check("L19 subagents: the rows in the thread, the drawer, its thread and r
     note("the drawer: its place, the crumb and the way back, ‹ n/N › in tree order and wrapping, ×, Esc without stopping the chat, closed with its chat");
   }
 
-  // ---- Esc closes the innermost layer first (B-SA-16): the @ list of the composer, then the drawer; the composer's Esc stops the chat only when
-  //      nothing is open. A board chat at work (its composer has the @ list and an Esc that stops it). On the phone the drawer is a screen
+  // ---- Esc closes the innermost layer first (B-SA-16): the drawer, with the focus in the composer's box; the composer's Esc stops the chat only
+  //      when nothing is open. A board chat at work (its composer has an Esc that stops it). On the phone the drawer is a screen
   //      with the back and no composer on it, and there is no Esc: none of this applies there.
   if (!phone) {
     const subs = [sub("e1", "c1", "Read the board", { status: "running", started: 1000, ended: undefined })];
@@ -244,27 +244,24 @@ await check("L19 subagents: the rows in the thread, the drawer, its thread and r
     const { page, ctx } = await open({ sel: { board: "b_arch", chat: "c_bsubs" }, wait: tidSel("sub-row") });
     const calls = callsOf(page), name = "Esc closes the innermost layer";
     const stops = () => calls.filter((c) => c.method === "POST" && /\/interrupt/.test(c.path)).length;
-    const box = byTid(page, "composer-input").first(), pop = byTid(page, "mention-pop");
+    const box = byTid(page, "composer-input").first();
     try {
       await press(page, rowOf(page, "e1"), LEFT);
       if (!await at(page, "e1")) throw new Error("the drawer did not open");
       await box.focus();
-      await page.keyboard.type("@");
-      if (!await until(() => pop.count(), WAIT)) throw new Error('"@" in the board chat opened no list');
+      await page.keyboard.type("hi");
+      if (!await until(async () => (await box.textContent()) === "hi", WAIT)) throw new Error(`the box holds ${J(await box.textContent())}, not the text typed`);
       await page.keyboard.press("Escape");
-      if (!await until(async () => !await pop.count(), WAIT)) fail(`${viewport}: Esc left the @ list open`);
-      if (!await drawerOf(page)) fail(`${viewport}: the Esc that was for the @ list also closed the drawer`);
-      if ((await box.textContent()) !== "@") fail(`${viewport}: Esc on the list changed the draft to ${J(await box.textContent())}`);
-      await page.keyboard.press("Escape");
-      if (!await shut(page)) fail(`${viewport}: the second Esc did not close the drawer`);
+      if (!await shut(page)) fail(`${viewport}: Esc with the focus in the box did not close the drawer`);
+      if ((await box.textContent()) !== "hi") fail(`${viewport}: the Esc that closed the drawer changed the draft to ${J(await box.textContent())}`);
       await frame(page);
-      if (stops()) fail(`${viewport}: an Esc that closed the list or the drawer stopped the chat`);
+      if (stops()) fail(`${viewport}: an Esc that closed the drawer stopped the chat`);
       // nothing is open now: the composer's Esc stops the chat at work (L16's, kept)
       await page.keyboard.press("Escape");
       if (!await until(() => stops(), WAIT)) fail(`${viewport}: Esc in the box of a busy chat with nothing open stopped nothing`);
     } catch (e) { fail(`${viewport}: ${name}: ${e.message.split("\n")[0]}`); }
     await ctx.close();
-    note("Esc: the @ list first (the draft stays, the drawer stays), the drawer next, neither stops the chat; with nothing open the composer's Esc stops it");
+    note("Esc: the drawer first (the draft stays), which does not stop the chat; with nothing open the composer's Esc stops it");
   }
 
   // ---- the prompt, the thread, the report, the rows that are not as a finished one

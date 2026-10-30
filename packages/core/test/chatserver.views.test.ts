@@ -63,7 +63,7 @@ test("a chat its server no longer has: the gone sentence stands for Send, the bo
   assert.equal(sendTitleOn(THERE, ["pi"], c, false, true), gone);
   assert.equal(sendTitleOn(THERE, ["pi"], c, true, true), gone, "before what else blocks it");
   assert.equal(sendTitleOn(DOWN, [], c, false, true), gone, "and before the server that is not connected");
-  assert.equal(sendTitleOn(THERE, ["pi"], c, false, false), "Send (Enter)");
+  assert.equal(sendTitleOn(THERE, ["pi"], c, false, false), "Send");
   assert.equal(offPlaceholder(THERE, ["pi"], c, true), gone);
   assert.equal(offPlaceholder(DOWN, [], c, true), gone);
   assert.equal(offWhy(THERE, true), gone);

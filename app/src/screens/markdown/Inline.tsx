@@ -1,10 +1,11 @@
 // A block's inline content (AD-75): nested Text for emphasis, code, links and mentions; a chip where a reference tag stood.
 // What is drawn is doc.ts's; the text of every leaf is what displayed.ts counts quotes in.
 import { useContext, type ReactNode } from "react";
-import { Pressable, Text as RNText, View, type TextStyle } from "react-native";
+import { Platform, Pressable, Text as RNText, View, type TextStyle } from "react-native";
 
 import { chipTitle } from "../../platform/chipinput/chipvalue.ts";
 import { linkProps } from "../../platform/openlink";
+import { useEditingSettings } from "../../state/editing.ts";
 import { MONO } from "../../ui/fonts.ts";
 import { useTokens } from "../../ui/theme.tsx";
 import { webStyle } from "../../ui/webstyle.ts";
@@ -13,6 +14,7 @@ import { LOCAL_SERVER } from "@aiwb/core/types.ts";
 
 import type { Inline } from "./doc.ts";
 import { useMarkdownEnv, WhereContext } from "./env.tsx";
+import { expandIndent } from "./indent.ts";
 import { LinkText } from "./LinkSheet.tsx";
 import { linkText } from "./linksheet.ts";
 import { alpha } from "./look.ts";
@@ -22,15 +24,23 @@ const noBoards = () => ({});
 
 /** The inline nodes as React nodes, for the inside of a Text. */
 export function Inlines({ kids }: { kids: Inline[] }) {
-  // (a line break in the source is a space, as in the page; white space runs collapse)
-  return <>{kids.map((n, i) => (n.k === "text" ? n.v.replace(/[ \t\r\n]+/g, " ") : n.k === "br" ? "\n" : <InlineNode key={i} n={n} />))}</>;
+  // (a line break in the source is a space, as in the page; white space runs collapse, but for a line's indent in a user's message)
+  return <>{kids.map((n, i) => (n.k === "text" ? n.v.replace(/[ \t\r\n]+/g, " ") : n.k === "br" ? "\n" : n.k === "indent" ? <Indent key={i} v={n.v} /> : <InlineNode key={i} n={n} />))}</>;
+}
+
+/** A line's indent in a user's message, as typed: a tab is the composer's tab width (`tabWidth`). The page keeps the white space and sets
+ *  the tab's width; native, where a tab's width cannot be set, draws the tabs as spaces (the displayed text keeps the tabs). */
+function Indent({ v }: { v: string }) {
+  const { tabWidth } = useEditingSettings();
+  if (Platform.OS === "web") return <RNText testID="md-indent" style={webStyle({ whiteSpace: "pre", tabSize: tabWidth }) as TextStyle | undefined}>{v}</RNText>;
+  return <RNText testID="md-indent">{expandIndent(v, tabWidth)}</RNText>;
 }
 
 function InlineNode({ n }: { n: Inline }): ReactNode {
   const t = useTokens();
   const look = useLook();
   switch (n.k) {
-    case "text": case "br": return null; // (Inlines draws them)
+    case "text": case "br": case "indent": return null; // (Inlines draws them)
     case "em": return <RNText style={{ fontStyle: "italic" }}><Inlines kids={n.kids} /></RNText>;
     case "strong": return <RNText style={{ fontWeight: "600" }}><Inlines kids={n.kids} /></RNText>;
     case "del": return <RNText style={{ color: t.muted, textDecorationLine: "line-through" }}><Inlines kids={n.kids} /></RNText>;

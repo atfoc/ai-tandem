@@ -90,7 +90,7 @@ test("the agent choice offers the usable agents alone; one the server lacks is m
 
 test("a chat with no agent shows the reason, and its Send is blocked with the reason as its title", () => {
   // the composer reads all of it from here
-  assert.ok(composerTsx.includes("sendTitleFor(sendTitleOn(where, usable, c, blocked, left), enters)} disabled={blocked || off || left || sending ||"));
+  assert.ok(composerTsx.includes("sendTitleFor(sendTitleOn(where, usable, c, blocked, left), names.send)} disabled={blocked || off || left || sending ||"));
   assert.ok(composerTsx.includes("const placeholder = offPlaceholder(where, usable, c, left) || (c.board"));
   assert.ok(choices.includes("if (!line.text) return null;") && choices.includes('tid("agent-reason"'), "the line is under the toolbar");
   assert.ok(/<ChipName missing>No agent<\/ChipName>/.test(choices) && /: "No agent"/.test(choices), "the chip says No agent");
@@ -228,7 +228,7 @@ test("offWhy: why a chat takes no call, which every control of its view that is 
 test("a chat its server no longer has takes no Send and no change, and the Send, the box and the toolbar's line say so", () => {
   // the page knows it by the chat's key (store.gone), not by a field of the chat
   assert.ok(composerTsx.includes("const left = useStore((s) => !!s.gone[chatId]); // its server no longer has the chat"));
-  assert.ok(composerTsx.includes("sendTitleFor(sendTitleOn(where, usable, c, blocked, left), enters)} disabled={blocked || off || left || sending ||"));
+  assert.ok(composerTsx.includes("sendTitleFor(sendTitleOn(where, usable, c, blocked, left), names.send)} disabled={blocked || off || left || sending ||"));
   assert.ok(choices.includes("const gone = useStore((s) => !!s.gone[c.id]);") && choices.includes("const line = toolbarLine(w, usable, c, gone);"));
   assert.ok(!composer.includes("sendGone") && !core("logic/chatserver.ts").includes("sendGone"));
 });
@@ -305,10 +305,10 @@ test("a server that is not connected, or that no longer has the chat: paste of a
 
 test("a Send that fails, or whose arrival is not known, keeps the images with the text: in the composer and as the draft", async () => {
   // what the composer does with them
-  assert.ok(composerTsx.includes("const p = picked, qs = quotes, im = images;"));
+  assert.ok(composerTsx.includes("const qs = quotes, im = images;"));
   assert.ok(composerTsx.includes("const back = withoutImages(im, lost.map((x) => x.id));"));
   assert.ok(composerTsx.includes("setImages((now) => withImages(back, now)); // and the images, before the ones added meanwhile"));
-  assert.ok(composerTsx.includes("if (gone.current && !sendFailed(chatId, branch, { text: t, mentions: p, references: qs, images: back }, e)) drafts.current!.change(t, p, qs, back);"));
+  assert.ok(composerTsx.includes("if (gone.current && !sendFailed(chatId, branch, { text: t, references: qs, images: back }, e)) drafts.current!.change(t, qs, back);"));
 });
 
 test("a Send refused because the chat's server no longer holds an image: that image stays out, the others go back, and the line says what to add again", async () => {
@@ -348,7 +348,7 @@ test("the composer's Send: enabled with images alone, held by imagesHold, and th
   assert.ok(composerTsx.includes("if (imagesHold(images, slotOf(chatId, branch).uploads.length > 0, noImages)) return;"));
   assert.ok(composerTsx.includes("const imagesHeld = imagesHold(images, up.uploads.length > 0, noImages);"));
   assert.ok(composerTsx.includes("imagesHeld && !blocked && !off && !left ? <SendButton title={imagesHeld} disabled />"));
-  assert.ok(composerTsx.includes("await sendMessage(chatId, t, p, toSend(qs), im);"));
+  assert.ok(composerTsx.includes("await sendMessage(chatId, t, toSend(qs), im);"));
   assert.ok(file("screens/composer/send.ts").includes("api.send(chat, branch, text, context, references, target, images)"), "the images go out with the message by the one api.send");
   // a refused Send that names images the chat no longer holds: those stay out, and the line says what to add again
   assert.ok(composerTsx.includes("const lost = e instanceof ApiError && e.images?.length ? im.filter((x) => e.images!.includes(x.id)) : [];"));
@@ -372,7 +372,7 @@ test("the composer shows the text it holds when its box appears, takes a save's 
   const at = (t: string) => { const i = composerTsx.indexOf(t); assert.ok(i >= 0, t); return i; };
   const ended = at("const removed = answered?.(refused) ?? false;\n      answered = null;\n      if (putsBack(removed)) {");
   const closed = at("      }\n      // The chat is read again when its state here is stale");
-  for (const t of ["setQuotes((now) => mergeQuotes(qs, now));", "setImages((now) => withImages(back, now));", "if (!current.current.trim()) input.current?.set(t);", "!current.current.trim()) setBox(t);", "drafts.current!.change(t, p, qs, back);"]) {
+  for (const t of ["setQuotes((now) => mergeQuotes(qs, now));", "setImages((now) => withImages(back, now));", "if (!current.current.trim()) input.current?.set(t);", "!current.current.trim()) setBox(t);", "drafts.current!.change(t, qs, back);"]) {
     assert.ok(at(t) > ended && at(t) < closed && composerTsx.indexOf(t, at(t) + 1) < 0, t);
   }
   // D4: a composer that went away is known as gone: its failed Send goes to the saver, not to a box
@@ -383,11 +383,11 @@ test("the composer shows the text it holds when its box appears, takes a save's 
 test("the composer sets a text also when it draws no box (an archived chat), puts a refused Send's text back so, and tells its saver of a refusal", () => {
   // a draft from the server, and what a move sets: with no box the text is what the composer holds all the same
   assert.ok(composerTsx.includes("    if (input.current) input.current.set(t);\n    else { current.current = t; setText(t); }"));
-  assert.ok(composerTsx.includes("      setBox(d.text);\n      setPicked(d.mentions ?? []);"));
+  assert.ok(composerTsx.includes("      setBox(d.text);\n      setQuotes(d.references ?? []);"));
   assert.ok(composerTsx.includes("if (h.text !== current.current) { setBox(h.text); input.current?.focus(true); }"));
   // a Send refused while the chat was archived: the composer is still there, without a box
   assert.ok(composerTsx.includes("if (!gone.current && !input.current && !current.current.trim()) setBox(t);"));
-  assert.ok(composerTsx.includes("if (gone.current && !sendFailed(chatId, branch, { text: t, mentions: p, references: qs, images: back }, e)) drafts.current!.change(t, p, qs, back);"));
+  assert.ok(composerTsx.includes("if (gone.current && !sendFailed(chatId, branch, { text: t, references: qs, images: back }, e)) drafts.current!.change(t, qs, back);"));
   // the first message of a chat on another server is a Send as any other: nothing is held for it, and a refusal is told
   assert.ok(composerTsx.includes("drafts.current!.sending();") && !composerTsx.includes("drafts.current!.kept()"));
   assert.ok(composerTsx.includes("refused = e instanceof ApiError && sentNothing(e.status, e.code);"));

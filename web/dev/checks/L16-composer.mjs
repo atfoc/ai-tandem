@@ -1,15 +1,16 @@
 // L16 (new; package K3): the composer's behaviours that no old check proved (the inventory's `none` rows of area C and the rows only a test of
 // the whole box reaches), on the real composer of the new build at the three viewports.
-//   C-TX-01  the box's placeholder: "Ask Claude Code…" in a plain chat, "Ask or tell… (@ to mention a board)" in a board chat; it goes with the first text
-//   C-TX-03/04  Enter sends and Shift+Enter is a line break (the box's text has "\n" for it); the message that goes is the text as typed
-//   C-TX-05/06/07  Send is off with a blank box (white space too), on with text; the text is trimmed; at Send the box is empty and the draft with it
+//   C-TX-01  the box's placeholder: "Ask Claude Code…" in a plain chat, "Ask or tell…" in a board chat; it goes with the first text
+//   C-TX-03/04  Enter and Shift+Enter are line breaks (the box's text has "\n" for each) and send nothing; ⌘Enter / Ctrl+Enter send (ControlOrMeta+Enter),
+//            at every viewport; each new line keeps the indent of the line before (the box's code-editor editing, ED1); the message that
+//            goes is the text as typed; a draft of quotes alone (no text) goes by the key too
+//   C-TX-05/06/07  Send is off with a blank box (white space too), on with text; the text sent loses its leading blank lines and its trailing white
+//                  space, not the first line's indent (deviation: the old page trimmed it; code-editor editing keeps indents); at Send the box is empty and the draft with it
 //   C-TX-08  a Send that is refused puts its text back into the empty box and says why under the composer (C-RO-09); `cap` does not read the chat again (C-CH-06)
-//   C-TX-10/15/16  a busy chat: Send off and says "The agent is working", Enter sends nothing and typing goes on; Stop stops it, and so does Esc
+//   C-TX-10/15/16  a busy chat: Send off and says "The agent is working", ⌘/Ctrl+Enter sends nothing and typing goes on; Stop stops it, and so does Esc
 //   C-TX-19  the box has room for three lines at least (the phone: one line, growing to six), grows with its text and then scrolls inside
 //   C-TX-20, C-NC-12  the box has the focus a moment after a chat is opened and after a new chat is made (the desktop's: a keyboard)
-//   C-MN-01/02/03/04/06  "@" in a board chat opens the list of the other boards of its server (six at most), by what follows; "a@b" opens none; a plain chat
-//            has none; the arrows move the highlight, Enter and Tab pick, Esc closes and leaves the text, a press on an option picks it and the box keeps the
-//            focus; a pick makes "@Name " and the context row shows the mentioned board; the same name again replaces the pick
+//   C-MN-06  a board chat's context row has its own board's chip, with its tooltip; an "@name" typed is text and adds nothing to the row
 //   C-CH-12/14  the model and effort menu searches ("Search models"), ↑ ↓ and Tab / Shift+Tab draft, Enter applies, Esc applies nothing; the effort
 //            follows the model (the menu of plans/model-effort-menu/design.md: the popover at the wide layouts, the sheet at the phone)
 //   C-RO-07/08  an archived chat draws no box but its bar ("Archived — unarchive to continue", Unarchive), and a chat of the old board connection its own bar
@@ -17,9 +18,8 @@
 //   (sweep, rn-sw-webtest) the folder of a chat that has not started, changed from elsewhere, is the composer's at once (web/test/sectionviews.test.ts)
 // Keys are the desktop's (a hardware keyboard on a tablet has them too: the tablet runs them, the phone the parts a finger does).
 // At the phone (ux-improvements C1) the composer is the phone's: the empty box shows Talk (`composer-talk`) and no Send, Send comes with text, Stop
-// while the agent works (Send beside it once something is typed); Enter is a line break and Ctrl+Enter sends; the controls have no `title`, so their
-// words are read from `aria-label`; the @ list is the dock above the composer (`mention-dock`, four rows at most, names without "@"); the context row's
-// chips are `ctx-chip` with `data-kind` (board: "Open the board <name>"; ref: the name and a "Remove <name> from the message" ×).
+// while the agent works (Send beside it once something is typed); the controls have no `title`, so their
+// words are read from `aria-label`; the context row's chips are `ctx-chip` with `data-kind` (board: "Open the board <name>").
 import { atRest, callMatcher, callsOf, check, mockEval, seed, until } from "../shot.mjs";
 import { MENU as MENU_SEL, chip, closeChoice, frame, menuOf, openAt, openChoice, openModelMenu, openState, phoneChip, placesOf } from "./composer.mjs";
 import { byTid, openChat, press, tidSel } from "./sel.mjs";
@@ -29,7 +29,7 @@ export const viewports = ["desktop", "tablet", "phone"];
 const J = JSON.stringify;
 const POST = /\/chats\/(\w+)\/messages(\?|$)/;
 
-await check("L16 the composer: Enter, trim, refusals, growth, focus, the @ list, the model's search, the bars", async ({ url, viewport, layout, open, fail, note }) => {
+await check("L16 the composer: Enter, trim, refusals, growth, focus, the context row, the model's search, the bars", async ({ url, viewport, layout, open, fail, note }) => {
   const keys = viewport !== "phone"; // (a hardware keyboard: the desktop's, and a tablet's)
   const phone = !keys;
   let states = await seed(url, "A2");
@@ -46,13 +46,12 @@ await check("L16 the composer: Enter, trim, refusals, growth, focus, the @ list,
   const talking = async (page) => (await talk(page).isVisible()) && !await byTid(page, "send").count();
   /** Send is "off": at the wide layouts a disabled button, at the phone no Send at all while the box is blank (Talk is there). */
   const sendOff = async (page) => phone ? await talking(page) : await send(page).isDisabled();
-  const popOf = (page) => byTid(page, phone ? "mention-dock" : "mention-pop");
   const posts = (calls, from = 0) => calls.slice(from).filter((c) => c.method === "POST" && POST.test(c.path));
   /** The phone's folder path as the user reads it: its text without the embedding marks that keep its characters in order. */
   const pathText = async (page) => ((await byTid(page, "dir-path").first().textContent()) ?? "").replace(/[\u202A-\u202E]/g, "");
   const type = async (page, s) => { await press(page, box(page)); await page.keyboard.type(s); };
 
-  // ---- the box: placeholder, Enter, Shift+Enter, trim, Send's state, the draft
+  // ---- the box: placeholder, Enter, Shift+Enter, ⌘/Ctrl+Enter, trim, Send's state, the draft
   {
     const { page, ctx } = await fresh("plain-new");
     const calls = callsOf(page);
@@ -68,47 +67,54 @@ await check("L16 the composer: Enter, trim, refusals, growth, focus, the @ list,
     if (await send(page).isDisabled()) fail("Send is off with text in the box");
     if (keys) {
       await page.keyboard.press("Shift+Enter");
-      await page.keyboard.type("second line  ");
-      if (!(await text(page)).includes("\n") && !/first line\s*second line/.test(await text(page))) fail(`Shift+Enter made no line break: ${J(await text(page))}`);
-      if (posts(calls).length) fail("Shift+Enter sent the message");
-      const from = calls.length;
-      await page.keyboard.press("Enter");
-      const sent = await until(() => posts(calls, from)[0], 10000);
-      if (!sent) fail("Enter did not send the message");
-      else if (sent.body?.text !== "first line\nsecond line") fail(`the message sent is ${J(sent.body?.text)}, not "first line\\nsecond line" (trimmed, a line break as "\\n")`);
-    } else {
-      // (the phone: Enter is a line break and sends nothing, Send is the button; Ctrl+Enter sends too, below)
-      await page.keyboard.press("Enter");
-      await page.keyboard.type("second line  ");
-      await page.waitForTimeout(300);
-      if (posts(calls).length) fail("Enter sent the message at the phone: it is a line break there");
-      if (!/first line\s*\n\s*second line/.test(await text(page))) fail(`Enter made no line break at the phone: ${J(await text(page))}`);
-      const from = calls.length;
-      await press(page, send(page));
-      const sent = await until(() => posts(calls, from)[0], 10000);
-      if (!sent) fail("a press on Send did not send the message");
-      else if (sent.body?.text !== "first line\nsecond line") fail(`the message sent is ${J(sent.body?.text)}, not "first line\nsecond line" (trimmed, a line break as "\n")`);
+      await page.keyboard.type("second line");
+      if (!/first line\s*\n\s*second line/.test(await text(page))) fail(`Shift+Enter made no line break: ${J(await text(page))}`);
     }
+    await page.keyboard.press("Enter");
+    await page.keyboard.type(keys ? "third line  " : "second line  ");
+    await page.waitForTimeout(300);
+    if (posts(calls).length) fail(`${keys ? "Shift+Enter or " : ""}Enter sent the message: both are line breaks`);
+    const want = keys ? "  first line\n  second line\n  third line" : "  first line\n  second line"; // (each new line keeps the indent of the first: ED1; the first line's indent is sent)
+    if (!/line\s*\n\s*(second|third) line\s*$/.test(await text(page))) fail(`Enter made no line break: ${J(await text(page))}`);
+    const from = calls.length;
+    if (keys) await page.keyboard.press("ControlOrMeta+Enter"); else await press(page, send(page)); // (the phone: the button; the key below)
+    const sent = await until(() => posts(calls, from)[0], 10000);
+    if (!sent) fail(keys ? "⌘/Ctrl+Enter did not send the message" : "a press on Send did not send the message");
+    else if (sent.body?.text !== want) fail(`the message sent is ${J(sent.body?.text)}, not ${J(want)} (the end trimmed, the first line's indent kept, a line break as "\n")`);
     if (!await until(async () => (await text(page)) === "", 5000)) fail(`after Send the box holds ${J(await text(page))}`);
     if (!await until(() => sendOff(page), 5000)) fail(phone ? "after Send, with the box empty, the primary is not Talk" : "after Send, with the box empty, Send is on");
     await ctx.close();
   }
-  if (phone) { // Ctrl+Enter sends at the phone (a keyboard on it), Enter does not; the box is empty after it
+  if (phone) { // ⌘/Ctrl+Enter sends at the phone too (a keyboard on it); the box is empty after it
     const { page, ctx } = await fresh("plain-new");
     const calls = callsOf(page);
     await type(page, "by the keys");
     const from = calls.length;
-    await page.keyboard.press("Control+Enter");
+    await page.keyboard.press("ControlOrMeta+Enter");
     const sent = await until(() => posts(calls, from)[0], 10000);
     if (!sent) fail("Ctrl+Enter did not send the message at the phone");
     else if (sent.body?.text !== "by the keys") fail(`Ctrl+Enter sent ${J(sent.body?.text)}, not "by the keys"`);
     if (!await until(async () => (await text(page)) === "", 5000)) fail(`after Ctrl+Enter the box holds ${J(await text(page))}`);
     await ctx.close();
   }
+  { // a draft of quotes alone (no text): ⌘/Ctrl+Enter sends it, at every viewport
+    const { page, ctx } = await fresh("plain-quotes");
+    const calls = callsOf(page);
+    const refs = (await mockEval(`return chats.c_A2_quotes.draft?.references ?? [];`, url)).length;
+    if (!refs) fail("the state plain-quotes has no quotes in its draft");
+    await press(page, box(page));
+    if ((await text(page)).trim()) fail(`the box of a draft of quotes alone holds ${J(await text(page))}`);
+    const from = calls.length;
+    await page.keyboard.press("ControlOrMeta+Enter");
+    const sent = await until(() => posts(calls, from)[0], 10000);
+    if (!sent) fail("⌘/Ctrl+Enter did not send a message of quotes alone");
+    else if (sent.body?.text !== "" || sent.body?.references?.length !== refs) fail(`the message of quotes alone went out as ${J(sent.body).slice(0, 300)}, not with no text and its ${refs} quotes`);
+    await ctx.close();
+  }
   { // a board chat's placeholder
     const { page, ctx } = await fresh("board-new");
     const t = await box(page).getAttribute("data-placeholder");
-    if (t !== "Ask or tell… (@ to mention a board)") fail(`a board chat's box says "${t}"`);
+    if (t !== "Ask or tell…") fail(`a board chat's box says "${t}"`);
     await ctx.close();
   }
 
@@ -218,7 +224,7 @@ await check("L16 the composer: Enter, trim, refusals, growth, focus, the @ list,
     await ctx.close();
   }
 
-  // ---- a busy chat: Send is off with its reason, Enter sends nothing and typing goes on; Stop and Esc stop it
+  // ---- a busy chat: Send is off with its reason, ⌘/Ctrl+Enter sends nothing and typing goes on; Stop and Esc stop it
   {
     const { page, ctx } = await fresh("plain-busy");
     const calls = callsOf(page);
@@ -227,7 +233,7 @@ await check("L16 the composer: Enter, trim, refusals, growth, focus, the @ list,
     await type(page, "while it works");
     if ((await text(page)) !== "while it works") fail(`typing in a busy chat gave ${J(await text(page))}`);
     if (!await send(page).isDisabled() || await says(send(page)) !== "The agent is working") fail(`Send of a busy chat is ${await send(page).isDisabled() ? "off" : "on"} and says "${await says(send(page))}"`);
-    if (keys) { await page.keyboard.press("Enter"); await page.waitForTimeout(300); if (posts(calls).length) fail("Enter sent a message to a busy chat"); }
+    if (keys) { await page.keyboard.press("ControlOrMeta+Enter"); await page.waitForTimeout(300); if (posts(calls).length) fail("⌘/Ctrl+Enter sent a message to a busy chat"); }
     const stop = byTid(page, "stop").first();
     const stopSays = phone ? "Stop" : "Stop (Esc)"; // (no keyboard hint at the phone)
     if (await says(stop) !== stopSays) fail(`Stop says "${await says(stop)}", not "${stopSays}"`);
@@ -271,8 +277,8 @@ await check("L16 the composer: Enter, trim, refusals, growth, focus, the @ list,
     if (t !== holder) fail(`${id}: the box says ${J(t)}, not ${J(holder)}`);
     await type(page, "no one to hear it");
     if (!await send(page).isDisabled() || await says(send(page)) !== why) fail(`${id}: Send is ${await send(page).isDisabled() ? "off" : "on"} and says ${J(await says(send(page)))}, not off with ${J(why)}`);
-    if (keys) { await page.keyboard.press("Enter"); await page.waitForTimeout(300); }
-    if (posts(calls).length) fail(`${id}: Enter sent a message to a chat with no agent`);
+    if (keys) { await page.keyboard.press("ControlOrMeta+Enter"); await page.waitForTimeout(300); }
+    if (posts(calls).length) fail(`${id}: ⌘/Ctrl+Enter sent a message to a chat with no agent`);
     if (await byTid(page, "empty-reason").count() !== 1 || (await byTid(page, "empty-reason").first().textContent()) !== why) fail(`${id}: the empty thread says ${J(await byTid(page, "empty-reason").allTextContents())}, not ${J(why)}`);
     if (await byTid(page, "suggestion").count()) fail(`${id}: the empty thread of a chat with no agent offers a suggestion to send`);
     await ctx.close();
@@ -309,75 +315,18 @@ await check("L16 the composer: Enter, trim, refusals, growth, focus, the @ list,
     await home.ctx.close(); // (the mock's host face has one stream: a page left open takes it from the next one every time the browser retries)
   }
 
-  // ---- the @ list of a board chat
+  // ---- a board chat's context row: its own board's chip; "@" is text like any other and nothing else is named
   {
     const { page, ctx } = await fresh("board-new");
-    const pop = () => popOf(page);
-    const items = () => byTid(page, "mention-item").allTextContents();
-    await press(page, box(page));
-    await page.keyboard.type("@");
-    if (!await until(() => pop().count(), 5000)) fail('"@" in a board chat opened no list of boards');
-    const all = await items();
-    if (!all.length || all.length > (phone ? 4 : 6) || (!phone && all.some((x) => !x.startsWith("@")))) fail(`the list of boards is ${J(all)}: ${phone ? "board names (the dock shows no \"@\"), four rows at most" : 'boards named with "@", six at most'}`);
-    if (all.some((x) => /pipeline/.test(x))) note("(the chat's own board is in its list: a board may be named in its own chat)");
-    await page.keyboard.type("sk");
-    const narrowed = await until(async () => { const i = await items(); return i.length && i.every((x) => /sk/i.test(x)) ? i : null; }, 5000);
-    if (!narrowed) fail(`"@sk" lists ${J(await items())}: boards whose name contains "sk"`);
-    if (keys) {
-      const hi = () => byTid(page, "mention-item").evaluateAll((els) => els.findIndex((e) => e.getAttribute("aria-selected") === "true"));
-      if (await hi() !== 0) fail(`the first board is not highlighted: ${await hi()}`);
-      await page.keyboard.press("Escape");
-      if (await pop().count() || (await text(page)) !== "@sk") fail(`Esc left the list ${await pop().count() ? "open" : "closed"} and the text ${J(await text(page))}`);
-      await page.keyboard.press("Backspace");
-      await page.keyboard.type("k");
-      if (!await until(() => pop().count(), 5000)) fail("the list did not open again with a typed character");
-      await page.keyboard.press("Enter");
-      if (!await until(async () => (await text(page)).startsWith("@") && (await text(page)).endsWith(" ") && !await pop().count(), 5000)) fail(`Enter picked nothing: the box holds ${J(await text(page))}`);
-    } else {
-      await press(page, byTid(page, "mention-item").first());
-      if (!await until(async () => (await text(page)).endsWith(" ") && !await pop().count(), 5000)) fail(`a press on an option picked nothing: the box holds ${J(await text(page))}`);
-    }
-    const picked = (await text(page)).trim();
-    if (!/^@\S+$/.test(picked)) fail(`the pick made ${J(picked)}, not "@Name "`);
-    // the context row names the board that was mentioned (at the phone the ref chip is the name and its ×, "Remove <name> from the message")
-    const refs = phone ? byTid(page, "ctx-chip", { kind: "ref" }) : byTid(page, "ctx-chip", { ref: true });
-    if (!await until(async () => (await refs.allTextContents()).some((x) => x.trim() === (phone ? picked.slice(1) : picked)), 5000)) fail(`the context row has no chip for ${picked}: ${J(await byTid(page, "ctx-chip").allTextContents())}`);
-    if (phone) {
-      if (await refs.first().locator(tidSel("ctx-chip-remove")).getAttribute("aria-label").then((t) => t !== `Remove ${picked.slice(1)} from the message`).catch(() => true)) fail(`the × of the chip of a mentioned board says ${J(await refs.first().locator(tidSel("ctx-chip-remove")).getAttribute("aria-label").catch(() => null))}, not "Remove ${picked.slice(1)} from the message"`);
-    } else if (await refs.first().getAttribute("title").then((t) => !/^Referenced board/.test(t ?? "")).catch(() => true)) fail("the chip of a mentioned board has no tooltip \"Referenced board\"");
     // the chat's own board is a chip of the context row, with its tooltip (C-MN-06); at the phone its words are "Open the board <name>"
-    const own = phone ? byTid(page, "ctx-chip", { kind: "board" }).first() : byTid(page, "ctx-chip").and(page.locator(":not([data-ref])")).first();
+    const own = phone ? byTid(page, "ctx-chip", { kind: "board" }).first() : byTid(page, "ctx-chip").first();
     const ownSays = phone ? "Open the board " : "Every message names this board to the agent";
-    if (!(await own.getAttribute("aria-label").catch(() => "") ?? "").startsWith(ownSays)) fail(`the chip of the chat's own board says ${J(await own.getAttribute("aria-label").catch(() => null))}, not "${ownSays} …"`);
-    // the same name again replaces the pick: one chip for it, not two (C-MN-04)
-    const chipsNow = () => refs.count();
-    const one = await chipsNow();
-    await page.keyboard.type("@sk");
-    if (!await until(() => pop().count(), 5000)) fail('"@sk" typed after a pick opened no list');
-    else {
-      if (keys) await page.keyboard.press("Enter"); else await press(page, byTid(page, "mention-item").first());
-      if (!await until(async () => (await text(page)).trim().split(/\s+/).length === 2 && !await pop().count(), 5000)) fail(`the same name picked again: the box holds ${J(await text(page))}`);
-      else if (await chipsNow() !== one) fail(`the same name picked again made ${await chipsNow()} chips for it, not ${one}`);
-      // (the chip is one board either way: what the pick adds to the draft's mentions, which the message carries, is told apart)
-      const mentions = () => mockEval(`return (chats.c_A2_board_new.draft?.mentions ?? []).length;`, url);
-      if (!await until(async () => (await mentions()) > 0, 10000) || !await until(async () => (await mentions()) === 1, 3000)) fail(`the same name picked again: the saved draft names ${await mentions()} mentions, not 1`);
-    }
-    // "a@b" opens none; white space after a name closes the list
-    await page.keyboard.press("ControlOrMeta+a"); await page.keyboard.press("Backspace");
-    await page.keyboard.type("a@b");
+    if (!await until(async () => (await own.getAttribute("aria-label").catch(() => "") ?? "").startsWith(ownSays), 5000)) fail(`the chip of the chat's own board says ${J(await own.getAttribute("aria-label").catch(() => null))}, not "${ownSays} …"`);
+    const chips = await byTid(page, "ctx-chip").count();
+    await type(page, "see @sketch ");
+    if (!await until(async () => (await text(page)) === "see @sketch ", 5000)) fail(`the box holds ${J(await text(page))}, not the text as typed`);
     await page.waitForTimeout(300);
-    if (await pop().count()) fail('"a@b" opened a list');
-    await page.keyboard.press("Backspace"); await page.keyboard.press("Backspace"); await page.keyboard.press("Backspace");
-    await page.keyboard.type("@s ");
-    await page.waitForTimeout(300);
-    if (await pop().count()) fail("white space after the name did not close the list");
-    await ctx.close();
-  }
-  { // a plain chat has no list
-    const { page, ctx } = await fresh("plain-new");
-    await type(page, "@");
-    await page.waitForTimeout(400);
-    if (await popOf(page).count()) fail('"@" in a plain chat opened a list');
+    if (await byTid(page, "ctx-chip").count() !== chips) fail(`an "@name" typed in a board chat changed the context row: ${J(await byTid(page, "ctx-chip").allTextContents())}`);
     await ctx.close();
   }
 
@@ -768,5 +717,5 @@ await check("L16 the composer: Enter, trim, refusals, growth, focus, the @ list,
     await ctx.close();
   }
   void frame; void placesOf;
-  note("the box: placeholder, Enter and Shift+Enter, trim, Send's state; a refused Send; a busy chat; growth; the focus; the @ list; the model's search; the bars; the note");
+  note("the box: placeholder, Enter and Shift+Enter (lines), ⌘/Ctrl+Enter (send, quotes alone too), trim, Send's state; a refused Send; a busy chat; growth; the focus; the context row; the model's search; the bars; the note");
 }, { viewports, page: false });

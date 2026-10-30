@@ -129,7 +129,7 @@ await check("SEC.7 a chat that is open when its server drops, and when it is bac
     await box.click({ force: true }).catch(() => {}); await page.keyboard.press("End"); await page.keyboard.type(" never");
     await page.keyboard.press("Backspace");
     await page.evaluate(() => document.execCommand("insertText", false, " pasted"));
-    await page.keyboard.press("Enter"); // (Send by the key: nothing is sent)
+    await page.keyboard.press("ControlOrMeta+Enter"); // (Send by the key: nothing is sent)
     await page.waitForTimeout(700); // (longer than a draft's save waits)
     if ((await box.textContent()) !== typed + more) fail(`${viewport}: the read-only box took what was typed during the outage: "${await box.textContent()}"`);
     if (calls.slice(was).some((c) => c.method !== "GET")) fail(`${viewport}: a call was made for a chat whose server is not connected: ${J(calls.slice(was).filter((c) => c.method !== "GET").map((c) => `${c.method} ${c.path}`))}`);

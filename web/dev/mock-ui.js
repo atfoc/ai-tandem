@@ -46,7 +46,7 @@
 //   A6  a chat with code (every kind of word the page colours in code is in it), a tool card and a permission card;
 //       a chat with two branches for the tree popup. The board and the Servers dialog are the mock's own and A1's
 //   UXC1 the phone's composer (package C1): plain chats (new, started, busy, a ring over 80 %), chats on the board "Pipeline" (new, started, with a draft of
-//       a mention and two quotes), five boards "R…" for the @ dock, a chat on the editable board b_ui for "Board selection"
+//       text and two quotes), a chat on the editable board b_ui for "Board selection"
 //   UXB2 Point at and Add selection on the phone (ux-improvements B2; UX.B2-pick reads it): the group "UXB2 pick" with the board b_UXB2 "Checkout flow"
 //       (its scene: the labelled rectangles uxb2_checkout "Checkout service", uxb2_payments "Payments", uxb2_inventory "Inventory", uxb2_orders "Orders DB"
 //       and the unlabelled uxb2_blank, apart from each other, in no group) and the chat c_UXB2 "Draw the request flow" on it (Claude, started). The states
@@ -639,15 +639,14 @@
 
   // ---- UXC1: the phone's composer (ux-improvements package C1, web/dev/checks/UX.C1-composer.mjs)
 
-  // ux-c1: one group "UXC1 composer" with the board "Pipeline" and five boards whose names start with R (the @ dock shows four of the five for "@r"),
-  // plain chats (new, started, at work, a ring over 80 %) and chats on the board (new, started with a draft that mentions a board and holds two quotes).
+  // ux-c1: one group "UXC1 composer" with the board "Pipeline",
+  // plain chats (new, started, at work, a ring over 80 %) and chats on the board (new, started with a draft of text and two quotes).
   // On the editable board b_ui (A1's `sketch`) a chat for "Board selection" with its count (the act "select" selects the three shapes).
   function UXC1() {
     sketch();
     group("g_UXC1", "UXC1 composer", { collapsed: true });
     const g = { group: "g_UXC1" };
     boards.b_UXC1 = { id: "b_UXC1", name: "Pipeline", group: "g_UXC1", created: iso(T0 - 110 * MIN) };
-    ["Roadmap", "Rollout", "Render pass", "Review notes", "Rewrite plan"].forEach((name, i) => { boards[`b_UXC1_r${i + 1}`] = { id: `b_UXC1_r${i + 1}`, name, group: "g_UXC1", created: iso(T0 - (100 - i) * MIN) }; });
     const own = (chatId) => ({ board: "b_UXC1", chat: chatId });
     add("c_UXC1_new", { ...g, ...fresh }); state("UXC1", "new", { chat: "c_UXC1_new" }, ".composer .chip-row");
     add("c_UXC1_started", { name: "Started", ...g }, clone(THREAD)); state("UXC1", "started", { chat: "c_UXC1_started" }, ".composer");
@@ -655,7 +654,7 @@
     add("c_UXC1_amber", { name: "Nearly full", ...g, usage: { ...usage, ctxIn: 170000, ctxOut: 2000 } }, clone(THREAD)); state("UXC1", "amber", { chat: "c_UXC1_amber" }, ".composer .ctx-meter");
     add("c_UXC1_board_new", { board: "b_UXC1", ...fresh }); state("UXC1", "board-new", own("c_UXC1_board_new"), ".composer .chip-row");
     add("c_UXC1_board", { name: "Board started", board: "b_UXC1" }, clone(THREAD)); state("UXC1", "board-started", own("c_UXC1_board"), ".composer .context-row");
-    add("c_UXC1_board_draft", { name: "Board with a draft", board: "b_UXC1", draft: { text: "Compare with @Roadmap", references: REFS } }, clone(THREAD)); state("UXC1", "board-draft", own("c_UXC1_board_draft"), ".composer .context-row");
+    add("c_UXC1_board_draft", { name: "Board with a draft", board: "b_UXC1", draft: { text: "Compare with the roadmap", references: REFS } }, clone(THREAD)); state("UXC1", "board-draft", own("c_UXC1_board_draft"), ".composer .context-row");
     add("c_UXC1_sketch", { name: "On the sketch", board: "b_ui" }, clone(THREAD)); // (no state: the check selects the shapes itself, UX.C1-composer)
   }
 

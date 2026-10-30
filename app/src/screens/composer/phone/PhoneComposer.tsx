@@ -1,9 +1,9 @@
 // The composer on the phone (ux-improvements goal 3.6; mockups "01", "04", "05", "07" of the composer row). Composer.tsx holds the state and the
 // calls, as for every layout, and hands the phone's composer what it draws, top to bottom:
-//   the @ dock (AtDock), the context row (ContextChips), the chip row of a new chat (ChipRow, package C2's), the lines of today (a pending move's
+//   the context row (ContextChips), the chip row of a new chat (ChipRow, package C2's), the lines of today (a pending move's
 //   banner, the model notice, voice's notice), then the box: the images, the text (17 pt, up to 6 lines, then it scrolls) and, in the toolbar's
 //   place, either what blocks sending (the composer part `useBlock`, package V1's: Blocked.tsx) or the toolbar (PhoneToolbar); under the box the
-//   speech bar. "+" opens the Add to message sheet (PlusSheet). What blocks sending is said once (goal 3.7.1): a block that replaces the box (an
+//   key row of Outdent and Indent while the box is typed in with the soft keyboard up (EditKeys.tsx; just above the keys), then the speech bar. "+" opens the Add to message sheet (PlusSheet). What blocks sending is said once (goal 3.7.1): a block that replaces the box (an
 //   archived chat, the old board connection, no agent) stands alone with the lines; the others add a card above the box or take the toolbar's
 //   place, and with any of them the box has no placeholder and nothing is said under it (a refused send is the red card above the box).
 // The toast stands above the composer (ui/Toast.tsx useToastLift). The wide layouts keep Composer.tsx's own tree.
@@ -18,7 +18,6 @@ import { useKeyboardUp } from "../../../platform/keyboard";
 import { ChipRow, type ChipRowProps } from "../ChipRow.tsx";
 import { DictateGuess, DictateLine } from "../../voice/DictateLine.tsx";
 import { useComposerParts, type BlockInput } from "../parts.tsx";
-import { AtDock, type AtDockProps } from "./AtDock.tsx";
 import { ContextChips, type ContextChipsProps } from "./ContextChips.tsx";
 import { PhoneToolbar, type PhoneToolbarProps } from "./PhoneToolbar.tsx";
 import { PlusSheet, type PlusSheetProps } from "./PlusSheet.tsx";
@@ -33,8 +32,6 @@ export type PhoneComposerProps = {
   focused: boolean;
   /** The box's focus handlers (Composer.tsx's). */
   boxHandlers: object;
-  /** The @ dock (null: closed, or no match). */
-  mention: AtDockProps | null;
   /** The context row (null: none). */
   context: ContextChipsProps | null;
   chips: Omit<ChipRowProps, "chatId" | "branch">;
@@ -50,6 +47,8 @@ export type PhoneComposerProps = {
   plus: Omit<PlusSheetProps, "open" | "onClose">;
   /** "+" was pressed: the sheet is about to take the focus (the composer notes the box's caret for Insert a prompt). */
   onPlusOpen?: () => void;
+  /** The key row of Outdent and Indent (EditKeys.tsx), or null: drawn right under the box, not when a block takes the box's place. */
+  keyRow?: ReactNode;
   /** The speech bar while speech mode is on. */
   speechBar: ReactNode;
   /** The quote float, if one is open. */
@@ -69,7 +68,6 @@ export function PhoneComposer(p: PhoneComposerProps) {
   if (block?.box) return <View onLayout={measure}>{p.lines}{block.box}</View>;
   return (
     <View onLayout={measure}>
-      {p.mention ? <AtDock {...p.mention} /> : null}
       {p.context ? <ContextChips {...p.context} /> : null}
       {typing ? null : <ChipRow chatId={p.chatId} branch={p.branch} {...p.chips} />}
       {p.lines}
@@ -88,6 +86,7 @@ export function PhoneComposer(p: PhoneComposerProps) {
           )}
         </View>
       </View>
+      {p.keyRow}
       {p.speechBar}
       {p.float}
       <PlusSheet open={plusOpen} onClose={() => setPlusOpen(false)} {...p.plus} />

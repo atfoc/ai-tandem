@@ -14,15 +14,12 @@
 //   5 the images       an upload that waits shows its ring on a 72 px thumb and Send is soft (data-soft) with "An image is being uploaded"; every ×
 //                      is at least 44 px; a refused file stays as a marked tile with its reason in red under the strip; 11 images give the limit
 //                      line (it names the limit and what was left out) and the sheet's Files row is dimmed with the reason (= Photo library)
-//   6 the context row  in a board chat (`context-row`): the board chip first (kind board), then the mention (kind ref), then "2 quotes"; the
-//                      mention's × takes the chip and its "@name" out; "2 quotes" opens "Quoted in this message" (a card for each quote, the comment
+//   6 the context row  in a board chat (`context-row`): the board chip first (kind board), then "2 quotes"; "2 quotes" opens "Quoted in this message" (a card for each quote, the comment
 //                      field or "+ Add a comment", a 44 px trash); the last quote removed closes the sheet; no "Add 3 selected" while shapes are selected
 //                      (the selection rule, B2)
-//   7 the @ dock       "@r" in a board chat: `mention-dock` holds at most 4 rows of 52 px, full width, above the box and not over it; a tap picks (the
-//                      board is a chip of the context row) and the box keeps the focus
-//   8 the ring         amber (data-tone "warn") from 80 % (a chat at 86 %); not in a chat at 21 %
-//   9 the chip row     `composer-chip-row` in a new chat (plain and on a board) and none in a started one
-// At the TABLET and the DESKTOP only: none of the phone's parts (`composer-phone-tools`, `composer-plus`, `plus-sheet`, `mention-dock`; `context-row`
+//   7 the ring         amber (data-tone "warn") from 80 % (a chat at 86 %); not in a chat at 21 %
+//   8 the chip row     `composer-chip-row` in a new chat (plain and on a board) and none in a started one
+// At the TABLET and the DESKTOP only: none of the phone's parts (`composer-phone-tools`, `composer-plus`, `plus-sheet`; `context-row`
 // in a plain chat) is drawn, and the wide composer (`composer-box`, `send`) is.
 import zlib from "node:zlib";
 
@@ -50,7 +47,7 @@ function pngOf(n) {
 
 const PLAIN = "c_UXC1_started";
 
-await check("UX.C1-composer the phone's composer: the box, the toolbar, the keys, the + sheet, the images, the context row, the @ dock, the ring, the chip row", async ({ url, layout, open, fail, note }) => {
+await check("UX.C1-composer the phone's composer: the box, the toolbar, the keys, the + sheet, the images, the context row, the ring, the chip row", async ({ url, layout, open, fail, note }) => {
   /** Seeds UXC1 anew, opens `sel` and waits for the box; closes the page when `body` ends. */
   const session = async (sel, body) => {
     await seed(url, "UXC1");
@@ -82,7 +79,7 @@ await check("UX.C1-composer the phone's composer: the box, the toolbar, the keys
     await session({ chat: PLAIN }, async (page) => {
       await shows(page, "the wide composer", "composer-box");
       await shows(page, "the wide composer", "send");
-      for (const id of ["composer-phone-tools", "composer-plus", "plus-sheet", "mention-dock", "context-row"]) {
+      for (const id of ["composer-phone-tools", "composer-plus", "plus-sheet", "context-row"]) {
         if (await byTid(page, id).count()) fail(`a plain chat at the ${layout} layout draws ${id}, which is the phone's`);
       }
       if (await byTid(page, "composer-talk").count()) fail(`a plain chat at the ${layout} layout draws the phone's Talk (composer-talk)`);
@@ -90,9 +87,8 @@ await check("UX.C1-composer the phone's composer: the box, the toolbar, the keys
     await session({ board: "b_UXC1", chat: "c_UXC1_board" }, async (page) => {
       await shows(page, "the wide composer on a board", "composer-box");
       await focusBox(page);
-      await page.keyboard.type("@r");
-      await shows(page, "the wide @ list", "mention-pop");
-      for (const id of ["composer-phone-tools", "composer-plus", "plus-sheet", "mention-dock"]) {
+      await page.keyboard.type("hi");
+      for (const id of ["composer-phone-tools", "composer-plus", "plus-sheet"]) {
         if (await byTid(page, id).count()) fail(`a board chat at the ${layout} layout draws ${id}, which is the phone's`);
       }
     });
@@ -194,7 +190,7 @@ await check("UX.C1-composer the phone's composer: the box, the toolbar, the keys
     }
   });
 
-  // ================= 8: the ring turns amber from 80 %
+  // ================= 7: the ring turns amber from 80 %
   const strokes = {};
   for (const [chat, tone] of [["c_UXC1_amber", "warn"], [PLAIN, "ok"]]) {
     await session({ chat }, async (page) => {
@@ -209,7 +205,7 @@ await check("UX.C1-composer the phone's composer: the box, the toolbar, the keys
   if (strokes.c_UXC1_amber && strokes.c_UXC1_amber === strokes[PLAIN]) fail(`the ring of 86 % is drawn in the colour of the ring of 21 % (${strokes[PLAIN]})`);
   note("the ring: amber at 86 %, not at 21 %");
 
-  // ================= 9: the chip row only in a new chat
+  // ================= 8: the chip row only in a new chat
   for (const [sel, on] of [[{ chat: "c_UXC1_new" }, true], [{ board: "b_UXC1", chat: "c_UXC1_board_new" }, true], [{ board: "b_UXC1", chat: "c_UXC1_board" }, false]]) {
     await session(sel, async (page) => {
       await shows(page, "the composer", "composer-phone-tools");
@@ -369,7 +365,7 @@ await check("UX.C1-composer the phone's composer: the box, the toolbar, the keys
     note("images: a 72 px thumb with its ring and a soft Send, 44 px ×, a refused tile with its reason in red, the limit line and the dimmed Files row");
   });
 
-  // ================= 6: the context row of a board chat (a draft with a mention and two quotes)
+  // ================= 6: the context row of a board chat (a draft with two quotes)
   const DRAFT = { board: "b_UXC1", chat: "c_UXC1_board_draft" };
   await session(DRAFT, async (page) => {
     if (!(await shows(page, "the context row", "context-row"))) return;
@@ -378,7 +374,7 @@ await check("UX.C1-composer the phone's composer: the box, the toolbar, the keys
       return { id: e.dataset.testid, kind: e.dataset.kind ?? "", x: Math.round(r.x), h: Math.round(r.height), text: e.innerText.trim() };
     }));
     const order = chips.map((c) => (c.id === "ctx-chip" ? c.kind : c.id));
-    if (order.join() !== "board,ref,qcount") fail(`the context row holds ${order.join(", ") || "nothing"}, in that order: not board, ref, qcount (the board chip first, the mention, the quotes)`);
+    if (order.join() !== "board,qcount") fail(`the context row holds ${order.join(", ") || "nothing"}, in that order: not board, qcount (the board chip first, the quotes)`);
     if (chips[0] && !chips[0].text.includes("Pipeline")) fail(`the board chip says ${J(chips[0].text)}, not the board's name`);
     if (chips.some((c) => c.h < 33 || c.h > 36)) fail(`the chips are ${chips.map((c) => c.h).join(", ")} px high, not 34`);
     if (!chips.every((c, i) => i === 0 || c.x > chips[i - 1].x)) fail(`the chips are not left to right in that order: x ${chips.map((c) => c.x).join(", ")}`);
@@ -409,37 +405,6 @@ await check("UX.C1-composer the phone's composer: the box, the toolbar, the keys
       await shows(page, "the last quote removed", "quotes-sheet", undefined, false); // (the sheet closes when no quote is left)
       await shows(page, "the last quote removed", "qcount", undefined, false);
     }
-    note("the context row board, ref, 2 quotes; the quotes sheet with its cards, comment field, 44 px trash; the last removal closes it");
-  });
-  await session(DRAFT, async (page) => {
-    if (!(await shows(page, "the context row", "context-row"))) return;
-    const ref = byTid(page, "ctx-chip", { kind: "ref" }).first();
-    if (!(await ref.isVisible().catch(() => false))) return fail("the draft's @Roadmap is no chip of the context row");
-    await press(page, byTid(ref, "ctx-chip-remove").first());
-    if (!(await until(async () => !(await byTid(page, "ctx-chip", { kind: "ref" }).count()), WAIT))) fail("the mention's × did not take its chip away");
-    if (!(await until(async () => !(await input(page).innerText()).includes("@Roadmap"), WAIT))) fail(`the mention's × left "@Roadmap" in the text: ${J(await input(page).innerText())}`);
-    if (!(await byTid(page, "ctx-chip", { kind: "board" }).count())) fail("the board chip went with the mention");
-  });
-
-  // ================= 7: the @ dock
-  await session({ board: "b_UXC1", chat: "c_UXC1_board" }, async (page) => {
-    await focusBox(page);
-    await page.keyboard.type("@r");
-    if (!(await shows(page, "\"@r\"", "mention-dock"))) return;
-    const dock = byTid(page, "mention-dock").first(), items = byTid(dock, "mention-item");
-    const n = await items.count();
-    if (n > 4 || n < 1) fail(`the @ dock holds ${n} rows, not at most 4 (the mock has 6 boards with an r)`);
-    else if (n !== 4) fail(`the @ dock holds ${n} rows for 6 matching boards: it must show 4`);
-    for (let i = 0; i < n; i++) { const r = await rect(items.nth(i)); if (Math.abs(r.height - 52) > 1) fail(`row ${i + 1} of the dock is ${Math.round(r.height)} px high, not 52`); }
-    const d = await rect(dock), b = await rect(byTid(page, "composer-box").first()), w = page.viewportSize().width;
-    if (Math.abs(d.width - w) > 2 || Math.abs(d.x) > 2) fail(`the dock is not full width: x ${Math.round(d.x)}, ${Math.round(d.width)} px of ${w}`);
-    if (d.y + d.height > b.y + 1) fail(`the dock (bottom ${Math.round(d.y + d.height)}) is over the box (top ${Math.round(b.y)}): it must stand above it`);
-    const first = items.first(), name = (await first.getAttribute("aria-label")) ?? "";
-    await press(page, first);
-    await shows(page, "a tap on a row", "mention-dock", undefined, false);
-    if (!(await until(async () => (await input(page).innerText()).includes("@" + name), WAIT))) fail(`a tap on ${J(name)} did not put @${name} in the text: ${J(await input(page).innerText())}`);
-    if (!(await until(async () => await byTid(page, "ctx-chip", { kind: "ref" }).filter({ hasText: name }).count() === 1, WAIT))) fail(`a tap on ${J(name)} did not make it a chip of the context row`);
-    if (await page.evaluate(() => document.activeElement?.dataset?.testid) !== "composer-input") fail(`after a tap on a row the focus is on ${J(await page.evaluate(() => document.activeElement?.dataset?.testid ?? document.activeElement?.tagName))}, not in the box`);
-    note(`the @ dock: ${n} rows of 52 px, full width, above the box; a tap picks ${name} and the box keeps the focus`);
+    note("the context row board, 2 quotes; the quotes sheet with its cards, comment field, 44 px trash; the last removal closes it");
   });
 }, { viewports, page: false });

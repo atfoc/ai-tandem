@@ -227,9 +227,9 @@ function open(chat: string, branch = "main") {
   const box = { text: shown?.text ?? "", images: (shown?.images ?? []) as ChatImage[] };
   const saver = new drafts.DraftSaver((d: Draft, keepalive: boolean, base?: number) => composer.saveDraft(chat, branch, d, keepalive, base), store.branchState(s(), chat, branch)?.draft,
     store.unsavedDraft(chat, branch), DELAY, rev(), (d: Draft) => { box.text = d.text; box.images = d.images ?? []; });
-  const save = () => saver.change(box.text, [], [], box.images);
+  const save = () => saver.change(box.text, [], box.images);
   actions.registerComposer(chat, branch, {
-    get: () => ({ text: box.text, mentions: [], references: [], images: box.images }),
+    get: () => ({ text: box.text, references: [], images: box.images }),
     set: (h: { text: string; images?: ChatImage[] }) => { box.text = h.text; box.images = h.images ?? []; },
     images: (f: (now: ChatImage[]) => ChatImage[]) => { box.images = f(box.images); save(); },
   });
@@ -552,7 +552,7 @@ test("a pending move's composer left its text with the move: the copy is what Ba
   await typeAndLeave("c_4", "draft of main");
   fake.down = false;
   // (a snapshot drops every move but one that is being sent: that one is still pending when the kept drafts are saved)
-  store.setMove("c_4", { branch: "main", at: 0, new: true, from: "main", held: { text: "draft of main", mentions: [], references: [] }, put: null });
+  store.setMove("c_4", { branch: "main", at: 0, new: true, from: "main", held: { text: "draft of main", references: [] }, put: null });
   puts();
   await backs.draftBacks.kept.back();
   assert.deepEqual([puts(), copy("c_4")?.text], [[], "draft of main"]);

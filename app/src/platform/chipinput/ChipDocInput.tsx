@@ -19,7 +19,7 @@ import { openInsertPopup } from "@aiwb/core/logic/insert.ts";
 import { serializeRef } from "@aiwb/core/logic/refs.ts";
 import type { KeyLike } from "../keys.types.ts";
 import {
-  applyChange, beforeCaret, copyOf, docOf, insertRef as insertRefAt, insertText, layout, replaceBeforeCaret as replaceAt, snap, toShown, toValue, valueOf,
+  applyChange, beforeCaret, copyOf, docOf, enterChange, indentChange, insertRef as insertRefAt, insertText, layout, replaceBeforeCaret as replaceAt, snap, toShown, toValue, valueOf,
   type Doc, type Ref, type Span,
 } from "./chipdoc.ts";
 import type { ChipInputHandle, ChipInputProps } from "./types.ts";
@@ -47,6 +47,8 @@ export type FieldProps = {
   /** A cut took copyText already: the selection is to be removed. Web only. */
   onCut(): void;
   placeholder: string;
+  /** The field took the focus (true) or lost it (false). */
+  onFocusChange?(focused: boolean): void;
   /** False while the box is locked or read-only: the platform's typing is stopped; its text can still be selected. */
   editable: boolean;
   readOnly: boolean;
@@ -66,6 +68,8 @@ export type ChipDocInputProps = ChipInputProps & {
   onState?(s: DocState): void;
   onRaw?(s: Span): void;
   plain?: boolean;
+  /** Given to the field (FieldProps.onFocusChange). */
+  onFocusChange?(focused: boolean): void;
 };
 
 /** What the box asks of its field. */
@@ -153,6 +157,18 @@ export const ChipDocInput = forwardRef<ChipInputHandle, ChipDocInputProps>(funct
       if (next !== cur) restore();
       return;
     }
+    // Enter with `editing`: the field has put the line break in already (it cannot be stopped before, and the soft keyboard's
+    // return is not told from a hardware Enter), so the change is read as Enter and the document gets newlineEdit's line in its
+    // place (chipdoc.ts enterChange). The field is controlled: one frame may show the bare line break before the indent. The rev
+    // makes the field take the runs again, also when the document is now empty (an empty list item ended: the field is cleared).
+    // On Android an update that arrives after the next keystroke is dropped by the field; the onText that follows is then
+    // measured from the document, so the box stays consistent (the indent is lost, never doubled).
+    const e = own.current.editing ? enterChange(d0, next, s0) : null;
+    if (e) {
+      put(e.doc, caretAt(e.caret));
+      setRev((r) => r + 1);
+      return;
+    }
     const c = applyChange(d0, next, s0, known.current);
     if (c.same) return;
     put(c.doc, caretAt(c.caret)); // (an edit not taken as it came, half a chip, gives other runs: the field is told them)
@@ -233,6 +249,15 @@ export const ChipDocInput = forwardRef<ChipInputHandle, ChipDocInputProps>(funct
       });
     },
     focus() { field.current?.focus(); },
+    indent(outdent: boolean) {
+      const ed = own.current.editing;
+      if (!ed || own.current.locked || own.current.readOnly) return;
+      const { doc: d0, selection: s0 } = now.current;
+      const r = indentChange(d0, s0, ed, outdent);
+      if (!r) return;
+      put(r.doc, r.selection);
+      setRev((n) => n + 1);
+    },
   }), []);
 
   return (
@@ -258,6 +283,7 @@ export const ChipDocInput = forwardRef<ChipInputHandle, ChipDocInputProps>(funct
       placeholder={placeholder}
       editable={!locked && !readOnly}
       readOnly={readOnly}
+      onFocusChange={props.onFocusChange}
       plain={plain}
       testID={testID}
     />

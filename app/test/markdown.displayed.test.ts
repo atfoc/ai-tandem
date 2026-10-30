@@ -16,7 +16,9 @@ import remarkGfm from "remark-gfm";
 import { parseRef, selectionRef, pointRef, serializeRef } from "@aiwb/core/logic/refs.ts";
 import { rehypeSlots, splitBlocks, stashRefs, trimPartialRef } from "@aiwb/core/logic/markdown.ts";
 import { findQuote } from "@aiwb/core/logic/quotes.ts";
-import { messageText } from "../src/screens/markdown/displayed.ts";
+import { displayedTextOf, messageText } from "../src/screens/markdown/displayed.ts";
+import type { Block } from "../src/screens/markdown/doc.ts";
+import { blocksOf, prepare } from "../src/screens/markdown/parse.ts";
 import { CORPUS } from "../src/dev/markdownfixtures.ts";
 
 const langOf = (node: any): string => {
@@ -63,7 +65,19 @@ function pageText(text: string, user = false, streaming = false): string {
   }).join("");
 }
 
-const same = (text: string, user = false) => assert.equal(messageText(text, user), pageText(text, user), JSON.stringify(text));
+// A user's message differs from the page in one way, on purpose (indent.ts): the indent its lines start with is shown, and a run of
+// indented lines is no code block. So a user's message is compared without its indents, and one with indented code is not compared.
+const withoutIndents = (text: string): string => blocksOf(text).map((b) => displayedTextOf({ kids: prepare(b, true).kids.map(dropIndents) })).join("");
+const dropIndents = (b: Block): Block => {
+  if (b.k === "p") return { ...b, kids: b.kids.filter((n) => n.k !== "indent") };
+  if (b.k === "quote" || b.k === "list" || b.k === "li" || b.k === "group") return { ...b, kids: b.kids.map(dropIndents) };
+  return b;
+};
+const INDENTED_CODE = /(^|\n)(\n|^)( {4}|\t)/;
+const same = (text: string, user = false) => {
+  if (!user) return assert.equal(messageText(text), pageText(text), JSON.stringify(text));
+  if (!INDENTED_CODE.test(text)) assert.equal(withoutIndents(text), pageText(text, true), JSON.stringify(text));
+};
 
 test("the fixtures of quotes.test.ts: a message of three blocks has its blocks' texts joined with nothing between", () => {
   const md = "# The plan\n\nOwn undo in the ShapeStore.\n\nRetry 3 times with backoff.";

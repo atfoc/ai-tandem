@@ -159,7 +159,7 @@ async function openMain(items = ["m0"], version = 3, more: Record<string, unknow
 }
 /** A pending move to a point of a branch, as startMove sets it; the list is not answered. */
 function moveTo(branch: string) {
-  store.setMove("c_1", { branch, at: 1, new: true, from: store.viewedBranch(s(), "c_1"), held: { text: "", mentions: [], references: [], images: [] }, put: null });
+  store.setMove("c_1", { branch, at: 1, new: true, from: store.viewedBranch(s(), "c_1"), held: { text: "", references: [], images: [] }, put: null });
   return conn.showBranch("c_1");
 }
 function back() { store.setMove("c_1", null); return conn.showBranch("c_1"); }
@@ -1686,7 +1686,7 @@ test("the unsaved copy of a draft of a section's chat is kept in the page's memo
   await withStorage(async (kept) => {
     await ev({ ...snapshot([view("c_2")], [rec("c_2", "main", { draftRev: 2 })]), servers: SERVERS,
       sections: { [S1]: treeOf({ chats: [view("k_1")], states: [rec("k_1", "main", { draftRev: 4 })] }) } });
-    const draft = (t: string) => ({ text: t, mentions: [], references: [] });
+    const draft = (t: string) => ({ text: t, references: [] });
     store.unsavedDraft(K1, "main").write(draft("typed there"));
     store.unsavedDraft("c_2", "main").write(draft("typed here"));
     assert.deepEqual(Object.keys(kept).filter((k) => k.startsWith("aiwb.draft")), ["aiwb.draft.c_2:main"]);

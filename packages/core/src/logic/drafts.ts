@@ -10,7 +10,6 @@
 // opens with that copy over the server's draft and saves it again.
 
 import { MAIN, type BranchState, type ChatImage, type ChatView, type Draft, type Held, type Reference } from "../types.ts";
-import type { Picked } from "./mentions.ts";
 import { currentBranch, stateFromView } from "./branches.ts";
 import { mergeQuotes } from "./quotes.ts";
 import { plainImage, withImages } from "./chatimage.ts";
@@ -23,11 +22,10 @@ export const DRAFT_DELAY = 400;
 export const SEND_GRACE = 1000;
 
 /** The draft for a composer's value, quotes and images: blank text, no quotes and no images is no
- *  draft, and mentions only go with text. An image is named by its id, name, type and size, never
+ *  draft. An image is named by its id, name, type and size, never
  *  with its bytes (plainImage). */
-export function draftOf(text: string, picked: Picked[] = [], references: Reference[] = [], images: readonly ChatImage[] = []): Draft {
+export function draftOf(text: string, references: Reference[] = [], images: readonly ChatImage[] = []): Draft {
   const d: Draft = { text: text.trim() ? text : "" };
-  if (d.text && picked.length) d.mentions = picked;
   if (references.length) d.references = references;
   if (images.length) d.images = images.map(plainImage);
   return d;
@@ -97,7 +95,7 @@ const NONE: Draft = { text: "" };
 const EMPTY = key(NONE);
 const UNSURE = "?"; // what a saver takes as saved while it is not known what the server has: no draft's key
 /** What a composer holds, as a draft. */
-export const ofHeld = (h: Held): Draft => draftOf(h.text, h.mentions, h.references, h.images);
+export const ofHeld = (h: Held): Draft => draftOf(h.text, h.references, h.images);
 
 /** Whether what a save refused as stale tells (the server's counter and its draft) goes into the
  *  store: not when the counter known here is a later one, whose draft an event brought since. */
@@ -115,20 +113,19 @@ export const answerNewer = (rev: unknown, known?: number): rev is number => type
 export const boxText = (d: Draft | null | undefined, held: string): string | null => (hasDraft(d) ? d.text : held || null);
 
 /** A draft as what a composer holds. */
-export const heldOf = (d: Draft): Held => ({ text: d.text, mentions: d.mentions ?? [], references: d.references ?? [], images: d.images ?? [] });
+export const heldOf = (d: Draft): Held => ({ text: d.text, references: d.references ?? [], images: d.images ?? [] });
 
 /** Whether two drafts are the same; none is the empty one. */
 export const sameDraft = (a?: Draft | null, b?: Draft | null): boolean => key(ofHeld(heldOf(a ?? NONE))) === key(ofHeld(heldOf(b ?? NONE)));
 
 /** Two drafts in the one place there is for both: the texts one after the other, with the
- *  mentions, the quotes and the images of both, each image once. The same draft twice, or one with
+ *  quotes and the images of both, each image once. The same draft twice, or one with
  *  nothing, is one draft. Nothing is dropped: the images of both can pass what one message takes
  *  (chatimage.ts overLimit), and the composer then holds its Send until some are removed. */
 export function joinDrafts(a: Draft, b?: Draft | null): Draft {
   if (!hasDraft(b) || sameDraft(a, b)) return a;
   if (!hasDraft(a)) return b;
-  const mentions = [...(a.mentions ?? []), ...(b.mentions ?? []).filter((m) => !a.mentions?.some((x) => x.id === m.id && x.name === m.name))];
-  return draftOf(a.text && b.text ? `${a.text}\n\n${b.text}` : a.text || b.text, mentions, mergeQuotes(a.references ?? [], b.references ?? []), withImages(a.images ?? [], b.images ?? []));
+  return draftOf(a.text && b.text ? `${a.text}\n\n${b.text}` : a.text || b.text, mergeQuotes(a.references ?? [], b.references ?? []), withImages(a.images ?? [], b.images ?? []));
 }
 
 /** The drafts a sent move leaves. A move makes a new branch, which has no draft, and the server
@@ -238,7 +235,7 @@ export class DraftSaver {
     this.put = put;
     this.unsaved = unsaved;
     this.delay = delay;
-    this.saved = key(draftOf(saved?.text ?? "", saved?.mentions, saved?.references, saved?.images));
+    this.saved = key(draftOf(saved?.text ?? "", saved?.references, saved?.images));
     this.base = base;
     this.show = show;
     // A copy that is there when the saver is made is a draft the server may not have, whatever saved tells: a save sets the store before its answer, and one
@@ -288,9 +285,9 @@ export class DraftSaver {
     if (d) this.unsaved?.write(d, base);
   }
 
-  change(text: string, picked: Picked[] = [], references: Reference[] = [], images: readonly ChatImage[] = []) {
+  change(text: string, references: Reference[] = [], images: readonly ChatImage[] = []) {
     clearTimeout(this.timer);
-    const d = draftOf(text, picked, references, images);
+    const d = draftOf(text, references, images);
     if (key(d) === this.saved) {
       this.pending = null;
       this.unsaved?.write(null);

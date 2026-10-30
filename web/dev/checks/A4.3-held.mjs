@@ -9,7 +9,7 @@
 // (checks/fork.mjs). Deviations: a message's actions are read one message at a time, the way the viewport shows them (a mouse hovers the message, a
 // finger opens its "⋯" menu, where a disabled action has its reason under it); a row of the tree opens by a double click with a mouse and by a tap on the
 // picked row with a finger, and its menu by a right click and by a long press; the foot says "Tap a message twice" for a finger.
-// The composer is the real one (K3): the message is typed in the box and sent with Enter, and what is read of it is the model and effort pickers disabled
+// The composer is the real one (K3): the message is typed in the box and sent with ⌘/Ctrl+Enter, and what is read of it is the model and effort pickers disabled
 // with the reason, Send disabled with its spinner, Stop live, a press on the pickers, what is typed while the message is on its way and Enter sending
 // nothing, the box after the answer.
 // The phone half (T3-8) describes the phone's screens: a message's actions are the rows of the message sheet (a hold opens it; an action that waits is faded with
@@ -270,7 +270,7 @@ await check("A4.3 what a wait holds is disabled and says why", async ({ url, vie
     expect(`${name}: Branch, "Branch and edit" and Label are live`, rest.length >= 4 && rest.every((a) => !a.disabled), rest);
     expect(`${name}: the composer is as it was: no banner`, !seen.banner, seen.banner);
     const sent = await sendNow(page);
-    expect(`${name}: Send is as it was`, sent && !sent.spin && sent.title === (phone ? "Send" : "Send (Enter)"), sent);
+    expect(`${name}: Send is as it was`, sent && !sent.spin && (phone ? sent.title === "Send" : /^Send \((⌘|Ctrl\+)Enter\)$/.test(sent.title)), sent);
     await pressAct(page, await firstMsg(page), "fork", { force: true });
     await frame(page);
     expect(`${name}: a press on Fork asks for no second fork`, await holds(url, "fork") === 1, await holds(url, "fork"));

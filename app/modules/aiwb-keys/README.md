@@ -8,14 +8,14 @@ decisions (what ⌘N does, under which dialog it does nothing) are the page's ow
 
 | File | What |
 |---|---|
-| `src/AiwbKeys.ts` | the contract: the event, the module's one function (`addListener("onKey")`) and `SHORTCUTS`, the list below as data |
+| `src/AiwbKeys.ts` | the contract: the event, the module's functions (`addListener("onKey")`, `setTabKeys`) and `SHORTCUTS`, the list below as data; `TAB_KEYS` |
 | `src/AiwbKeysModule.ts` | the native module, `requireOptionalNativeModule("AiwbKeys")` (null in a build made before the module: the port then takes no key) |
 | `src/AiwbKeysModule.web.ts` | null: the web uses the page's own `keydown` (`platform/keys.web.ts`) |
 | `src/fake.ts` | the module in JS, for the tests of the port |
 | `ios/AiwbKeysModule.swift` | UIKeyCommands on the root view controller of every window |
 | `android/.../AiwbKeysModule.kt` | the activity window's `dispatchKeyEvent` |
-| `../../src/platform/nativekeys.ts`, `keys.native.ts` | the adapter `keysOver(module): OnKey` (the keys port), and the port itself |
-| `../../test/nativekeys.test.ts` | the adapter over the fake; the list against what `@aiwb/core` reads; the list against the Swift and Kotlin sources |
+| `../../src/platform/nativekeys.ts`, `keys.native.ts` | the adapters `keysOver(module): OnKey` (the keys port) and `tabOver(module)` (Tab on request), and the port itself (`onKey`, `takeTab`) |
+| `../../test/nativekeys.test.ts` | the adapters over the fake; the list against what `@aiwb/core` reads; the list and the Tab handling against the Swift and Kotlin sources |
 | `../../src/dev/KeysSelfTest.tsx`, `../../e2e/maestro/keys.yaml`, `../../e2e/xcuitest/keys/` | the device test (below) |
 
 ## The list
@@ -62,6 +62,25 @@ the two sources and fails when they differ from the TypeScript.
   the input method: a key down that is a shortcut (exact Ctrl and Shift, no Alt or Meta) is emitted and taken, its key up with it.
   The wrapper is put back when the last listener goes. A `Modal` of React Native is a window of its own with its own callback, so a
   shortcut is not taken while one is open (U2's overlays are on `Modal`): the key reaches the dialog's own handling instead.
+
+## Tab, on request
+
+Tab and Shift+Tab (`TAB_KEYS`, not part of `SHORTCUTS`) are the system's (the focus moves on Android; on iPadOS the text view types a tab
+or the focus moves), except **while the composer's box asks for them**: it has the focus and code editing is on (Settings > Composer).
+Then the box indents and outdents, as on the desktop page. `takeTab()` (`platform/keys.native.ts`, over `tabOver` of `nativekeys.ts`)
+takes them and answers the function that gives them back; takers are counted, the first calls `setTabKeys(true)`, the last give-back
+`setTabKeys(false)`. The keys come through the keys port's handlers (`onKey`) as `{ key: "Tab", code: "Tab", shiftKey, metaKey: false,
+ctrlKey: false, altKey: false, repeat }`, so they are taken only while a handler is registered too; a build made before `setTabKeys` has
+no such function and `takeTab` does nothing there.
+
+- **iOS.** Two more `UIKeyCommand`s, input `"\t"` without and with Shift, `wantsPriorityOverSystemBehavior = true` (over the text view's
+  own tab and the focus system), discoverability titles "Indent" and "Outdent", on every root view controller while the flag is on and
+  somebody listens (a root view controller that comes later gets them as the others do); kept apart from the shortcuts' commands and
+  removed when the flag goes off or the last listener leaves. Their `propertyList` is `"tab0"` / `"tab1"`; repeat as for the others.
+- **Android.** `dispatchKeyEvent` of the same window callback: `KEYCODE_TAB` with no Ctrl, Alt or Meta (Shift allowed) is emitted and
+  taken while the flag is on (a `@Volatile` the callback reads), its key up with it; `repeat` is `repeatCount > 0`.
+
+Not verified on a device yet: the Swift and the Kotlin are checked by `app/test/nativekeys.test.ts` only as sources.
 
 ## The device test
 

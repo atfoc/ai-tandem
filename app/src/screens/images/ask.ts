@@ -16,5 +16,5 @@ export async function askAboutImage(chat: string, image: ChatImage): Promise<voi
   if (heldImages(chat, branch, add)) return;
   const d = draftToShow(chat, branch) ?? { text: "" };
   if (d.images?.some((x) => x.id === image.id)) return;
-  await putDraft(chat, branch, draftOf(d.text, d.mentions, d.references, add([...(d.images ?? [])])));
+  await putDraft(chat, branch, draftOf(d.text, d.references, add([...(d.images ?? [])])));
 }

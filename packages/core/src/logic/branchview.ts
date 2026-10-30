@@ -69,7 +69,7 @@ export function afterBack(move: PendingMove, now: Held, limit: number): Held {
   const below = quotesBefore(now.references, limit);
   // What the moves took out of the composer, without what it has again. A move that does not say: the quotes past the limit.
   const hid = (move.put ? [] : move.hid ?? move.held.references.filter((r) => r.item >= limit)).filter((h) => !below.some(same(h)));
-  if (now.text !== (move.put?.text ?? move.held.text)) return { text: now.text, mentions: now.mentions, references: [...below, ...hid], images: now.images };
+  if (now.text !== (move.put?.text ?? move.held.text)) return { text: now.text, references: [...below, ...hid], images: now.images };
   const images = move.put ? withImages(move.held.images, withoutImages(now.images, move.put.images.map((x) => x.id))) : now.images;
   const had = new Set([...(move.put ?? move.held).references, ...move.held.references].map(quoteKey));
   const added = [...below, ...hid].filter((r) => !had.has(quoteKey(r)));

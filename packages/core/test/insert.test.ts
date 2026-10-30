@@ -6,10 +6,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { insertKeyName, insertText, isInsertKey, lines, onInsertPopup, openInsertPopup, sameBox, type InsertTarget } from "../src/logic/insert.ts";
 import { parseRefs, plainText, pointRef, selectionRef, serializeRef } from "../src/logic/refs.ts";
-import { resolveMentions, type Picked } from "../src/logic/mentions.ts";
 import { DraftSaver, draftOf } from "../src/logic/drafts.ts";
-import type { Board, Draft } from "../src/types.ts";
-import { UNGROUPED } from "../src/types.ts";
+import type { Draft } from "../src/types.ts";
 
 const MAC = "MacIntel", PC = "Win32";
 const key = (o: Partial<{ metaKey: boolean; ctrlKey: boolean; shiftKey: boolean; altKey: boolean; code: string }>) =>
@@ -99,10 +97,8 @@ test("the breaks that end the box are the browser's to keep: the rest is held to
   assert.ok(!sameBox("a", "A"));
 });
 
-// ---- line 13: reference chips and mentions
+// ---- line 13: reference chips
 
-const board = (id: string, name: string): Board => ({ id, name, group: UNGROUPED, created: "2026-09-01T00:00:00Z" });
-const boards: Record<string, Board> = Object.fromEntries([board("b_arch0001", "arch"), board("b_flow0001", "flows"), board("b_flow0002", "flows")].map((b) => [b.id, b]));
 const SEL = selectionRef([{ id: "a1", type: "rectangle", x: 10, y: 20, width: 160, height: 70, label: "API" }])!, POINT = pointRef(120, -40);
 const refsOf = (value: string) => parseRefs(value).filter((s) => typeof s !== "string");
 
@@ -121,32 +117,18 @@ test("reference chips in the box are still there after an insertion, each where 
   assert.deepEqual(refsOf(insertText(value, { start: from, end: to }, "X").value), [SEL]);
 });
 
-test("mentions in the box still resolve after an insertion: the picked ones by their board, the typed ones by name", () => {
-  const picked: Picked[] = [{ name: "flows", id: "b_flow0002" }];
-  const value = "Compare @flows with @arch.";
-  const was = resolveMentions(plainText(value), boards, picked).map((b) => b.id);
-  assert.deepEqual(was, ["b_flow0002", "b_arch0001"]);
-  for (const at of [0, "Compare ".length, "Compare @flows".length, value.length]) {
-    const r = insertText(value, { start: at, end: at }, ` ${PROMPT} `); // (set off by spaces, as typed text would be: a name ends where its word does)
-    assert.deepEqual(resolveMentions(plainText(r.value), boards, picked).map((b) => b.id), was, `at ${at}`);
-  }
-  // a prompt's own @name is a typed mention like any other
-  assert.deepEqual(resolveMentions(plainText(insertText("", { start: 0, end: 0 }, "see @arch").value), boards, []).map((b) => b.id), ["b_arch0001"]);
-});
-
 // ---- line 14: the draft, and what is sent
 
 test("the inserted text is in the draft, as typed text is, and a box filled from that draft holds it again", async () => {
-  const picked: Picked[] = [{ name: "flows", id: "b_flow0002" }];
   const typed = `For @flows and ${serializeRef(SEL)}: `;
   const r = insertText(typed, { start: typed.length, end: typed.length }, PROMPT);
-  assert.deepEqual(draftOf(r.value, picked), { text: typed + PROMPT, mentions: picked });
+  assert.deepEqual(draftOf(r.value), { text: typed + PROMPT });
   const puts: Draft[] = [];
   const saver = new DraftSaver(async (d) => { puts.push(d); }, undefined, undefined, 5);
-  saver.change(typed, picked);     // what the composer gives its saver as the box changes: before,
-  saver.change(r.value, picked);   // and after the insertion
+  saver.change(typed);     // what the composer gives its saver as the box changes: before,
+  saver.change(r.value);   // and after the insertion
   await new Promise((ok) => setTimeout(ok, 30));
-  assert.deepEqual(puts, [{ text: typed + PROMPT, mentions: picked }]);
+  assert.deepEqual(puts, [{ text: typed + PROMPT }]);
   // after a reload the box is filled from the saved text: the same text, the same chip
   assert.deepEqual(parseRefs(puts[0].text), [`For @flows and `, SEL, ": " + PROMPT]);
   // and what a Send sends is the box's value, trimmed at its ends alone

@@ -72,6 +72,7 @@ test("every key the page writes, by the place that writes it: a setting, a key o
     "app/screens/shell/nav.ts \"aiwb.side\"",               // a setting
     "app/screens/sidebar/Foot.tsx \"aiwb.archived\"",       // a setting
     "app/screens/voice/pill/collapse.ts PILL_KEY",          // a setting: whether the board's voice pill is collapsed to the orb
+    "app/state/editing.ts EDITING_KEY",                     // a setting: what Tab puts in a composer and the tab width
     "app/ui/theme.tsx THEME_KEY",                           // a setting
     "app/voice/engine/marks.ts MARKS_KEY",                  // the mic marks: which of this device's chat messages were sent by voice (chat keys, branches, item indexes)
     "app/voice/engine/state.ts SETTINGS_KEY",               // the voice settings (voice, models, speeds, Auto-send): settings, and never the ElevenLabs key

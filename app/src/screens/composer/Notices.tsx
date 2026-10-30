@@ -1,5 +1,4 @@
-// The lines and bars around the composer's box (the old page's Composer.tsx): the context row of a board chat (its board, the boards its text
-// mentions, the count of quotes, the note, the reference buttons) and the note about a model that is not the conversation's. The bars that
+// The lines and bars around the composer's box (the old page's Composer.tsx): the context row of a board chat (its board, the count of quotes, the note, the reference buttons) and the note about a model that is not the conversation's. The bars that
 // stand for the box when a chat is archived or uses the old board connection are in Blocked.tsx.
 import type { ReactNode } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
@@ -24,10 +23,9 @@ import { webStyle } from "../../ui/webstyle.ts";
 export type KeyNames = { ref: string; point: string; insert: string };
 
 export type ContextRowProps = {
-  /** The chat's own board, and the boards its text mentions. */
+  /** The chat's own board. */
   own?: Board;
   board: string;
-  refs: Board[];
   count: ReactNode;
   note: string;
   /** The reference buttons show (a board chat whose board is on screen and that takes a change). */
@@ -39,20 +37,20 @@ export type ContextRowProps = {
   onPoint(): void;
 };
 
-const Chip = ({ title, mention: isRef, children }: { title: string; mention?: boolean; children: ReactNode }) => {
+const Chip = ({ title, children }: { title: string; children: ReactNode }) => {
   const { tokens: t } = useTheme();
   const tip = useControlRef(title);
   return (
-    <View ref={tip} {...tid("ctx-chip", { ref: isRef || undefined })} accessibilityLabel={title}
-      style={[styles.chip, isRef ? { backgroundColor: t.accentSoft, borderColor: "transparent" } : { backgroundColor: t.panel, borderColor: t.line }]}>
+    <View ref={tip} {...tid("ctx-chip")} accessibilityLabel={title}
+      style={[styles.chip, { backgroundColor: t.panel, borderColor: t.line }]}>
       {children}
     </View>
   );
 };
 
-/** The row above the box of a board chat: its board, the boards the text mentions, the count of quotes, then (right) the note or the buttons
+/** The row above the box of a board chat: its board, the count of quotes, then (right) the note or the buttons
  *  that put the board's selection or a clicked point into the message. On touch the buttons say "Add selection" and "Point at". */
-export function ContextRow({ own, board, refs, count, note, canRef, selected, picking, keys, onAddSelection, onPoint }: ContextRowProps) {
+export function ContextRow({ own, board, count, note, canRef, selected, picking, keys, onAddSelection, onPoint }: ContextRowProps) {
   const { tokens: t } = useTheme();
   const touch = usePointer() === "touch";
   return (
@@ -60,7 +58,6 @@ export function ContextRow({ own, board, refs, count, note, canRef, selected, pi
       <Chip title={`Every message names this board to the agent (${ownId(board)})`}>
         <BoardIcon color={t.muted} /><Text size={11.5} tone="muted" style={styles.chipText}>{own?.name ?? "board"}</Text>
       </Chip>
-      {refs.map((r) => <Chip key={r.id} mention title={`Referenced board (${ownId(r.id)})`}><Text size={11.5} weight="600" tone="accent" style={styles.chipText}>@{r.name}</Text></Chip>)}
       {count}
       <View style={styles.grow} />
       {note ? <Text {...tid("ctx-note")} size={11.5} tone="warn" style={styles.note}>{note}</Text> : canRef ? <>

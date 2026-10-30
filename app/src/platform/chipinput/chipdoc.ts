@@ -13,6 +13,8 @@
 // map between them; the text between chips is the same characters in both.
 //
 // No React, no DOM: node tests run it (test/chipdoc.test.ts). The value is serialize(doc), refs.ts's own.
+import type { EditingSettings } from "@aiwb/core/logic/editing.ts";
+import { applyEdit, indentUnit, newlineEdit, outdentEdit, tabEdit } from "@aiwb/core/logic/indent.ts";
 import { insertText as insertTextInValue } from "@aiwb/core/logic/insert.ts";
 import { parseRefs, serialize, serializeRef, type Ref } from "@aiwb/core/logic/refs.ts";
 
@@ -257,3 +259,53 @@ export function beforeCaret(doc: Doc, caret: number): string {
 
 /** The text a copy of the selection puts on the clipboard: the value's form, tags for chips. */
 export const copyOf = (doc: Doc, sel: Span): string => serialize(slice(doc, Math.min(sel.start, sel.end), Math.max(sel.start, sel.end)));
+
+/**
+ * Enter in a box that edits like code (ChipInputProps.editing, core logic/indent.ts newlineEdit): the new line keeps the indent
+ * and goes on with a markdown list. React Native's field has put the line break in already when JS hears of it, and it does not
+ * tell the soft keyboard's return from a hardware Enter (onKeyPress says "Enter" for both, after the fact on Android). So the
+ * change is read instead: `next` that is `layout(doc).text` with exactly one "\n" put in place of a span of it, and nothing
+ * else, is an Enter, soft or hardware, and the answer is the document with newlineEdit applied to the value at that span, and
+ * the caret (in the new shown string). `hint` is the selection before the edit; it says where the "\n" went when it fits the
+ * strings; without it a pure insertion is placed by the common prefix, unless it sits next to another "\n" (several places give
+ * the same string: which line's indent to copy is unknown). null leaves the change to applyChange (the bare line break): when
+ * the span cannot be told, when its edge is inside a chip, when newlineEdit adds nothing, and for any other change (a paste of
+ * more than the "\n", an autocorrect that changed a word in the same event, a paste of several lines), which is never touched.
+ */
+export function enterChange(doc: Doc, next: string, hint?: Span): { doc: Doc; caret: number } | null {
+  const { text: cur, chips } = layout(doc);
+  if (next.length < 1 || next.length > cur.length + 1) return null;
+  const fits = (lo: number, hi: number) => next === cur.slice(0, lo) + "\n" + cur.slice(hi);
+  let span: [number, number] | null = null;
+  if (hint) {
+    const lo = Math.max(0, Math.min(hint.start, hint.end, cur.length)), hi = Math.min(cur.length, Math.max(hint.start, hint.end, 0));
+    if (fits(lo, hi)) span = [lo, hi];
+  }
+  if (!span && next.length === cur.length + 1) {
+    let p = 0;
+    while (p < cur.length && cur[p] === next[p]) p++;
+    // (a "\n" put in next to another: the prefix ends after the run, wherever in it the key was pressed)
+    if (!fits(p, p) || (p > 0 && cur[p - 1] === "\n")) return null;
+    span = [p, p];
+  }
+  if (!span) return null;
+  const [lo, hi] = span;
+  if (chipAround(chips, lo) || chipAround(chips, hi)) return null;
+  const value = valueOf(doc), at = { start: toValue(doc, lo), end: toValue(doc, hi) };
+  const edit = newlineEdit(value, at);
+  if (edit.start === at.start && edit.end === at.end && edit.text === "\n") return null;
+  const r = applyEdit(value, edit), out = docOf(r.value);
+  return { doc: out, caret: toShown(out, r.selection.end) };
+}
+
+/** Tab (`outdent` false) or Shift+Tab over the selection `sel` (in the shown string), as core logic/indent.ts tabEdit and
+ *  outdentEdit do it to the value: the document after, and the selection (in the new shown string). null when Shift+Tab finds
+ *  no indent to take away. */
+export function indentChange(doc: Doc, sel: Span, settings: EditingSettings, outdent: boolean): { doc: Doc; selection: Span } | null {
+  const lo = Math.min(sel.start, sel.end), hi = Math.max(sel.start, sel.end);
+  const value = valueOf(doc), at = { start: toValue(doc, lo), end: toValue(doc, hi) };
+  const edit = outdent ? outdentEdit(value, at, settings.tabWidth) : tabEdit(value, at, indentUnit(settings));
+  if (!edit) return null;
+  const r = applyEdit(value, edit), out = docOf(r.value);
+  return { doc: out, selection: { start: toShown(out, r.selection.start), end: toShown(out, r.selection.end) } };
+}

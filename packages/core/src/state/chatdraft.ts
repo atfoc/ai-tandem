@@ -19,7 +19,7 @@ export async function savesDone(chat: string, branch: string): Promise<void> {
 }
 
 /** d without the images named. */
-const without = (d: Draft, ids: readonly string[]): Draft => draftOf(d.text, d.mentions, d.references, withoutImages(d.images ?? [], ids));
+const without = (d: Draft, ids: readonly string[]): Draft => draftOf(d.text, d.references, withoutImages(d.images ?? [], ids));
 
 /** Saves a branch's draft on the server, and in the store at once (on the branch's record, and
  *  on the chat's view when the branch is its current one): a composer reopened before the

@@ -11,7 +11,7 @@ node app/e2e/run.mjs --list
 ```
 
 Name **your own** simulator (`--device` or `AIWB_IOS_UDID`; `xcrun simctl list devices`) or device (`--device` or
-`AIWB_ANDROID_SERIAL`): other agents run this on theirs, so the runner never guesses one. Flows: `conn-on-hermes`, `net-selftest`, `keys`, `board-webview`, `sheets`, `net-pinned-stream`, `composer-chips`, `composer-chips-gallery`, `voice-mic`, `voice-devices`, `ux-stack`, `ux-table`, `ux-composer`, `ux-rows`, `storage-picker-permission`, `ux-board` (the phone's board screen, B1: fitted open, the menu, Edit here, the Chats sheet, landscape; `POST /board?scene=spread` draws its three shapes) (`app/e2e/maestro/*.yaml`; files that start with `_`
+`AIWB_ANDROID_SERIAL`): other agents run this on theirs, so the runner never guesses one. Flows: `conn-on-hermes`, `net-selftest`, `keys`, `board-webview`, `sheets`, `net-pinned-stream`, `composer-chips`, `composer-chips-gallery`, `voice-mic`, `voice-devices`, `ux-stack`, `ux-table`, `ux-composer`, `ux-rows`, `ux-editkeys`, `ux-sentindent`, `storage-picker-permission`, `ux-board` (the phone's board screen, B1: fitted open, the menu, Edit here, the Chats sheet, landscape; `POST /board?scene=spread` draws its three shapes) (`app/e2e/maestro/*.yaml`; files that start with `_`
 are shared parts).
 
 ## What a run does
@@ -248,6 +248,21 @@ left to right (`_pick-ios.yaml`). Android's photo picker is in the tree, its cel
 from Home by its row (`home-row`; a row's accessibility label is "<name>, <sub-line>", so the flow matches the id and the name as a pattern, `text: "Stack-group.*"`). iOS: the edge swipe (Maestro `swipe` from 1% to 70% of the width) goes back from the chat to the group's screen and from the group to Home, and
 does **not** leave the board (`board-stage` stays; its `nav-back` goes to the group). Android: the system's back does all three, the board included. Both: holding `nav-back` on a chat opens
 `stack-sheet` ("Go back to"), and its Home row goes to Home. Passed on the iPhone 17 simulator (iOS 26.3); the Android half is written and not yet run on the emulator (it needs a JDK 17 for the Gradle build).
+
+## The composer's code editing (`ux-editkeys`)
+
+`node app/e2e/run.mjs ux-editkeys --platform ios --device <udid>`; header `needs=server,agent,control app=1`. A plain new chat "Edit-chat" on a scratch server
+with the stand-in agent, the editing settings at their defaults (Tab puts in a tab). **Asserted**: with the keyboard down there is no key row; a tap on the box raises
+the keyboard and the row of edit keys (`composer-editkeys`: `composer-outdent`, `composer-indent`) stands above its "return" key; then "a:", return, Indent, "one", return,
+"two", return, Outdent, "- three", return, "four" and Send: the server holds exactly "a:", "\tone", "\ttwo", "- three", "- four" on five lines (the return key kept the
+tab and continued the list; Indent and Outdent acted at the caret and the typing went on in the box, so the keyboard stayed up); with the keyboard lowered the row is gone.
+Not covered: a hardware Tab (the aiwb-keys module's `setTabKeys`), Android.
+
+`node app/e2e/run.mjs ux-sentindent --platform ios --device <udid>`; header `needs=server,agent,control app=1`. The same message as `ux-editkeys` in a chat "Indent-chat",
+then the thread with the keyboard lowered: **asserted** the server's text and "three" and "four" visible as whole texts; **shown only by the screenshot**
+(`sentindent-01-bubble`) the user's bubble as wide as its text, "one" and "two" indented under "a:", "three" and "four" as list items (not a narrow column with a
+letter to a line: `markdown/Blocks.tsx`, a user's list item is not `flex: 1`). Then Indent, "x" and Send: the server holds "\tx" (`_ux-c1-sent.js` with
+`KEEPSTART: "1"` compares the leading white space too), and the bubble shows "x" indented (`sentindent-02-first`). Android: not run.
 
 ## The phone's composer (`ux-composer`, package C1)
 

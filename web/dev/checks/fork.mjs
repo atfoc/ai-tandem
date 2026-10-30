@@ -93,13 +93,12 @@ export async function firstMsg(page, role = "assistant") {
   return byTid(page, "msg", { item }).first();
 }
 
-/** Types `text` into the composer and sends it with Enter (K3's box); at the phone layout, where Enter is a line break, with Ctrl+Enter
- *  (ux-improvements C1). */
+/** Types `text` into the composer and sends it with ⌘Enter / Ctrl+Enter (Enter is a line break at every layout). */
 export async function typeAndSend(page, text) {
   const box = byTid(page, COMPOSER_IDS.input).first();
   await box.click();
   await page.keyboard.type(text);
-  await page.keyboard.press((page.viewportSize()?.width ?? 1000) < 700 ? "Control+Enter" : "Enter");
+  await page.keyboard.press("ControlOrMeta+Enter");
 }
 
 /** Sends `text` as the composer's Send does: through the box when the composer is drawn (`composer`), else through the hook a build for the checks has

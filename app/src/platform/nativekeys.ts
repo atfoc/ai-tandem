@@ -38,3 +38,21 @@ export function keysOver(module: AiwbKeysModule | null): OnKey {
     };
   };
 }
+
+/** Tab and Shift+Tab on request over `module`: each call takes them and answers the function that gives them back (once; a second
+ *  call does nothing). The module takes them from the first taker to the last give-back, and only while a handler of the port is
+ *  registered: the keys come as key "Tab" through the port's handlers, like the shortcuts. With no module, or one made before
+ *  `setTabKeys`, a no-op. */
+export function tabOver(module: AiwbKeysModule | null): () => () => void {
+  let takers = 0;
+  return () => {
+    if (!module?.setTabKeys) return () => {};
+    if (++takers === 1) module.setTabKeys(true);
+    let given = false;
+    return () => {
+      if (given) return;
+      given = true;
+      if (--takers === 0) module.setTabKeys?.(false);
+    };
+  };
+}

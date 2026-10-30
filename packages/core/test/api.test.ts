@@ -140,7 +140,7 @@ const SECTION: Record<keyof typeof api, [args: unknown[], method: string, path: 
   openChat: [["s_1~c_1", "main"], "POST", "/api/chats/c_1/open?branch=main"],
   send: [["s_1~c_1", "main", "hi", "ctx"], "POST", "/api/chats/c_1/messages?branch=main", { text: "hi", context: "ctx" }],
   configure: [["s_1~c_1", "main", { agent: "pi" }], "PATCH", "/api/chats/c_1?branch=main", { agent: "pi" }],
-  saveDraft: [["s_1~c_1", "main", { text: "see @Plan", mentions: [{ name: "Plan", id: "s_1~b_1" }] }, 3], "PUT", "/api/chats/c_1/draft?branch=main&rev=3", { text: "see @Plan", mentions: [{ name: "Plan", id: "b_1" }] }],
+  saveDraft: [["s_1~c_1", "main", { text: "see @Plan" }, 3], "PUT", "/api/chats/c_1/draft?branch=main&rev=3", { text: "see @Plan" }],
   uploadImage: [["s_1~c_1", png, "a b.png", "image/png"], "POST", "/api/chats/c_1/images?name=a%20b.png", "<1 bytes>"],
   renameChat: [["s_1~c_1", "Notes"], "PATCH", "/api/chats/c_1", { name: "Notes" }],
   moveChat: [["s_1~c_1", "s_1~g_1"], "PATCH", "/api/chats/c_1", { group: "g_1" }],
@@ -259,8 +259,8 @@ test("what a section's call answers gets the page's keys before it is handed on"
   assert.deepEqual(await api.newBoard("s_1~g_1", "Plan"), { id: "s_1~b_9", name: "Plan", group: "s_1~g_1", created: "t" });
   assert.deepEqual(await api.renameBoard("s_1~b_9", "Plan"), { id: "s_1~b_9", name: "Plan", group: "s_1~g_1", created: "t" });
   assert.deepEqual(await api.newBoard("g_1", "Plan"), { id: "b_9", name: "Plan", group: "g_1", created: "t" });
-  fake.handler = json({ id: "c_9", agent: "pi", group: "g_1", board: "b_1", forkedFrom: "c_1", draft: { text: "@Plan", mentions: [{ name: "Plan", id: "b_1" }] } });
-  const chat = { id: "s_1~c_9", agent: "pi", group: "s_1~g_1", board: "s_1~b_1", forkedFrom: "s_1~c_1", draft: { text: "@Plan", mentions: [{ name: "Plan", id: "s_1~b_1" }] } };
+  fake.handler = json({ id: "c_9", agent: "pi", group: "g_1", board: "b_1", forkedFrom: "c_1", draft: { text: "@Plan" } });
+  const chat = { id: "s_1~c_9", agent: "pi", group: "s_1~g_1", board: "s_1~b_1", forkedFrom: "s_1~c_1", draft: { text: "@Plan" } };
   assert.deepEqual(await api.chat("s_1~c_9"), chat);
   assert.deepEqual(await api.fork("s_1~c_1", "main", 3), chat);
   fake.handler = json({ ok: true, chat: { id: "c_9", agent: "pi", group: "g_1" } });
@@ -270,15 +270,15 @@ test("what a section's call answers gets the page's keys before it is handed on"
   assert.deepEqual(await api.items("s_1~c_9", "main"), { version: 4, items: [], branch: "main", state: { chat: "s_1~c_9", branch: "main", status: "ready" } });
 });
 
-test("a section's draft refused as stale: the server's draft in the error has the page's keys", async () => {
-  fake.handler = refusal(409, { error: "the draft was changed elsewhere", code: "stale", rev: 7, draft: { text: "@Plan", mentions: [{ name: "Plan", id: "b_1" }] } });
+test("a section's draft refused as stale: the server's draft is in the error", async () => {
+  fake.handler = refusal(409, { error: "the draft was changed elsewhere", code: "stale", rev: 7, draft: { text: "@Plan" } });
   await assert.rejects(() => api.saveDraft("s_1~c_1", "main", { text: "mine" }, 3), (e: unknown) => {
     assert.ok(e instanceof ApiError);
-    assert.deepEqual([e.status, e.code, e.rev, e.draft], [409, "stale", 7, { text: "@Plan", mentions: [{ name: "Plan", id: "s_1~b_1" }] }]);
+    assert.deepEqual([e.status, e.code, e.rev, e.draft], [409, "stale", 7, { text: "@Plan" }]);
     return true;
   });
   await assert.rejects(() => api.saveDraft("c_1", "main", { text: "mine" }, 3), (e: unknown) => {
-    assert.deepEqual((e as ApiError).draft, { text: "@Plan", mentions: [{ name: "Plan", id: "b_1" }] });
+    assert.deepEqual((e as ApiError).draft, { text: "@Plan" });
     return true;
   });
 });

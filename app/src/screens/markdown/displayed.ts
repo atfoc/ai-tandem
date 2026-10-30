@@ -13,7 +13,7 @@ export const NOT_DISPLAYED = ["md-code-head", "md-marker"] as const;
 
 function inlineText(n: Inline): string {
   switch (n.k) {
-    case "text": case "code": return n.v;
+    case "text": case "code": case "indent": return n.v;
     case "br": return "\n";
     case "chip": return n.ref.label + n.after;
     case "mention": return n.raw;

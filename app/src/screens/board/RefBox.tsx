@@ -39,6 +39,7 @@ export const RefBox = forwardRef<RefBoxHandle, RefBoxProps>(function RefBox(prop
     openInsert: (at) => inner.current?.openInsert(at),
     replaceBeforeCaret: (n, s) => inner.current?.replaceBeforeCaret(n, s),
     focus: (atEnd) => inner.current?.focus(atEnd),
+    indent: (outdent) => inner.current?.indent?.(outdent),
     set(value: string) {
       const split = splitRefs(value);
       plain.current = split.text;
@@ -76,5 +77,7 @@ export const RefBox = forwardRef<RefBoxHandle, RefBoxProps>(function RefBox(prop
     report(before);
   };
 
+  // (`editing` goes through with the rest of the props: the inner box holds the plain text, so its Tab, Shift+Tab and Enter edits see no
+  // tag, on web and on native alike; the references stay at their offsets through shiftRefs like after any other change)
   return <ChipInput {...props} ref={inner} onChange={onInner} />;
 });

@@ -94,9 +94,9 @@ test("a message, a draft, a fork and the session calls of a section's chat go to
   await api.send(a("c_1"), "main", "hi", "", [], { branch: "ab12cd34", at: 2, new: true });
   assert.equal(last().path, `${ON}/chats/c_1/messages`);
   answer = () => json({ rev: 5 });
-  assert.deepEqual(await api.saveDraft(a("c_1"), "main", { text: "@B", mentions: [{ name: "B", id: a("b_1") }] }, 4), { rev: 5 });
+  assert.deepEqual(await api.saveDraft(a("c_1"), "main", { text: "@B" }, 4), { rev: 5 });
   assert.deepEqual([last().method, last().path], ["PUT", `${ON}/chats/c_1/draft?branch=main&rev=4`]);
-  assert.deepEqual(last().body, { text: "@B", mentions: [{ name: "B", id: "b_1" }] }, "the boards picked in it by their own ids");
+  assert.deepEqual(last().body, { text: "@B" });
   assert.equal(last().path.includes("replace"), false);
   answer = () => json(chatView("c_fork", { forkedFrom: "c_1" }));
   const fork = await api.fork(a("c_1"), "main", 4, 3);
@@ -142,12 +142,12 @@ test("what a section's chat is read with: its view, items, tree, context, a suba
   assert.deepEqual([conf.chat?.id, conf.chat?.group], [a("c_1"), a("g_1")]);
 });
 
-test("a draft refused as stale brings that server's draft with the page's keys", async () => {
-  answer = () => json({ error: "the draft was changed", code: "stale", rev: 9, draft: { text: "@B", mentions: [{ name: "B", id: "b_1" }] } }, 409);
+test("a draft refused as stale brings that server's draft", async () => {
+  answer = () => json({ error: "the draft was changed", code: "stale", rev: 9, draft: { text: "@B" } }, 409);
   await assert.rejects(api.saveDraft(a("c_1"), "main", { text: "mine" }, 4), (e: unknown) => {
     assert.ok(e instanceof ApiError);
     assert.deepEqual([e.code, e.rev], ["stale", 9]);
-    assert.deepEqual(e.draft, { text: "@B", mentions: [{ name: "B", id: a("b_1") }] });
+    assert.deepEqual(e.draft, { text: "@B" });
     return true;
   });
 });
@@ -232,19 +232,10 @@ test("an id of one server is never sent to another: a move, a nesting or a new g
   assert.deepEqual([last().path, last().body], [`${ON}/groups`, { name: "n" }]);
 });
 
-test("a draft is saved with the boards of its own server alone: a local board picked in a section's chat, and the reverse, is not sent as that server's", async () => {
-  answer = () => json({ rev: 2 });
-  const picks = [{ name: "Here", id: "b_1" }, { name: "There", id: a("b_1") }];
-  await api.saveDraft(a("c_1"), "main", { text: "@Here @There", mentions: picks }, 1);
-  assert.deepEqual([last().path, last().body], [`${ON}/chats/c_1/draft?branch=main&rev=1`, { text: "@Here @There", mentions: [{ name: "There", id: "b_1" }] }]);
-  await api.saveDraft("c_1", "main", { text: "@Here @There", mentions: picks }, 1);
-  assert.deepEqual([last().path, last().body], ["/api/chats/c_1/draft?branch=main&rev=1", { text: "@Here @There", mentions: [{ name: "Here", id: "b_1" }] }]);
-});
-
 // The one rule under all of the above, asked of every method of the api at once: no key of the page reaches the wire.
 test("whatever the call, it goes to the section's server with nothing of the page's: no key, no `server`, no `collapsed`, no `replace`, no `local`", async () => {
   answer = (path) => (path.endsWith("/scene") ? json({}, 200, { "X-AIWB-Scene-Rev": "1" }) : json({ rev: 1, state: "free", id: "x", name: "n", group: "g_1", created: "", status: "draft", version: 1, items: [] }));
-  const draft = { text: "@B", mentions: [{ name: "B", id: a("b_1") }] };
+  const draft = { text: "@B" };
   const all: Promise<unknown>[] = [
     api.newGroup(A, "n", a("g_1")), api.renameGroup(a("g_1"), "n"), api.moveGroup(a("g_1"), a("g_2"), a("g_3")), api.archive("groups", a("g_1")), api.unarchive("groups", a("g_1")), api.deleteGroup(a("g_1"), "delete"),
     api.newBoard(a("g_1"), "n", true), api.scene(a("b_1")), api.saveScene(a("b_1"), 1, {}), api.takeBoard(a("b_1")), api.releaseBoard(a("b_1")), api.renameBoard(a("b_1"), "n"), api.moveBoard(a("b_1"), a("g_1")),

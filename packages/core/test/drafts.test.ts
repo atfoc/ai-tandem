@@ -20,11 +20,10 @@ function saver(initial?: Draft, fail = false) {
   return { puts, local, s: new DraftSaver(put, initial, unsaved, 10) };
 }
 
-test("draftOf drops blank text and mentions without text", () => {
+test("draftOf drops blank text", () => {
   assert.deepEqual(draftOf("  \n "), { text: "" });
-  assert.deepEqual(draftOf("", [{ name: "a", id: "b_1" }]), { text: "" });
   assert.deepEqual(draftOf("hi"), { text: "hi" });
-  assert.deepEqual(draftOf("hi @a", [{ name: "a", id: "b_1" }]), { text: "hi @a", mentions: [{ name: "a", id: "b_1" }] });
+  assert.deepEqual(draftOf("hi @a"), { text: "hi @a" }, "an @ is text like any other");
 });
 
 test("saves the last change after a pause", async () => {
@@ -90,22 +89,22 @@ test("changing back to the saved draft drops the unsaved copy", () => {
 const quote = { quote: "undo", comment: "keep it", item: 1, start: 4, end: 8 };
 
 test("draftOf keeps quotes, with or without text", () => {
-  assert.deepEqual(draftOf("", [], [quote]), { text: "", references: [quote] });
-  assert.deepEqual(draftOf("hi @a", [{ name: "a", id: "b_1" }], [quote]), { text: "hi @a", mentions: [{ name: "a", id: "b_1" }], references: [quote] });
-  assert.equal(hasDraft(draftOf("", [], [quote])), true);
+  assert.deepEqual(draftOf("", [quote]), { text: "", references: [quote] });
+  assert.deepEqual(draftOf("hi", [quote]), { text: "hi", references: [quote] });
+  assert.equal(hasDraft(draftOf("", [quote])), true);
   assert.equal(hasDraft(draftOf(" ")), false);
   assert.equal(hasDraft(undefined), false);
 });
 
 test("saves quotes and their comments, and skips them when saved already", async () => {
   const { puts, s } = saver({ text: "", references: [quote] });
-  s.change("", [], [quote]); // the composer restoring it
+  s.change("", [quote]); // the composer restoring it
   await tick(30);
   assert.equal(puts.length, 0);
-  s.change("", [], [{ ...quote, comment: "keep it here" }]);
+  s.change("", [{ ...quote, comment: "keep it here" }]);
   await tick(30);
   assert.deepEqual(puts, [[{ text: "", references: [{ ...quote, comment: "keep it here" }] }, false]]);
-  s.change("", [], []); // the last quote removed
+  s.change("", []); // the last quote removed
   await tick(30);
   assert.deepEqual(puts[1], [{ text: "" }, false]);
 });
@@ -148,25 +147,27 @@ test("legacyDraftRenames: a draft kept per chat goes under the chat's current br
 });
 
 const q = (item: number, comment?: string): Reference => ({ quote: "q" + item, item, start: 0, end: 2, ...(comment ? { comment } : {}) });
-const held = (text: string, references: Reference[] = [], mentions: Held["mentions"] = [], images: Held["images"] = []): Held => ({ text, mentions, references, images });
+const held = (text: string, references: Reference[] = [], images: Held["images"] = []): Held => ({ text, references, images });
 const NOTHING = held("");
 
 test("heldOf and sameDraft: a draft as a composer holds it; no draft is the empty one", () => {
   assert.deepEqual(heldOf({ text: "hi" }), held("hi"));
   assert.deepEqual(heldOf({ text: "", references: [q(1)] }), held("", [q(1)]));
-  assert.equal(sameDraft({ text: "hi" }, { text: "hi", mentions: [], references: [] }), true);
+  assert.equal(sameDraft({ text: "hi" }, { text: "hi", references: [] }), true);
+  // a draft saved by a build that had the @ list may still carry the boards picked in it: they are ignored
+  assert.equal(sameDraft({ text: "hi @a" }, { text: "hi @a", mentions: [{ name: "a", id: "b_1" }] } as Draft), true);
+  assert.deepEqual(heldOf({ text: "hi @a", mentions: [{ name: "a", id: "b_1" }] } as Draft), held("hi @a"));
   assert.equal(sameDraft(undefined, { text: " " }), true);
   assert.equal(sameDraft(null, { text: "" }), true);
   assert.equal(sameDraft({ text: "hi" }, { text: "hi", references: [q(1)] }), false);
   assert.equal(sameDraft({ text: "hi" }, null), false);
 });
 
-test("joinDrafts: both texts, mentions and quotes; the same draft twice, or one with nothing, is one draft", () => {
-  const a: Draft = { text: "typed @a", mentions: [{ name: "a", id: "b_1" }], references: [q(1)] };
-  const b: Draft = { text: "aside @a @b", mentions: [{ name: "a", id: "b_1" }, { name: "b", id: "b_2" }], references: [q(1, "edited"), q(2)] };
+test("joinDrafts: both texts and quotes; the same draft twice, or one with nothing, is one draft", () => {
+  const a: Draft = { text: "typed", references: [q(1)] };
+  const b: Draft = { text: "aside", references: [q(1, "edited"), q(2)] };
   assert.deepEqual(joinDrafts(a, b), {
-    text: "typed @a\n\naside @a @b",
-    mentions: [{ name: "a", id: "b_1" }, { name: "b", id: "b_2" }],
+    text: "typed\n\naside",
     references: [q(1, "edited"), q(2)],
   });
   assert.equal(joinDrafts(a, null), a);
@@ -177,9 +178,9 @@ test("joinDrafts: both texts, mentions and quotes; the same draft twice, or one 
 });
 
 test("draftsAfterSent: Branch and edit leaves the draft put aside on the branch left, whole", () => {
-  const aside = held("my draft", [q(1), q(7)], [{ name: "a", id: "b_1" }]);
+  const aside = held("my draft", [q(1), q(7)]);
   assert.deepEqual(draftsAfterSent(aside, NOTHING, true), {
-    left: { text: "my draft", mentions: [{ name: "a", id: "b_1" }], references: [q(1), q(7)] },
+    left: { text: "my draft", references: [q(1), q(7)] },
     to: null, // a new branch opens with no draft: the draft does not come back into the composer
   });
 });
@@ -420,15 +421,15 @@ test("text typed after a Send and saved is kept when the drop of the sent draft 
   const { puts, local, shown, s } = counted(3, { text: "first" });
   s.sending(); // the Send is on its way
   s.change("");
-  s.change("next", [{ name: "a", id: "b_1" }]);
+  s.change("next", [q(1)]);
   await tick(30);
   await puts[0].ok(4);
-  s.arrived(4, { text: "next", mentions: [{ name: "a", id: "b_1" }] }); // the save's echo
+  s.arrived(4, { text: "next", references: [q(1)] }); // the save's echo
   assert.equal(local.d, null);
   s.arrived(5, null); // a server that drops the sent draft late
   assert.deepEqual(shown, []);
-  assert.deepEqual([local.d, local.base], [{ text: "next", mentions: [{ name: "a", id: "b_1" }] }, 5]);
-  assert.deepEqual([puts.length, puts[1].d, puts[1].base], [2, { text: "next", mentions: [{ name: "a", id: "b_1" }] }, 5]);
+  assert.deepEqual([local.d, local.base], [{ text: "next", references: [q(1)] }, 5]);
+  assert.deepEqual([puts.length, puts[1].d, puts[1].base], [2, { text: "next", references: [q(1)] }, 5]);
   await puts[1].ok(6);
   assert.deepEqual([shown, local.d], [[], null]);
   // the drop was taken once: a draft cleared elsewhere after it empties the composer as before
@@ -450,11 +451,11 @@ test("the drop of the sent draft that arrives while the save of the text typed s
 });
 
 test("a Send that keeps the draft saves it again over the removal the server makes, and the box is not emptied", async () => {
-  const { puts, local, shown, s } = counted(3, { text: "typed", mentions: [{ name: "a", id: "b_1" }] });
+  const { puts, local, shown, s } = counted(3, { text: "typed", references: [q(1)] });
   const answered = s.keeping(); // a spoken turn is on its way
   s.arrived(4, null); // the server removed the branch's draft for it
   assert.deepEqual(shown, []);
-  assert.deepEqual([puts.length, puts[0].d, puts[0].base], [1, { text: "typed", mentions: [{ name: "a", id: "b_1" }] }, 4]);
+  assert.deepEqual([puts.length, puts[0].d, puts[0].base], [1, { text: "typed", references: [q(1)] }, 4]);
   await puts[0].ok(5);
   answered(false);
   assert.deepEqual([shown, local.d], [[], null]);
@@ -1359,11 +1360,11 @@ test("revSet: the record of a branch gets a later counter; an earlier one, or no
 const im = (n: number, size = 1000): ChatImage => ({ id: String(n).padStart(64, "0"), name: `i${n}.png`, type: "image/png", size });
 
 test("a draft of images alone is a draft, wherever the page asks whether a branch has one", () => {
-  const d = draftOf("", [], [], [im(1)]);
+  const d = draftOf("", [], [im(1)]);
   assert.deepEqual(d, { text: "", images: [im(1)] });
   assert.equal(hasDraft(d), true);
   assert.equal(hasDraft({ text: "", images: [] }), false);
-  assert.equal(hasDraft(draftOf("  ", [], [], [])), false);
+  assert.equal(hasDraft(draftOf("  ", [])), false);
   assert.equal(chatHasDraft(view({ draft: d })), true);
   assert.equal(otherDrafts([record("main"), record("ab12cd34", d)], "main"), true);
   assert.equal(otherDrafts([record("main", d)], "main"), false);
@@ -1375,24 +1376,22 @@ test("a draft of images alone is a draft, wherever the page asks whether a branc
   assert.deepEqual([cur.view.draft, cur.view.hasDraft], [d, true]);
   // a composer's box gets the draft's text, which is none, and not a text held from before
   assert.equal(boxText(d, "held while archived"), "");
-  // mentions go with text only, as before; the images stay
-  assert.deepEqual(draftOf("", [{ name: "a", id: "b_1" }], [], [im(1)]), { text: "", images: [im(1)] });
 });
 
 test("a draft has no image bytes: an image is named by its id, name, type and size, whatever the composer holds of it", () => {
   const fat = { ...im(1), data: new Uint8Array(8), src: "blob:preview" } as ChatImage;
-  const d = draftOf("see", [], [], [fat]);
+  const d = draftOf("see", [], [fat]);
   assert.deepEqual(d.images, [im(1)]);
   assert.equal(JSON.stringify(d), JSON.stringify({ text: "see", images: [im(1)] }));
   // the unsaved copy in the browser is the same draft
   const { local, s } = saver();
-  s.change("see", [], [], [fat]);
+  s.change("see", [], [fat]);
   assert.equal(JSON.stringify(local.d), JSON.stringify({ text: "see", images: [im(1)] }));
 });
 
 test("what a composer holds and its draft are one another's, with the images; two drafts with other images are not the same", () => {
   const d: Draft = { text: "t", references: [q(1)], images: [im(1), im(2)] };
-  assert.deepEqual(heldOf(d), held("t", [q(1)], [], [im(1), im(2)]));
+  assert.deepEqual(heldOf(d), held("t", [q(1)], [im(1), im(2)]));
   assert.deepEqual(heldOf({ text: "t" }).images, []);
   assert.deepEqual(ofHeld(heldOf(d)), d);
   assert.equal(sameDraft(d, { ...d, images: [im(1), im(2)] }), true);
@@ -1420,41 +1419,41 @@ test("joinDrafts: two drafts joined keep the images of both, each once, also pas
 });
 
 test("draftsAfterSent: the images go where the text goes", () => {
-  const aside = held("the draft put aside", [], [], [im(1)]), typed = held("typed after the Send", [], [], [im(2)]);
+  const aside = held("the draft put aside", [], [im(1)]), typed = held("typed after the Send", [], [im(2)]);
   // moved: the branch left has what was put aside, the new branch what was typed
   assert.deepEqual(draftsAfterSent(aside, typed, true), { left: { text: "the draft put aside", images: [im(1)] }, to: { text: "typed after the Send", images: [im(2)] } });
   // images alone typed after the Send are a draft of the new branch
-  assert.deepEqual(draftsAfterSent(null, held("", [], [], [im(2)]), true), { left: { text: "" }, to: { text: "", images: [im(2)] } });
+  assert.deepEqual(draftsAfterSent(null, held("", [], [im(2)]), true), { left: { text: "" }, to: { text: "", images: [im(2)] } });
   assert.deepEqual(draftsAfterSent(null, NOTHING, true), { left: { text: "" }, to: null });
   // not moved: the two are joined in the branch left, with the images of both
   assert.deepEqual(draftsAfterSent(aside, typed, false), { left: { text: "typed after the Send\n\nthe draft put aside", images: [im(2), im(1)] }, to: null });
-  assert.deepEqual(draftsAfterSent(held("", [], [], [im(1)]), held("", [], [], [im(1), im(3)]), false).left, { text: "", images: [im(1), im(3)] });
+  assert.deepEqual(draftsAfterSent(held("", [], [im(1)]), held("", [], [im(1), im(3)]), false).left, { text: "", images: [im(1), im(3)] });
 });
 
 test("the saver saves a draft of images alone, a change of the images alone, and the empty draft when the last image is removed", async () => {
   const { puts, local, s } = saver();
-  s.change("", [], [], [im(1)]);
+  s.change("", [], [im(1)]);
   assert.deepEqual(local.d, { text: "", images: [im(1)] }); // kept in the browser until the server has it, without bytes
   await tick(30);
   assert.deepEqual(puts, [[{ text: "", images: [im(1)] }, false]]);
   assert.equal(local.d, null);
-  s.change("", [], [], [im(1)]); // the same again: nothing to save
+  s.change("", [], [im(1)]); // the same again: nothing to save
   await tick(30);
   assert.equal(puts.length, 1);
-  s.change("", [], [], [im(1), im(2)]);
+  s.change("", [], [im(1), im(2)]);
   await tick(30);
   assert.deepEqual(puts[1][0], { text: "", images: [im(1), im(2)] });
-  s.change("", [], [], []);
+  s.change("", [], []);
   await tick(30);
   assert.deepEqual(puts[2][0], { text: "" });
 });
 
 test("a saver that opens on a draft with images skips that draft, and saves it when the page goes away with an image more", async () => {
   const { puts, s } = saver({ text: "hi", images: [im(1)] });
-  s.change("hi", [], [], [im(1)]);
+  s.change("hi", [], [im(1)]);
   await tick(30);
   assert.equal(puts.length, 0);
-  s.change("hi", [], [], [im(1), im(2)]);
+  s.change("hi", [], [im(1), im(2)]);
   s.flush(true);
   assert.deepEqual(puts, [[{ text: "hi", images: [im(1), im(2)] }, true]]);
 });
@@ -1467,7 +1466,7 @@ test("a draft with images from another window is shown with them, and one typed 
   a.s.arrived(4, { text: "theirs", images: [im(2)] });
   assert.deepEqual(a.shown[1], { text: "theirs", images: [im(2)] });
   const b = counted(2);
-  b.s.change("", [], [], [im(5)]); b.s.flush();
+  b.s.change("", [], [im(5)]); b.s.flush();
   await b.puts[0].stale(4, { text: "theirs" });
   assert.deepEqual(b.shown, []); // what was added here stays in the composer
   assert.deepEqual([b.puts[1].d, b.puts[1].base], [{ text: "", images: [im(5)] }, 4]); // and is saved again on the new counter
@@ -1477,21 +1476,21 @@ test("a Send of images alone is a Send of a draft: one removed on the server mea
   // the draft of images alone was removed while the Send ran (another window sent it, or the Send was taken after all): nothing goes back
   const a = counted(3, { text: "", images: [im(1)] });
   let end = a.s.sending(50);
-  a.s.change("", [], [], []);
+  a.s.change("", [], []);
   a.s.arrived(4, null);
   assert.equal(end(true), true);
   assert.equal(putsBack(true), false);
   // no removal: the images go back with the message
   const b = counted(3, { text: "", images: [im(1)] });
   end = b.s.sending(50);
-  b.s.change("", [], [], []);
+  b.s.change("", [], []);
   assert.equal(end(true), false);
   assert.equal(putsBack(false), true);
   // images the server never had as a draft (added and sent within the pause) are no draft another window can send
   const c = counted(3);
-  c.s.change("", [], [], [im(1)]);
+  c.s.change("", [], [im(1)]);
   end = c.s.sending(50);
-  c.s.change("", [], [], []);
+  c.s.change("", [], []);
   c.s.arrived(4, null);
   assert.equal(end(true), false);
 });

@@ -10,7 +10,7 @@ import type { PermAnswer } from "./logic/perms.ts";
 import type { LibraryTree } from "./logic/library.ts";
 import { isBytesFile, type UploadFile } from "./logic/chatimage.ts";
 import { ownId, pathOf, sameServer, serverOfKey } from "./logic/keys.ts";
-import { boardIn, chatIn, draftIn, draftOut, groupIn, stateIn } from "./logic/sectionwire.ts";
+import { boardIn, chatIn, draftOut, groupIn, stateIn } from "./logic/sectionwire.ts";
 import { transport, type CallAnswer, type CallBody } from "./transport/index.ts";
 
 /** A server's own snapshot (GET /api/state and the `snapshot` event): its own groups, boards, chats and the rest, with its
@@ -203,9 +203,8 @@ export const api = {
    *  was changed elsewhere: the error then has the server's counter (rev) and its draft. missing: the ids of the images the draft
    *  named that the chat does not hold; it was saved without them. */
   saveDraft: (id: string, branch: string, d: Draft, base: number, keepalive = false): Promise<{ rev: number; missing?: string[] }> =>
-    thing<{ rev: number; missing?: unknown }>("chats", id, "PUT", `/draft${onBranch(branch)}&rev=${base}`, draftOut(serverOfKey(id), d), keepalive)
-      .then((r) => ({ rev: r.rev, ...(Array.isArray(r.missing) && r.missing.length ? { missing: r.missing.filter((x): x is string => typeof x === "string") } : {}) }),
-        (e) => { if (e instanceof ApiError && e.draft) e.draft = draftIn(serverOfKey(id), e.draft); throw e; }),
+    thing<{ rev: number; missing?: unknown }>("chats", id, "PUT", `/draft${onBranch(branch)}&rev=${base}`, draftOut(d), keepalive)
+      .then((r) => ({ rev: r.rev, ...(Array.isArray(r.missing) && r.missing.length ? { missing: r.missing.filter((x): x is string => typeof x === "string") } : {}) })),
   /** Uploads an image to a chat (id: the top-level chat's): the body is the file's bytes, as they are. Answers the image as the
    *  chat holds it, which is what a draft and a message name. The same call for a chat of this computer and of a section. Refused with the codes
    *  "image_too_large" (413), "image_type" (415) and "image_cap" (409: too many images of the chat were never sent). For a chat of a section also as

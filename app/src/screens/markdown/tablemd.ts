@@ -20,7 +20,7 @@ function code(v: string): string {
 export function inlineMarkdown(kids: Inline[]): string {
   return kids.map((n): string => {
     switch (n.k) {
-      case "text": return plain(n.v.replace(/\s+/g, " "));
+      case "text": case "indent": return plain(n.v.replace(/\s+/g, " "));
       case "br": return "<br>";
       case "code": return code(n.v);
       case "em": return `*${inlineMarkdown(n.kids)}*`;

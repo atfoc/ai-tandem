@@ -16,7 +16,7 @@ import type { Block, Cell, Inline } from "./doc.ts";
 import { Inlines } from "./Inline.tsx";
 
 const textLength = (kids: Inline[]): number =>
-  kids.reduce((n, k) => n + (k.k === "text" || k.k === "code" ? k.v.length : k.k === "chip" ? k.ref.label.length + 3 : k.k === "mention" ? k.raw.length : k.k === "br" || k.k === "check" ? 1 : textLength(k.kids)), 0);
+  kids.reduce((n, k) => n + (k.k === "text" || k.k === "code" || k.k === "indent" ? k.v.length : k.k === "chip" ? k.ref.label.length + 3 : k.k === "mention" ? k.raw.length : k.k === "br" || k.k === "check" ? 1 : textLength(k.kids)), 0);
 
 /** The width of a column's longest cell's text in points at `size`, without padding (about half the size for a character). */
 export const textWidth = (cells: Cell[], size: number): number => Math.max(0, ...cells.map((c) => textLength(c.kids))) * size * 0.54;

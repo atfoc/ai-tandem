@@ -39,6 +39,9 @@ export const ArchiveGlyph = ({ size = 17, color }: Glyph) => draw(size, color, <
   <Rect x="1.8" y="2.5" width="12.4" height="3.2" rx="1" /><Path d="M3 5.7v6.3a1.4 1.4 0 0 0 1.4 1.4h7.2A1.4 1.4 0 0 0 13 12V5.7M6.3 8.5h3.4" />
 </>);
 
+/** Lines, the middle two pushed in: Composer's editing. */
+export const IndentGlyph = ({ size = 17, color }: Glyph) => draw(size, color, <Path d="M2.5 3.5h11M6 6.5h7.5M6 9.5h7.5M2.5 12.5h11M2.5 6.5l2 1.5-2 1.5" />);
+
 /** A circled i: About. */
 export const InfoGlyph = ({ size = 17, color }: Glyph) => draw(size, color, <>
   <Path d="M8 14A6 6 0 1 0 8 2a6 6 0 0 0 0 12z" /><Path d="M8 7.2V11" /><Path d="M8 4.9h.01" strokeWidth={1.8} />

@@ -24,6 +24,9 @@ export type Subscription = { remove(): void };
  *  to the system. */
 export interface AiwbKeysModule {
   addListener<E extends keyof AiwbKeysEvents>(name: E, listener: AiwbKeysEvents[E]): Subscription;
+  /** Takes Tab and Shift+Tab too (`TAB_KEYS`) while `on` and a listener is added; `false` gives them back to the system. Optional: a
+   *  build made before it has no such function. */
+  setTabKeys?(on: boolean): void;
 }
 
 /** One shortcut the module takes. `mod` is the platform's command key: ⌘ (metaKey) on iPadOS, Ctrl (ctrlKey) on Android. */
@@ -49,6 +52,13 @@ export const SHORTCUTS: readonly Shortcut[] = [
   { code: "KeyE", key: "e", mod: true, shift: false, label: "Model and effort" },
   { code: "Enter", key: "Enter", mod: true, shift: false, label: "Save" },
   { code: "Escape", key: "Escape", mod: false, shift: false, label: "Close" },
+];
+
+/** The keys taken only on request (`setTabKeys(true)`: the composer's box has the focus and code editing is on), not part of
+ *  `SHORTCUTS`. No command key; the event's `key` is "Tab" with Shift too. */
+export const TAB_KEYS: readonly Shortcut[] = [
+  { code: "Tab", key: "Tab", mod: false, shift: false, label: "Indent" },
+  { code: "Tab", key: "Tab", mod: false, shift: true, label: "Outdent" },
 ];
 
 /** The event of a shortcut as the platform's module makes it. */

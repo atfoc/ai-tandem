@@ -225,7 +225,7 @@ async function arrived(chat: string, branch: string, image: ChatImage): Promise<
     if (!getState().chats[chat] || heldImages(chat, branch, add)) return;
     const d = draftToShow(chat, branch) ?? { text: "" };
     if (d.images?.some((x) => x.id === image.id)) return;
-    try { await putDraft(chat, branch, draftOf(d.text, d.mentions, d.references, add(d.images ?? []))); return; }
+    try { await putDraft(chat, branch, draftOf(d.text, d.references, add(d.images ?? []))); return; }
     catch (e) { if (!staleOf(e)) return; } // not saved: the unsaved copy has it, and the branch's next composer saves it
   }
 }

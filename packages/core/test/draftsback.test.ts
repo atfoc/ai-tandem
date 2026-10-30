@@ -68,9 +68,9 @@ test("the draft that waits is saved with its images: one of images alone is save
   const backs = new DraftBacks();
   const a = composer(backs, "s_1"), b = composer(backs, "s_1"), here = composer(backs, LOCAL_SERVER);
   // text with two images; an image alone (its upload was answered just before the server went away); and a local chat's while the page's stream was down
-  a.s.change("look", [], [], [img(1), img(2)]); a.s.flush();
-  b.s.change("", [], [], [img(3)]); b.s.flush();
-  here.s.change("", [], [], [img(4)]); here.s.flush();
+  a.s.change("look", [], [img(1), img(2)]); a.s.flush();
+  b.s.change("", [], [img(3)]); b.s.flush();
+  here.s.change("", [], [img(4)]); here.s.flush();
   await tick();
   assert.deepEqual([a.c.tries, b.c.tries, here.c.tries, a.c.drafts, b.c.drafts], [1, 1, 1, [], []]);
   a.c.away = false; b.c.away = false;
@@ -84,7 +84,7 @@ test("the draft that waits is saved with its images: one of images alone is save
   assert.deepEqual(here.c.drafts, [{ text: "", images: [img(4)] }]);
   // an image removed while the server was away again: what is left is what is saved, and nothing is saved twice
   a.c.away = true;
-  a.s.change("look", [], [], [img(2)]); a.s.flush();
+  a.s.change("look", [], [img(2)]); a.s.flush();
   await tick();
   a.c.away = false;
   backs.sectionBack("s_1"); backs.opened();

@@ -1,7 +1,7 @@
 // L23 (new; package rn-sw-gaps-c): the composer and the thread of a chat that is shown as it was, in the cases no check looked at: its server drops
 // while a list is open or the chat is archived, the chat is deleted on its server, a refusal's sentence is under the box when the server comes back.
 // On the SEC seed (the server "Studio Mac" of the sections), at desktop, tablet and phone.
-//   C-MN-09  the @ list of a board chat: open with the server connected; as the server drops it is gone, and Enter and the arrows pick no board
+//   C-MN-09  the box of a board chat with text typed: as the server drops it takes no key, and Enter and the arrows send and change nothing
 //   C-RO-07  an archived chat of a section: "Archived — unarchive to continue" and the button; its server dropped, "Archived." and the reason with
 //            no button and no sentence under it; back, the button
 //   C-IM-25  a chat its server no longer has: the attach button is off, and its title is the gone sentence ("This chat is no longer on Studio Mac.")
@@ -23,7 +23,7 @@ const J = JSON.stringify;
 const STUDIO = "s_studio", AWAY = "Studio Mac is not connected", GONE = "This chat is no longer on Studio Mac.";
 const key = (id) => `${STUDIO}~${id}`;
 
-await check("L23 a chat shown as it was: the @ list, the archived bar, the attach button, an empty thread, a refusal's sentence", async ({ url, viewport, layout, open, fail, note }) => {
+await check("L23 a chat shown as it was: the box as the server drops, the archived bar, the attach button, an empty thread, a refusal's sentence", async ({ url, viewport, layout, open, fail, note }) => {
   const phone = layout === "phone";
   const drop = () => mockEval(`setServerState("${STUDIO}", "unreachable", { detail: "connection refused" });`, url);
   const back = () => mockEval(`setServerState("${STUDIO}", "connected");`, url);
@@ -49,18 +49,16 @@ await check("L23 a chat shown as it was: the @ list, the archived bar, the attac
     : (await byTid(page, "remote-bar").first().getAttribute("data-kind").catch(() => "")) === kind;
   const text = async (page) => (await box(page).textContent()) ?? "";
 
-  // ---- C-MN-09: the @ list is open, the server drops
+  // ---- C-MN-09: text in the box, the server drops
   {
     await fresh();
     const { page, ctx } = await on({ board: key("b_loose"), chat: key("c_on_floor") });
-    // (the phone's @ list is the dock above the composer, C1: `mention-dock`; the wide layouts' is the popup)
-    const calls = callsOf(page), pop = byTid(page, phone ? "mention-dock" : "mention-pop");
+    const calls = callsOf(page);
     await press(page, box(page));
-    await page.keyboard.type("@");
-    if (!await until(() => pop.count(), 10000)) fail('"@" in a board chat of a section opened no list of boards');
+    await page.keyboard.type("hi");
+    if (!await until(async () => (await text(page)) === "hi", 10000)) fail(`the box of a board chat of a section holds ${J(await text(page))}, not the text typed`);
     else {
       await drop();
-      if (!await until(async () => !await pop.count(), WAIT)) fail("the @ list stays open when the chat's server drops");
       if (phone) { if (!await until(() => said(page, "off"), WAIT)) fail(`the composer of a chat whose server dropped says ${J(await blockText(page))} in the toolbar's place (${await byTid(page, "composer-block").count()} blocks), with the placeholder ${J(await box(page).getAttribute("data-placeholder"))}`); }
       else if (!await until(async () => (await box(page).getAttribute("data-placeholder")) === AWAY, WAIT)) fail(`the box of a chat whose server dropped says ${J(await box(page).getAttribute("data-placeholder"))} when empty, not ${J(AWAY)}`);
       const was = calls.length;
@@ -68,9 +66,8 @@ await check("L23 a chat shown as it was: the @ list, the archived bar, the attac
       await page.keyboard.press("Enter");
       await page.keyboard.press("Tab");
       await page.waitForTimeout(500);
-      if (await text(page) !== "@") fail(`a board was picked, or the box took a key, while the server is away: the box holds ${J(await text(page))}`);
-      if (await byTid(page, "ctx-chip", { ref: true }).count()) fail("a board was mentioned while the server is away");
-      // (the "@" typed just before the drop may still be saved: that is the draft's own save, which SEC.7 proves)
+      if (await text(page) !== "hi") fail(`the box took a key while the server is away: it holds ${J(await text(page))}`);
+      // (the text typed just before the drop may still be saved: that is the draft's own save, which SEC.7 proves)
       const calling = calls.slice(was).filter((c) => c.method !== "GET" && !(c.method === "PUT" && /\/draft\?/.test(c.path)));
       if (calling.length) fail(`a call was made for a box that takes nothing: ${J(calling.map((c) => `${c.method} ${c.path}`))}`);
     }
@@ -216,5 +213,5 @@ await check("L23 a chat shown as it was: the @ list, the archived bar, the attac
     if (await text(page) !== "will be refused") fail(`the refused text is not in the box: ${J(await text(page))}`);
     await ctx.close();
   }
-  note("the @ list goes with the server, the archived bar's two forms, the attach button and the empty thread of a chat its server no longer has, a refusal's sentence cleared by the server's return");
+  note("the box takes no key once the server is gone, the archived bar's two forms, the attach button and the empty thread of a chat its server no longer has, a refusal's sentence cleared by the server's return");
 }, { viewports, page: false });

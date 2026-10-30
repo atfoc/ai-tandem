@@ -102,7 +102,7 @@ test("a server that is not connected: no agent is offered, the line says why, an
   assert.equal(offPlaceholder(DOWN, [], far({ agent: "" })), "Studio is not connected", "before the agent's own placeholder");
   // connected: as any chat
   assert.equal(sendOff(THERE), false);
-  assert.equal(sendTitleOn(THERE, ["pi"], c, false), "Send (Enter)");
+  assert.equal(sendTitleOn(THERE, ["pi"], c, false), "Send");
   assert.equal(sendTitleOn(THERE, [], chat({ agent: "" }), true), noAgentOn(THERE));
   assert.equal(sendTitleOn(THERE, ["pi"], chat({ status: "thinking" }), true), "The agent is working");
   assert.equal(offPlaceholder(THERE, ["pi"], c), "");
@@ -130,7 +130,7 @@ test("a chat of a section before its first message is a chat like any other: no 
     const c = far({ agent: "pi" });
     assert.deepEqual(toolbarLine(THERE, ["pi"], c), { text: "", tone: "" });
     assert.deepEqual(toolbarLine(DOWN, [], c), { text: notConnectedLine("Studio"), tone: "missing" });
-    assert.equal(sendTitleOn(THERE, ["pi"], c, false), "Send (Enter)");
+    assert.equal(sendTitleOn(THERE, ["pi"], c, false), "Send");
     assert.equal(offPlaceholder(THERE, ["pi"], c), "");
     assert.deepEqual(agentChoiceOn(THERE, ["pi", "claude"], c.agent).options, ["pi", "claude"]); // its agent can be changed until it starts
   }
@@ -227,8 +227,8 @@ test("a chat its server no longer has takes no Send and no change, and the Send,
   assert.equal(sendTitleOn(THERE, ["pi"], c, false, true), "This chat is no longer on Studio.");
   assert.equal(sendTitleOn(THERE, ["pi"], c, true, true), goneText("Studio"), "before what else blocks it");
   assert.equal(sendTitleOn(DOWN, [], c, false, true), goneText("Studio"), "and before the server that is not connected");
-  assert.equal(sendTitleOn(THERE, ["pi"], c, false, false), "Send (Enter)");
-  assert.equal(sendTitleOn(THERE, ["pi"], c, false), "Send (Enter)");
+  assert.equal(sendTitleOn(THERE, ["pi"], c, false, false), "Send");
+  assert.equal(sendTitleOn(THERE, ["pi"], c, false), "Send");
   assert.equal(offPlaceholder(THERE, ["pi"], c, true), goneText("Studio"));
   assert.equal(offPlaceholder(DOWN, [], c, true), goneText("Studio"));
   assert.equal(offPlaceholder(THERE, ["pi"], far({ agent: "" }), true), goneText("Studio"));

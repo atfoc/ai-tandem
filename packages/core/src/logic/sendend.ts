@@ -1,5 +1,10 @@
 // What the end of a Send leaves under a chat's composer and in its box. DOM-free: Composer.tsx asks here.
 
+/** The text a Send sends of what the box holds: the blank lines before the first line with something on it and the whitespace at the
+ *  end are taken off, the first line's indent is kept (code pasted or typed indented goes as it is). "" for a box of whitespace only: the
+ *  message is blank then, and is sent only with quotes or images. */
+export const sentText = (text: string): string => text.replace(/^(?:[ \t]*(?:\r\n|\n|\r))+/, "").trimEnd();
+
 /** The code of a Send refused because the chat's server is not connected: nothing was sent. */
 export const SERVER_UNREACHABLE = "server_unreachable";
 

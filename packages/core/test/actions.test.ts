@@ -156,7 +156,7 @@ const N_ITEMS = [user("q1"), reply("a1"), end("p1"), user("msg")];
 const s = () => store.getState();
 const texts = () => store.threadOf(s(), "c_1")?.items.map((it: { text?: string }) => it.text ?? "");
 const asked = () => fake.asked.splice(0);
-const held = (text: string, references: Reference[] = [], images: ChatImage[] = []): Held => ({ text, mentions: [], references, images });
+const held = (text: string, references: Reference[] = [], images: ChatImage[] = []): Held => ({ text, references, images });
 const unsaved = (branch: string): Draft | null => store.unsavedDraft("c_1", branch).read();
 /** The saves the server got for a branch of c_1, as their texts. */
 const saved = (branch: string) => fake.saves.filter(([chat, b]) => chat === "c_1" && b === branch).map(([, , d]) => d.text);
@@ -171,7 +171,7 @@ class Box {
   held: Held;
   mounted = false;
   private dirty = true;
-  private saver: { change(text: string, picked: unknown[], references: Reference[], images: ChatImage[]): void; flush(): void };
+  private saver: { change(text: string, references: Reference[], images: ChatImage[]): void; flush(): void };
 
   constructor(chat: string, branch: string) {
     this.chat = chat; this.branch = branch;
@@ -199,7 +199,7 @@ class Box {
     this.dirty = false;
     if (!s().moves[this.chat]) this.save();
   }
-  private save() { this.saver.change(this.held.text, this.held.mentions, this.held.references, this.held.images); }
+  private save() { this.saver.change(this.held.text, this.held.references, this.held.images); }
   unmount() {
     actions.registerComposer(this.chat, this.branch, null);
     if (!s().moves[this.chat]) this.save();
@@ -210,20 +210,19 @@ class Box {
   type(text: string, references = this.held.references) { this.held = { ...this.held, text, references }; this.dirty = true; this.effects(); }
   /** Send, as the composer's submit: the box is emptied at once, and gets the message back when the Send failed. */
   async submit(): Promise<string | undefined> {
-    const t = this.held.text.trim(), p = this.held.mentions, qs = this.held.references, im = this.held.images;
+    const t = this.held.text.trim(), qs = this.held.references, im = this.held.images;
     if ((!t && !qs.length && !im.length) || actions.isSending(this.chat) || this.slot.uploads.length) return;
-    this.held = { text: "", mentions: p, references: [], images: [] }; this.dirty = true; this.effects();
+    this.held = { text: "", references: [], images: [] }; this.dirty = true; this.effects();
     const post = (branch: string, target?: Target) => new Promise((resolve, reject) => {
       fake.posts.push({ chat: this.chat, branch, text: t, target, answer: async (r) => { resolve(r); await settle(); }, fail: async (e) => { reject(e); await settle(); } });
     });
     try {
       await actions.sendAt(this.chat, post);
-      if (this.mounted && this.held.mentions === p) this.held = { ...this.held, mentions: [] };
     } catch (e: any) {
       if (this.mounted) {
         this.held = { ...this.held, text: this.held.text.trim() ? this.held.text : t, references: [...qs, ...this.held.references], images: [...im, ...this.held.images.filter((x) => !im.includes(x))] };
         this.dirty = true;
-      } else if (!actions.sendFailed(this.chat, this.branch, { text: t, mentions: p, references: qs, images: im }, e)) this.saver.change(t, p, qs, im);
+      } else if (!actions.sendFailed(this.chat, this.branch, { text: t, references: qs, images: im }, e)) this.saver.change(t, qs, im);
       return e?.message ?? String(e);
     }
   }

@@ -1,0 +1,99 @@
+# aiwb-e2e: needs=server,agent,control app=1
+# ux-sentindent (the user's message in the thread, branch composer-input-tab): what the composer sends with indents is drawn as typed. A plain chat
+# "Indent-chat" on a scratch server with the stand-in agent; the phone's composer, the editing settings at their defaults (Tab puts in a tab).
+#   the bubble      "a:", "\tone", "\ttwo", "- three", "- four" (typed as in ux-editkeys) is drawn with "one" and "two" indented and "three" and "four" as list
+#                   items, in a bubble as wide as its text, not a narrow column with a letter to a line (Blocks.tsx: a user's list item is not `flex: 1`)
+#   first indent    a message that starts with Indent keeps that tab: Indent, "x", Send gives the server "\tx" (the composer drops only leading blank lines
+#                   and trailing white space)
+# ASSERTED: the server's text of both messages (`_ux-c1-sent.js`, KEEPSTART for the second); "three" and "four" visible as whole texts. SHOWN ONLY BY THE
+# SCREENSHOTS (Maestro reads no sizes): the bubble's shape (`sentindent-01-bubble`, `sentindent-02-first`).
+appId: ${APP_ID}
+---
+- runFlow: _open-app.yaml
+- runFlow: _forget-servers.yaml
+- runScript:
+    file: _ctl.js
+    env:
+      METHOD: POST
+      ROUTE: /chat?name=Indent-chat
+- evalScript: ${output.chat = output.ctl.id}
+- runFlow: _add-server.yaml
+- extendedWaitUntil:
+    visible: "Indent-chat"
+    timeout: 90000
+- tapOn: "Indent-chat"
+- extendedWaitUntil:
+    visible:
+      id: "composer-input"
+    timeout: 60000
+- waitForAnimationToEnd
+- tapOn:
+    id: "composer-input"
+- extendedWaitUntil:
+    visible:
+      id: "composer-indent"
+    timeout: 30000
+# ---- "a:", Enter, Indent, "one", Enter, "two", Enter, Outdent, "- three", Enter, "four", Send
+- inputText: "a:"
+- pressKey: Enter
+- tapOn:
+    id: "composer-indent"
+- inputText: "one"
+- pressKey: Enter
+- inputText: "two"
+- pressKey: Enter
+- tapOn:
+    id: "composer-outdent"
+- inputText: "- three"
+- pressKey: Enter
+- inputText: "four"
+- tapOn:
+    id: "send"
+- extendedWaitUntil:
+    visible: "FAKE.*a:.*"
+    timeout: 90000
+- runScript:
+    file: _ux-c1-sent.js
+    env:
+      CHAT: ${output.chat}
+      N: "1"
+      LINES: "a:|\tone|\ttwo|- three|- four"
+# ---- the thread: the keyboard lowered (a tap above the messages), the list items' texts whole
+- tapOn:
+    point: "50%,20%"
+- extendedWaitUntil:
+    notVisible: "(?i)return"
+    timeout: 10000
+- waitForAnimationToEnd
+- assertVisible: "three"
+- assertVisible: "four"
+- takeScreenshot: sentindent-01-bubble
+# ---- a message that starts with Indent: the server holds "\tx"
+- tapOn:
+    id: "composer-input"
+- extendedWaitUntil:
+    visible:
+      id: "composer-indent"
+    timeout: 30000
+- tapOn:
+    id: "composer-indent"
+- inputText: "x"
+- tapOn:
+    id: "send"
+- extendedWaitUntil:
+    visible: "FAKE.*x.*"
+    timeout: 90000
+- runScript:
+    file: _ux-c1-sent.js
+    env:
+      CHAT: ${output.chat}
+      N: "2"
+      LINES: "\tx"
+      KEEPSTART: "1"
+- tapOn:
+    point: "50%,20%"
+- extendedWaitUntil:
+    notVisible: "(?i)return"
+    timeout: 10000
+- waitForAnimationToEnd
+- takeScreenshot: sentindent-02-first

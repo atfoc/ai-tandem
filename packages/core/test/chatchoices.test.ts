@@ -113,7 +113,7 @@ test("a chat with no agent shows the reason, and its Send is blocked with the re
   // a chat with an agent keeps today's titles, and one from before the field is not blocked
   assert.deepEqual(composerControls({ status: "ready", agent: "claude" }), { stop: false, blocked: false, esc: false });
   assert.deepEqual(composerControls({ status: "ready" }), { stop: false, blocked: false, esc: false });
-  assert.equal(sendTitle({ status: "ready", agent: "claude" }, false, NO_AGENT), "Send (Enter)");
+  assert.equal(sendTitle({ status: "ready", agent: "claude" }, false, NO_AGENT), "Send");
   assert.equal(sendTitle({ status: "thinking", agent: "claude" }, true, NO_AGENT), "The agent is working");
   assert.equal(sendTitle({ status: "thinking", agent: "claude", fresh: true }, true, NO_AGENT), "The agent is starting");
 });

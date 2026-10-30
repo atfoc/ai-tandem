@@ -32,7 +32,7 @@ A *prompt* is a name and a text; *groups* hold prompts and other groups.
   opens the insert popup: a search box and the list of prompts with their paths, nothing else.
   The arrow keys move the highlight, Enter or a click inserts, Esc closes with the box as it
   was. The prompt's text goes in at the cursor, in place of a selection if there is one, as
-  plain text with its line breaks; references and mentions in the box stay as they are. What
+  plain text with its line breaks; references in the box stay as they are. What
   was inserted is from then on text you typed: it is saved with the draft, and a later change
   to the prompt does not change it. In a text box ⌘P does not print the page; anywhere else it
   is the system's, as before. The composer's toolbar has an **Insert a prompt** button that

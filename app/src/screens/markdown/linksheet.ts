@@ -40,7 +40,7 @@ export function closeLinkSheet(): void {
 export function linkText(kids: Inline[]): string {
   return kids.map((n): string => {
     switch (n.k) {
-      case "text": case "code": return n.v.replace(/[ \t\r\n]+/g, " ");
+      case "text": case "code": case "indent": return n.v.replace(/[ \t\r\n]+/g, " ");
       case "br": return " ";
       case "chip": return n.ref.label + n.after;
       case "mention": return n.raw;

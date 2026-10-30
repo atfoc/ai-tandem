@@ -9,9 +9,14 @@
 // took it); the colours are the theme's tokens, set as CSS variables on the box; the box blocks the browser's own typing
 // while it is locked or read-only; the caret is reported to onChange also when it only moves (a touch on the text, the
 // selection handles of a phone), which is what keeps the @ list in step with the caret (C-RF-26).
+//
+// Given `editing`, Tab, Shift+Tab and Enter edit like a code editor (core logic/indent.ts): the edit is typed over its span with the
+// browser's own commands, so ⌘Z undoes it as one step; a line break is a "\n" in the text, as the browser's Enter puts it (edits.ts).
+// Esc, then Tab or Shift+Tab, is the way out of such a box by the keyboard: that Tab is the browser's, and moves the focus.
 import React, { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 
 import { pastedImages, pastedName } from "@aiwb/core/logic/chatimage.ts";
+import { applyEdit, indentUnit, newlineEdit, outdentEdit, tabEdit, type Edit } from "@aiwb/core/logic/indent.ts";
 import { insertText, isInsertKey, lines, openInsertPopup, sameBox } from "@aiwb/core/logic/insert.ts";
 import { serializeRef, type Ref } from "@aiwb/core/logic/refs.ts";
 import { TYPE } from "../../ui/metrics.ts";
@@ -19,6 +24,7 @@ import { BASE_SIZE } from "../../ui/Text.tsx";
 import { SANS } from "../../ui/fonts.ts";
 import { useTokens } from "../../ui/theme.tsx";
 import { chipSpacing, chipTitle, piecesOf } from "./chipvalue.ts";
+import { boxText, boxValue, hunksOf } from "./edits.ts";
 import type { ChipInputHandle, ChipInputProps } from "./types.ts";
 
 export type { ChipInputHandle, ChipInputProps } from "./types.ts";
@@ -58,21 +64,24 @@ function chipNode(ref: Ref): HTMLSpanElement {
 
 const isChip = (n: Node | null): n is HTMLElement => !!n && n.nodeType === Node.ELEMENT_NODE && !!(n as HTMLElement).dataset?.ref;
 
-/** The value of the box: text, "\n" for line breaks and blocks, each chip's tag. */
-function valueOf(root: Node): string {
+/** What nodes read as: text, "\n" for line breaks and blocks, each chip's tag. For a part of the box (a caret's offset, a copy). */
+function textOf(root: Node): string {
   let out = "";
   root.childNodes.forEach((n) => {
     if (n.nodeType === Node.TEXT_NODE) out += (n.textContent ?? "").replace(/​/g, "");
     else if (isChip(n)) out += n.dataset.ref;
     else if (n.nodeName === "BR") out += "\n";
-    else if (n.nodeName === "DIV" || n.nodeName === "P") { if (out && !out.endsWith("\n")) out += "\n"; out += valueOf(n); }
-    else out += valueOf(n);
+    else if (n.nodeName === "DIV" || n.nodeName === "P") { if (out && !out.endsWith("\n")) out += "\n"; out += textOf(n); }
+    else out += textOf(n);
   });
   return out;
 }
 
-/** What a box is made of for `text`: text nodes, and a chip for each tag. */
-const nodesOf = (text: string) => piecesOf(text).map((p) => ("tag" in p ? chipNode(p.ref) : document.createTextNode(p.text)));
+/** The value of the box: what it reads as, less the break the browser adds to draw an empty last line (edits.ts). */
+const valueOf = (root: Node): string => boxValue(textOf(root));
+
+/** What a box is made of for `text`: text nodes, and a chip for each tag (and the break that draws an empty last line). */
+const nodesOf = (text: string) => piecesOf(boxText(text)).map((p) => ("tag" in p ? chipNode(p.ref) : document.createTextNode(p.text)));
 
 /** How much of the box's value is before a point in it. */
 function offsetOf(root: HTMLElement, node: Node, offset: number): number {
@@ -80,22 +89,21 @@ function offsetOf(root: HTMLElement, node: Node, offset: number): number {
   r.selectNodeContents(root); r.setEnd(node, offset);
   const holder = document.createElement("div");
   holder.append(r.cloneContents());
-  return valueOf(holder).length;
+  return textOf(holder).length;
 }
 
-/** The end of what a box holds, as a caret. */
-function endOf(root: HTMLElement): Range {
+/** The end of the box's value, as a caret: before the break that only draws an empty last line (edits.ts), not after it, where a
+ *  chip or a text put in would leave that break in the value. */
+const endOf = (root: HTMLElement): Range => caretAt(root, valueOf(root).length);
+
+/** The point `offset` into the value of a box made of nodesOf, as a caret (past its value: the end of what it holds). */
+function caretAt(root: HTMLElement, offset: number): Range {
   const r = document.createRange();
   r.selectNodeContents(root); r.collapse(false);
-  return r;
-}
-
-/** The point `offset` into the value of a box made of nodesOf, as a caret. */
-function caretAt(root: HTMLElement, offset: number): Range {
-  const r = endOf(root);
   let left = offset;
   for (const n of root.childNodes) {
-    if (isChip(n)) { left -= (n.dataset.ref ?? "").length; if (left <= 0) { r.setStartAfter(n); break; } }
+    if (isChip(n)) { if (left === 0) { r.setStartBefore(n); break; } left -= (n.dataset.ref ?? "").length; if (left <= 0) { r.setStartAfter(n); break; } }
+    else if (n.nodeName === "BR") { if (left === 0) { r.setStartBefore(n); break; } left -= 1; }
     else if (left <= (n.textContent ?? "").length) { r.setStart(n, left); break; }
     else left -= (n.textContent ?? "").length;
   }
@@ -153,8 +161,19 @@ function copyValue(e: React.ClipboardEvent): boolean {
   holder.append(sel.getRangeAt(0).cloneContents());
   if (!holder.querySelector("[data-ref]")) return false;
   e.preventDefault();
-  e.clipboardData.setData("text/plain", valueOf(holder));
+  e.clipboardData.setData("text/plain", textOf(holder));
   return true;
+}
+
+/** Types `text` over the selection as the browser's own keys would, so its undo keeps it: the text with insertText, each line break
+ *  with insertLineBreak (a "\n" in the text node, what Enter and Shift+Enter put in; insertText would split the line into <div>s). The
+ *  browser takes the commands typed one after the other as one step of its undo. */
+function typeText(text: string) {
+  if (!text) { document.execCommand("delete"); return; }
+  text.split("\n").forEach((s, i) => {
+    if (i) document.execCommand("insertLineBreak");
+    if (s) document.execCommand("insertText", false, s);
+  });
 }
 
 /** Pasting text with tags in it gives chips again; plain text goes in as text. */
@@ -183,6 +202,7 @@ export const ChipInput = forwardRef<ChipInputHandle, ChipInputProps>(function Ch
   const empty = useRef(true);
   const reported = useRef<[string, string] | null>(null); // what onChange was last given
   const moved = useRef<() => void>(() => {}); // what is done when the caret or the selection moved
+  const escaped = useRef(false); // Esc was the last key: the next Tab or Shift+Tab is the browser's (the focus leaves the box)
   const now = useRef(props); // the latest props, for the handlers that live longer than a render
   now.current = props;
 
@@ -304,13 +324,42 @@ export const ChipInput = forwardRef<ChipInputHandle, ChipInputProps>(function Ch
     });
   };
 
+  /** Makes a code-editor edit (core logic/indent.ts) in the box: each of its replaces (edits.ts hunksOf: none touches a chip it keeps)
+   *  typed over its span, the selection put where the edit says, the change reported. One step of the browser's undo, but for an
+   *  indent of several lines with chips in them (a step per line there). What the browser did not do as told (a box with blocks in
+   *  it, from a paste of lines) is done here: the box is made anew. */
+  const applyBoxEdit = (el: HTMLDivElement, edit: Edit) => {
+    const value = valueOf(el), want = applyEdit(value, edit);
+    if (!el.querySelector("div, p")) for (const h of hunksOf(value, edit)) { place(spanOf(el, h)); typeText(h.text); }
+    if (valueOf(el) !== want.value) el.replaceChildren(...nodesOf(want.value));
+    place(spanOf(el, want.selection));
+    changed();
+  };
+
+  /** Tab, Shift+Tab, Enter and Shift+Enter as a code editor has them, when the box is given `editing` (types.ts). True: the key was
+   *  taken (Shift+Tab with nothing to outdent too, so the focus stays in the box). */
+  const editKey = (key: KeyboardEvent): boolean => {
+    const ed = now.current.editing, el = box.current, sel = getSelection();
+    if (!ed || !el || now.current.locked || now.current.readOnly || key.ctrlKey || key.metaKey || key.altKey) return false;
+    if (key.key !== "Tab" && key.key !== "Enter") return false;
+    if (!sel?.rangeCount || !el.contains(sel.getRangeAt(0).startContainer)) return false;
+    const r = sel.getRangeAt(0), value = valueOf(el);
+    const at = { start: offsetOf(el, r.startContainer, r.startOffset), end: offsetOf(el, r.endContainer, r.endOffset) };
+    const edit = key.key === "Enter" ? newlineEdit(value, at) : key.shiftKey ? outdentEdit(value, at, ed.tabWidth) : tabEdit(value, at, indentUnit(ed));
+    if (edit) applyBoxEdit(el, edit);
+    return true;
+  };
+
   useImperativeHandle(ref, () => ({
     caret() {
       const el = box.current;
       if (!el) return null;
       const sel = getSelection();
       const r = sel?.rangeCount && el.contains(sel.getRangeAt(0).startContainer) ? sel.getRangeAt(0) : last.current && el.contains(last.current.startContainer) ? last.current : null;
-      return r ? { start: offsetOf(el, r.startContainer, r.startOffset), end: offsetOf(el, r.endContainer, r.endOffset) } : null;
+      if (!r) return null;
+      // (a caret after the break that draws an empty last line is at the value's end)
+      const n = valueOf(el).length;
+      return { start: Math.min(n, offsetOf(el, r.startContainer, r.startOffset)), end: Math.min(n, offsetOf(el, r.endContainer, r.endOffset)) };
     },
     insertRef(r: Ref, at?: { start: number; end: number } | null) {
       const el = box.current;
@@ -318,9 +367,9 @@ export const ChipInput = forwardRef<ChipInputHandle, ChipInputProps>(function Ch
       const range = at ? spanOf(el, at) : where(el);
       el.focus();
       range.deleteContents();
-      const before = document.createRange(); before.selectNodeContents(el); before.setEnd(range.startContainer, range.startOffset);
-      const after = document.createRange(); after.selectNodeContents(el); after.setStart(range.startContainer, range.startOffset);
-      const gap = chipSpacing(before.toString(), after.toString());
+      // (what is before and after it in the value: the break that only draws an empty last line is not "after")
+      const value = valueOf(el), cut = Math.min(value.length, offsetOf(el, range.startContainer, range.startOffset));
+      const gap = chipSpacing(value.slice(0, cut), value.slice(cut));
       const frag = document.createDocumentFragment();
       if (gap.before) frag.append(" ");
       const chip = chipNode(r);
@@ -349,6 +398,10 @@ export const ChipInput = forwardRef<ChipInputHandle, ChipInputProps>(function Ch
       if (!el) return;
       el.replaceChildren(...nodesOf(text));
       last.current = mark.current = null;
+      // (a selection left in the box while the focus is elsewhere is now at its start, where nobody put it: the box has no place then, so
+      // what goes in without a place goes to the value's end, `where`)
+      const sel = getSelection();
+      if (document.activeElement !== el && sel?.rangeCount && el.contains(sel.getRangeAt(0).startContainer)) sel.removeAllRanges();
       changed();
     },
     openInsert,
@@ -369,6 +422,11 @@ export const ChipInput = forwardRef<ChipInputHandle, ChipInputProps>(function Ch
     e.stopPropagation(); // the page's own shortcuts (and Excalidraw's) are not the box's
     moved.current(); // (a caret a key or a press took into a chip is put beside it before this key acts on it)
     if (key.isComposing || key.keyCode === 229) return; // an input method is composing: Enter, Esc and the arrows are its
+    // The way out by the keyboard of a box that takes Tab: after Esc, the next Tab or Shift+Tab moves the focus as the browser does. Any
+    // other key (a modifier alone is none: Shift is pressed before its Tab), a press in the box or the focus leaving it ends that.
+    const out = escaped.current;
+    if (!["Shift", "Control", "Alt", "Meta"].includes(key.key)) escaped.current = key.key === "Escape";
+    if (out && key.key === "Tab") return;
     // ⌘P opens the insert popup, and the page is not printed.
     if (isInsertKey(key, navigator.platform)) {
       e.preventDefault();
@@ -396,13 +454,16 @@ export const ChipInput = forwardRef<ChipInputHandle, ChipInputProps>(function Ch
         }
       }
     }
-    if (now.current.onKey(key)) key.preventDefault();
+    if (now.current.onKey(key)) { key.preventDefault(); return; }
+    if (editKey(key)) key.preventDefault();
   };
 
   const style = {
     "--cin-text": t.text, "--cin-muted": t.muted, "--cin-faint": t.faint, "--cin-accent": t.accent, "--cin-bg": t.bg,
     "--cin-font": SANS, "--cin-size": `${size === "phone" ? TYPE.control : BASE_SIZE}px`,
     // (the phone's box: one line high when empty, six at most, then it scrolls; the lines and the 3 px above and below as in the default box)
+    // (a tab character is as wide as the editing settings say; the box is white-space: pre-wrap, so tabs and indents show)
+    ...(props.editing ? { tabSize: props.editing.tabWidth, MozTabSize: props.editing.tabWidth } : null),
     ...(size === "phone" ? { "--cin-min": "calc(1.45em + 6px)", "--cin-max": "calc(6 * 1.45em + 6px)" } : null),
   } as React.CSSProperties;
 
@@ -420,10 +481,11 @@ export const ChipInput = forwardRef<ChipInputHandle, ChipInputProps>(function Ch
       data-placeholder={placeholder}
       spellCheck
       suppressContentEditableWarning
+      onPointerDown={() => { escaped.current = false; }}
       onPointerUp={() => moved.current()}
       onInput={changed}
       onKeyDown={onKeyDown}
-      onBlur={keep}
+      onBlur={() => { escaped.current = false; keep(); }}
       onCopy={(e) => { copyValue(e); }}
       onCut={(e) => { if (copyValue(e) && !locked && !readOnly) { document.execCommand("delete"); changed(); } }}
       onPaste={(e) => {

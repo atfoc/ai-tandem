@@ -7,6 +7,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { pageVersion } from "@aiwb/core/state/version.ts";
 
+import { useEditingSettings } from "../../state/editing.ts";
 import { useStore } from "../../state/useStore.ts";
 import { voice, useVoiceSettings } from "../../voice/index.ts";
 import { Cell, CellGroup } from "../../ui/Cells.tsx";
@@ -14,8 +15,9 @@ import { MicIcon, SunIcon } from "../../ui/icons.tsx";
 import { PHONE } from "../../ui/metrics.ts";
 import { useTheme, useTokens } from "../../ui/theme.tsx";
 import { pushScreen, subscribePushed } from "../shell/screens.ts";
-import { ArchiveGlyph, InfoGlyph, LibraryGlyph, ServersGlyph, Tile } from "./icons.tsx";
+import { ArchiveGlyph, InfoGlyph, IndentGlyph, LibraryGlyph, ServersGlyph, Tile } from "./icons.tsx";
 import { S1_TID } from "./ids.ts";
+import { editingLine } from "./editing.ts";
 import { appearanceLine, archivedValue, libraryValue, serversLine, voiceLine } from "./rows.ts";
 
 /** Whether the voice key is set: null until the keystore has answered. Read again whenever the stack changes, so a return from Voice shows
@@ -38,6 +40,7 @@ export function Settings() {
   const localNetworkDenied = useStore((s) => s.localNetworkDenied);
   const hasKey = useHasKey();
   const voiceName = useVoiceSettings((s) => s.voiceName), autoSend = useVoiceSettings((s) => s.autoSend);
+  const editing = useEditingSettings();
   const line = useMemo(() => serversLine(servers, { localNetworkDenied }), [servers, localNetworkDenied]);
   const row = (name: string) => ({ testID: S1_TID.row, data: { row: name }, onPress: () => { pushScreen(name === "voice" ? "voice-settings" : name, {}); } });
   return (
@@ -52,6 +55,9 @@ export function Settings() {
       </CellGroup>
       <CellGroup title="Voice">
         <Cell {...row("voice")} label="Voice" sub={voiceLine({ hasKey, voiceName, autoSend })} leading={<Tile colour="danger">{(c) => <MicIcon size={17} color={c} />}</Tile>} />
+      </CellGroup>
+      <CellGroup title="Composer">
+        <Cell {...row("editing")} label="Editing" sub={editingLine(editing)} leading={<Tile colour="viz3">{(c) => <IndentGlyph color={c} />}</Tile>} />
       </CellGroup>
       <CellGroup title="Display">
         <Cell {...row("appearance")} label="Appearance" sub={appearanceLine(pref)} leading={<Tile colour="viz2">{(c) => <SunIcon size={17} color={c} />}</Tile>} />

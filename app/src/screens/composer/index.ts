@@ -1,4 +1,4 @@
-// The composer (package K3; AD-62): the message box under a chat, its toolbar, the @ list, the lines, the drafts. Registers itself in the
+// The composer (package K3; AD-62): the message box under a chat, its toolbar, the lines, the drafts. Registers itself in the
 // chat view's `Composer` part (screens/chat/parts.tsx) and as the place the shell's `focusComposer` goes to. Imported by screens/register.ts.
 //
 // What the packages after it plug into (parts.tsx `setComposerPart`): K4 the image strip, the attach button and the picker; K5 the quotes of
@@ -31,4 +31,4 @@ export { TChip, ChipName, Caret, NAME_CAP, UNTIL_FIRST_MESSAGE } from "./Chip.ts
 export { Picker, type PickerOption, type PickerProps } from "./Picker.tsx";
 export { effortLabel, modelLabel, modelOf, subline } from "./model.ts";
 export { recentDirs } from "./recent.ts";
-export { boxAction, enterSends, keyNames, refKey, sendByKey } from "./keys.ts";
+export { boxAction, keyNames, refKey, sendByKey } from "./keys.ts";

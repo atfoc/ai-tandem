@@ -1,5 +1,5 @@
 // The keys port over the aiwb-keys module (package N3, AD-73): the adapter over the module's fake, the list of shortcuts against
-// what @aiwb/core reads (so a shortcut of the list is a shortcut of the page) and against the two native sources.
+// what @aiwb/core reads (so a shortcut of the list is a shortcut of the page) and against the two native sources; Tab on request (`tabOver`).
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { test } from "node:test";
@@ -11,9 +11,9 @@ import { isInsertKey } from "@aiwb/core/logic/insert.ts";
 import { isTreeKey } from "@aiwb/core/logic/treepopup.ts";
 import { isModelMenuKey } from "@aiwb/core/logic/modeleffort.ts";
 
-import { eventOf, SHORTCUTS, type KeyEvent } from "../modules/aiwb-keys/src/AiwbKeys.ts";
+import { eventOf, SHORTCUTS, TAB_KEYS, type KeyEvent } from "../modules/aiwb-keys/src/AiwbKeys.ts";
 import { createFakeAiwbKeys } from "../modules/aiwb-keys/src/fake.ts";
-import { keysOver } from "../src/platform/nativekeys.ts";
+import { keysOver, tabOver } from "../src/platform/nativekeys.ts";
 import type { KeyLike } from "../src/platform/keys.types.ts";
 import { shortcutHandler } from "../src/screens/shell/shortcuts.ts";
 import { getState, setState } from "@aiwb/core/state/store.ts";
@@ -133,4 +133,54 @@ test("the Swift and the Kotlin source carry the list of AiwbKeys.ts, line for li
   const want = SHORTCUTS.map((s) => ({ code: s.code, key: s.key, mod: s.mod, shift: s.shift, label: s.label }));
   assert.deepEqual(listed("../modules/aiwb-keys/ios/AiwbKeysModule.swift"), want);
   assert.deepEqual(listed("../modules/aiwb-keys/android/src/main/java/expo/modules/aiwbkeys/AiwbKeysModule.kt"), want);
+});
+
+test("Tab on request: the first taker turns it on, the last give-back off; a give-back twice counts once", () => {
+  const fake = createFakeAiwbKeys();
+  const take = tabOver(fake.module);
+  assert.equal(fake.tabKeys(), false);
+  const give1 = take();
+  assert.equal(fake.tabKeys(), true);
+  const give2 = take();
+  give1();
+  give1(); // twice is harmless: the second taker still has them
+  assert.equal(fake.tabKeys(), true);
+  give2();
+  assert.equal(fake.tabKeys(), false, "the last one gone: Tab is the system's again");
+  take();
+  assert.equal(fake.tabKeys(), true, "taken again after");
+});
+
+test("Tab on request with no module, or one made before setTabKeys, does nothing and nothing fails", () => {
+  tabOver(null)()();
+  const fake = createFakeAiwbKeys();
+  const old = { addListener: fake.module.addListener };
+  tabOver(old)()();
+  assert.equal(fake.tabKeys(), false);
+});
+
+test("Tab and Shift+Tab come through the port as key \"Tab\" on both platforms, and are not among the shortcuts", () => {
+  for (const platform of ["ios", "android"] as const) {
+    const fake = createFakeAiwbKeys();
+    const seen: string[] = [];
+    keysOver(fake.module)((e) => seen.push(`${e.key}/${e.code}/${e.shiftKey}/${e.metaKey || e.ctrlKey || e.altKey}`));
+    for (const t of TAB_KEYS) fake.press(eventOf(t, platform));
+    assert.deepEqual(seen, ["Tab/Tab/false/false", "Tab/Tab/true/false"], platform);
+  }
+  assert.ok(!SHORTCUTS.some((s) => s.code === "Tab"), "Tab is taken only on request");
+});
+
+test("the Swift and the Kotlin source take Tab and Shift+Tab on request", () => {
+  const read = (file: string) => fs.readFileSync(fileURLToPath(new URL(file, import.meta.url)), "utf8");
+  const swift = read("../modules/aiwb-keys/ios/AiwbKeysModule.swift");
+  assert.match(swift, /Function\("setTabKeys"\)/);
+  assert.match(swift, /input: "\\t"/);
+  assert.match(swift, /\[\(false, "Indent"\), \(true, "Outdent"\)\]/);
+  assert.match(swift, /input: "\\t"[\s\S]*?wantsPriorityOverSystemBehavior = true/);
+  assert.match(swift, /"key": "Tab", "code": "Tab"/);
+  const kotlin = read("../modules/aiwb-keys/android/src/main/java/expo/modules/aiwbkeys/AiwbKeysModule.kt");
+  assert.match(kotlin, /Function\("setTabKeys"\)/);
+  assert.match(kotlin, /KeyEvent\.KEYCODE_TAB/);
+  assert.match(kotlin, /tabOn\(\) && isTabKey\(event\)/);
+  assert.match(kotlin, /"key" to "Tab", "code" to "Tab"/);
 });

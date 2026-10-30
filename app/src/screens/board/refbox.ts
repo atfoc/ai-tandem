@@ -70,12 +70,43 @@ export function splitRefs(value: string): { text: string; refs: Placed[] } {
   return { text: plain, refs: kept };
 }
 
+/** Tab or Shift+Tab over several lines (the composer's `editing`, core logic/indent.ts): `before` and `after` have the same lines
+ *  but for the leading white space of two or more of them. Taken as one edit, a tag on a line between the first and the last
+ *  changed one would go to the edit's start; here each tag keeps its line and its place in the line's text (a tag inside the old
+ *  indent stays inside the new one, at most at its end). null for any other change. */
+function indentShift(before: string, after: string): ((at: number) => number) | null {
+  const b = before.split("\n"), a = after.split("\n");
+  if (b.length !== a.length || b.length < 2) return null;
+  const lead = (l: string) => /^[ \t]*/.exec(l)![0].length;
+  let changed = 0;
+  for (let i = 0; i < b.length; i++) {
+    if (b[i] === a[i]) continue;
+    if (b[i].slice(lead(b[i])) !== a[i].slice(lead(a[i]))) return null;
+    changed++;
+  }
+  if (changed < 2) return null;
+  return (at) => {
+    let sb = 0, sa = 0;
+    for (let i = 0; i < b.length; i++) {
+      if (at <= sb + b[i].length || i === b.length - 1) {
+        const c = Math.max(0, Math.min(at - sb, b[i].length)), lb = lead(b[i]), la = lead(a[i]);
+        return sa + (c >= lb ? c - lb + la : Math.min(c, la));
+      }
+      sb += b[i].length + 1;
+      sa += a[i].length + 1;
+    }
+    return at;
+  };
+}
+
 /** The offsets after the plain text changed from `before` to `after`, taken as one edit (the common prefix and suffix are kept).
  *  A tag before the edit, or at its start, stays (what is typed at a tag goes after it: the caret was after the chip); a tag inside
  *  the replaced span moves to the span's start; a tag after the span moves by the change in length. `caret`: where the caret is in
  *  `after` when the box knows it (the edit ends there), which tells where an edit in a run of the same characters was ("a" typed
  *  into "aa" at 0 is not one typed at the end). */
 export function shiftRefs(refs: Placed[], before: string, after: string, caret?: number): Placed[] {
+  const lines = indentShift(before, after);
+  if (lines) return refs.map((r) => ({ ref: r.ref, at: lines(r.at) }));
   const max = Math.min(before.length, after.length);
   const hint = caret !== undefined && caret >= 0 && caret <= after.length;
   const delta0 = after.length - before.length;

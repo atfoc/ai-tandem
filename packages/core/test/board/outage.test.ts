@@ -603,20 +603,13 @@ test("get_view names the board on screen to an agent of the same server only: a 
     `The user is looking at a whiteboard that is not on this server, not Board ${here} (${here}).`);
 });
 
-test("the context block of a section's board chat names its board and the boards mentioned by their own ids, and mentions only boards of that server", async () => {
-  const own = remote(), near = remote(), far = remote(0, S2), here = fresh();
-  for (const b of [near, far, here]) setBoard(b, { name: "plan" }); // one name, on three servers
+test("the context block of a section's board chat names its board by its own id, and no other board", async () => {
+  const own = remote(), here = fresh();
+  setBoard(here, { name: "plan" });
   const chat = `${S1}~c_1`;
   store.setState((s: any) => ({ chats: { ...s.chats, [chat]: { id: chat, board: own, agent: "claude", name: "c" } } }));
-  const block = (referenced?: string) => `<ui-context>\nactive_board: Board ${ownId(own)} (${ownId(own)})\n${referenced ? `referenced_boards: ${referenced}\n` : ""}</ui-context>`;
-  assert.equal(side.buildContext(chat, "nothing mentioned"), block());
-  assert.equal(side.buildContext(chat, "see @plan"), block(`plan (${ownId(near)})`), "a typed name is every board of the chat's server with that name");
-  assert.equal(side.buildContext(chat, "see @plan", [{ name: "plan", id: near }]), block(`plan (${ownId(near)})`));
-  assert.equal(side.buildContext(chat, "see @plan", [{ name: "plan", id: far }]), block(), "a board of another server is not named to this one's agent");
-  // a chat of this computer mentions this computer's board
+  assert.equal(side.buildContext(chat), `<ui-context>\nactive_board: Board ${ownId(own)} (${ownId(own)})\n</ui-context>`);
   store.setState((s: any) => ({ chats: { ...s.chats, c_1: { id: "c_1", board: here, agent: "claude", name: "c" } } }));
-  const mine = fresh();
-  setBoard(mine, { name: "plan" });
-  assert.equal(side.buildContext("c_1", "see @plan"), `<ui-context>\nactive_board: plan (${here})\nreferenced_boards: plan (${mine})\n</ui-context>`);
+  assert.equal(side.buildContext("c_1"), `<ui-context>\nactive_board: plan (${here})\n</ui-context>`);
   store.setState({ chats: {} });
 });
