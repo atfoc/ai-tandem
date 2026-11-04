@@ -4,7 +4,7 @@
 // permission there, which the config as written does not show.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { copyFileSync, mkdtempSync, rmSync } from "node:fs";
+import { copyFileSync, cpSync, mkdtempSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -33,6 +33,7 @@ test("app config: after every plugin, Info.plist has voice's text and the manife
   const dir = mkdtempSync(join(app, ".configtest-"));
   try {
     for (const f of ["app.config.ts", "package.json"]) copyFileSync(join(app, f), join(dir, f));
+    cpSync(join(app, "plugins"), join(dir, "plugins"), { recursive: true });
     const cli = createRequire(join(app, "package.json")).resolve("expo/bin/cli");
     const out = execFileSync(process.execPath, [cli, "config", "--type", "introspect", "--json"], { cwd: dir, encoding: "utf8", env: { ...process.env, EXPO_NO_TELEMETRY: "1" } });
     const made = JSON.parse(out) as {

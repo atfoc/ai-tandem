@@ -63,6 +63,9 @@ const config: ExpoConfig = {
       cameraPermission: CAMERA_TEXT,
       microphonePermission: MICROPHONE_TEXT,
     }],
+    // The UIScene life cycle, without which an app built with the iOS 27 SDK stops at launch: the scene manifest names Expo's scene
+    // delegate, and AppDelegate leaves the window to it (app/plugins/scene-life-cycle.js; Expo 58's template does the same).
+    "./plugins/scene-life-cycle.js",
   ],
   web: { output: "single", bundler: "metro", favicon: "./public/favicon.png" },
   // The window loads the export from file:// (AD-41): bundle, chunks, assets and fonts are named relative to the page.
