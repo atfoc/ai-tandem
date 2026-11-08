@@ -25,3 +25,27 @@ Each entry: the decision, who made it (user / orchestrator / architect), why.
 - D16 (architect): the relay's routes are `POST /api/tl/{id}/open|sync|close`, `POST /api/tl-host/out`, `GET|PUT /api/tl/{id}/snapshot`; events `tl_sync`, `tl_closed` (to a window) and `tl_open`, `tl_sync`, `tl_close`, `tl_drop` (to the host), all sent to one client with `Bridge.SendTo`; messages are an array of JSON-text strings Go never parses (design 2.2, 2.3).
 - D17 (architect): quiet times: a room closes 30 s after its last session and agent call; Go stops the board host after 60 s with no session and no tl call (two looks 5 s apart); placeholders until measured (design 5.1, goal 9).
 - D18 (architect): the old routes (`scene`, `take`) refuse a tl board with 409 `tl_board`; `follow` answers harmlessly; old boards' code paths are unchanged (design 4.1).
+
+## Spike bb-spike-ui (`plans/better-board/spike-ui.md`, branch `bb-spike-ui`)
+
+- U1 (orchestrator's spike): the spike pinned the same tldraw 5.6.0 (`tldraw` and `@tldraw/assets` exactly) and confirms the development-bundle rule above: seen in Chromium and Electron, a production `file://` page without a key shows tldraw's empty licence gate at 5 s; the dev bundle stays with its watermark.
+- U2: the new board in the window is a second web target of the same kind as `board.js` (an IIFE defining a global with `mount(element, …)`, its own React root in a box of the app's page, fonts beside it; a one-file page for phones). No iframe. Checked beside Excalidraw in a copy of the app's web build and in Electron (spike-ui.md A, spike-ui-embed.md).
+- U3: the sticky is a custom ShapeUtil `sticky` (7.2's fallback: tldraw's `note` grows instead of shrinking and resizes only by scale), with its own colour style prop `aiwb:sticky-color` (a shared `DefaultColorStyle` would make a sticky's last colour the next shape's colour). Shrink-to-fit is `fit.ts`, a pure function of a text measure, run in `onBeforeCreate/onBeforeUpdate` through `editor.textMeasure` (spike-ui.md D).
+- U4: agrees with D2: tldraw's own IBM Plex Sans for every element; skia-canvas 4.0.0 measures its woff2 files exactly as Chromium does (spike-ui.md E). Give the fonts to tldraw as `data:` URLs in the web build too, or the window's image export falls back to a system font under `connect-src 'none'` (spike-ui-embed.md).
+
+## tldraw version: 5.6.0, exact
+
+- `tldraw` 5.6.0 and the matching `@tldraw/*` 5.6.0 (`@tldraw/editor`, `@tldraw/sync-core`, `@tldraw/tlschema`,
+  `@tldraw/assets` for the font files), React 19.2.3 (the version the repository already has). Pinned exactly, no `^`.
+- Who: `bb-spike-host` (the first package to add tldraw), 2026-11-08.
+- Why: the latest stable release on npm that day (`latest` dist-tag 5.6.0; `next` is 5.7.0-next).
+- Measured by the spike (`plans/better-board/spike-host.md`): tldraw 5.6.0's Editor, text measuring, SVG export and
+  `TLSocketRoom` run in Node; see there for the DOM (linkedom recommended, jsdom fallback) and rasterizer (resvg) choices.
+
+## Orchestrator, after both spikes
+
+- O1: the agent edits through a room editor that is not a sync peer (D15) and writes with `room.updateStore` (measured to broadcast; resolves after the commit, so save-then-answer follows directly). The marker is the custom message of D11. Not the persistent peer of spike-host 6.2, because its `whenSettled()` reads private fields of `TLSyncClient`, and D15 keeps `apply` synchronous and atomic. (orchestrator)
+- O2: consequence of O1: the window's `TLSyncClient` always runs with `presenceMode: 'full'` (never useSync's solo switch), so a lone window sees agent changes at ~35 ms and not tldraw's 1 fps solo rate. (orchestrator)
+- O3: every room is loaded through the spike's `snapshotForRestore()` (clock shifted forward on load, risk 8.5). (orchestrator)
+- O4: the board host runs the editor on linkedom (jsdom selectable as fallback, one module), measures with spike-host's `measure.ts`/`fonts.ts`, renders pictures by SVG export → `textToPaths` → resvg, capped at 2000 px on the long side. (orchestrator)
+- O5: fonts: tldraw's own files from `@tldraw/assets` 5.6.0 (IBM Plex Sans for our elements), the same files in the window and the host; the window measures only once they are loaded. (orchestrator)

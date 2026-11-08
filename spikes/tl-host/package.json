@@ -1,0 +1,24 @@
+{
+  "name": "tl-host-spike",
+  "private": true,
+  "type": "module",
+  "description": "Spike: tldraw's Editor, text measuring, SVG export and TLSocketRoom in Node (better-board risk 8.1, 8.2, 8.5, 8.8). Findings: plans/better-board/spike-host.md.",
+  "dependencies": {
+    "@resvg/resvg-js": "2.6.2",
+    "@tldraw/assets": "5.6.0",
+    "@tldraw/editor": "5.6.0",
+    "@tldraw/sync-core": "5.6.0",
+    "@tldraw/tlschema": "5.6.0",
+    "happy-dom": "21.0.4",
+    "jsdom": "27.4.0",
+    "linebreak": "1.1.0",
+    "linkedom": "0.18.15",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "skia-canvas": "4.0.0",
+    "tldraw": "5.6.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
+}
