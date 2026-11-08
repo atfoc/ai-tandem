@@ -47,9 +47,23 @@ type Server struct {
 	// Usage returns an agent's plan usage limits (agent.UsageCache.Get); a missing agent = not available.
 	Usage map[model.AgentKind]func(fresh bool) (model.PlanUsage, error)
 
+	// TL serves the routes of the new (tldraw) boards, /api/tl/... and /api/tl-host/out
+	// (better-board design 2.2): a *tlrelay.Relay. routes() mounts them on the client API's mux
+	// behind ClientHandler; nil mounts nothing (and the table test then fails: every server sets it).
+	TL TLRoutes
+
 	// beforeTake is a test's hook: the take route calls it with the board's id between its check
 	// of the board and the grant. nil outside tests.
 	beforeTake func(board string)
+}
+
+// TLRoutes is what the server needs of internal/tlrelay: the mount of its routes. Each body limit is
+// the relay's own (32 MiB for sync and out, 128 MiB for a snapshot); nothing in front of them caps a
+// body.
+type TLRoutes interface {
+	Mount(mux interface {
+		HandleFunc(string, func(http.ResponseWriter, *http.Request))
+	}, clientHeader string)
 }
 
 // ---- helpers --------------------------------------------------------------
@@ -167,7 +181,8 @@ func statusOf(err error, fallback int) int {
 	case errors.Is(err, chats.ErrBadReference), errors.Is(err, chats.ErrBadLabel), errors.Is(err, chats.ErrBadPoint),
 		errors.Is(err, chats.ErrBadChoice), errors.Is(err, chats.ErrBadID),
 		errors.Is(err, chats.ErrSubRange),
-		errors.Is(err, chats.ErrImageID), errors.Is(err, chats.ErrImageLimit), errors.Is(err, chats.ErrImageModel):
+		errors.Is(err, chats.ErrImageID), errors.Is(err, chats.ErrImageLimit), errors.Is(err, chats.ErrImageModel),
+		errors.Is(err, boards.ErrBadKind), errors.Is(err, boards.ErrBadSnapshot):
 		return http.StatusBadRequest
 	case errors.Is(err, boards.ErrArchived), errors.Is(err, chats.ErrArchived),
 		errors.Is(err, chats.ErrLegacy), errors.Is(err, chats.ErrLocked), errors.Is(err, agent.ErrFolderMissing),
@@ -175,7 +190,8 @@ func statusOf(err error, fallback int) int {
 		errors.Is(err, chats.ErrWindow),
 		errors.Is(err, usable.ErrMissing), errors.Is(err, usable.ErrNone), errors.Is(err, chats.ErrAgentFixed), errors.Is(err, chats.ErrIDTaken),
 		errors.Is(err, chats.ErrSubFixed),
-		errors.Is(err, chats.ErrImageCap), errors.Is(err, chats.ErrImageMissing):
+		errors.Is(err, chats.ErrImageCap), errors.Is(err, chats.ErrImageMissing),
+		errors.Is(err, boards.ErrTLBoard), errors.Is(err, boards.ErrNotTL):
 		return http.StatusConflict
 	case errors.Is(err, chats.ErrChatCap), errors.Is(err, chats.ErrAppCap):
 		// Not 409: a client takes a 409 on a message as "stale, wait for the turn's end".
@@ -195,7 +211,8 @@ func statusOf(err error, fallback int) int {
 // codeOf is the "code" of a refusal a client tells apart from the others with the same status:
 // "busy", "cap", "bad_point", "window", "agent_missing" and "no_agent"; the ones about images
 // (images.go): "image_too_large", "image_type", "image_cap", "image_id", "image_missing",
-// "image_limit" and "image_model"; and "not_found" for a chat, a board or a group that is not
+// "image_limit" and "image_model"; the ones about the kinds of boards: "tl_board" (a drawing call on
+// a new board), "not_tl" (a snapshot call on a classic one) and "bad_kind"; and "not_found" for a chat, a board or a group that is not
 // there, which tells "the thing the call names is gone" from a part of it that is missing (a
 // branch, a subagent, an image: other codes, or none). Every other error has none.
 func codeOf(err error) string {
@@ -226,6 +243,12 @@ func codeOf(err error) string {
 		return "agent_missing"
 	case errors.Is(err, usable.ErrNone):
 		return "no_agent"
+	case errors.Is(err, boards.ErrTLBoard):
+		return "tl_board"
+	case errors.Is(err, boards.ErrNotTL):
+		return "not_tl"
+	case errors.Is(err, boards.ErrBadKind):
+		return "bad_kind"
 	case errors.Is(err, chats.ErrNotFound), errors.Is(err, boards.ErrNotFound), errors.Is(err, app.ErrGroupNotFound):
 		return "not_found"
 	}
@@ -365,7 +388,8 @@ func (s *Server) routes() *routeMux {
 	})
 	// Takes the board for the client. "held" with the scene's revision: the board was free or the
 	// client's already. "waiting": another client holds it and was asked to release; a held event
-	// follows. With {"ifFree": true} a board held elsewhere is left there: "busy".
+	// follows. With {"ifFree": true} a board held elsewhere is left there: "busy". A tl board is held
+	// by nobody: 409 "tl_board".
 	mux.HandleFunc("POST /api/boards/{id}/take", func(w http.ResponseWriter, r *http.Request) {
 		var body struct{ IfFree bool }
 		if !readOptionalJSON(w, r, &body) {
@@ -375,6 +399,10 @@ func (s *Server) routes() *routeMux {
 		bd, found := a.Boards.Get(id)
 		if !found {
 			fail(w, boards.ErrNotFound, http.StatusInternalServerError)
+			return
+		}
+		if bd.Kind == model.KindTL {
+			fail(w, boards.ErrTLBoard, http.StatusConflict)
 			return
 		}
 		if bd.Archived {
@@ -423,11 +451,17 @@ func (s *Server) routes() *routeMux {
 	// The client follows the board from now on: its scene and writer events reach it. The answer
 	// is the stored revision and the writer ("window", "headless" or ""), so that the client need
 	// not wait for an event to know them. A board followed again stays so; an archived one may be
-	// followed.
+	// followed. A tl board has no scene nor writer: the answer is {"rev":0,"writer":""} and nothing
+	// changes (the board side of an old window may still call this).
 	mux.HandleFunc("POST /api/boards/{id}/follow", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
-		if _, found := a.Boards.Get(id); !found {
+		bd, found := a.Boards.Get(id)
+		if !found {
 			fail(w, boards.ErrNotFound, http.StatusInternalServerError)
+			return
+		}
+		if bd.Kind == model.KindTL {
+			writeJSON(w, map[string]any{"rev": 0, "writer": ""})
 			return
 		}
 		rev, writer, followed := s.Bridge.FollowBoard(r.Header.Get(ClientHeader), id)
@@ -530,28 +564,39 @@ func (s *Server) routes() *routeMux {
 	}
 
 	// ---- boards ----
-	// A body with "server" is refused (400, "server_refused").
+	// A body with "server" is refused (400, "server_refused"). "kind" is "" (a classic board) or
+	// "tl" (a new board, which nobody holds: it is not taken); another kind is 400 "bad_kind".
 	mux.HandleFunc("POST /api/boards", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Name  string
 			Group string
 			New   bool
+			Kind  string
 		}
 		if apiServerRefused(w, r) {
 			return
 		}
-		if !readJSON(w, r, &body) || !checkGroup(w, body.Group) {
+		if !readJSON(w, r, &body) {
 			return
 		}
-		bd, err := a.Boards.Create(body.Name, body.Group, body.New)
+		if body.Kind != model.KindClassic && body.Kind != model.KindTL {
+			fail(w, boards.ErrBadKind, http.StatusBadRequest)
+			return
+		}
+		if !checkGroup(w, body.Group) {
+			return
+		}
+		bd, err := a.Boards.Create(body.Name, body.Group, body.New, body.Kind)
 		if err != nil {
 			fail(w, err, http.StatusBadRequest)
 			return
 		}
-		s.Bridge.TakeBoard(r.Header.Get(ClientHeader), bd.ID, true) // the client that creates a board holds it
+		if bd.Kind == model.KindClassic {
+			s.Bridge.TakeBoard(r.Header.Get(ClientHeader), bd.ID, true) // the client that creates a board holds it
+		}
 		writeJSON(w, bd)
 	})
-	// The drawing, with its revision in the header SceneRevHeader.
+	// The drawing, with its revision in the header SceneRevHeader. A tl board has none: 409 "tl_board".
 	mux.HandleFunc("GET /api/boards/{id}/scene", func(w http.ResponseWriter, r *http.Request) {
 		b, rev, err := a.Boards.SceneAt(r.PathValue("id"))
 		if err != nil {
@@ -564,13 +609,18 @@ func (s *Server) routes() *routeMux {
 	})
 	// Writes the drawing. Only the client that holds the board may (code "not_holder"), and ?rev=
 	// names the revision the drawing is based on, the one of its read or of its last accepted
-	// write: on another one nothing is written (code "stale", with the stored revision).
+	// write: on another one nothing is written (code "stale", with the stored revision). A tl board
+	// has no drawing: 409 "tl_board".
 	mux.HandleFunc("PUT /api/boards/{id}/scene", func(w http.ResponseWriter, r *http.Request) {
 		b, fits := readScene(w, r)
 		if !fits {
 			return
 		}
 		id := r.PathValue("id")
+		if a.Boards.IsTL(id) {
+			fail(w, boards.ErrTLBoard, http.StatusConflict)
+			return
+		}
 		holder, held := s.Bridge.HolderOf(id)
 		if held && holder != r.Header.Get(ClientHeader) {
 			writeErrorCode(w, http.StatusConflict, "another window holds this board", "not_holder")
@@ -649,6 +699,10 @@ func (s *Server) routes() *routeMux {
 		}
 		ok(w)
 	})
+	// ---- the new (tldraw) boards: sessions, sync, the board host's out and snapshot ----
+	if s.TL != nil {
+		s.TL.Mount(mux, ClientHeader)
+	}
 	// ---- chats ----
 	// A new chat in a group or on a board. The chat is this server's: a body with "server",
 	// whatever its value, is refused (400 "server_refused") and nothing is made, and the first

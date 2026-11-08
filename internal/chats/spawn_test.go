@@ -900,7 +900,7 @@ func TestSpawnSubagentExtraTokenRevokeOnStopAndComplete(t *testing.T) {
 func TestSpawnSubagentBoardParentByToken(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)
-	bd, err := e.bds.Create("board", gOne, false)
+	bd, err := e.bds.Create("board", gOne, false, model.KindClassic)
 	if err != nil {
 		t.Fatal(err)
 	}

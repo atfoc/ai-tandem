@@ -1,6 +1,7 @@
 // Package boards keeps the boards: one folder per board (boards/<id>/) holding board.json,
 // drawing.excalidraw and scene.rev (the drawing's revision). The client owns the open scene and saves it back here; the server never
-// edits a scene. (The prototype's pages.go, keyed by board id.)
+// edits a scene. (The prototype's pages.go, keyed by board id.) A tl board (model.KindTL) holds board.json
+// and, once the board host saved it, snapshot.tl.json instead; it has no drawing and no scene.rev.
 package boards
 
 import (
@@ -53,6 +54,18 @@ const EmptyScene = `{"type":"excalidraw","version":2,"source":"ai-whiteboard","e
 
 var ErrArchived = errors.New("the board is archived")
 var ErrNotFound = errors.New("no such board")
+
+// ErrBadKind is Create's refusal of a kind that is neither model.KindClassic nor model.KindTL.
+var ErrBadKind = errors.New("unknown board kind")
+
+// ErrNotTL is the refusal of a snapshot read or write on a board that is not a tl board.
+var ErrNotTL = errors.New("the board is not a new board")
+
+// ErrTLBoard is the refusal of a drawing read or write (SceneAt, SaveAt) on a tl board.
+var ErrTLBoard = errors.New("the board is a new board, it has no drawing")
+
+// ErrBadSnapshot is SaveSnapshot's refusal of a body that is not valid JSON.
+var ErrBadSnapshot = errors.New("the snapshot is not valid JSON")
 
 // StaleError is SaveAt's refusal of a write whose base is not the stored revision. Rev is the
 // stored one.
@@ -262,8 +275,13 @@ func (b *Service) checkGroup(group string) error {
 	return nil
 }
 
-// Create makes a board with an empty drawing, saved the moment it is created.
-func (b *Service) Create(name, group string, isNew bool) (model.Board, error) {
+// Create makes a board of the given kind, saved the moment it is created: a classic board
+// (model.KindClassic) with an empty drawing, a tl board (model.KindTL) with no content at all (a
+// missing snapshot is an empty room). Any other kind is ErrBadKind.
+func (b *Service) Create(name, group string, isNew bool, kind string) (model.Board, error) {
+	if kind != model.KindClassic && kind != model.KindTL {
+		return model.Board{}, ErrBadKind
+	}
 	if name == "" {
 		name = "whiteboard"
 	}
@@ -273,7 +291,7 @@ func (b *Service) Create(name, group string, isNew bool) (model.Board, error) {
 	}
 	b.sendMu.Lock()
 	defer b.sendMu.Unlock()
-	bd, err := b.create(name, group, isNew)
+	bd, err := b.create(name, group, isNew, kind)
 	if err != nil {
 		return model.Board{}, err
 	}
@@ -282,18 +300,20 @@ func (b *Service) Create(name, group string, isNew bool) (model.Board, error) {
 }
 
 // create is Create under mu.
-func (b *Service) create(name, group string, isNew bool) (model.Board, error) {
+func (b *Service) create(name, group string, isNew bool, kind string) (model.Board, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if err := b.checkGroup(group); err != nil {
 		return model.Board{}, err
 	}
-	bd := &model.Board{ID: model.NewID("b_"), Name: name, Group: group, Created: time.Now(), New: isNew}
+	bd := &model.Board{ID: model.NewID("b_"), Name: name, Group: group, Created: time.Now(), New: isNew, Kind: kind}
 	if err := os.MkdirAll(b.st.P.BoardDir(bd.ID), 0o700); err != nil {
 		return model.Board{}, err
 	}
-	if err := store.WriteFileAtomic(b.st.P.BoardFile(bd.ID), []byte(EmptyScene), 0o644); err != nil {
-		return model.Board{}, err
+	if kind == model.KindClassic {
+		if err := store.WriteFileAtomic(b.st.P.BoardFile(bd.ID), []byte(EmptyScene), 0o644); err != nil {
+			return model.Board{}, err
+		}
 	}
 	// board.json last: a folder without it is not a board.
 	if err := b.save(bd); err != nil {
@@ -303,13 +323,66 @@ func (b *Service) create(name, group string, isNew bool) (model.Board, error) {
 	return *bd, nil
 }
 
+// IsTL reports whether id names a known tl board.
+func (b *Service) IsTL(id string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	bd, ok := b.boards[id]
+	return ok && bd.Kind == model.KindTL
+}
+
+// SnapshotAt returns a tl board's stored snapshot. A tl board with none yet gives nil, false, nil.
+// An unknown id is ErrNotFound, a classic board ErrNotTL.
+func (b *Service) SnapshotAt(id string) (raw []byte, exists bool, err error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	bd, ok := b.boards[id]
+	if !ok {
+		return nil, false, ErrNotFound
+	}
+	if bd.Kind != model.KindTL {
+		return nil, false, ErrNotTL
+	}
+	raw, err = os.ReadFile(b.st.P.BoardSnapshot(id))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return raw, true, nil
+}
+
+// SaveSnapshot writes a tl board's snapshot atomically. Go checks only that body is valid JSON
+// (ErrBadSnapshot); it never looks into it. An archived board is written too: a last save may
+// arrive after an archive. An unknown id is ErrNotFound, a classic board ErrNotTL.
+func (b *Service) SaveSnapshot(id string, body []byte) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	bd, ok := b.boards[id]
+	if !ok {
+		return ErrNotFound
+	}
+	if bd.Kind != model.KindTL {
+		return ErrNotTL
+	}
+	if !json.Valid(body) {
+		return ErrBadSnapshot
+	}
+	return store.WriteFileAtomic(b.st.P.BoardSnapshot(id), body, 0o644)
+}
+
 // SceneAt returns a board's drawing and its revision. A known board with a missing file gives
-// EmptyScene; an unknown id is ErrNotFound.
+// EmptyScene; an unknown id is ErrNotFound, a tl board ErrTLBoard.
 func (b *Service) SceneAt(id string) (raw []byte, rev int64, err error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if _, ok := b.boards[id]; !ok {
+	bd, ok := b.boards[id]
+	if !ok {
 		return nil, 0, ErrNotFound
+	}
+	if bd.Kind == model.KindTL {
+		return nil, 0, ErrTLBoard
 	}
 	rev = b.Rev(id)
 	raw, err = os.ReadFile(b.st.P.BoardFile(id))
@@ -321,7 +394,7 @@ func (b *Service) SceneAt(id string) (raw []byte, rev int64, err error) {
 
 // SaveAt writes a board's drawing if base is its stored revision, and returns the new one
 // (base+1). Another base is a StaleError with the stored revision, and nothing is written.
-// Archived boards are read-only.
+// Archived boards are read-only. A tl board is ErrTLBoard.
 //
 // scene.rev is written before the drawing, so a crash between the two leaves a revision ahead
 // of the drawing (a client reads again), never a drawing ahead of its revision. If the drawing
@@ -332,6 +405,9 @@ func (b *Service) SaveAt(id string, base int64, body []byte) (rev int64, err err
 	bd, ok := b.boards[id]
 	if !ok {
 		return 0, ErrNotFound
+	}
+	if bd.Kind == model.KindTL {
+		return 0, ErrTLBoard
 	}
 	if bd.Archived {
 		return 0, ErrArchived

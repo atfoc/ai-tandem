@@ -132,7 +132,7 @@ func (e *env) groupOf(chat string) string {
 
 func (e *env) board(group string) string {
 	e.t.Helper()
-	b, err := e.a.Boards.Create("board", group, false)
+	b, err := e.a.Boards.Create("board", group, false, model.KindClassic)
 	if err != nil {
 		e.t.Fatal(err)
 	}

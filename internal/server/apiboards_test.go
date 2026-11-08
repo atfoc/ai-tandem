@@ -28,6 +28,12 @@ func isBoardRoute(route string) bool {
 	return strings.Contains(route, " /api/boards/") || route == "POST /api/boards" || route == "POST /api/rpc-reply"
 }
 
+// isTLRoute is a route of the new boards' relay (better-board design 2.2); they are called in
+// TestLevel5TableRoutesServeAClient.
+func isTLRoute(route string) bool {
+	return strings.Contains(route, " /api/tl/") || strings.Contains(route, " /api/tl-host/")
+}
+
 // isLibraryRoute is a route of the prompt library.
 func isLibraryRoute(route string) bool { return strings.Contains(route, " /api/library") }
 

@@ -12,6 +12,7 @@ import (
 	"ai-whiteboard/internal/headless"
 	"ai-whiteboard/internal/remote"
 	"ai-whiteboard/internal/store"
+	"ai-whiteboard/internal/tlrelay"
 )
 
 // statusJSON is what `status -json` writes: what the running server serves, and what the next
@@ -32,6 +33,9 @@ type runningJSON struct {
 	// Headless is the headless writer: whether this machine can run it, and whether it does (D36).
 	// null for an older build.
 	Headless *headless.Status `json:"headless"`
+	// Boardhost is the board host of the new boards and the relay's counters (better-board design
+	// 3.4). null for a build without it.
+	Boardhost *tlrelay.Status `json:"boardhost"`
 }
 
 type filesJSON struct {
@@ -79,6 +83,9 @@ func statusCommand(args []string, stdout, stderr io.Writer) int {
 			if h := st.Headless; h != nil {
 				fmt.Fprintf(stdout, "Headless writer: %s\n", headlessLine(*h))
 			}
+			if b := st.Boardhost; b != nil {
+				fmt.Fprintf(stdout, "Board host: %s\n", boardhostLine(*b))
+			}
 		}
 	}
 
@@ -108,10 +115,22 @@ func headlessLine(h headless.Status) string {
 	}
 }
 
-// withHeadlessStatus adds "headless" to the control socket's GET /status: the headless writer
-// is the server program's, and the handler of internal/server knows nothing of it. Every other
-// request goes to next as it is.
-func withHeadlessStatus(next http.Handler, m interface{ Status() headless.Status }) http.Handler {
+// boardhostLine is the board host's status for a person.
+func boardhostLine(b tlrelay.Status) string {
+	switch {
+	case b.Running:
+		return fmt.Sprintf("running (pid %d, %d sessions)", b.PID, b.Sessions)
+	case b.Available:
+		return "available, not running"
+	default:
+		return "not available: " + b.Reason
+	}
+}
+
+// withHeadlessStatus adds "headless" and "boardhost" to the control socket's GET /status: the
+// headless writer and the board host are the server program's, and the handler of internal/server
+// knows nothing of them. bh nil adds no "boardhost". Every other request goes to next as it is.
+func withHeadlessStatus(next http.Handler, m interface{ Status() headless.Status }, bh interface{ Status() tlrelay.Status }) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/status" {
 			next.ServeHTTP(w, r)
@@ -124,6 +143,9 @@ func withHeadlessStatus(next http.Handler, m interface{ Status() headless.Status
 		if rec.Code == http.StatusOK && json.Unmarshal(body, &st) == nil {
 			h, _ := json.Marshal(m.Status())
 			st["headless"] = h
+			if bh != nil {
+				st["boardhost"], _ = json.Marshal(bh.Status())
+			}
 			body, _ = json.Marshal(st)
 		}
 		for k, v := range rec.Header() {
@@ -145,7 +167,7 @@ func writeStatusJSON(f *ownFlags, run runningServer, found bool, rep remote.Repo
 		r := &runningJSON{Build: string(run.build), Version: run.hello.Version, PID: run.hello.Pid,
 			FeatureLevel: run.hello.FeatureLevel, InstanceID: run.hello.InstanceID}
 		if st, ok := run.statusOf(); ok {
-			r.Client, r.MCP, r.Headless = &st.Client, st.MCP, st.Headless
+			r.Client, r.MCP, r.Headless, r.Boardhost = &st.Client, st.MCP, st.Headless, st.Boardhost
 			if r.Client.Names == nil {
 				r.Client.Names = []string{}
 			}

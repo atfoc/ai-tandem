@@ -55,6 +55,7 @@ import (
 	"ai-whiteboard/internal/prompts"
 	"ai-whiteboard/internal/server"
 	"ai-whiteboard/internal/store"
+	"ai-whiteboard/internal/tlrelay"
 	"ai-whiteboard/internal/usable"
 )
 
@@ -69,8 +70,14 @@ type options struct {
 	// keeps a board after an agent's last call on it (D26).
 	headlessNode, headlessDir string
 	headlessQuiet             time.Duration
-	json                      bool // launch and relaunch: write one JSON line for the app
-	paths                     store.Paths
+	// boardhostNode, boardhostDir and boardhostQuiet are the board host's, the process that holds
+	// the rooms of the new (tldraw) boards (better-board design 1.3, 5.1): the program that runs it,
+	// the folder of its bundle ("" for each: look for it as for the headless writer) and how long
+	// after its last session or tool call it counts as busy before the process is stopped.
+	boardhostNode, boardhostDir string
+	boardhostQuiet              time.Duration
+	json                        bool // launch and relaunch: write one JSON line for the app
+	paths                       store.Paths
 	// serveArgs are the flags the server that launch starts gets: the data folder, and every flag
 	// that was given, as it was.
 	serveArgs []string
@@ -120,12 +127,19 @@ func parseFlags(cmd string, args []string) options {
 	fs.StringVar(&o.headlessNode, "headless-node", "", "program that runs the headless writer, which edits boards while no window is open (empty = the desktop app's Electron, else node 22+ on PATH; or AIWB_HEADLESS_NODE)")
 	fs.StringVar(&o.headlessDir, "headless-dir", "", "folder of the headless writer's bundle (empty = headless/ beside the server, or Resources/headless of the Mac app)")
 	fs.DurationVar(&o.headlessQuiet, "headless-quiet", headless.QuietDefault, "how long the headless writer keeps a board after an agent's last call on it")
+	fs.StringVar(&o.boardhostNode, "boardhost-node", "", "program that runs the board host, which holds the new boards' rooms (empty = as for the headless writer; or AIWB_BOARDHOST_NODE)")
+	fs.StringVar(&o.boardhostDir, "boardhost-dir", "", "folder of the board host's bundle (empty = boardhost/ beside the server, or Resources/boardhost of the Mac app)")
+	fs.DurationVar(&o.boardhostQuiet, "boardhost-quiet", boardhostQuietDefault, "how long the board host keeps running after its last session or tool call")
 	if cmd != "serve" {
 		fs.BoolVar(&o.json, "json", false, "write one JSON line for the app")
 	}
 	fs.Parse(args)
 	if o.headlessQuiet <= 0 {
 		fmt.Fprintf(os.Stderr, "-headless-quiet %v: the time must be above 0\n", o.headlessQuiet)
+		os.Exit(2)
+	}
+	if o.boardhostQuiet <= 0 {
+		fmt.Fprintf(os.Stderr, "-boardhost-quiet %v: the time must be above 0\n", o.boardhostQuiet)
 		os.Exit(2)
 	}
 
@@ -190,6 +204,11 @@ func serve(o options) {
 	}
 	bs := boards.New(st, br)
 	br.SceneRev = bs.Rev
+	// The relay of the new (tldraw) boards: their sessions, the board host's out and snapshots, the
+	// agents' calls on them. Its OnEnd is set here, long before the client listener serves, so no
+	// stream can end unseen.
+	tlr := tlrelay.New(br, bs, waits.boardhostQuiet(o), log.Printf)
+	br.OnEnd = tlr.ClientEnded
 	bins := map[model.AgentKind]string{model.Claude: o.claudeBin, model.Cursor: o.cursorBin, model.Pi: o.piBin}
 	agents := usable.New(bins) // the agents whose programs are found; looked up again every usable.Every
 	base := fmt.Sprintf("https://127.0.0.1:%d", port)
@@ -236,7 +255,8 @@ func serve(o options) {
 	go refreshClaudeCatalog(claudeSpawner, st, br)
 	// Never stopped: the server ends by exiting.
 	go agents.Watch(waits.agentsEvery(), nil, func(l []model.AgentKind) { br.Broadcast(map[string]any{"type": "agents", "agents": l}) })
-	a = &app.App{St: st, Boards: bs, Chats: cm, Bridge: br, Agents: agents, Home: home, DefaultCwd: o.cwd, DataDir: p.Root}
+	a = &app.App{St: st, Boards: bs, Chats: cm, Bridge: br, Agents: agents, Home: home, DefaultCwd: o.cwd, DataDir: p.Root,
+		BoardGone: tlr.BoardGone}
 	// The change-overs of a server from before: nothing of another server is kept, and the group
 	// "Remote" of before level 5 goes, before any request.
 	localOnly(p, cm, a)
@@ -252,7 +272,7 @@ func serve(o options) {
 		log.Printf("cursor deny rules: %v", err)
 	}
 	var mcpUp atomic.Bool // read by the control socket's /status
-	srv := &server.Server{App: a, Relay: relay, Bridge: br,
+	srv := &server.Server{App: a, Relay: relay, Bridge: br, TL: tlr,
 		Usage: map[model.AgentKind]func(bool) (model.PlanUsage, error){
 			model.Claude: (&agent.UsageCache{Fetch: claudeSpawner.Usage, TTL: time.Minute}).Get,
 			model.Cursor: (&agent.UsageCache{Fetch: (&cursor.CostReader{Bin: o.cursorCostBin, Home: home}).Usage, TTL: time.Minute}).Get,
@@ -266,9 +286,15 @@ func serve(o options) {
 	// until the first of them. It connects as a client, so it needs the instance id and the secret
 	// that attach gives the server, and the relay has it before the MCP listener serves a call.
 	rem.attach(srv)
-	hm := headless.New(br, headless.Listener{Port: port, Fingerprint: rem.rep.Fingerprint,
-		Secret: rem.currentSecret, InstanceID: srv.InstanceID}, waits.headlessOptions(o))
+	hl := headless.Listener{Port: port, Fingerprint: rem.rep.Fingerprint, Secret: rem.currentSecret, InstanceID: srv.InstanceID}
+	hm := headless.New(br, hl, waits.headlessOptions(o))
 	relay.Away = hm
+	// The board host, which holds the new boards' rooms: a second manager of the same kind, with the
+	// board host's bundle, and the relay's adapter for what "busy" means. It starts on the first open
+	// of a new board or the first agent call on one, never at boot.
+	bhm := headless.New(tlr.HostAdapter(br), hl, waits.boardhostOptions(o))
+	tlr.SetHost(bhm)
+	relay.TL = tlr // agents' calls on new boards go to the board host, before the MCP listener serves
 	mcpHandler := srv.MCPHandler(mcpBoundPort)
 	mcpUp.Store(true)
 	go func() {
@@ -288,13 +314,14 @@ func serve(o options) {
 		log.Printf("server.json: %v", err)
 	}
 	go func() {
-		if err := http.Serve(ctl, withHeadlessStatus(srv.ControlHandler(p.Root), hm)); err != nil && !errors.Is(err, net.ErrClosed) {
+		if err := http.Serve(ctl, withHeadlessStatus(srv.ControlHandler(p.Root), hm, tlr)); err != nil && !errors.Is(err, net.ErrClosed) {
 			log.Printf("control socket: %v", err)
 		}
 	}()
 	go onSignal(stopAsked, func() {
 		br.StopAndFlush(2 * time.Second) // the clients write pending board changes, the headless writer's too
 		hm.Close()                       // then it ends
+		bhm.Close()                      // the board host too, its rooms saved while the client listener still serves
 		cm.Shutdown()                    // history written; agents end
 		agent.EndAll(2 * time.Second)    // agents still running, and whatever they started
 		pb.Close()                       // the extension bridge: no more connections, socket removed
