@@ -82,3 +82,12 @@ Each entry: the decision, who made it (user / orchestrator / architect), why.
   put them under `dist/assets/`. Fonts are `dist/assets/fonts/`. Only the build machine's own os/arch can be built (no fetch
   of other targets' natives). The build's banner sends `console.log/info/debug` to stderr from the first line, so React's
   development-build notice never reaches stdout. Built: 7.1 MB bundle, 41 MB folder, ready in ~0.2 s, ~138 MB RSS.
+- H-7 (host lane, H2; refines O1): the agent's change is written with `room.storage.transaction(txn => …)`, not
+  `room.updateStore`. In tldraw 5.6.0 `updateStore` awaits its updater before it writes, so a window's push handled in that
+  microtask gap would be overwritten by the room editor's older copy of a record. `storage.transaction` is public, commits
+  inside the call, and the room broadcasts the whole write as one patch (measured: one message carrying every record). It is
+  the first option of design 7.4 step 5; the rest of O1 (room editor, not a sync peer; save, then answer) holds.
+- H-8 (host lane, H2): the room editor is synced before every call by a record diff (identity first, then value) applied with
+  `mergeRemoteChanges` + `applyDiff(…, { runCallbacks: false })`, so no fit or growY runs on load. The marker
+  (`aiwb_agent`, D11) is sent to connected sessions after the write, also when the save then fails (the change is in the
+  windows); a session that connects within its ttl gets it with the remaining ttl.
