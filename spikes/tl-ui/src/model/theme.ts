@@ -1,14 +1,15 @@
-// The board's theme (goal 3.2, 7.2, 4.10): tldraw 5.6's theme registry carries the palette and the fonts. Colours added to
-// the theme become values of tldraw's own `DefaultColorStyle` (`registerColorsFromThemes` adds them when the editor is
-// made), so "set the colour of the selection" and "the colour of the next shape" work for stickies and shapes alike with
-// tldraw's own machinery. The window and the board host must register the same theme (they share this file), or a record
-// with a colour one side does not know fails validation there.
+// The sticky palette (goal 3.2, 7.2, 4.10): a tldraw style prop of our own, `aiwb:sticky-color`, with 16 Miro-like colours.
+// A style prop, so tldraw's "set the style of the selection" and "the style of the next shape" work with it: a new
+// sticky gets the colour last used (goal 3.2) with no code of ours. It is its own prop, not tldraw's `DefaultColorStyle`,
+// because tldraw keeps one "next" value per style prop: with the shared colour, choosing a sticky colour would also colour
+// the next rectangle, arrow and text (and the first sticky would be tldraw's default black).
 //
-// The light palette is what is stored and exported; the dark one is a copy (the dark theme is out of scope, goal 5).
-import { DEFAULT_THEME, type TLDefaultColor, type TLTheme } from "tldraw";
+// (tldraw 5.6 can also add colour names to `DefaultColorStyle` through its theme registry — `themes` prop,
+// `registerColorsFromThemes` — which is the way to give shapes a Miro-like palette; spike-ui.md.)
+//
+// The stored value is the name; the window and the board host map it to the same hex here. Theme-independent (4.10).
+import { StyleProp } from "tldraw";
 
-/** The sticky palette, Miro-like: 16 colours. Keys are the stored colour names (agent terms use the same names). Where a
- *  name is also one of tldraw's 13, only its sticky fill changes; the others are new colours. */
 export const STICKY_COLORS = {
   "light-yellow": "#fff9b1",
   yellow: "#f5d128",
@@ -32,47 +33,10 @@ export type StickyColor = keyof typeof STICKY_COLORS;
 export const STICKY_COLOR_NAMES = Object.keys(STICKY_COLORS) as StickyColor[];
 export const DEFAULT_STICKY_COLOR: StickyColor = "light-yellow";
 
-/** The new colour names, and the tldraw colour each one takes its shape variants (stroke, fill, frame...) from. */
-const NEW_COLORS = {
-  "light-yellow": "yellow",
-  "dark-green": "green",
-  cyan: "light-blue",
-  "light-pink": "light-red",
-  pink: "light-red",
-  "dark-blue": "blue",
-} as const;
+export const StickyColorStyle = StyleProp.defineEnum("aiwb:sticky-color", {
+  defaultValue: DEFAULT_STICKY_COLOR,
+  values: STICKY_COLOR_NAMES,
+});
 
-declare module "tldraw" {
-  interface TLThemeDefaultColors {
-    "light-yellow": TLDefaultColor;
-    "dark-green": TLDefaultColor;
-    cyan: TLDefaultColor;
-    "light-pink": TLDefaultColor;
-    pink: TLDefaultColor;
-    "dark-blue": TLDefaultColor;
-  }
-}
-
-type Palette = TLTheme["colors"]["light"];
-
-function withStickies(base: Palette): Palette {
-  const out: Record<string, unknown> = { ...base };
-  for (const [name, from] of Object.entries(NEW_COLORS)) out[name] = { ...(base as any)[from] };
-  for (const [name, hex] of Object.entries(STICKY_COLORS)) {
-    const c = out[name] as TLDefaultColor;
-    out[name] = { ...c, noteFill: hex, noteText: name === "black" ? "#ffffff" : "#1a1a1a" };
-  }
-  return out as Palette;
-}
-
-/** The theme, registered under tldraw's `default` id (so nothing has to pick it). Fonts: tldraw's own (E in spike-ui.md);
- *  a Miro-like sans would be a change of `fonts.sans` here and of the files beside the bundle. */
-export const AIWB_THEME: TLTheme = {
-  ...DEFAULT_THEME,
-  colors: {
-    light: withStickies(DEFAULT_THEME.colors.light),
-    dark: withStickies(DEFAULT_THEME.colors.dark),
-  },
-};
-
-export const THEMES = { default: AIWB_THEME };
+/** The text colour on a sticky of colour `c`. */
+export const stickyTextColor = (c: StickyColor) => (c === "black" ? "#ffffff" : "#1a1a1a");
