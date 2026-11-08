@@ -77,3 +77,8 @@ Each entry: the decision, who made it (user / orchestrator / architect), why.
   would need a scale below 0.1. Padding is tldraw's export default (32 px, a window's own export), not old boards' 16.
 - H-5 (host lane): the board host's bundle is a development build of tldraw and React (`NODE_ENV=development`), as the
   orchestrator's licence decision says for `tl.js`; nothing it prints reaches stdout except through the log.
+- H-6 (host lane, H4): the bundle's native modules (skia-canvas with its JS dependencies and binary, `@resvg/resvg-js` with its
+  platform package) are in `dist/node_modules/`, beside `dist/boardhost.mjs`, so Node finds them by its own lookup; design 1.3
+  put them under `dist/assets/`. Fonts are `dist/assets/fonts/`. Only the build machine's own os/arch can be built (no fetch
+  of other targets' natives). The build's banner sends `console.log/info/debug` to stderr from the first line, so React's
+  development-build notice never reaches stdout. Built: 7.1 MB bundle, 41 MB folder, ready in ~0.2 s, ~138 MB RSS.
