@@ -23,7 +23,7 @@ import {
   type TLShape,
   type TLTextShape,
 } from "tldraw";
-import { AIWB_THEME, STICKY_COLORS, STICKY_COLOR_NAMES } from "../model/theme.ts";
+import { STICKY_COLORS, STICKY_COLOR_NAMES, StickyColorStyle } from "../model/theme.ts";
 import { act, arrowLook, isAllBold, setArrowLook, setBold, setFrameName, setStickyFontSize, setStyle, type ArrowLook } from "./ctxActions.ts";
 
 /** The states in which the toolbar is hidden (a gesture is under way). */
@@ -42,11 +42,13 @@ export const BUSY_STATES = [
 
 // --- the controls -------------------------------------------------------------------------------------------------
 type Key =
-  | "color" | "geo" | "fill" | "size" | "dash" | "align" | "textAlign" | "arrowheadStart" | "arrowheadEnd" // style props
+  | "stickyColor" | "color" | "geo" | "fill" | "size" | "dash" | "align" | "textAlign" | "arrowheadStart" | "arrowheadEnd" // style props
   | "stickyFontSize" | "bold" | "arrowKind" | "frameName"; // not style props: the shape's own props
 
 type StyleKey = Exclude<Key, "stickyFontSize" | "bold" | "arrowKind" | "frameName">;
 const STYLE: Record<StyleKey, { style: StyleProp<any>; label: string; values?: () => readonly string[] }> = {
+  // the sticky's colour is its own style prop (theme.ts: tldraw keeps one "next" value per style prop)
+  stickyColor: { style: StickyColorStyle, label: "Colour" },
   color: { style: DefaultColorStyle, label: "Colour" },
   geo: { style: GeoShapeGeoStyle, label: "Shape", values: () => GeoShapeGeoStyle.values },
   fill: { style: DefaultFillStyle, label: "Fill", values: () => ["none", "semi", "solid", "pattern", "fill", "lined-fill"] },
@@ -61,7 +63,7 @@ const STYLE: Record<StyleKey, { style: StyleProp<any>; label: string; values?: (
 
 /** What each shape type shows (goal 3.3). */
 const SECTIONS: Record<string, Key[]> = {
-  sticky: ["color", "stickyFontSize", "align"],
+  sticky: ["stickyColor", "stickyFontSize", "align"],
   geo: ["geo", "fill", "color", "size", "dash", "align"],
   text: ["size", "color", "textAlign", "bold"],
   arrow: ["arrowKind", "dash", "size", "color", "arrowheadStart", "arrowheadEnd"],
@@ -72,7 +74,7 @@ const SECTIONS: Record<string, Key[]> = {
 const STICKY_SIZES = [0, 12, 16, 24, 32, 48]; // 0 = auto (shrink to fit)
 const TL_COLORS = Object.keys(DEFAULT_THEME.colors.light).filter((k) => typeof (DEFAULT_THEME.colors.light as any)[k] === "object");
 const swatchHex = (c: string, sticky: boolean) =>
-  sticky ? (STICKY_COLORS as Record<string, string>)[c] : ((AIWB_THEME.colors.light as any)[c]?.solid ?? "#ccc");
+  sticky ? (STICKY_COLORS as Record<string, string>)[c] : ((DEFAULT_THEME.colors.light as any)[c]?.solid ?? "#ccc");
 
 // --- what the toolbar reads ---------------------------------------------------------------------------------------
 function read(editor: Editor) {
@@ -111,7 +113,6 @@ function read(editor: Editor) {
     count: shapes.length,
     frameId: shapes.length === 1 && shapes[0].type === "frame" ? shapes[0].id : null,
     locked: shapes.every((s) => s.isLocked),
-    stickyPalette: types.includes("sticky"),
     keys: shapes.every((s) => s.isLocked) ? [] : keys,
     values,
   };
@@ -139,18 +140,20 @@ export function ContextToolbar() {
   const { values } = info;
   const controls = info.keys.map((k) => {
     switch (k) {
+      case "stickyColor":
       case "color": {
-        const names = info.stickyPalette ? STICKY_COLOR_NAMES : TL_COLORS;
+        const sticky = k === "stickyColor";
+        const names: readonly string[] = sticky ? STICKY_COLOR_NAMES : TL_COLORS;
         return (
-          <span key={k} className="group" data-testid="ctx-color">
+          <span key={k} className="group" data-testid={sticky ? "ctx-sticky-color" : "ctx-color"}>
             {names.map((c) => (
               <button
                 key={c}
                 title={c}
                 data-testid={`color-${c}`}
-                className={"swatch" + (values.color === c ? " on" : "")}
-                style={{ background: swatchHex(c, info.stickyPalette) }}
-                onClick={() => setStyle(editor, DefaultColorStyle, c)}
+                className={"swatch" + (values[k] === c ? " on" : "")}
+                style={{ background: swatchHex(c, sticky) }}
+                onClick={() => setStyle(editor, STYLE[k].style, c)}
               />
             ))}
           </span>
@@ -203,7 +206,7 @@ export function ContextToolbar() {
       {controls}
       {multi && (
         <span className="group" data-testid="ctx-arrange">
-          <Select id="ctx-align" label="Align" value={null}
+          <Select id="ctx-align-shapes" label="Align" value={null}
             options={["left", "center-horizontal", "right", "top", "center-vertical", "bottom"].map((v) => ({ v, t: v }))}
             onChange={(v) => act(editor, "align", (ids) => editor.alignShapes(ids, v as any))} />
           <button data-testid="ctx-distribute-h" disabled={info.count < 3} title="Distribute horizontally"
@@ -220,7 +223,10 @@ export function ContextToolbar() {
             editor.duplicateShapes(ids, { x: 20, y: 20 }); // selects the copies
           })}>Duplicate</button>
         )}
-        <button data-testid="ctx-lock" onClick={() => act(editor, "lock", (ids) => editor.toggleLock(ids))}>{info.locked ? "Unlock" : "Lock"}</button>
+        <button data-testid="ctx-lock" onClick={() => act(editor, "lock", (ids) => {
+          editor.toggleLock(ids); // tldraw deselects what it locks; keep it selected so Unlock stays at hand
+          editor.select(...ids);
+        })}>{info.locked ? "Unlock" : "Lock"}</button>
         {!info.locked && <button data-testid="ctx-delete" onClick={() => act(editor, "delete", (ids) => editor.deleteShapes(ids))}>Delete</button>}
       </span>
     </div>
