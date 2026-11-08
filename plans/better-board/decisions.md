@@ -102,3 +102,16 @@ Each entry: the decision, who made it (user / orchestrator / architect), why.
   window lane could move `setNextStyles` into the model so both import one function.
 - O1 amended (orchestrator, accepting H-7): the agent's change is written with `room.storage.transaction`, not `room.updateStore` (in tldraw 5.6 `updateStore` defers its write, and a window's edit arriving in that gap would be overwritten). The rest of O1 stands.
 - O6 (orchestrator): the goal's checks of section 6 are confirmed by temporary scripts in /tmp (not committed), per the user's testing rules; their results and small screenshots go into the findings report. The free old-board scripts of 6.7 (`away`, `readers`) are run once, at the very end, on the final branch.
+- V1 (verify, goal 3.3): undo and redo in a window touch only what that window did. tldraw 5.6's history stores whole records
+  and an undo writes the whole "before" record back, so a property another window or the agent changed in between was put back
+  too (found on a real server, check 6.4.8). Fixed without patching tldraw, with its public store side effects
+  (`packages/board-tl/src/view/localundo.ts`, merge in `localundo-logic.ts`): the window keeps, per record id, the record as it
+  last left it (changes with source "user"; the sync client's are "remote"); every undo/redo runs inside `replay()` (tldraw's
+  undo/redo actions overridden in `UI_OVERRIDES`, so ⌘Z, Ctrl+Z, ⇧⌘Z, Ctrl+⇧Z, and our Ctrl+Y), and a before-change handler
+  takes the history's value of a top-level field, or of each field of `props` and `meta`, only where the current value
+  deep-equals what this window left, else keeps the current one. After a replay the record "left" is the history's record, so
+  a later redo/undo again leaves the others' fields alone. A property both changed: A's undo and redo keep B's later value.
+  Creates and deletes stay tldraw's: undoing a delete recreates the record even if someone else deleted it since; undoing a
+  create deletes it even if someone else changed it. Not merged: tldraw's bail (a cancelled drag, Escape), which rewinds
+  only the gesture in progress. Two undos in a row over a field someone else changed between them: the second compares with
+  the first's write, so it can put back this window's older value (accepted edge).

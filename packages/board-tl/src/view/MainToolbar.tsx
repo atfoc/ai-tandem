@@ -12,6 +12,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { GeoShapeGeoStyle, useEditor, useValue, type Editor, type TLGeoShape, type TLUiOverrides } from "tldraw";
 import { STICKY_TOOL } from "../model/shapes/sticky.tsx";
 import { ROUNDED_RECT } from "../model/styles.ts";
+import { localRedo, localUndo } from "./localundo.ts";
 import "./toolbar.css";
 
 export type Geo = TLGeoShape["props"]["geo"];
@@ -61,6 +62,13 @@ export const UI_OVERRIDES: TLUiOverrides = {
     // tldraw's note stays registered (old records) but is not reachable by a key; N is ours
     if (next.note) next.note = { ...next.note, kbd: undefined };
     if (next.draw) next.draw = { ...next.draw, kbd: "d,p,b,x" };
+    return next;
+  },
+  // every undo and redo touches only what this window did (goal 3.3, localundo.ts); ⌘Z, Ctrl+Z, ⇧⌘Z and Ctrl+⇧Z come here
+  actions(editor, actions) {
+    const next = { ...actions };
+    if (next.undo) next.undo = { ...next.undo, onSelect() { localUndo(editor); } };
+    if (next.redo) next.redo = { ...next.redo, onSelect() { localRedo(editor); } };
     return next;
   },
 };

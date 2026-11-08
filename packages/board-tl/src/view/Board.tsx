@@ -29,6 +29,7 @@ import { ASSET_URLS } from "./assets.ts";
 import { AgentMarker } from "./AgentMarker.tsx";
 import { ContextBar } from "./ContextBar.tsx";
 import { installInteractions } from "./interactions.ts";
+import { installLocalUndo } from "./localundo.ts";
 import { MainToolbar, UI_OVERRIDES } from "./MainToolbar.tsx";
 import { QuickAdd } from "./QuickAdd.tsx";
 import { CAMERA, ConnectorTool, MiroSelectTool, OPTIONS } from "./navigation.ts";
@@ -101,6 +102,7 @@ export function Board({ store, onMount, user, markers }: BoardProps) {
         editor.getContainer().focus();
         setNextStyles(editor);
         const uninstall = installInteractions(editor);
+        const uninstallUndo = installLocalUndo(editor.store);
         // no editing until the sans faces are loaded
         const wasReadonly = editor.getIsReadonly();
         editor.updateInstanceState({ isReadonly: true });
@@ -115,6 +117,7 @@ export function Board({ store, onMount, user, markers }: BoardProps) {
         return () => {
           live = false;
           uninstall();
+          uninstallUndo();
         };
       }}
     >

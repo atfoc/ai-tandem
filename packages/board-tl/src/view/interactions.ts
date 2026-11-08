@@ -7,7 +7,7 @@
 // - typing a printable character while exactly one sticky or shape is selected (select tool idle, not read-only, the focus not
 //   in an input of ours) starts editing it with that character as its text (Miro-like; tldraw only has this for its note,
 //   behind a debug flag);
-// - Ctrl+Y redoes (tldraw binds only ⇧⌘Z / Ctrl+⇧Z).
+// - Ctrl+Y redoes (tldraw binds only ⇧⌘Z / Ctrl+⇧Z), through localundo.ts as every undo and redo.
 //
 // The quick-add actions (QuickAdd.tsx's "+"): a copy next to an element joined by a connector, and a connector dragged out of
 // an element. Each is one undo step (one history stopping point before the first change).
@@ -35,6 +35,7 @@ import {
   type Rect,
   type Side,
 } from "./quickadd-logic.ts";
+import { localRedo } from "./localundo.ts";
 
 export function installInteractions(editor: Editor): () => void {
   const container = editor.getContainer();
@@ -56,7 +57,7 @@ export function installInteractions(editor: Editor): () => void {
     if (isCtrlYRedo(e)) {
       e.preventDefault();
       e.stopPropagation();
-      editor.redo();
+      localRedo(editor);
       return;
     }
     if (isTypingKey(e) && startTyping(editor, e.key)) {
