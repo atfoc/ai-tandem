@@ -318,7 +318,33 @@ with linkedom. With jsdom, add ~55 MB.
    (every window reloads the whole board after a host restart); the relayed transport's own batching on top of tldraw's
    33 ms frames (risk 8.4).
 
-## 7. How to run it (`spikes/tl-host`)
+## 7. The design's assumptions (`design.md` section 10) and decisions D11/D15, answered
+
+| # | Answer |
+|---|---|
+| A1 | **Holds.** The Editor runs on a DOM (linkedom or jsdom; a hand-made stand-in would have to be a DOM). Its measuring is replaced at the `TextManager` level (`installCanvasMeasure`). Notes and geo shapes are exact against Chromium; everything else is within 0.5 px except CJK (system font, 8.7) and 5 edge cases (section 2). The fallback (`apply.ts` writing records itself) is not needed. |
+| A2 | **Holds, with one step added.** `getSvgElement` works in Node, but its rich text is `<foreignObject>` HTML that neither resvg nor skia-canvas lays out, so `textToPaths` (section 3) has to run before rasterizing. With it, resvg's picture matches Chromium's export (0.31% strong). No headless Chromium needed. |
+| A3 | **Mostly holds, with the clock fix.** Rooms with proxy sockets work. Writes through `room.updateStore` reached the other clients (measured). **`room.storage.transaction` was not tried**: check that it broadcasts before relying on it. Reconnecting to an older save gives the full state and resends unacknowledged edits only when the clock is not reused; without `snapshotForRestore()` a window can diverge silently (a2/a3, section 4). So the link needs no hard reset, but rooms must be loaded through that function. |
+| A6 | Not tested in a page here. In Node a `TLSyncClient` on our own `TLPersistentClientSocket` works, with the store handed to the Editor after the first hydration. That is how `useSync` does it, and how `room.ts` `connectEditor` does it. |
+| A5 | Not tested here: the spike used tldraw's `note`. U3's custom `sticky` fits its text through `editor.textMeasure.measureHtml`, which the canvas measurer answers the same way. Run the sticky's cases through the corpus harness once it exists. |
+| A7 | **Holds:** 10 rooms, each with an editor peer and a window client, use 166 MB (linkedom) / 213 MB (jsdom), section 5. |
+
+**D15 (room editor, not a sync peer) and D11 (marker as a custom message)** work with what was measured. The cost of an
+editor per room is small either way (section 5), and `updateStore` broadcasts. One measured effect bears on them:
+
+- tldraw's `TLSyncClient` runs at **1 fps while it sees no other presence** ("solo" mode, `useSync`'s default).
+- With D15 the agent has no presence, so a window alone on the board, which is the normal case for "the agent works
+  while I watch", sees every agent change **~0.8 s late**.
+- **Fix, in the window:** its `TLSyncClient` is ours (design 2.5), so pass it `presenceMode: atom('full')` always, not
+  useSync's solo/full switch. The cost is that a lone window also sends its own presence. Then D15 + D11 deliver agent
+  changes at the same ~35 ms as a peer would.
+- The alternative is section 6.2's persistent peer, which also makes the agent a real collaborator (cursor and
+  selection) instead of a custom-message marker.
+
+Either way, `whenSettled()` is not needed with D15: `updateStore` resolves after the commit, and the save can follow
+directly.
+
+## 8. How to run it (`spikes/tl-host`)
 
 ```sh
 cd spikes/tl-host && npm install && npm install --no-save playwright@1.64.1   # Chromium 156 for the reference

@@ -1,0 +1,26 @@
+{
+  "name": "@aiwb/board-tl",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The new board (better-board prototype): tldraw in the window and the shared model (schema, palette, agent terms, apply/read/validate) the window and the board host both use.",
+  "exports": {
+    "./*": "./src/*"
+  },
+  "scripts": {
+    "test": "node --test --experimental-strip-types 'test/*.test.ts'",
+    "check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@tldraw/tlschema": "5.6.0",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "tldraw": "5.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "@types/react": "~19.2.2",
+    "@types/react-dom": "~19.2.2",
+    "typescript": "^7.0.2"
+  }
+}

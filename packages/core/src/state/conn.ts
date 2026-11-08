@@ -7,6 +7,7 @@ import { setState, getState, applySnapshot, applySection, dropLeftBehind, dropSe
   upsertState, setDrawer, setShown, setThreadError, setLoading, dropLoading, threadAt, shownBranch, shownKey, currentBranch, branchState, isBusy,
   type ThreadKey } from "./store.ts";
 import { boardSide } from "./ports.ts";
+import { tlRegistry, usesTl } from "../tl/registry.ts";
 import { subKey } from "../logic/subagents.ts";
 import { branchKey, keyOfChat, type BranchKey } from "../logic/branches.ts";
 import { Loads } from "../logic/branchview.ts";
@@ -82,6 +83,7 @@ function onApp(e: any) {
  *  its snapshot until here. */
 function leaves(server: string) {
   libraryAwayOf(server);
+  tlRegistry().streamState(server, false); // the sessions of new boards of that server end with its stream
   if (server === LOCAL_SERVER) {
     if (!getState().connected) return;
     setState({ connected: false });
@@ -99,7 +101,7 @@ async function onEvent(server: string, m: any) {
   if (on && OF_A_THING.has(m.type) && !getState().sections[on]) return;
   const key = (id: string) => keyOn(on, id);
   switch (m.type) {
-    case "hello": boardSide().streamOpened(server); clearWriters(server); if (!on) { setState({ role: "active" }); draftBacks.opened(); } return; // a new stream holds no board of that server; a draft that could not be saved without one is saved
+    case "hello": tlRegistry().streamState(server, true); boardSide().streamOpened(server); clearWriters(server); if (!on) { setState({ role: "active" }); draftBacks.opened(); } return; // a new stream holds no board of that server; a draft that could not be saved without one is saved
     case "snapshot": if (on) onSectionSnapshot(on, m); else onSnapshot(m); return;
     case "release_request": if (m.board) await boardSide().handOver(key(m.board)); return; // another window asks for one board
     case "superseded": if (m.board) boardSide().boardLost(key(m.board)); return; // that board turns into a reader (the role bar says another window took it); the stream stays
@@ -108,6 +110,7 @@ async function onEvent(server: string, m: any) {
     case "writer": if (m.board) setWriter(key(m.board), m.writer === "window" || m.writer === "headless" ? m.writer : ""); return; // who writes a board on screen changed
     case "server_stopping": await boardSide().flushAll(server); await api.flushed(server).catch(() => {}); return;
     case "rpc": return answer(server, on ? { ...m, params: toolCallIn(on, m.params) } : m);
+    case "tl_sync": case "tl_closed": tlRegistry().event(server, m); return; // a new board's sync session (ids the server's own; the registry routes by session)
     case "groups": if (on) setSectionGroups(on, (m.groups ?? []).map((g: any) => groupIn(on, g))); else setState({ groups: m.groups ?? [] }); return;
     case "board": if (m.board?.id) upsertBoard(boardIn(on, m.board)); return;
     case "board_removed": if (m.id) onBoardRemoved(key(m.id)); return;
@@ -158,7 +161,8 @@ async function answer(server: string, m: any) {
   let reply: { result?: unknown; error?: string };
   try {
     if (m.method !== "tool") throw new Error(`unknown method ${m.method}`);
-    reply = { result: await boardSide().runTool(m.params) };
+    // get_view and show_board of a new board are the tl view's (tl/registry.ts); every other tool, and every classic board, the board side's
+    reply = { result: await (usesTl(m.params) ? tlRegistry().answer(m.params) : boardSide().runTool(m.params)) };
   } catch (err: any) {
     reply = { error: `${err?.code ? err.code + ": " : ""}${err?.message ?? String(err)}` };
   }
