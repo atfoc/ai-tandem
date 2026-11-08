@@ -12,21 +12,26 @@ import {
   DefaultFontFaces,
   DefaultFontStyle,
   Tldraw,
+  atom,
+  createTLCurrentUser,
   createTLStore,
   type Editor,
   type TLComponents,
   type TLStore,
   type TLStoreWithStatus,
+  type TLUserPreferences,
   type TLUiComponents,
 } from "tldraw";
 import { tlSchema } from "../model/schema.ts";
 import { CUSTOM_SHAPE_UTILS, StickyTool } from "../model/shapes/index.ts";
 import { FillColorStyle } from "../model/styles.ts";
 import { ASSET_URLS } from "./assets.ts";
+import { AgentMarker } from "./AgentMarker.tsx";
 import { ContextBar } from "./ContextBar.tsx";
 import { installInteractions } from "./interactions.ts";
 import { MainToolbar } from "./MainToolbar.tsx";
 import { CAMERA, MiroSelectTool, OPTIONS } from "./navigation.ts";
+import type { AgentMarkers, TlUser } from "./sync.ts";
 import { Zoom } from "./Zoom.tsx";
 
 const UI_NULL: Required<{ [K in keyof TLUiComponents]: null }> = {
@@ -60,14 +65,24 @@ export type BoardProps = {
   store?: TLStore | TLStoreWithStatus;
   /** Called once the editor is mounted and the fonts are loaded (editing is allowed from then). */
   onMount?(editor: Editor): void;
+  /** The person (D12): tldraw's user preferences, so the editor's user is them. Absent: tldraw's own (the dev page). */
+  user?: TlUser;
+  /** The agents' markers of the synced board (D11). */
+  markers?: AgentMarkers;
 };
 
-export function Board({ store, onMount }: BoardProps) {
+export function Board({ store, onMount, user, markers }: BoardProps) {
   const [local] = useState(() => (store ? null : createTLStore({ schema: tlSchema })));
+  const [currentUser] = useState(() => {
+    if (!user) return undefined;
+    const prefs = atom<TLUserPreferences>("aiwb user preferences", { id: user.id, name: user.name, color: user.color, locale: "en" });
+    return createTLCurrentUser({ userPreferences: prefs, setUserPreferences: (p) => prefs.set(p) });
+  });
   return (
     <Tldraw
       hideUi
       store={store ?? local!}
+      user={currentUser}
       components={COMPONENTS}
       shapeUtils={CUSTOM_SHAPE_UTILS}
       tools={TOOLS}
@@ -103,6 +118,7 @@ export function Board({ store, onMount }: BoardProps) {
     >
       <MainToolbar />
       <Zoom />
+      {markers && <AgentMarker markers={markers} />}
     </Tldraw>
   );
 }
