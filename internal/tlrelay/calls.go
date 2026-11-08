@@ -75,7 +75,14 @@ func reasonOf(err error) string {
 	case errors.Is(err, context.Canceled):
 		return "the request was cancelled"
 	}
-	return strings.TrimPrefix(err.Error(), headless.ErrUnavailable.Error()+": ")
+	// The manager's error is "<its words for ErrUnavailable>: <reason>" ("the board host is not
+	// available: …"); the reason alone is what goes into the texts.
+	if errors.Is(err, headless.ErrUnavailable) {
+		if inner := errors.Unwrap(err); inner != nil {
+			return strings.TrimPrefix(err.Error(), inner.Error()+": ")
+		}
+	}
+	return err.Error()
 }
 
 // CallTool sends an agent's tool call on a new board to the board host and returns its answer: a
