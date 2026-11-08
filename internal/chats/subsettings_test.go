@@ -66,7 +66,7 @@ func subDefaults(per map[string]model.SubLimits) model.Defaults {
 func TestSubSettingsOfANewChat(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)
-	bd, err := e.bds.Create("board", gTwo, false)
+	bd, err := e.bds.Create("board", gTwo, false, model.KindClassic)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -371,7 +371,7 @@ func TestSubSettingsAreSticky(t *testing.T) {
 func TestSubSettingsOnABoard(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)
-	bd, err := e.bds.Create("board", gTwo, false)
+	bd, err := e.bds.Create("board", gTwo, false, model.KindClassic)
 	if err != nil {
 		t.Fatal(err)
 	}

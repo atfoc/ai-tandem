@@ -219,7 +219,7 @@ func TestBootRegistersBranches(t *testing.T) {
 func TestBootBoardChatBranchesAreNotListed(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)
-	bd, err := e.bds.Create("board", gTwo, false)
+	bd, err := e.bds.Create("board", gTwo, false, model.KindClassic)
 	if err != nil {
 		t.Fatal(err)
 	}

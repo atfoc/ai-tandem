@@ -53,7 +53,7 @@ func newEnv(t *testing.T) *env {
 	if err := m.Load(); err != nil {
 		t.Fatal(err)
 	}
-	bd, err := bds.Create("arch", model.Ungrouped, false)
+	bd, err := bds.Create("arch", model.Ungrouped, false, model.KindClassic)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -258,7 +258,7 @@ func TestToolsCallThroughClient(t *testing.T) {
 		got <- p
 		return editorbridge.RPCReply{Result: json.RawMessage(`"rect r1 at 0,0"`)}
 	})
-	other, err := e.relay.Boards.Create("other", model.Ungrouped, false)
+	other, err := e.relay.Boards.Create("other", model.Ungrouped, false, model.KindClassic)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -394,7 +394,7 @@ func (e *env) addGroups() {
 // newBoard makes one more board, ungrouped.
 func (e *env) newBoard(name string) model.Board {
 	e.t.Helper()
-	bd, err := e.relay.Boards.Create(name, model.Ungrouped, false)
+	bd, err := e.relay.Boards.Create(name, model.Ungrouped, false, model.KindClassic)
 	if err != nil {
 		e.t.Fatal(err)
 	}
@@ -584,7 +584,7 @@ func TestListBoardsNeedsNoPage(t *testing.T) {
 	}
 	e.addGroups()
 	mk := func(name, group string) model.Board {
-		bd, err := e.relay.Boards.Create(name, group, false)
+		bd, err := e.relay.Boards.Create(name, group, false, model.KindClassic)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -640,7 +640,7 @@ func TestCreateBoardCarriesNoMark(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)
 	e.addGroups()
-	own, err := e.relay.Boards.Create("theirs", "g_infra", false)
+	own, err := e.relay.Boards.Create("theirs", "g_infra", false, model.KindClassic)
 	if err != nil {
 		t.Fatal(err)
 	}

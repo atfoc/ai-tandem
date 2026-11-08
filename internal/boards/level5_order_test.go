@@ -26,7 +26,7 @@ func TestLevel5ListIsOldestFirst(t *testing.T) {
 	// More boards than one bucket of a map holds, in the order they are made.
 	var made []string
 	for i := 0; i < 24; i++ {
-		bd, err := s.Create("board", model.Ungrouped, false)
+		bd, err := s.Create("board", model.Ungrouped, false, model.KindClassic)
 		if err != nil {
 			t.Fatal(err)
 		}

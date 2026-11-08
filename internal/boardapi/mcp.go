@@ -320,7 +320,7 @@ func (r *Relay) createBoard(chatBoard string, args json.RawMessage) (text string
 	}
 	json.Unmarshal(args, &p)
 	name, _ := p.Name.(string)
-	bd, err := r.Boards.Create(name, own.Group, true)
+	bd, err := r.Boards.Create(name, own.Group, true, model.KindClassic)
 	if err != nil {
 		return err.Error(), true
 	}

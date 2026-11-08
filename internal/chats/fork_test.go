@@ -565,7 +565,7 @@ func TestForkNewChat(t *testing.T) {
 func TestForkBoardChat(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)
-	bd, err := e.bds.Create("board", gTwo, false)
+	bd, err := e.bds.Create("board", gTwo, false, model.KindClassic)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -814,7 +814,7 @@ func TestForkLabels(t *testing.T) {
 func TestForkIsUnlistedDuringTheStart(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)
-	bd, err := e.bds.Create("board", gOne, false)
+	bd, err := e.bds.Create("board", gOne, false, model.KindClassic)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -936,7 +936,7 @@ func TestForkFailureLeavesNothing(t *testing.T) {
 		for _, tc := range cases {
 			t.Run(string(kind)+"/"+tc.name, func(t *testing.T) {
 				e := newEnv(t)
-				bd, err := e.bds.Create("board", gOne, false)
+				bd, err := e.bds.Create("board", gOne, false, model.KindClassic)
 				if err != nil {
 					t.Fatal(err)
 				}
