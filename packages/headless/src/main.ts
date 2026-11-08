@@ -5,10 +5,10 @@
 // The secret is in the configuration line and in the connection's memory, and in no other place: not in argv, not in the
 // environment, not in a file, and not in any line this process prints (every line goes through `redact`).
 import { createInterface } from "node:readline";
-import { randomBytes } from "node:crypto";
 import type { StoredEntry } from "@aiwb/conn";
+import { entryOf, parseConfig, redact, type Config } from "./config.ts";
 import { startEngine as realStartEngine, type Engine, type EngineOptions } from "./engine.ts";
-import { startLoop, HANDOVER_DEFAULT_MS, QUIET_DEFAULT_MS, type Loop } from "./loop.ts";
+import { startLoop, type Loop } from "./loop.ts";
 import type { ClientLike } from "./api.ts";
 
 /** The exit code of a process that could not start (the engine, or the first connection, within the start limit). */
@@ -19,63 +19,7 @@ export const START_LIMIT_MS = 20_000;
 /** How long the boards held are given to be saved when the process ends (D28). */
 export const FLUSH_LIMIT_MS = 2_000;
 
-export type Config = {
-  address: string;
-  fingerprint: string;
-  secret: string;
-  clientId: string;
-  instanceId: string;
-  quietMs: number;
-  handoverMs: number;
-  version: string;
-};
-
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-
-/** Reads the configuration line. The errors name the field and never quote the line. */
-export function parseConfig(line: string): Config {
-  let raw: unknown;
-  try { raw = JSON.parse(line); } catch { throw new Error("the configuration on stdin is not JSON"); }
-  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) throw new Error("the configuration on stdin is not an object");
-  const c = raw as Record<string, unknown>;
-  const text = (k: string): string => {
-    const v = c[k];
-    if (typeof v !== "string" || v === "") throw new Error(`the configuration has no "${k}"`);
-    return v;
-  };
-  const ms = (k: string, def: number): number => {
-    const v = c[k];
-    if (v === undefined || v === null) return def;
-    if (typeof v !== "number" || !Number.isFinite(v) || v < 0) throw new Error(`the configuration's "${k}" is not a number of milliseconds`);
-    return v;
-  };
-  const clientId = text("clientId");
-  if (!UUID.test(clientId)) throw new Error('the configuration\'s "clientId" is not a UUID v4');
-  const address = text("address");
-  return {
-    address: /^[a-z][a-z0-9+.-]*:\/\//i.test(address) ? address : `https://${address}`,
-    fingerprint: text("fingerprint"),
-    secret: text("secret"),
-    clientId,
-    instanceId: text("instanceId"),
-    quietMs: ms("quietMs", QUIET_DEFAULT_MS),
-    handoverMs: ms("handoverMs", HANDOVER_DEFAULT_MS),
-    version: typeof c.version === "string" ? c.version : "dev",
-  };
-}
-
-/** The entry of the one server, as the connection module's list holds it: pinned to the certificate the server gave. */
-export function entryOf(c: Config, random: (n: number) => Buffer = randomBytes): StoredEntry {
-  return {
-    id: `s_${random(6).toString("hex")}`, name: "AI Whiteboard", address: c.address, secret: c.secret,
-    selfSigned: true, pin: c.fingerprint, instanceId: c.instanceId,
-  };
-}
-
-/** A line with the secret taken out of it. */
-export function redact(line: string, secret: string): string {
-  return secret ? line.split(secret).join("***") : line;
-}
+export { entryOf, parseConfig, redact, type Config };
 
 /** The test knob `AIWB_HEADLESS_TEST=hold-before-save[:N]`: false when it is not set, else which `apply` is held (loop.ts `holdBeforeSave`). */
 export function holdOf(v: string | undefined): boolean | number {
