@@ -47,7 +47,15 @@ const (
 
 // ErrUnavailable is what Ensure returns when the headless writer cannot run here (no Node, no bundle, a
 // start that failed). The error wraps it and says why. The relay tells agents in the words of 2.10.
+// A manager with another Options.Name returns errors that say its name and are still ErrUnavailable for
+// errors.Is.
 var ErrUnavailable = errors.New("the headless writer is not available")
+
+// unavailableError is ErrUnavailable in the words of a manager with another Name.
+type unavailableError struct{ name string }
+
+func (e *unavailableError) Error() string        { return "the " + e.name + " is not available" }
+func (e *unavailableError) Is(target error) bool { return target == ErrUnavailable }
 
 // Bridge is what the manager needs of the editor bridge.
 type Bridge interface {
@@ -76,8 +84,13 @@ type Listener struct {
 }
 
 // Options configures a Manager. A zero duration is the default: Quiet 60 s, StartLimit 20 s, Linger 5 s,
-// Retry 60 s, Handover 8 s.
+// Retry 60 s, Handover 8 s. Empty names are the headless writer's: Program "headless.mjs", Folder "headless",
+// Name "headless writer", NodeEnv "AIWB_HEADLESS_NODE". A second manager (the board host) gives its own.
 type Options struct {
+	Program    string        // the program inside the bundle folder, "" for headless.mjs
+	Folder     string        // the bundle folder's name in <exe>/../Resources/, <exe>/ and <exe>/resources/, "" for headless; also the stem of the flags the reasons name (-<folder>-node, -<folder>-dir) and the prefix of the process's own log lines
+	Name       string        // what the log lines and the reasons call the process, "" for "headless writer"
+	NodeEnv    string        // the variable read for the Node when Node is "", "" for AIWB_HEADLESS_NODE
 	Node       string        // -headless-node: the program to run, "" to look for one (D33)
 	Dir        string        // -headless-dir: the bundle folder, "" to look for it (D34)
 	Quiet      time.Duration // how long the process keeps a board after the last call on it (D26)
@@ -104,9 +117,11 @@ type Manager struct {
 	l Listener
 	o Options
 
-	look  lookups
-	newID func() string
-	now   func() time.Time
+	look    lookups
+	names   naming
+	unavail error // ErrUnavailable, or the same in the words of Options.Name
+	newID   func() string
+	now     func() time.Time
 	// stopGrace and termGrace are the waits of the stop sequence; variables of the manager so that a test
 	// need not wait them out.
 	stopGrace, termGrace time.Duration
@@ -160,9 +175,27 @@ func New(b Bridge, l Listener, o Options) *Manager {
 	if o.Logf == nil {
 		o.Logf = log.Printf
 	}
+	if o.Program == "" {
+		o.Program = BundleFile
+	}
+	if o.Folder == "" {
+		o.Folder = FolderDefault
+	}
+	if o.Name == "" {
+		o.Name = NameDefault
+	}
+	if o.NodeEnv == "" {
+		o.NodeEnv = NodeEnv
+	}
+	var unavail error = ErrUnavailable
+	if o.Name != NameDefault {
+		unavail = &unavailableError{name: o.Name}
+	}
 	return &Manager{
 		b: b, l: l, o: o,
 		look:      systemLookups(),
+		names:     naming{Program: o.Program, Folder: o.Folder, Name: o.Name, NodeEnv: o.NodeEnv},
+		unavail:   unavail,
 		newID:     newUUID,
 		now:       time.Now,
 		stopGrace: stopGrace,
@@ -179,7 +212,7 @@ func (m *Manager) Ensure(ctx context.Context) (string, error) {
 		m.mu.Lock()
 		if m.closed {
 			m.mu.Unlock()
-			return "", fmt.Errorf("%w: the server is stopping", ErrUnavailable)
+			return "", fmt.Errorf("%w: the server is stopping", m.unavail)
 		}
 		if m.cur == nil && m.failed != nil && m.now().Before(m.failedUntil) {
 			err := m.failed
@@ -217,7 +250,7 @@ func (m *Manager) Ensure(ctx context.Context) (string, error) {
 		}
 		m.mu.Unlock()
 	}
-	return "", fmt.Errorf("%w: the process stopped as often as it was started", ErrUnavailable)
+	return "", fmt.Errorf("%w: the process stopped as often as it was started", m.unavail)
 }
 
 // CallTimedOut tells the manager that a call on the headless writer did not answer in time: it is stuck,
@@ -234,7 +267,7 @@ func (m *Manager) CallTimedOut() {
 	<-p.up
 	if p.startErr == nil {
 		p.stopping.Store(true)
-		m.o.Logf("headless writer: a call did not answer in time, the process is killed")
+		m.o.Logf("%s: a call did not answer in time, the process is killed", m.o.Name)
 		agent.SignalGroup(p.cmd, syscall.SIGKILL)
 	}
 }
@@ -297,12 +330,16 @@ func (m *Manager) Status() Status {
 	return s
 }
 
+// reasonOf is the reason of an error that unavailable made: its text after "the … is not available: ".
 func reasonOf(err error) string {
-	return strings.TrimPrefix(err.Error(), ErrUnavailable.Error()+": ")
+	if inner := errors.Unwrap(err); inner != nil {
+		return strings.TrimPrefix(err.Error(), inner.Error()+": ")
+	}
+	return err.Error()
 }
 
-// unavailable wraps reason in ErrUnavailable.
-func unavailable(reason string) error { return fmt.Errorf("%w: %s", ErrUnavailable, reason) }
+// unavailable wraps reason in ErrUnavailable, in the manager's words.
+func (m *Manager) unavailable(reason string) error { return fmt.Errorf("%w: %s", m.unavail, reason) }
 
 // watch is the idle stop of D28. Every Linger it asks whether the process holds a board or has a call open;
 // two looks in a row that find neither stop it. (A look, and no hook on the last release: a process whose
@@ -334,7 +371,7 @@ func (m *Manager) watch(p *proc) {
 		}
 		m.mu.Unlock()
 		if stopNow {
-			m.o.Logf("headless writer: it holds no board, it is stopped")
+			m.o.Logf("%s: it holds no board, it is stopped", m.o.Name)
 			m.stop(p)
 			return
 		}
