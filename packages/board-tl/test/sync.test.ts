@@ -116,7 +116,9 @@ test("a link cut and opened again converges; edits made while cut off are kept",
       const kb = JSON.stringify(shapes(b.sync).map((r) => [r.id, r.x, (r.props as { color: string }).color]).sort());
       return ka === kb;
     };
-    await until(() => loaded(a.sync) && !!get(b.sync, "shape:s3") && same(), "converged");
+    // (wait for the end state itself: right after the reconnect A holds the room's state, `gone` included, until its pending
+    // changes are rebased and pushed, and on a loaded machine the two windows can match in that moment)
+    await until(() => loaded(a.sync) && !!get(b.sync, "shape:s3") && !get(b.sync, "shape:gone") && same(), "converged");
     assert.equal(get(b.sync, "shape:gone"), undefined, "A's offline delete reached B");
     assert.equal(get(b.sync, "shape:s3")!.x, 900, "A's offline create reached B");
     assert.equal((get(a.sync, "shape:s2")!.props as { color: string }).color, "violet", "B's edit reached A");

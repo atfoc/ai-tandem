@@ -17,10 +17,8 @@ export type MountOptions = {
   testID?: string;
   /** The handle for `get_view`/`show_board` once the editor is ready (again if the editor is remade), null at unmount. */
   onHandle?(handle: TlViewHandle | null): void;
-  /** The editor (tldraw's `Editor`) once it is ready: fonts loaded, after the seed when `seed`. */
+  /** The editor (tldraw's `Editor`) once it is ready (fonts loaded). */
   onMount?(editor: object): void;
-  /** TEMPORARY (dev page): fill a local board with mock elements (dev/seed.ts). Ignored with a link. */
-  seed?: boolean;
 };
 
 export type TlView = { mount(element: HTMLElement, options?: MountOptions): { unmount(): void } };

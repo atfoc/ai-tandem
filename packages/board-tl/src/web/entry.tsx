@@ -1,7 +1,7 @@
 // The new board's web target, `tl.js` (like board-view's `board.js`): `window.aiwbTlView.mount(element, options) → { unmount }`,
 // an own React root in a box of the app's page (no iframe; decision U2). The options are in types.ts (design 6):
 // - with `link`: the store is synced through it (view/sync.ts), with the person's presence, the agents' markers and the
-//   connection line; without: a local store (the dev page, `build.mjs --dev-page`, where `seed` fills it with the mock board);
+//   connection line; without: a local store (the dev page, `build.mjs --dev-page`, an empty board driven through `window.__tlEditor`);
 // - `onHandle(handle)` once the editor is ready (view/handle.ts), `onHandle(null)` at unmount;
 // - the root element (`data-testid` = `testID`) takes the focus at mount (the spike's rule: the app decides when to mount).
 import "tldraw/tldraw.css";
@@ -15,7 +15,6 @@ import { createViewHandle } from "../view/handle.ts";
 import { Status } from "../view/Status.tsx";
 import { TlSync, type TlUser } from "../view/sync.ts";
 import type { LinkLike } from "../view/socket.ts";
-import { seed } from "../../dev/seed.ts";
 import type { MountOptions, TlView } from "./types.ts";
 
 export type { MountOptions, TlView, TlViewUser } from "./types.ts";
@@ -47,7 +46,6 @@ window.aiwbTlView = {
     let live = true;
     const onEditor = (editor: Editor) => {
       if (!live) return;
-      if (options.seed && !options.link) seed(editor);
       options.onHandle?.(createViewHandle(editor));
       options.onMount?.(editor);
     };

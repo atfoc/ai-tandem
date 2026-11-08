@@ -1,30 +1,3 @@
-.aiwb-maintoolbar { position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); z-index: 1000; display: flex; gap: 2px;
-  background: #fff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,.18); padding: 4px; font: 13px system-ui, sans-serif; pointer-events: all; }
-.aiwb-maintoolbar button, .aiwb-contexttoolbar button { border: 0; background: transparent; padding: 6px 8px; border-radius: 6px; cursor: pointer; font: inherit; }
-.aiwb-maintoolbar button.on { background: #e3e9ff; color: #2f46d0; }
-.aiwb-maintoolbar .sep { width: 1px; background: #ddd; margin: 2px 4px; }
-.aiwb-contexttoolbar { position: absolute; transform: translate(-50%, calc(-100% - 12px)); z-index: 1000; display: flex; flex-wrap: nowrap; gap: 2px;
-  align-items: center; background: #fff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,.18); padding: 4px; font: 13px system-ui, sans-serif;
-  pointer-events: all; white-space: nowrap; }
-.aiwb-contexttoolbar .swatch { width: 18px; height: 18px; padding: 0; border-radius: 50%; border: 1px solid rgba(0,0,0,.15); }
-.aiwb-contexttoolbar .swatch.on { outline: 2px solid #2f46d0; outline-offset: 1px; }
 /* tldraw leaves the font of its own chrome (the frame names) to the page; the board font, not the page's */
 .tl-container { font-family: var(--tl-font-sans); }
-/* contextual toolbar controls (spike-ui-ctx) */
-.aiwb-contexttoolbar { flex-wrap: wrap; max-width: 560px; justify-content: center; row-gap: 4px; }
-.aiwb-contexttoolbar.below { transform: translate(-50%, 12px); }
-.aiwb-contexttoolbar .group { display: inline-flex; gap: 2px; align-items: center; padding: 0 4px; border-left: 1px solid #eee; flex-wrap: wrap; }
-.aiwb-contexttoolbar .group:first-child { border-left: 0; }
-.aiwb-contexttoolbar .ctl { display: inline-flex; gap: 3px; align-items: center; color: #666; font-size: 11px; padding: 0 2px; }
-.aiwb-contexttoolbar select, .aiwb-contexttoolbar input.name { font: 12px system-ui, sans-serif; padding: 2px; border: 1px solid #ddd; border-radius: 4px; background: #fff; }
-.aiwb-contexttoolbar input.name { width: 120px; }
-.aiwb-contexttoolbar button.on { background: #e3e9ff; color: #2f46d0; }
-.aiwb-contexttoolbar button:disabled { opacity: .35; cursor: default; }
-.aiwb-contexttoolbar button:hover:not(:disabled) { background: #f1f1f1; }
-/* Our overlay UI takes no browser gesture: a pinch that starts on a toolbar must not zoom the page (spike-ui-nav.md). */
-.aiwb-maintoolbar, .aiwb-contexttoolbar { touch-action: none; }
-/* the zoom controls, bottom left: the bottom right is tldraw's watermark (development build), which nothing of ours may cover (goal 4.2) */
-.aiwb-zoom { position: absolute; left: 12px; bottom: 12px; z-index: 1000; display: flex; gap: 2px; background: #fff; border-radius: 8px;
-  box-shadow: 0 2px 8px rgba(0,0,0,.18); padding: 4px; font: 13px system-ui, sans-serif; pointer-events: all; touch-action: none; }
-.aiwb-zoom button { border: 0; background: transparent; padding: 6px 8px; border-radius: 6px; cursor: pointer; font: inherit; min-width: 28px; }
-.aiwb-zoom button:hover { background: #f1f1f1; }
+/* (our toolbars' styles are in toolbar.css, contextbar.css, quickadd.css and sync.css, beside their components) */

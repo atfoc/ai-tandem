@@ -197,8 +197,8 @@ export function withBold<T>(richText: T, bold: boolean): T {
 
 export type Box = { minX: number; minY: number; maxX: number; maxY: number };
 export type Size = { w: number; h: number };
-/** Gap between the selection and the bar, and the bar's least distance to the viewport's edges. */
-export const GAP = 12;
+/** Gap between the selection and the bar (clear of the quick-add "+" handles, 18 px out, about 10 px in radius), and the bar's least distance to the viewport's edges. */
+export const GAP = 36;
 export const MARGIN = 8;
 
 const clamp = (v: number, lo: number, hi: number) => (hi < lo ? lo : Math.min(Math.max(v, lo), hi));

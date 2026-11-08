@@ -12,6 +12,7 @@ import {
   curvedBend,
   groupsFor,
   isAllBold,
+  GAP,
   placeBar,
   placePopover,
   readValues,
@@ -131,14 +132,14 @@ test("bold: on when every text node is bold; toggling keeps other marks and the 
 test("the bar: centred above, clamped to the viewport, flipped below when no room above", () => {
   const view = { w: 1280, h: 800 };
   const bar = { w: 300, h: 36 };
-  // room above: centred, 12 px above
-  assert.deepEqual(placeBar({ minX: 500, minY: 400, maxX: 700, maxY: 500 }, bar, view), { left: 450, top: 352, below: false });
+  // room above: centred, GAP px above
+  assert.deepEqual(placeBar({ minX: 500, minY: 400, maxX: 700, maxY: 500 }, bar, view), { left: 450, top: 400 - GAP - 36, below: false });
   // at the right edge: clamped 8 px in
   assert.equal(placeBar({ minX: 1200, minY: 400, maxX: 1300, maxY: 500 }, bar, view).left, 1280 - 8 - 300);
   // at the left edge
   assert.equal(placeBar({ minX: -100, minY: 400, maxX: 20, maxY: 500 }, bar, view).left, 8);
   // near the top: below the selection
-  assert.deepEqual(placeBar({ minX: 500, minY: 20, maxX: 700, maxY: 120 }, bar, view), { left: 450, top: 132, below: true });
+  assert.deepEqual(placeBar({ minX: 500, minY: 20, maxX: 700, maxY: 120 }, bar, view), { left: 450, top: 120 + GAP, below: true });
   // the selection fills the viewport: inside it, at the bottom
   const full = placeBar({ minX: -50, minY: -50, maxX: 1400, maxY: 900 }, bar, view);
   assert.deepEqual(full, { left: 525, top: 800 - 8 - 36, below: true });

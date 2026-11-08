@@ -431,3 +431,16 @@ into one `TLSocketRoom` running in the page, bundled with esbuild; Playwright 1.
 - At a pane 697 px wide the main toolbar's left end touches the zoom controls (bottom left), seen in the shots; T2a's area.
 - A rejection that repeats on every fresh client (e.g. `CLIENT_TOO_OLD`) stops after 3; the link keeps reopening sessions that
   carry nothing until the app closes it.
+
+## Lane lead: after the merges
+
+- All parts together on the dev page (1280×800 and 700×600, Playwright research in `/tmp/bb-win/`): no page error, no
+  visible `.tlui-` element, toolbar left, zoom bottom left, watermark uncovered. The top quick-add "+" overlapped the
+  contextual toolbar; the bar now sits 36 px above the selection (`ctxModel.ts` `GAP`). `shots/win-combined.png`.
+- The temporary mock seed (`dev/seed.ts`) and the mount's `seed` option are deleted: `tl.js` carries no mock data; the
+  dev page is an empty local board driven through `window.__tlEditor`.
+- `test/sync.test.ts` "a link cut and opened again converges" could pass its convergence wait in the moment right after
+  the reconnect (A holds the room's state, `gone` included, before its pending changes are rebased) and then fail under
+  the load of the root `npm test`; it now waits for the end state. Six concurrent runs pass.
+- Not looked at here: the real relay and board host in the loop (the Go lane and the host lane run in parallel; Wave 4
+  checks it), and Electron.

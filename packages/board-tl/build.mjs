@@ -2,8 +2,7 @@
 //   node build.mjs                       (npm run build:web) → app/public/tl/tl.js + tl.css (git-ignored, like app/public/board/)
 //   node build.mjs --dev-page [--out d]  (npm run dev-page)  → a standalone page, default packages/board-tl/dev-dist/
 //                                         (git-ignored): index.html under the app's CSP (cspFor() of app/scripts/export-web.mjs,
-//                                         imported), tl.js, tl.css, and page.js, which mounts the seeded mock board (?empty: none)
-//                                         and exposes the editor as window.__tlEditor (the dev page only)
+//                                         imported), tl.js, tl.css, and page.js, which mounts an empty local board and exposes the editor as window.__tlEditor (the dev page only)
 // Always a development build of tldraw (process.env.NODE_ENV "development", decisions and licence.md: a production file://
 // page without a key goes blank after 5 s), minified anyway. The fonts are tldraw's 16 woff2 files of @tldraw/assets, named by
 // src/model/fonts.ts, inlined as data: URLs (`@tldraw/assets/selfHosted` is swapped for a module that imports them), so no
@@ -71,7 +70,6 @@ if (devPage) {
 </html>
 `);
   fs.writeFileSync(path.join(out, "page.js"), `window.aiwbTlView.mount(document.getElementById("board"), {
-  seed: !location.search.includes("empty"),
   onMount: function (editor) { window.__tlEditor = editor; document.body.dataset.ready = "1"; },
 });
 `);
