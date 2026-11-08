@@ -35,6 +35,8 @@ export type Board = Archive & {
   group: string; // group id or UNGROUPED
   created: string;
   new?: boolean;
+  /** "tl": a new board (tldraw, many people at once: plans/better-board); absent: a classic (Excalidraw) board. */
+  kind?: "tl";
 };
 
 export type State = {
