@@ -105,16 +105,20 @@ Each entry: the decision, who made it (user / orchestrator / architect), why.
 - V1 (verify, goal 3.3): undo and redo in a window touch only what that window did. tldraw 5.6's history stores whole records
   and an undo writes the whole "before" record back, so a property another window or the agent changed in between was put back
   too (found on a real server, check 6.4.8). Fixed without patching tldraw, with its public store side effects
-  (`packages/board-tl/src/view/localundo.ts`, merge in `localundo-logic.ts`): the window keeps, per record id, the record as it
-  last left it (changes with source "user"; the sync client's are "remote"); every undo/redo runs inside `replay()` (tldraw's
-  undo/redo actions overridden in `UI_OVERRIDES`, so ⌘Z, Ctrl+Z, ⇧⌘Z, Ctrl+⇧Z, and our Ctrl+Y), and a before-change handler
-  takes the history's value of a top-level field, or of each field of `props` and `meta`, only where the current value
-  deep-equals what this window left, else keeps the current one. After a replay the record "left" is the history's record, so
-  a later redo/undo again leaves the others' fields alone. A property both changed: A's undo and redo keep B's later value.
-  Creates and deletes stay tldraw's: undoing a delete recreates the record even if someone else deleted it since; undoing a
-  create deletes it even if someone else changed it. Not merged: tldraw's bail (a cancelled drag, Escape), which rewinds
-  only the gesture in progress. Two undos in a row over a field someone else changed between them: the second compares with
-  the first's write, so it can put back this window's older value (accepted edge).
+  (`packages/board-tl/src/view/localundo.ts`, merge in `localundo-logic.ts`). Ownership is field-wise: per record id the
+  window keeps only the fields it wrote itself (top-level fields whole, each field of `props` and `meta` apart) with the value
+  it wrote. A change with source "user" (the sync client's are "remote") owns each field whose value it changed, with the new
+  value, and leaves the others as they were (absent stays absent; a removed field is owned as absent); a create owns every
+  field; remote changes own nothing (a remote write makes the current value differ from the owned one, which is enough).
+  Every undo/redo runs inside `replay()` (tldraw's undo/redo actions overridden in `UI_OVERRIDES`, so ⌘Z, Ctrl+Z, ⇧⌘Z,
+  Ctrl+⇧Z, and our Ctrl+Y), and a before-change handler takes the history's value of a field only where this window owns it
+  and the current value deep-equals the owned one; everywhere else the current value stays. After the replay the window owns
+  exactly the fields the replay changed, with the values it wrote. So a record this window never wrote is not changed by its
+  replays, and a field someone else wrote after this window (a property both changed) keeps their value through any number of
+  undos and redos. (The first version stored the whole record as "what this window left", which made another's fields this
+  window's after its next own change or replay: c64 check 8 on a real server.) Creates and deletes stay tldraw's: undoing a
+  delete recreates the record even if someone else deleted it since; undoing a create deletes it even if someone else changed
+  it. Not merged: tldraw's bail (a cancelled drag, Escape), which rewinds only the gesture in progress.
 - V2 (verify, fixes "Bug A" of the verification; refines H-4): a picture's pixel size is `floor(side × scale)` on both sides,
   as tldraw's own export (`getSvgAsImage`: `Math.floor` of the canvas size, the SVG drawn stretched onto it), not
   `round(width × scale)` with resvg's `fitTo: width` (resvg derived the height from the rounded width and rounded it up, so
