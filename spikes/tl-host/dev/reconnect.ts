@@ -2,10 +2,10 @@
 // Scenarios a-d of notes/sync.md, each for a plain client (a window) and for the headless editor (the agent), and each
 // restored room both from the raw snapshot and from snapshotForRestore() (the clock jumped, history reset).
 // Run: node dev/reconnect.ts   (VERBOSE=1 also prints tldraw's console output as it happens)
-import { installPage } from '../src/dom.ts'
+import { loadDom } from '../src/dom-pick.ts'
 import { captureConsole, sameDocs, sleep, stubMeasure, waitFor } from './common.ts'
 
-installPage()
+;(await loadDom()).installPage()
 const con = captureConsole()
 const { createRoom, connectEditor, connectClient, snapshotForRestore } = await import('../src/room.ts')
 const { toRichText } = await import('tldraw')

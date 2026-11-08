@@ -2,7 +2,7 @@
 // socket pair between the room and a sync client, and the agent as a peer (a headless Editor on a sync client's store,
 // with presence). Written so a board-host package can lift it as it is.
 //
-// Import this module dynamically AFTER dom.ts's installPage(): it imports tldraw (through editor.ts and directly).
+// Import this module dynamically AFTER a page is installed (dom-pick.ts loadDom().installPage()): it imports tldraw (through editor.ts and directly).
 //
 // The pieces:
 //   createRoom()         the room, tldraw's default schema, optionally from a saved snapshot.
@@ -37,7 +37,6 @@ import {
   uniqueId,
 } from 'tldraw'
 import type { Editor, TLRecord, TLStore, TLStoreSnapshot } from 'tldraw'
-import { installPage } from './dom.ts'
 import { createEditor } from './editor.ts'
 import { installCanvasMeasure } from './measure.ts'
 import { fontAssetUrls } from './headless.ts'
@@ -443,8 +442,10 @@ export async function connectEditor(room: Room, opts: PeerOptions): Promise<Edit
     presenceMode: atom<TLPresenceMode>('presenceMode', 'full'),
   }))
   await peer.whenConnected()
-  const page = installPage()
-  const container = page.container()
+  // a container in whichever page is installed (jsdom, happy-dom or linkedom: dom-pick.ts)
+  const doc = (globalThis as Any).document as Document
+  const container = doc.createElement('div')
+  doc.body.appendChild(container)
   const editor = createEditor({ container, store: peer.store, fontAssetUrls: fontAssetUrls() })
   installCanvasMeasure(editor) // real text measuring (measure.ts): the agent's sizes are what a window would store
   const close = peer.close

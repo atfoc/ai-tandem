@@ -1,10 +1,10 @@
 // Experiments 1-4 of the sync spike (notes/sync.md): a TLSocketRoom, the agent's headless Editor as a sync peer with
 // presence, and a plain TLSyncClient (a window's stand-in), all in one process over the in-process socket pair.
 // Run: node dev/sync.ts
-import { installPage } from '../src/dom.ts'
+import { loadDom } from '../src/dom-pick.ts'
 import { captureConsole, docRecords, ms, sameDocs, shapeIds, sleep, stubMeasure, waitFor } from './common.ts'
 
-installPage()
+;(await loadDom()).installPage()
 const con = captureConsole()
 const { createRoom, connectEditor, connectClient } = await import('../src/room.ts')
 const { buildBoard } = await import('../src/board.ts')
