@@ -15,10 +15,8 @@ import * as store from "@aiwb/core/state/store.ts";
 import { makeApi, type ClientLike, type WriterApi } from "./api.ts";
 import { nameOf, noSelectionText, noShowText, noViewText, saveFailedText, takenText } from "./texts.ts";
 
-/** The quiet time a board is kept after the last call on it (D26), and the longest wait for the call in progress when a board
- *  is asked for (D17): the server sends both in the start-up configuration. */
-export const QUIET_DEFAULT_MS = 60_000;
-export const HANDOVER_DEFAULT_MS = 8_000;
+import { HANDOVER_DEFAULT_MS, QUIET_DEFAULT_MS } from "./config.ts";
+export { HANDOVER_DEFAULT_MS, QUIET_DEFAULT_MS };
 const NO_TIMER_MS = 60 * 60_000;
 
 export type LoopOptions = {

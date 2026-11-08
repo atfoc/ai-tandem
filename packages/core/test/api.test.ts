@@ -151,6 +151,9 @@ const SECTION: Record<keyof typeof api, [args: unknown[], method: string, path: 
   setLabel: [["s_1~c_1", "main", 2, "here"], "PUT", "/api/chats/c_1/label", { branch: "main", item: 2, text: "here" }],
   fork: [["s_1~c_1", "main", 3, 2], "POST", "/api/chats/c_1/fork", { branch: "main", at: 3, message: 2 }],
   contextSplit: [["s_1~c_1", "main", true], "GET", "/api/chats/c_1/context?branch=main&fresh=1"],
+  tlOpen: [["s_1~b_1"], "POST", "/api/tl/b_1/open", {}],
+  tlSync: [["s_1~b_1", "s_x", ["{\"type\":\"ping\"}"]], "POST", "/api/tl/b_1/sync", { session: "s_x", messages: ["{\"type\":\"ping\"}"] }],
+  tlClose: [["s_1~b_1", "s_x"], "POST", "/api/tl/b_1/close", { session: "s_x" }],
 };
 
 const request = async (name: string, args: unknown[]): Promise<[string, string, string, unknown]> => {
@@ -338,4 +341,24 @@ test("followBoard, unfollowBoard and releaseBoard with ifIdle: the routes of a b
   fake.handler = () => ok({ writer: "someone else" });
   assert.deepEqual(await api.followBoard("s_1~b_1"), { rev: 0, writer: "" });
   assert.deepEqual([fake.calls.at(-1)!.server, fake.calls.at(-1)!.path], ["s_1", "/api/boards/b_1/follow"]);
+});
+
+// ---- new boards (kind "tl")
+
+test("api.newBoard sends kind only for a new board (tl)", async () => {
+  await api.newBoard("g_1", "Plan", false, "tl");
+  await api.newBoard("g_1", "Old");
+  assert.deepEqual(calls.map((c) => c.body), [{ name: "Plan", group: "g_1", new: false, kind: "tl" }, { name: "Old", group: "g_1", new: false }]);
+});
+
+test("api.tlOpen answers the session; tlSync keeps a refusal's status and code (410 no_session); tlClose posts the session", async () => {
+  fake.handler = (c) => (c.path.endsWith("/open") ? ok({ session: "s_abc" }) : c.path.endsWith("/sync") ? refuse(410, { code: "no_session", error: "no such session" }) : undefined);
+  assert.deepEqual(await api.tlOpen("b_1"), { session: "s_abc" });
+  await assert.rejects(api.tlSync("b_1", "s_abc", ["a", "b"]), (e: unknown) => e instanceof ApiError && e.status === 410 && e.code === "no_session");
+  await api.tlClose("b_1", "s_abc");
+  assert.deepEqual(calls.map((c) => [c.server, c.method, c.path, c.body]), [
+    ["local", "POST", "/api/tl/b_1/open", {}],
+    ["local", "POST", "/api/tl/b_1/sync", { session: "s_abc", messages: ["a", "b"] }],
+    ["local", "POST", "/api/tl/b_1/close", { session: "s_abc" }],
+  ]);
 });

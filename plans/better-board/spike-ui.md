@@ -296,6 +296,17 @@ mount (`setStyleForNextShapes(DefaultFontStyle, 'sans')`; tldraw's default is it
 11. **tldraw upgrades** re-check: the select tool's child-state ids and hooks, `hideUi`'s keeping of shortcuts, the
    `AssetUrlsProvider` skipping `""`, the licence rules above.
 
+## To reconcile with `packages/board-tl` (T1a, merged from the parent after the spike)
+
+T1a's model was written in parallel with this spike. When the sticky moves into board-tl (T1b), these differ:
+
+| | spike `spikes/tl-ui` | board-tl T1a | Suggestion |
+|---|---|---|---|
+| shape type | `sticky` | placeholder `aiwb-sticky` | either; one name in `palette.ts`'s `STICKY_TYPE` and the util |
+| colour names | 16: `light-yellow, yellow, orange, light-green, green, dark-green, cyan, light-pink, pink, violet, light-red, light-blue, blue, dark-blue, grey, black` | 12 (`StickyColor` in `terms.ts`: incl. `red`, `white`) | board-tl's list is the agent terms: the style prop `aiwb:sticky-color` takes board-tl's names; the hexes come from the spike's table where the names match |
+| font size | `fontSize: number` (0 = auto) + `fitted` (output) | `fontSize: "auto" \| Size` in, `shownSize` out | board-tl's terms map onto the record: `"auto"` → 0, a `Size` → its px; `shownSize` ← `fitted` |
+| default size | 200 × 200 | `w` optional | 200 |
+
 ## What was hard / surprising
 
 - The licence gate: the production bundle works for 5 s from `file://` and then vanishes. It first looked like random
