@@ -52,10 +52,11 @@ var Tools = []Tool{
 		Summary:     "{}",
 	},
 	{
-		Name:        "read_board",
-		Description: "Read a board as text: one line per element with type, key, id, label, position/size, and for arrows what they connect.",
-		Schema:      obj(props{"board": str(boardDesc)}),
-		Summary:     `{"board"?: "<board id>"}`,
+		Name: "read_board",
+		Description: "Read a board as text: one line per element with type, key, id, label, position/size, and for arrows what they connect. " +
+			"A new board (marked (new board) in list_boards) is read as one header line plus one JSON object per element.",
+		Schema:  obj(props{"board": str(boardDesc)}),
+		Summary: `{"board"?: "<board id>"}`,
 	},
 	{
 		Name: "get_view",
@@ -106,7 +107,10 @@ var Tools = []Tool{
 			"A create whose key already exists updates that element instead. " +
 			"update items: {ref, x, y, moveBy: [dx,dy], width, height, label, text, strokeColor, backgroundColor, start, end, ifVersion}. " +
 			"Returns created key→id, updated ids and conflicts." +
-			" New elements default to sharp corners, roughness 0 and the normal font.",
+			" New elements default to sharp corners, roughness 0 and the normal font." +
+			" On a new board (marked (new board) in list_boards) apply takes ops instead of create and update: op create " +
+			"(type sticky, shape, text, connector or frame; ref names it within this apply), update (by id) or delete (by id), e.g. " +
+			`{"ops":[{"op":"create","type":"sticky","ref":"n1","x":0,"y":0,"text":"Idea"}]}.`,
 		Schema: obj(props{
 			"board": str(boardDesc),
 			"create": arr(map[string]any{
@@ -114,12 +118,17 @@ var Tools = []Tool{
 				"description": "an element to create; also takes roughness (0, 1 or 2) and fontFamily: hand|normal|code",
 			}),
 			"update": arr(obj(props{"ref": ref})),
+			"ops": arr(map[string]any{
+				"type":        "object",
+				"description": `new boards only, instead of create and update: {"op":"create","type":"sticky|shape|text|connector|frame","ref":...,...}, {"op":"update","id":...,...} or {"op":"delete","id":...}`,
+			}),
 		}),
-		Summary: `{"board"?: "<board id>", "create"?: [{type, key, x, y, width, height, label, ...}], "update"?: [{ref, ...}]}`,
+		Summary: `{"board"?: "<board id>", "create"?: [{type, key, x, y, width, height, label, ...}], "update"?: [{ref, ...}]} or, on a new board, {"board"?: "<board id>", "ops": [{"op": "create|update|delete", ...}]}`,
 	},
 	{
-		Name:        "delete_elements",
-		Description: "Delete elements from a board. cascade: also delete arrows bound to them.",
+		Name: "delete_elements",
+		Description: "Delete elements from a board. cascade: also delete arrows bound to them. " +
+			"On a new board (marked (new board) in list_boards) cascade is ignored: a connector whose element goes keeps a free end.",
 		Schema: obj(props{
 			"board":   str(boardDesc),
 			"refs":    arr(ref),
@@ -129,10 +138,18 @@ var Tools = []Tool{
 		Summary: `{"board"?: "<board id>", "refs": [{"key"|"id": ...}], "cascade"?: bool, "reason"?: "..."}`,
 	},
 	{
-		Name:        "create_board",
-		Description: "Create a new empty board in the same group as this chat's board. Only when the user asks for a new board. Returns its name and id.",
-		Schema:      obj(props{"name": str("")}, "name"),
-		Summary:     `{"name": "<board name>"}`,
+		Name: "create_board",
+		Description: "Create a new empty board in the same group as this chat's board. Only when the user asks for a new board. Returns its name and id. " +
+			`kind "new" makes a new board, a Miro-like board that many people edit at once; "classic" (the default) makes a classic board.`,
+		Schema: obj(props{
+			"name": str(""),
+			"kind": map[string]any{
+				"type":        "string",
+				"description": `"new" = a Miro-like board many people edit at once; "classic" (default) = a classic board`,
+				"enum":        []any{"new", "classic"},
+			},
+		}, "name"),
+		Summary: `{"name": "<board name>", "kind"?: "new|classic"}`,
 	},
 	{
 		Name: "show_board",
