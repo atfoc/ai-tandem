@@ -4,6 +4,10 @@
 // The shape and binding utils come from ../schema.ts (the board host's one schema). No Node-only import: a browser page may
 // bundle this module.
 import {
+  DefaultColorStyle,
+  DefaultDashStyle,
+  DefaultFillStyle,
+  DefaultFontStyle,
   Editor,
   createTLStore,
   defaultAddFontsFromNode,
@@ -13,6 +17,7 @@ import {
   tipTapDefaultExtensions,
 } from 'tldraw'
 import type { TLStore } from 'tldraw'
+import { FillColorStyle } from '@aiwb/board-tl/model/styles.ts'
 import { bindingUtils as defaultBindingUtils, shapeUtils as defaultShapeUtils } from '../schema.ts'
 
 export interface EditorOptions {
@@ -42,5 +47,17 @@ export function createEditor({ container, store, fontAssetUrls }: EditorOptions)
     },
   })
   registerDefaultSideEffects(editor)
+  setNextStyles(editor)
   return editor
+}
+
+/** The styles of new elements, as the window sets them for people (packages/board-tl/src/view/Board.tsx `setNextStyles`): the
+ *  sans font, solid lines, shapes filled white with a black border and black text. tldraw's createShapes fills every style prop
+ *  an element is created without from these, so what an agent leaves out is what a person gets (design 7.1 "Sizes"). */
+export function setNextStyles(editor: Editor) {
+  editor.setStyleForNextShapes(DefaultFontStyle, 'sans')
+  editor.setStyleForNextShapes(DefaultDashStyle, 'solid')
+  editor.setStyleForNextShapes(DefaultFillStyle, 'fill')
+  editor.setStyleForNextShapes(FillColorStyle, 'white')
+  editor.setStyleForNextShapes(DefaultColorStyle, 'black')
 }

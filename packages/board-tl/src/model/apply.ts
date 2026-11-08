@@ -295,7 +295,9 @@ class Run {
         const parentId = this.parentFor(op.parent);
         const at = this.toLocal(parentId, { x: op.x as number, y: op.y as number });
         const type = op.type === "sticky" ? STICKY_TYPE : op.type === "shape" ? "geo" : "text";
-        const base: Record<string, unknown> = op.type === "sticky" ? {} : { font: FONT };
+        // (every element in our font, explicitly: createShapes fills a style prop left out from the editor's next-shape style, whose
+        // font default is tldraw's draw font; the window sets sans as people's next-shape font, O5)
+        const base: Record<string, unknown> = { font: FONT };
         if (op.type === "shape") base.dash = DASH.solid;
         if (op.type === "shape" && op.shape === undefined) base.geo = SHAPE_GEO.rectangle;
         if (op.type === "text") base.richText = richText(op.text as string, op.bold === true);

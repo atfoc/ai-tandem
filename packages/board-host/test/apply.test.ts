@@ -77,7 +77,8 @@ test("a shape with defaults, and with every field", () =>
       },
       { op: "create", type: "shape", ref: "c", shape: "ellipse", x: 0, y: 300, fill: "pink" },
     ]));
-    has(one(editor, r.ids.a), { type: "shape", shape: "rectangle", x: 0, y: 0, w: 100, h: 100, fill: "none", border: "black", borderWidth: "m", borderStyle: "solid", align: "middle", size: "m" });
+    // (fill white: what a person gets, the window's next-shape style, which the host's editor sets too)
+    has(one(editor, r.ids.a), { type: "shape", shape: "rectangle", x: 0, y: 0, w: 100, h: 100, fill: "white", border: "black", borderWidth: "m", borderStyle: "solid", align: "middle", size: "m" });
     has(one(editor, r.ids.b), { type: "shape", shape: "rounded", x: 200, y: 50, w: 240, h: 120, text: "API", fill: "light-blue", border: "red", borderWidth: "l", borderStyle: "dashed", align: "start", size: "xl" });
     has(one(editor, r.ids.c), { shape: "ellipse", fill: "pink" });
     const p = editor.getShape(r.ids.b as TLShapeId)!.props as Record<string, unknown>;

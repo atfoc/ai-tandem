@@ -24,7 +24,7 @@ test("stickies and our geo store what Chromium stored (fitted, growY)", async ()
       if (kind === "sticky") {
         const w = Number(a);
         const fontSize = b === "auto" ? 0 : STICKY_FONT_SIZES[b as keyof typeof STICKY_FONT_SIZES];
-        editor.createShapes([{ id, type: STICKY_TYPE, x: 0, y: 0, props: { w, h: w, richText, fontSize } } as never]);
+        editor.createShapes([{ id, type: STICKY_TYPE, x: 0, y: 0, props: { font: "sans", w, h: w, richText, fontSize } } as never]);
         const p = editor.getShape(id)!.props as { fitted: number; w: number; h: number };
         got[caseId] = { fitted: p.fitted, w: p.w, h: p.h };
       } else {

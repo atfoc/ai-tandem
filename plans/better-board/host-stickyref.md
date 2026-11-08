@@ -321,3 +321,12 @@ console.log('measure-only differences (stored equal):\n' + (measureDiffs.join('\
 process.exit(0)
 ```
 
+
+## Re-run in our font (host lane lead, the same day)
+
+The first run created the stickies without a `font`, so `editor.createShapes` took the editor's next-shape font, tldraw's
+default `draw` (Shantell Sans), on both sides. People's stickies are in IBM Plex Sans (the window sets `sans` as the next-shape
+font; O5), and so are the agent's now (apply.ts sets `font` on every element; the host's editor sets the window's next-shape
+styles). Re-run with `font: 'sans'` on the stickies, same Chromium 156.0.8078.4: **sticky 46/46 and geo 52/52 equal, no stored
+or measure-only difference.** `STICKY_REFERENCE` holds the sans values (8 `fitted` values changed, e.g. `long:200` 18 → 19,
+`multi:300` 35 → 39) and `test/sticky.test.ts` creates its stickies with `font: "sans"`.

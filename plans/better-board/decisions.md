@@ -91,3 +91,8 @@ Each entry: the decision, who made it (user / orchestrator / architect), why.
   `mergeRemoteChanges` + `applyDiff(…, { runCallbacks: false })`, so no fit or growY runs on load. The marker
   (`aiwb_agent`, D11) is sent to connected sessions after the write, also when the save then fails (the change is in the
   windows); a session that connects within its ttl gets it with the remaining ttl.
+- H-9 (host lane): the host's editor sets the window's next-shape styles (font sans, dash solid, fill `fill` with fill colour
+  white, colour black: `view/Board.tsx` `setNextStyles`), and apply sets `font` on every element, stickies included. Found by
+  the smoke's picture: an agent's sticky came out in tldraw's draw font, because `createShapes` fills a style prop left out
+  from the editor's next-shape style. So what an agent leaves out is what a person gets, also for a shape's fill (white). The
+  window lane could move `setNextStyles` into the model so both import one function.
