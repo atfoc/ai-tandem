@@ -21,3 +21,5 @@
 .aiwb-contexttoolbar button.on { background: #e3e9ff; color: #2f46d0; }
 .aiwb-contexttoolbar button:disabled { opacity: .35; cursor: default; }
 .aiwb-contexttoolbar button:hover:not(:disabled) { background: #f1f1f1; }
+/* Our overlay UI takes no browser gesture: a pinch that starts on a toolbar must not zoom the page (spike-ui-nav.md). */
+.aiwb-maintoolbar, .aiwb-contexttoolbar { touch-action: none; }

@@ -36,8 +36,18 @@ window loads `app/dist-web/index.html` with `loadFile` (`file://`), under the CS
 `connect-src 'none'`). On a phone the board is a one-file HTML page in a web view (fonts as `data:` URLs, CSP by hash).
 
 The spike builds tldraw the same way (`spikes/tl-ui/build.mjs`: one esbuild configuration, IIFE, `target: safari16`),
-and its page carries the app's CSP imported from `cspFor()`, not copied. Results (Chromium from `file://`; Electron and the
-app's page: `spike-ui-embed.md`):
+and its page carries the app's CSP imported from `cspFor()`, not copied. Results (Chromium and Electron 44.4.5 from
+`file://`, and inside a copy of the app's web build; details in `spike-ui-embed.md`):
+
+- **Electron**: renders under the app's exact CSP; every request is `file://` or `blob:`; the only CSP violation is tldraw's
+  licence ping (production bundle only). Screenshot `shots/spike-ui-embed-electron-dev.png`.
+- **In the app's page beside Excalidraw**: `board-tl.js` loaded with `defer` next to `board.js`, both boards mounted and
+  drawing on one page, no errors, no CSP violation, fonts from `board-tl/fonts/`; tldraw's CSS does not restyle the app
+  (home screen with and without `board-tl.css`: 5 anti-aliasing pixels differ on desktop, none on phone).
+  `shots/spike-ui-embed-app-both.png`. Added size: about 3.4 MB raw, 2.0 MB gzipped.
+- **One file for phones** (`node build.mjs --onefile`): `board-tl.html` with the script inline (CSP by hash) and the fonts
+  as `data:` URLs runs from `file://` with no other file; 3.8 MB, 1.9 MB gzipped. WebKit was not tried (not installed for
+  Playwright here): iOS is unverified.
 
 - tldraw renders and works under that CSP. It needs **no worker, no wasm, no eval** and no `connect-src`: fonts load through
   `FontFace` from `fonts/` (`font-src 'self'`), cursors are CSS `data:` SVGs, the export and patterns use `blob:`/`data:`
@@ -51,8 +61,14 @@ app's page: `spike-ui-embed.md`):
   Times. `board.css` sets `.tl-container { font-family: var(--tl-font-sans) }`. (tldraw measures frame names with
   `"Inter, sans-serif"` and draws them in SVG export with `"Arial"`, fonts it does not ship: a fidelity point for the board
   host's pictures, 6.5.)
-- Size: `board-tl.js` 2.0 MB minified (production) / 5.5 MB (development, unminified), `board-tl.css` 78 KB, fonts 1.3 MB.
-  (Gzip sizes and the app-page check: `spike-ui-embed.md`.)
+- **The one gap: the window's image export.** To embed fonts in an SVG/PNG export, tldraw `fetch`es the font files (and
+  `board-tl.css`); `connect-src 'none'` blocks that, so the export succeeds with its text in a fallback font. With the fonts
+  given as `data:` URLs (as the one-file build does) tldraw does not fetch them and the export is right. The board host
+  draws the agent's pictures, but 6.5 compares them with tldraw's export in Chromium, and a person's "copy as PNG" needs it:
+  **board-tl should give the fonts as `data:` URLs in the web build too** (about +0.5 MB gzipped, and one file fewer to
+  ship).
+- Size: `board-tl.js` 2.0 MB minified (production) / 5.5 MB (development, unminified), `board-tl.css` 78 KB, fonts 1.3 MB;
+  all 16 font faces load at mount (dropping the 12 unused ones was not tried).
 
 **Decision: a second web target of the same kind**, `packages/board-tl` built into `app/public/board-tl/` (beside
 `app/public/board/`), loaded by `index.html` and mounted by a `board-tl.web.tsx` host like `board.web.tsx`, and a one-file
@@ -80,7 +96,9 @@ From tldraw 5.6's `LicenseManager`:
   itself treats as development. Recorded in `decisions.md`.
 - A release needs a key valid for the window's origin. Keys have a `NATIVE_LICENSE` flag: its hosts are regular
   expressions tested against `location.href`, which is how a `file://` (Electron) or app-bundle (web view) page can be
-  licensed. Keys also carry feature flags; without a valid licence in production the `collaboration` feature is off
+  licensed. tldraw lowercases the pattern but not the address (which keeps `…/Contents/Resources/…` or
+  `…/AI%20Whiteboard/…`), so the pattern may only use lowercase parts, e.g. `^file:///.*/web/index\.html`
+  (spike-ui-embed.md). Keys also carry feature flags; without a valid licence in production the `collaboration` feature is off
   (`getEnabledFeatures`), which matters for `@tldraw/sync` (multiplayer, goal 3.4). Price and terms are not in the code;
   the licence finding of the report needs tldraw's sales answer.
 - Also: with a tracked/evaluation/watermarked licence tldraw pings its CDN; our CSP blocks it. Whether a licence requires
@@ -103,13 +121,40 @@ kept: they are the board, not tldraw's chrome.
   zoom and moves because `useValue` re-reads it), hidden while the editor is in a gesture state (`select.translating`,
   `resizing`, `rotating`, `dragging_handle`, `brushing`, `panning_canvas`, the `pointing_*` handle states). Its per-type
   content and the gaps against goal 3.3: `spike-ui-ctx.md`.
+- Per type (merged from the child run, 41 of 41 checks passed, dev build): sticky — 16 colours, font size Auto/fixed,
+  alignment; shape — type (incl. a rounded rectangle added with tldraw's `customGeoTypes`), fill, colour, size, dash,
+  alignment; text — size, colour, alignment, bold (TipTap through tldraw's API); connector — dash, size, colour, both
+  arrowheads, kind; frame — name; several — shared styles, align, distribute; always — lock/unlock, front/back, duplicate,
+  delete. Each control changes the stored record at once and `editor.undo()` restores it; the toolbar is absent mid-drag
+  and follows a pan exactly; no `.tlui-` element is visible. `shots/spike-ui-ctx-{sticky,shape,multi}.png`.
+- Gaps of tldraw's styles against goal 3.3 (proposals in `spike-ui-ctx.md`): a shape has **one colour for fill and
+  border** (proposal: our style prop `aiwb:border-color` on a geo util extending tldraw's); **label size and border width
+  are one style** (`DefaultSizeStyle`; proposal: `aiwb:font-size`); the **frame's colour** is drawn only with its
+  `showColors` option; a **locked element cannot be clicked** to select it and unlock (board-tl's select tool or a context
+  menu must allow it); a sticky and a shape selected together share no colour control (two style props); with every
+  control the toolbar wraps to 2–3 rows (board-tl: group into popovers).
 - Positioning detail for board-tl: the toolbar must be clamped to the viewport and flip below the selection when there is
   no room above (the spike's runs off the edge for a selection near the top right; `shots/spike-ui-sticky-board.png`).
 
 ## C. Navigation
 
-The spike's navigation is in `src/nav/options.ts` (options) and `src/nav/select.ts` (overrides). Full checks, with
-touch at the phone and tablet viewports: `spike-ui-nav.md`.
+The spike's navigation is in `src/nav/options.ts` (options) and `src/nav/select.ts` (overrides). **All ten behaviours of
+goal 3.1 pass** at desktop 1280×800 with the mouse, and with emulated touch (CDP touch events) at phone 390×844 and tablet
+820×1180: pan by drag (camera moves by exactly the drag, no shape moves, selection kept), move by drag, Shift-brush, wheel
+pan, Ctrl+wheel/pinch zoom around the pointer (0.000 px drift), Space and middle drag over elements, zoom held to
+10%–400%, `Shift+1`/`Shift+2`, double-click sticky, touch pan/move/pinch/two-finger pan, hollow shapes. Full table and
+method: `spike-ui-nav.md`; shots `spike-ui-nav-{pan,brush,phone-pinch}.png`.
+
+Problems found and fixed on the way:
+- a pinch-out that starts with the fingers close counted as a double-tap and made stickies: the double-click sticky is now
+  made on the second release (a pinch never has one);
+- a pinch that started on our toolbar zoomed the *page* (scale 3.13), after which touches landed ~240 px off:
+  `touch-action: none` on our overlay UI (checked: page scale stays 1);
+- no shortcut worked until the board was clicked: tldraw's hotkeys (Shift+1) listen on the document but Space-to-pan on
+  the container, and `editor.focus()` sets only tldraw's flag; the mount now also focuses the container (checked: Space
+  pans with no click first). In the app, focus the board when the person opens it, not while they type elsewhere.
+- Space and middle drag keep sliding after release (tldraw's camera slide); our left-drag pan stops dead. Harmless; a
+  board-tl choice.
 
 | Behaviour (goal 3.1) | How |
 |---|---|
@@ -243,10 +288,12 @@ mount (`setStyleForNextShapes(DefaultFontStyle, 'sans')`; tldraw's default is it
    for the sticky (and tldraw's own shapes).
 7. **Agent ops** through `editor.createShapes/updateShapes` (the fit runs there); the sticky's `fontSize: 0` means
    automatic, `fitted` is output only.
-8. **Contextual toolbar**: clamp to the viewport, flip below the selection near the top; the per-type controls and the
+8. **Overlay UI**: `touch-action: none` on every toolbar; focus the container when the board is opened.
+9. **Fonts as `data:` URLs** in both builds (the window's export needs it under `connect-src 'none'`).
+10. **Contextual toolbar**: clamp to the viewport, flip below the selection near the top; the per-type controls and the
    gaps of tldraw's styles against goal 3.3 (one colour for a shape's fill and border, size driving both stroke and
    label): `spike-ui-ctx.md`.
-9. **tldraw upgrades** re-check: the select tool's child-state ids and hooks, `hideUi`'s keeping of shortcuts, the
+11. **tldraw upgrades** re-check: the select tool's child-state ids and hooks, `hideUi`'s keeping of shortcuts, the
    `AssetUrlsProvider` skipping `""`, the licence rules above.
 
 ## What was hard / surprising
@@ -257,10 +304,13 @@ mount (`setStyleForNextShapes(DefaultFontStyle, 'sans')`; tldraw's default is it
 - The shared "next style" of `DefaultColorStyle` (above): the theme route to a sticky palette works technically but
   couples sticky and shape colours.
 - tldraw relies on the page's font for frame names.
+- Emulated touch found two real bugs (pinch read as double-tap; pinch over our toolbar zooming the page) that a mouse-only
+  check would have missed.
 
 ## Not done here
 
 - Multiplayer, the board host, agent terms (other spikes).
 - The full per-type contextual toolbar is in the child report; quick-add "+" handles, Alt-drag duplicate (tldraw's own),
   the zoom controls' styling, the dark theme (out of scope).
-- Phones beyond the one-file page check in a desktop engine (no simulators in this goal).
+- Phones beyond the one-file page check in desktop Chromium: no WebKit run (not installed here; `npx playwright install
+  webkit` before phone work), no real device; iOS's own double-tap zoom and long-press menu were not exercised.

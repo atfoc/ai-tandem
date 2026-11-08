@@ -35,6 +35,11 @@ export function Board({ onMount }: { onMount?: (editor: Editor) => void }) {
       onMount={(editor) => {
         // tldraw's UI only knows English messages built in (no fetch: connect-src 'none'); other locales would fetch JSON
         editor.user.updateUserPreferences({ locale: "en" });
+        // Space-to-pan listens on tldraw's container (its hotkeys like Shift+1 on the document): editor.focus() sets tldraw's
+        // flag only, so the container gets DOM focus too, or Space does nothing until a click. (In the app: focus when the
+        // person opens the board, never while they type elsewhere.)
+        editor.focus();
+        editor.getContainer().focus();
         // every new element is in the sans font (tldraw's default is its hand-drawn "draw")
         editor.setStyleForNextShapes(DefaultFontStyle, "sans");
         onMount?.(editor);
