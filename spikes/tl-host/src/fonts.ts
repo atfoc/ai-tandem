@@ -61,6 +61,11 @@ const GENERIC: Record<string, Record<string, string | null>> = {
   win32: { 'sans-serif': 'Arial', serif: 'Times New Roman', monospace: 'Consolas', inter: null },
 }
 
+/** Fonts Chromium picks per script for a generic family, put after it (the system fallback does the rest). */
+const SCRIPT_FALLBACK: Record<string, Record<string, string[]>> = {
+  darwin: { serif: ['Songti SC', 'AppleMyungjo'] },
+}
+
 let registered = false
 
 /** Registers every tldraw face with skia-canvas under its alias. Idempotent. */
@@ -98,6 +103,30 @@ export interface ResolvedFont {
 
 const cache = new Map<string, ResolvedFont>()
 
+const EMOJI_FONT: Record<string, string> = { darwin: 'Apple Color Emoji', linux: 'Noto Color Emoji', win32: 'Segoe UI Emoji' }
+
+/**
+ * A grapheme cluster a browser draws with the system's colour emoji font whatever the family list says: emoji
+ * presentation by default, or asked for (VS16, ZWJ sequence, skin tone, keycap, flag). Chromium does this before the
+ * family list (❤️ in IBM Plex Mono, which has a text ❤ of its own, measured 36 px in Chromium, 21.7 px by the list).
+ */
+export function isEmojiCluster(g: string): boolean {
+  if (g.includes('\uFE0E')) return false
+  return /\uFE0F|\u200D|\u20E3|[\u{1F3FB}-\u{1F3FF}]|\p{Regional_Indicator}/u.test(g) || /^\p{Emoji_Presentation}/u.test(g)
+}
+
+/** The colour emoji font at a size (for emoji clusters, see isEmojiCluster). */
+export function emojiFont(sizePx: number, familyList: string, weight: string, style: string): ResolvedFont {
+  const key = `emoji|${sizePx}`
+  let r = cache.get(key)
+  if (!r) {
+    const name = EMOJI_FONT[process.platform] ?? EMOJI_FONT.linux
+    r = { native: `normal 400 ${sizePx}px "${name}"`, primary: name, css: { family: familyList, weight, style, sizePx } }
+    cache.set(key, r)
+  }
+  return r
+}
+
 /** Resolves a CSS font (family list, weight, style, size) to a skia-canvas font string with the right faces. */
 export function resolveFont(familyList: string, weight: string, style: string, sizePx: number): ResolvedFont {
   const key = `${familyList}|${weight}|${style}|${sizePx}`
@@ -119,6 +148,10 @@ export function resolveFont(familyList: string, weight: string, style: string, s
     else if (FontLibrary.has(fam)) names.push(fam)
   }
   if (!names.length) names.push(generic['sans-serif']!)
+  // Chromium's generic families are per script: for `serif`, Han and kana come from Songti SC and Hangul from
+  // AppleMyungjo on macOS (measured, dev/chromium fonts), where the system fallback after Times would pick the sans ones.
+  const last = parseFamilies(familyList).pop()?.toLowerCase()
+  if (last && SCRIPT_FALLBACK[process.platform]?.[last]) names.push(...SCRIPT_FALLBACK[process.platform][last])
   // The aliases hold one face each, so asking the CSS weight and style picks that face without synthesis; the system
   // fallbacks after it get the CSS weight and style, as in a browser.
   const native = `${st} ${cssWeight(weight)} ${sizePx}px ${names.map((n) => `"${n}"`).join(', ')}`

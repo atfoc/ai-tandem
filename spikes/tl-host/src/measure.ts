@@ -19,9 +19,10 @@
 // layoutHtml() returns the lines themselves (text runs with their fonts and positions), which export.ts uses to draw the
 // same text into the SVG that the measurement promised.
 import LineBreaker from 'linebreak'
+import asciiBreaks from './ascii-breaks.json' with { type: 'json' }
 import { Canvas } from 'skia-canvas'
 import type { BoxModel, Editor, TLMeasureTextOpts, TLMeasureTextSpanOpts } from 'tldraw'
-import { resolveFont } from './fonts.ts'
+import { emojiFont, isEmojiCluster, resolveFont } from './fonts.ts'
 import type { ResolvedFont } from './fonts.ts'
 
 type Any = any
@@ -103,10 +104,16 @@ export interface LayoutOptions {
 // --------------------------------------------------------------------------------------------- measuring with skia
 
 const ctx = new Canvas(16, 16).getContext('2d') as Any
+const IGNORABLE = /[\u200B\u2060\uFEFF\u00AD]/
+const IGNORABLE_G = /[\u200B\u2060\uFEFF\u00AD]/g
 const widthCache = new Map<string, number>()
 
 /** The advance width of `text` in one font, shaped as one piece (as a browser shapes a text item). */
 export function textWidth(font: ResolvedFont, text: string): number {
+  if (!text) return 0
+  // default-ignorable characters have no advance in a browser (tldraw ends frame titles with U+200B); skia gives them
+  // the fallback font's width
+  if (IGNORABLE.test(text)) text = text.replace(IGNORABLE_G, '')
   if (!text) return 0
   const key = font.native + '\u0000' + text
   let w = widthCache.get(key)
@@ -134,7 +141,9 @@ export function fontMetrics(font: ResolvedFont): { ascent: number; descent: numb
 
 /** Blink's LayoutUnit: 1/64 px. Inline sizes are snapped up so a text never wraps in the box made for it. */
 export const LU = 64
-export const luCeil = (x: number) => Math.ceil(x * LU - 1e-6) / LU
+// skia-canvas sums advances in float32 (168.0000153 where Blink's fixed-point HarfBuzz positions give 168.0): a width within
+// 1/50 of a LayoutUnit above a step counts as that step.
+export const luCeil = (x: number) => Math.ceil(x * LU - 0.02) / LU
 export const luFloor = (x: number) => Math.floor(x * LU + 1e-6) / LU
 export const luRound = (x: number) => Math.round(x * LU) / LU
 
@@ -165,7 +174,19 @@ function parseHtml(html: string, o: LayoutOptions): Block[] {
     if (node.nodeType === 3) {
       if (!cur) cur = newBlock(c, { indent })
       const text = node.textContent ?? ''
-      if (text) cur.runs.push({ text, font: resolveFont(c.family, c.weight, c.style, c.size), mark: c.mark, link: c.link, underline: c.underline, strike: c.strike })
+      if (!text) return
+      const font = resolveFont(c.family, c.weight, c.style, c.size)
+      const marks = { mark: c.mark, link: c.link, underline: c.underline, strike: c.strike }
+      // emoji clusters get the emoji font (fonts.ts isEmojiCluster); the rest the family list
+      let buf = ''
+      let emo = ''
+      const push = (t: string, f: ResolvedFont) => { if (t) cur!.runs.push({ text: t, font: f, ...marks }) }
+      for (const { segment } of graphemes.segment(text)) {
+        if (isEmojiCluster(segment)) { push(buf, font); buf = ''; emo += segment }
+        else { push(emo, emojiFont(c.size, c.family, c.weight, c.style)); emo = ''; buf += segment }
+      }
+      push(buf, font)
+      push(emo, emojiFont(c.size, c.family, c.weight, c.style))
       return
     }
     if (node.nodeType !== 1) return
@@ -268,6 +289,7 @@ function widthOf(f: Flat, a: number, b: number): number {
   return w
 }
 
+const ASCII_BREAKS = new Set<string>(asciiBreaks.pairs)
 const isSpace = (ch: string) => ch === ' ' || ch === '\t' || ch === '　'
 const graphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
 
@@ -278,9 +300,20 @@ function opportunities(text: string, breakAll: boolean): Opp[] {
   if (breakAll) {
     for (const g of graphemes.segment(text)) if (g.index > 0) out.push({ pos: g.index, required: text[g.index - 1] === '\n' })
   } else {
+    // UAX #14 (as ICU), except between two printable ASCII characters, where Blink asks a table of its own
+    // (text_break_iterator.cc kAsciiLineBreakTable): measured from Chromium into ascii-breaks.json.
     const lb = new LineBreaker(text)
     let br: Any
-    while ((br = lb.nextBreak())) out.push({ pos: br.position, required: br.required || text[br.position - 1] === '\n' })
+    const ascii = (c: number) => c >= 0x21 && c <= 0x7e
+    while ((br = lb.nextBreak())) {
+      const i = br.position
+      if (i > 0 && i < text.length && ascii(text.charCodeAt(i - 1)) && ascii(text.charCodeAt(i)) && !ASCII_BREAKS.has(text.slice(i - 1, i + 1))) continue
+      out.push({ pos: i, required: br.required || text[i - 1] === '\n' })
+    }
+    for (let i = 1; i < text.length; i++) {
+      if (ascii(text.charCodeAt(i - 1)) && ascii(text.charCodeAt(i)) && ASCII_BREAKS.has(text.slice(i - 1, i + 1)) && !out.some((o) => o.pos === i)) out.push({ pos: i, required: false })
+    }
+    out.sort((a, b) => a.pos - b.pos)
   }
   // the end of the text is always a (soft) end
   if (!out.length || out[out.length - 1].pos !== text.length) out.push({ pos: text.length, required: false })
@@ -303,7 +336,7 @@ function breakLines(f: Flat, avail: number | null, wrap: 'break-word' | 'normal'
   const lines: RawLine[] = []
   if (!text.length) return [{ a: 0, b: 0, width: 0, widthWithSpaces: 0 }]
   const opps = opportunities(text, breakAll || wrap === 'anywhere' && false)
-  const fits = (w: number) => avail === null || luCeil(w) <= avail + 1e-6
+  const fits = (w: number) => avail === null || luCeil(w) <= avail + 1e-9
   let start = 0
   let oi = 0
   while (start < text.length) {
@@ -470,19 +503,22 @@ export class CanvasTextManager {
         const m = font ? fontMetrics(font) : { ascent: opts.fontSize, descent: 0 }
         const h = m.ascent + m.descent
         const top = line.baseline - m.ascent
-        // cut the line into runs of spaces / non-spaces, as measureElementTextNodeSpans does
-        let x = line.left + shift
+        // cut the line into runs of spaces / non-spaces, as measureElementTextNodeSpans does; positions are prefix widths
+        // of the line shaped as a whole (kerning across a space counts, as in the browser's line box)
+        const x0 = line.left + shift
         for (const p of line.pieces) {
           const parts = p.text.match(/\s+|\S+/g) ?? []
+          let off = 0
           for (const part of parts) {
-            const w = textWidth(p.font, part)
+            const xs = x0 + p.x + textWidth(p.font, p.text.slice(0, off))
+            const xe = x0 + p.x + textWidth(p.font, p.text.slice(0, off + part.length))
+            off += part.length
             const last = spans[spans.length - 1]
             const sp = /\s/.test(part)
             if (last && last.box.y === top && /\s/.test(last.text) === sp) {
               last.text += part
-              last.box.w += w
-            } else spans.push({ text: part, box: { x, y: top, w, h } })
-            x += w
+              last.box.w = xe - last.box.x
+            } else spans.push({ text: part, box: { x: xs, y: top, w: xe - xs, h } })
           }
         }
       }
