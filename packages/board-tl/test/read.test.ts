@@ -12,20 +12,27 @@ const one = (records: object[]) => {
 test("a tldraw note reads as a sticky, with its shrunk font size", () => {
   assert.deepEqual(
     one([note("shape:n", { x: 10, y: 20, key: "n1", props: { richText: rich("Idea"), color: "light-red", fontSizeAdjustment: 0.5 } })]),
-    { id: "shape:n", key: "n1", type: "sticky", x: 10, y: 20, w: 200, h: 200, text: "Idea", color: "pink", align: "middle", fontSize: "auto", shownSize: 11 },
+    { id: "shape:n", key: "n1", type: "sticky", x: 10, y: 20, w: 200, h: 200, text: "Idea", color: "light-pink", align: "middle", fontSize: "auto", shownSize: 11 },
   );
   // growY makes it taller; scale scales it.
   const tall = one([note("shape:n", { props: { growY: 50, scale: 2 } })]);
   assert.deepEqual([tall.w, tall.h, tall.shownSize], [400, 500, 44]);
+  // A note's ink reads as the sticky colour of the same name, else the nearest.
+  const colorOf = (color: string) => one([note("shape:n", { props: { color } })]).color;
+  assert.deepEqual(["yellow", "light-blue", "black", "light-violet", "white"].map(colorOf), ["yellow", "light-blue", "black", "violet", "grey"]);
 });
 
 test("our sticky reads its own colour names, size and fixed font size", () => {
   assert.deepEqual(
-    one([sticky("shape:s", { x: -5, props: { w: 300, h: 300, richText: rich("a\nb"), fontSize: "l", align: "start-legacy" } })]),
-    { id: "shape:s", type: "sticky", x: -5, y: 0, w: 300, h: 300, text: "a\nb", color: "light-yellow", align: "start", fontSize: "l", shownSize: 26 },
+    one([sticky("shape:s", { x: -5, props: { w: 300, h: 300, richText: rich("a\nb"), color: "dark-blue", fontSize: 32, fitted: 32, align: "start-legacy" } })]),
+    { id: "shape:s", type: "sticky", x: -5, y: 0, w: 300, h: 300, text: "a\nb", color: "dark-blue", align: "start", fontSize: "l", shownSize: 32 },
   );
-  const shown = one([sticky("shape:s", { props: { shownSize: 13.37 } })]);
-  assert.deepEqual([shown.fontSize, shown.shownSize, shown.w], ["auto", 13.4, 200]);
+  // automatic (0): shownSize is the fitted size
+  const shown = one([sticky("shape:s", { props: { fontSize: 0, fitted: 13.37 } })]);
+  assert.deepEqual([shown.fontSize, shown.shownSize, shown.w, shown.color], ["auto", 13.4, 200, "light-yellow"]);
+  // a fixed px that is no Size reads as the nearest Size
+  const near = (fontSize: number) => one([sticky("shape:s", { props: { fontSize, fitted: fontSize } })]).fontSize;
+  assert.deepEqual([12, 19, 21, 29, 39, 41, 100].map(near), ["s", "s", "m", "l", "l", "xl", "xl"]);
 });
 
 test("a geo reads as a shape with fill, border and growY", () => {
@@ -36,14 +43,16 @@ test("a geo reads as a shape with fill, border and growY", () => {
       fill: "none", border: "black", borderWidth: "m", borderStyle: "solid", align: "middle", size: "m",
     },
   );
-  const filled = one([geo("shape:g", { props: { geo: "ellipse", fill: "solid", color: "blue", dash: "dashed", size: "l" } })]);
+  // fill colour = fillColor, border = color, border width = size, label size = labelSize (styles.ts)
+  const filled = one([geo("shape:g", { props: { geo: "ellipse", fill: "fill", fillColor: "light-red", color: "blue", dash: "dashed", size: "l", labelSize: "s" } })]);
   assert.deepEqual(
     [filled.shape, filled.fill, filled.border, filled.borderWidth, filled.borderStyle, filled.size],
-    ["ellipse", "blue", "blue", "l", "dashed", "l"],
+    ["ellipse", "pink", "blue", "l", "dashed", "s"],
   );
-  // Our own props, once the schema has them.
-  const own = one([geo("shape:g", { props: { geo: "rounded", fill: "solid", color: "black", fillColor: "light-red", borderWidth: "xl" } })]);
-  assert.deepEqual([own.shape, own.fill, own.borderWidth, own.size], ["rounded", "pink", "xl", "m"]);
+  const rounded = one([geo("shape:g", { props: { geo: "rounded-rectangle", fill: "solid", fillColor: "white", size: "xl", labelSize: "xl" } })]);
+  assert.deepEqual([rounded.shape, rounded.fill, rounded.borderWidth, rounded.size], ["rounded", "white", "xl", "xl"]);
+  // fill none hides the fill colour
+  assert.equal(one([geo("shape:g", { props: { fill: "none", fillColor: "red" } })]).fill, "none");
   // A geo kind the agent has no name for.
   assert.equal(one([geo("shape:g", { props: { geo: "star" } })]).type, "other");
 });

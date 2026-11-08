@@ -2,7 +2,8 @@
 // This file is the contract; it is kept exactly as the design writes it.
 
 export type StickyColor =
-  | "yellow" | "light-yellow" | "orange" | "red" | "pink" | "violet" | "blue" | "light-blue" | "green" | "light-green" | "grey" | "white";
+  | "light-yellow" | "yellow" | "orange" | "light-green" | "green" | "dark-green" | "cyan" | "light-pink" | "pink" | "violet"
+  | "red" | "light-blue" | "blue" | "dark-blue" | "grey" | "black";
 export type Color = "black" | "grey" | "white" | "red" | "orange" | "yellow" | "green" | "light-green"
   | "blue" | "light-blue" | "violet" | "pink";
 export type ShapeKind = "rectangle" | "rounded" | "ellipse" | "triangle" | "diamond";

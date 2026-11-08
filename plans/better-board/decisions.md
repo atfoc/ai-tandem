@@ -49,3 +49,12 @@ Each entry: the decision, who made it (user / orchestrator / architect), why.
 - O3: every room is loaded through the spike's `snapshotForRestore()` (clock shifted forward on load, risk 8.5). (orchestrator)
 - O4: the board host runs the editor on linkedom (jsdom selectable as fallback, one module), measures with spike-host's `measure.ts`/`fonts.ts`, renders pictures by SVG export → `textToPaths` → resvg, capped at 2000 px on the long side. (orchestrator)
 - O5: fonts: tldraw's own files from `@tldraw/assets` 5.6.0 (IBM Plex Sans for our elements), the same files in the window and the host; the window measures only once they are loaded. (orchestrator)
+
+## Window lane
+
+- W1 (window lane): the sticky's type name is `aiwb-sticky` (`STICKY_TYPE` in `palette.ts`; the util's `type` uses it); its tool id stays `sticky`.
+- W2 (window lane): sticky colours are Miro's 16 (`light-yellow, yellow, orange, light-green, green, dark-green, cyan, light-pink, pink, violet, red, light-blue, blue, dark-blue, grey, black`), hexes from the UI spike (its `light-red` is `red`), `white` dropped, default `light-yellow`; `terms.ts`, `palette.ts`, `aiwb:sticky-color` and design 7.2 agree.
+- W3 (window lane): a sticky's record has `fontSize: number` (0 = automatic, else fixed px) and `fitted: number` (drawn, output of the fit only); agent `"auto"` ↔ 0, a `Size` ↔ `STICKY_FONT_SIZES = { s: 16, m: 24, l: 32, xl: 48 }` (reading: nearest), `shownSize` ← `fitted`; default side 200.
+- W4 (window lane): our geo extends tldraw's `GeoShapeUtil` with type `geo` and two style props, `fillColor` (`aiwb:fill-color`, tldraw's colour names, default white) and `labelSize` (`aiwb:label-size`, s/m/l/xl, default m), drawn through `getCustomDisplayValues`; `color` is the border, `size` the border width, `labelColor` the text; agent `fill: <Color>` → `fill: "fill"` + `fillColor`. The rounded rectangle is the custom geo value `rounded-rectangle`, added to `GeoShapeGeoStyle` by `model/styles.ts` so it validates in the schema.
+- W5 (window lane): frames are `FrameShapeUtil.configure({ showColors: true })`.
+- W6 (window lane): fonts are tldraw's own 16 woff2 of `@tldraw/assets` 5.6.0 (O5), listed once in `model/fonts.ts`; no font file is committed, the builds read them from `node_modules/@tldraw/assets/fonts/` (`tl.js` as `data:` URLs).

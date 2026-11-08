@@ -48,7 +48,7 @@ tldraw to a workspace records it in `decisions.md`, pinned exactly.
 
 | Where | New / changed | Owns |
 |---|---|---|
-| `packages/board-tl/` (`@aiwb/board-tl`) | **new** | tldraw in the window **and** the shared model. `src/model/`: the one schema and shape definitions (window and host), the palette, the fonts list, the agent terms, `apply`/`read`/`validate`. `src/view/`: the React UI (navigation, main toolbar, contextual toolbar, agent marker, cursors' names), `TransportSocket` (a `TLPersistentClientSocket` over core's `TlLink`), the `TLSyncClient` setup. `src/web/entry.tsx`: the IIFE entry `window.aiwbTlView`. `build.mjs`: the web bundle into `app/public/tl/`. `fonts/`: the font files both sides use. |
+| `packages/board-tl/` (`@aiwb/board-tl`) | **new** | tldraw in the window **and** the shared model. `src/model/`: the one schema and shape definitions (window and host), the palette, the fonts list, the agent terms, `apply`/`read`/`validate`. `src/view/`: the React UI (navigation, main toolbar, contextual toolbar, agent marker, cursors' names), `TransportSocket` (a `TLPersistentClientSocket` over core's `TlLink`), the `TLSyncClient` setup. `src/web/entry.tsx`: the IIFE entry `window.aiwbTlView`. `build.mjs`: the web bundle into `app/public/tl/`. No `fonts/` folder: both sides take tldraw's own files from `@tldraw/assets` (1.2). |
 | `packages/board-host/` (`@aiwb/board-host`) | **new** | The board host process. `src/bin.ts` (entry), `src/main.ts` (stdin config, start, exit), `src/link.ts` (stream events in, `out` batches), `src/rooms.ts` (one `TLSocketRoom` per open board, proxy sockets, load, throttled save, quiet close), `src/agent.ts` (the `rpc` tools on a room editor, save before the answer, the agent marker), `src/node/` (the stand-in page, text measuring, SVG → PNG: what S-HOST proves), `build.mjs` → `dist/boardhost.mjs` + `dist/assets/` + `dist/manifest.json`. |
 | `packages/headless/` | reused, unchanged | The board host imports its `memstore.ts`, its config parsing (`main.ts` `parseConfig`, `entryOf`, `redact`) and its `makeClient` pattern (`bin.ts`) through the workspace (`"exports": {"./*": "./src/*"}`). If an import needs a small export added there, that is the only change allowed in the package. |
 | `packages/board-engine/` | reused, unchanged | `src/page.ts`, `src/canvas.ts` and `src/skia-binary.ts` are generic enough to copy from or import (S-HOST decides). Its Excalidraw parts are not used. |
@@ -77,11 +77,12 @@ tldraw to a workspace records it in `decisions.md`, pinned exactly.
 - The agent terms (`model/terms.ts`), their validation (`model/validate.ts`), the mapping from records to terms
   (`model/read.ts`) and the ops on an `Editor` (`model/apply.ts`) live in `model/` too. So the window can use `read.ts` for
   `get_view`, and unit tests run them in Node.
-- The fonts: `packages/board-tl/fonts/` holds the files. `tl.js`'s build copies them into `app/public/tl/fonts/` and declares
-  them with `@font-face`; the board host's build copies the same files into `dist/assets/fonts/` and registers them with
-  skia-canvas. `model/fonts.ts` names them once (family → file → weight/style), and both builds read that list. Goal 9 leaves
-  the choice of fonts open: **D2** (recommendation) use tldraw's own sans (the `sans` font family's files from
-  `@tldraw/assets`) for every element, so there is one family to measure and match; the spikes may change it.
+- The fonts: tldraw's own 16 woff2 files of `@tldraw/assets` 5.6.0 (decision O5; IBM Plex Sans, tldraw's `sans`, is the font of
+  our elements). **No `fonts/` folder and no font file is committed** (window lane): the builds take the files from
+  `node_modules/@tldraw/assets/fonts/`. `model/fonts.ts` names the 16 faces once (tldraw's family, weight, style, file, the key
+  of tldraw's `fontAssetUrls`), and both builds read that list: `tl.js` inlines them as `data:` URLs into tldraw's
+  `fontAssetUrls` (so the window's image export keeps the font under `connect-src 'none'`, U4); the board host registers the
+  same files with skia-canvas under the family names (`model/fonts-node.ts` `fontsDir()` finds them in Node).
 
 ### 1.3 How the board host bundle is built and found
 
@@ -522,7 +523,7 @@ if !screen && bd.Kind == model.KindTL {
 | The board screen | `app/src/screens/board/BoardCanvas.tsx:91`: the present component is renamed `ClassicCanvas` (no other change), and `BoardCanvas` becomes a wrapper: `const kind = useStore((s) => s.boards[board]?.kind); return kind === "tl" ? <TlCanvas board={board} /> : <ClassicCanvas board={board} />;` (a wrapper, so the hooks of each keep their order). |
 | `TlCanvas` | `app/src/screens/board/TlCanvas.tsx` (**new**): makes `openTlLink(board)` on mount and `link.close()` on unmount; reads the person's name (D12); renders `<TlHost board link user onHandle />` and `<slots.BoardVoice>` like `ClassicCanvas`; no `RoleBar`, no `SaveBanner`, no `DroppedNote`, no `boardApp.show`/`attachView`. It registers the handle the view gives (`tlRegistry().setHandle(board, handle)`) for `get_view`/`show_board`. |
 | The mount | `app/src/platform/tlboard.web.tsx` (**new**): mounts `window.aiwbTlView.mount(element, { board, link, user, testID, onHandle })` into an RN `View`'s DOM node, as `board.web.tsx` mounts `aiwbBoardView`. `app/src/platform/tlboard.native.tsx` (**new**): a centred text "New boards are not available on this device yet." (phones are out of scope, goal 5). |
-| The web build | `packages/board-tl/build.mjs` writes `app/public/tl/{tl.js, tl.css, fonts/}` (git-ignored like `app/public/board/`). `app/scripts/export-web.mjs` step 0 also runs `npm run build:web` in `packages/board-tl` and checks `public/tl/tl.js` exists. `app/public/index.html` loads `./tl/tl.css` and `<script src="./tl/tl.js" defer>` beside `board.js` **[S-UI]**. `tl.js` is a development build of tldraw (1.3, licence). |
+| The web build | `packages/board-tl/build.mjs` writes `app/public/tl/{tl.js, tl.css}` (fonts inlined as `data:` URLs; git-ignored like `app/public/board/`). `app/scripts/export-web.mjs` step 0 also runs `npm run build:web` in `packages/board-tl` and checks `public/tl/tl.js` exists. `app/public/index.html` loads `./tl/tl.css` and `<script src="./tl/tl.js" defer>` beside `board.js` **[S-UI]**. `tl.js` is a development build of tldraw (1.3, licence). |
 | Old boards' paths | Guards so no Excalidraw code runs for a tl board: `nav.ts select()` skips `boardApp.flush(prev.board)` for a tl board; `rows.tsx` rename skips `boardApp.flush` for a tl board; `packages/core/src/board/side.ts` `afterSnapshot`/`sectionBack` do not load a scene for a tl board on screen (one `isTl(key)` check where the board on screen is picked). `ClassicCanvas` is never rendered for a tl board, so `show`/`attachView` never see one. |
 | Agent `rpc` in the window | `packages/core/src/state/conn.ts` `answer` (`:155`): if the tool is `get_view` and the chat's board is a tl board, or the tool is `show_board` and its target (or the chat's board) is a tl board, `tlRegistry().answer(params)` instead of `boardSide().runTool`. `answer` returns the same shape (`string` or `{text}`). |
 
@@ -570,8 +571,9 @@ sentence each, with a one-line example.
 
 ```ts
 // packages/board-tl/src/model/terms.ts
-export type StickyColor =
-  | "yellow" | "light-yellow" | "orange" | "red" | "pink" | "violet" | "blue" | "light-blue" | "green" | "light-green" | "grey" | "white";
+export type StickyColor =                                       // Miro's 16 (window lane); default light-yellow
+  | "light-yellow" | "yellow" | "orange" | "light-green" | "green" | "dark-green" | "cyan" | "light-pink" | "pink" | "violet"
+  | "red" | "light-blue" | "blue" | "dark-blue" | "grey" | "black";
 export type Color = "black" | "grey" | "white" | "red" | "orange" | "yellow" | "green" | "light-green"
   | "blue" | "light-blue" | "violet" | "pink";
 export type ShapeKind = "rectangle" | "rounded" | "ellipse" | "triangle" | "diamond";
@@ -609,6 +611,16 @@ export type Op = CreateSticky | CreateShape | CreateText | CreateConnector | Cre
 export type ApplyArgs = { board?: string; ops: Op[] };
 ```
 
+- A sticky is stored as our shape `aiwb-sticky` (`STICKY_TYPE`), 200 × 200 by default, colour `light-yellow` by default. Its
+  font size is the record's `fontSize` (a number: 0 = automatic, shrink to fit; else a fixed size in px) and the size drawn is
+  its `fitted` (written by the fit only). `fontSize: "auto"` is stored as 0 and a `Size` as the px of `palette.ts`'s
+  `STICKY_FONT_SIZES` (`s` 16, `m` 24, `l` 32, `xl` 48); reading, 0 is `"auto"`, any other px the nearest `Size`, and
+  `shownSize` is `fitted`.
+- A shape is tldraw's `geo` with two style props of ours, so the fill colour is separate from the border colour and the label
+  size from the border width (goal 3.2, 3.3): `fill: <Color>` is `fill: "fill"` plus `fillColor` (`aiwb:fill-color`, tldraw's
+  colour names), `fill: "none"` is `fill: "none"`; `border` is tldraw's `color`, `borderWidth` tldraw's `size`, `size` (the
+  label) our `labelSize` (`aiwb:label-size`, drawn with tldraw's label font sizes). `rounded` is the custom geo value
+  `"rounded-rectangle"`.
 - `color` on a sticky is its note colour. On a shape, `color` is not accepted (use `fill`/`border`). On text and connectors it
   is the ink.
 - A field that does not apply to an element is an error (`INVALID_OP`), not ignored, so an agent learns the terms.

@@ -38,13 +38,15 @@ export const note = (id: string, o: Base = {}) =>
   }, o);
 
 export const sticky = (id: string, o: Base = {}) =>
-  shape("aiwb-sticky", id, { color: "light-yellow", size: "m", align: "middle", richText: rich(""), scale: 1 }, o);
+  shape("aiwb-sticky", id, {
+    w: 200, h: 200, color: "light-yellow", font: "sans", align: "middle", verticalAlign: "middle", richText: rich(""), fontSize: 0, fitted: 48,
+  }, o);
 
 export const geo = (id: string, o: Base = {}) =>
   shape("geo", id, {
     geo: "rectangle", dash: "draw", url: "", w: 100, h: 100, growY: 0, scale: 1, flipX: false, flipY: false,
     labelColor: "black", color: "black", fill: "none", size: "m", font: "sans", align: "middle", verticalAlign: "middle",
-    richText: rich(""),
+    richText: rich(""), fillColor: "white", labelSize: "m",
   }, o);
 
 export const text = (id: string, o: Base = {}) =>

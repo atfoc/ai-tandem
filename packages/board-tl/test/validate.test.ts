@@ -49,7 +49,8 @@ test("every element type and field in its valid form", () => {
       { op: "update", id: "c1", from: "s1", to: { x: 5, y: 5 }, line: "curved" },
       { op: "update", id: "f1", name: "N", contains: ["s1", "shape:t"] },
       { op: "update", id: "shape:t", w: 50, bold: false, color: "grey" },
-      { op: "update", id: "shape:k", color: "white", fontSize: "auto" },
+      { op: "update", id: "shape:k", color: "dark-green", fontSize: "auto" },
+      { op: "update", id: "shape:k", color: "black" },
       { op: "delete", id: "shape:p" },
     ]),
     { ok: true },
@@ -108,7 +109,7 @@ test("INVALID_OP: values and ranges", () => {
   );
   // A sticky colour that is no ink, on a text; an ink that is no sticky colour, on a sticky.
   fails(run([{ op: "update", id: "shape:t", color: "light-yellow" }]), "INVALID_OP", 0, "INVALID_OP: op 0 (update shape:t): color is not one of black, grey, white, red, orange, yellow, green, light-green, blue, light-blue, violet, pink");
-  fails(run([{ op: "update", id: "n1", color: "black" }]), "INVALID_OP", 0, "INVALID_OP: op 0 (update n1): color is not one of yellow, light-yellow, orange, red, pink, violet, blue, light-blue, green, light-green, grey, white");
+  fails(run([{ op: "update", id: "n1", color: "white" }]), "INVALID_OP", 0, "INVALID_OP: op 0 (update n1): color is not one of light-yellow, yellow, orange, light-green, green, dark-green, cyan, light-pink, pink, violet, red, light-blue, blue, dark-blue, grey, black");
   fails(run([{ op: "create", type: "sticky", x: "0", y: 0 }]), "INVALID_OP", 0, "INVALID_OP: op 0 (create sticky): x is not a number");
   fails(run([{ op: "create", type: "sticky", x: Infinity, y: 0 }]), "INVALID_OP", 0, "INVALID_OP: op 0 (create sticky): x is not a number");
   fails(run([{ op: "create", type: "shape", x: 0, y: 0, w: 0 }]), "INVALID_OP", 0, "INVALID_OP: op 0 (create shape): w is not more than 0");
