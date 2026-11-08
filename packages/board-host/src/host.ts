@@ -64,15 +64,24 @@ export function startHost(o: HostOptions): Host {
   const connected = new Promise<void>((resolve, reject) => { onConnected = resolve; onRefused = reject; });
   connected.catch(() => {});
 
+  /** The server's board names, by id (the `snapshot`, `board` and `board_removed` events, as the headless writer's loop.ts). */
+  const names = new Map<string, string>();
+  const keepBoard = (b: any) => { if (b && typeof b.id === "string" && typeof b.name === "string") names.set(b.id, b.name); };
+
   async function rpc(m: any) {
-    const reply = await answerRpc(m, rooms, handleTool);
+    const reply = await answerRpc(m, rooms, handleTool, (id) => names.get(id));
     if (closed) return;
     await api.rpcReply(m.id, reply).catch((e) => { if (e?.status !== 409) log(`rpc reply failed: ${messageOf(e)}`); });
   }
 
   function onEvent(m: any) {
     switch (m?.type) {
-      case "snapshot": wasConnected = true; onConnected(); return;
+      case "snapshot":
+        names.clear();
+        for (const b of Array.isArray(m.boards) ? m.boards : []) keepBoard(b);
+        wasConnected = true; onConnected(); return;
+      case "board": keepBoard(m.board); return;
+      case "board_removed": if (typeof m.id === "string") names.delete(m.id); return;
       case "tl_open": if (m.board && m.session) rooms.open(m.board, m.session); return;
       case "tl_sync": if (m.board && m.session) rooms.sync(m.board, m.session, strings(m.messages)); return;
       case "tl_close": if (m.board && m.session) rooms.close(m.board, m.session); return;

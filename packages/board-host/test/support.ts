@@ -109,16 +109,16 @@ export class FakeServer implements ClientLike {
   emit(event: unknown) { this.cb?.({ server: this.serverId, event }); }
   state(state: string, detail = "") { this.cb?.({ app: { type: "server_state", server: { id: this.serverId, name: "AI Whiteboard", state, ...(detail ? { detail } : {}) } } }); }
   /** What a connection gives first. */
-  open() {
+  open(boards: { id: string; name: string }[] = []) {
     this.state("connecting");
     this.emit({ type: "hello", instanceId: "i" });
-    this.emit({ type: "snapshot", boards: [], chats: [] });
+    this.emit({ type: "snapshot", boards, chats: [] });
     this.state("connected");
   }
   private seq = 0;
-  rpc(name: string, args: unknown = {}, board = "b1"): string {
+  rpc(name: string, args: unknown = {}, board = "b1", extra: Record<string, unknown> = {}): string {
     const id = `rpc${++this.seq}`;
-    this.emit({ type: "rpc", id, method: "tool", params: { chat: "c1", branch: "main", board, target: board, name, args, kind: "tl" } });
+    this.emit({ type: "rpc", id, method: "tool", params: { chat: "c1", branch: "main", board, target: board, name, args, kind: "tl", ...extra } });
     return id;
   }
   async reply(id: string) {
@@ -181,6 +181,8 @@ export class FakeWindow {
   readonly client: TLSyncClient<TLRecord, any>;
   loaded = false;
   errors: string[] = [];
+  /** The custom messages the room sent this window (the agent's marker, D11), with when they came (ms). */
+  customs: { data: any; at: number }[] = [];
   constructor(server: FakeServer, board: string, session: string) {
     this.socket = new WindowSocket(server, board, session);
     this.client = new TLSyncClient<TLRecord, any>({
@@ -188,6 +190,7 @@ export class FakeWindow {
       onLoad: () => { this.loaded = true; },
       onSyncError: (r) => { this.errors.push(r); },
       onAfterConnect: () => { (this.store as any).ensureStoreIsUsable(); },
+      onCustomMessageReceived: (data: any) => { this.customs.push({ data, at: Date.now() }); },
     });
   }
   /** The document records, by id (pages, shapes, the document). */

@@ -8,9 +8,10 @@
 // `server_stopping` and at exit) and the close of a quiet room save at once. A room with no session and no agent call for
 // `quietMs` is saved and closed.
 import { TLSocketRoom, type RoomSnapshot, type WebSocketMinimal } from "@tldraw/sync-core";
-import { ToolError, type BoardRoom, type RoomHandle, type SessionMeta } from "./agent.ts";
+import { ToolError, type AgentMarker, type BoardRoom, type RoomHandle, type SessionMeta } from "./agent.ts";
 import type { Link } from "./link.ts";
 import { restoreSnapshot } from "./restore.ts";
+import { RoomEditor } from "./roomeditor.ts";
 import { boardSchema, type BoardRecord, type BoardSchema } from "./schema.ts";
 
 /** The time from the first unsaved change of people to its save (design 4.2). */
@@ -31,6 +32,8 @@ export type RoomsOptions = {
   saveDelayMs?: number;
   quietMs?: number;
   log?: (line: string) => void;
+  /** Makes a room's editor for the agent's tools (tests); default: a headless editor of the runtime. */
+  makeEditor?: () => Promise<RoomEditor>;
 };
 
 /** Close reasons the host gives the server for a session it closes by itself. */
@@ -87,6 +90,10 @@ type Entry = {
   queue: Promise<unknown>;
   /** Closed or dropped: nothing more happens to it. */
   closed: boolean;
+  /** The room editor of the agent's tools (D15), made at the first call that asks for it; disposed with the room. */
+  editor: Promise<RoomEditor> | null;
+  /** The last agent marker (D11) and when it was sent (ms): a session that connects within its ttl gets it too. */
+  marker: { msg: AgentMarker; at: number } | null;
 };
 
 export type Rooms = {
@@ -114,6 +121,7 @@ export function createRooms(o: RoomsOptions): Rooms {
   const quietMs = o.quietMs ?? ROOM_QUIET_MS;
   const log = o.log ?? (() => {});
   const makeSchema = o.schema ?? boardSchema;
+  const makeEditor = o.makeEditor ?? RoomEditor.create;
   const rooms = new Map<string, Entry>();
   const sessionBoard = new Map<string, string>();
   const roomLog = (board: string) => ({
@@ -128,7 +136,7 @@ export function createRooms(o: RoomsOptions): Rooms {
     if (had) return had;
     const e: Entry = {
       board, room: null, loading: null, pending: new Map(), sockets: new Map(), dirty: false, failed: false, saving: null,
-      saveTimer: null, quietTimer: null, active: 0, lastAgent: 0, queue: Promise.resolve(), closed: false,
+      saveTimer: null, quietTimer: null, active: 0, lastAgent: 0, queue: Promise.resolve(), closed: false, editor: null, marker: null,
     };
     rooms.set(board, e);
     e.loading = load(e);
@@ -145,6 +153,12 @@ export function createRooms(o: RoomsOptions): Rooms {
         const initialSnapshot = restoreSnapshot(text) as RoomSnapshot | undefined;
         e.room = new TLSocketRoom<BoardRecord, SessionMeta>({
           schema: makeSchema(), initialSnapshot, onDataChange: () => changed(e), log: roomLog(e.board),
+          // a session that connects within the last marker's ttl gets it after its connect (D11)
+          onBeforeSendMessage: (args) => {
+            // (`message` is in the arguments at run time; tldraw marks it internal in its types)
+            const { sessionId, message } = args as typeof args & { message?: { type?: string } };
+            if (message?.type === "connect" && e.marker) queueMicrotask(() => replayMarker(e, sessionId));
+          },
         });
       }
     } catch (err) {
@@ -196,6 +210,41 @@ export function createRooms(o: RoomsOptions): Rooms {
     e.sockets.delete(session);
     if (e.room && !e.room.isClosed()) e.room.handleSocketClose(session);
     armQuiet(e);
+  }
+
+  // ---- the agent's marker (D11)
+
+  /** What is left of the marker's ttl (ms), 0 when it is gone. */
+  function markerLeft(e: Entry): number {
+    if (!e.marker) return 0;
+    return Math.max(0, e.marker.msg.ttlMs - (Date.now() - e.marker.at));
+  }
+
+  function connectedSessions(e: Entry): string[] {
+    if (!e.room || e.room.isClosed()) return [];
+    return e.room.getSessions().filter((s) => s.isConnected).map((s) => s.sessionId);
+  }
+
+  function mark(e: Entry, msg: AgentMarker) {
+    if (e.closed || !e.room) return;
+    e.marker = { msg, at: Date.now() };
+    for (const s of connectedSessions(e)) {
+      try { e.room.sendCustomMessage(s, msg); } catch (err) { log(`room ${e.board}: the marker could not be sent: ${messageOf(err)}`); }
+    }
+  }
+
+  function replayMarker(e: Entry, session: string) {
+    const left = markerLeft(e);
+    if (e.closed || !e.marker || left <= 0 || !connectedSessions(e).includes(session)) return;
+    try { e.room!.sendCustomMessage(session, { ...e.marker.msg, ttlMs: left }); } catch (err) { log(`room ${e.board}: the marker could not be sent: ${messageOf(err)}`); }
+  }
+
+  function roomEditor(e: Entry): Promise<RoomEditor> {
+    if (!e.editor) {
+      e.editor = makeEditor();
+      e.editor.catch(() => { e.editor = null; });
+    }
+    return e.editor;
   }
 
   // ---- saving
@@ -263,6 +312,19 @@ export function createRooms(o: RoomsOptions): Rooms {
     e.sockets.clear();
     e.pending.clear();
     try { e.room?.close(); } catch (err) { log(`closing the room of board ${e.board} failed: ${messageOf(err)}`); }
+    e.marker = null;
+    const editor = e.editor;
+    e.editor = null;
+    editor?.then((ed) => ed.dispose(), () => {}).catch((err) => log(`disposing the editor of board ${e.board} failed: ${messageOf(err)}`));
+  }
+
+  /** The agent's save (4.2): always written, also when the change was written to the room's storage in this very turn (the
+   *  storage tells onDataChange on a microtask: waited for first, so that notice does not schedule a second save). */
+  async function agentSave(e: Entry) {
+    await new Promise<void>((r) => queueMicrotask(r));
+    if (e.closed) throw new Error("the board was closed");
+    e.dirty = true;
+    await save(e);
   }
 
   async function flushAll() {
@@ -315,7 +377,7 @@ export function createRooms(o: RoomsOptions): Rooms {
         if (e.loading) await e.loading;
         if (e.closed || !e.room) throw new ToolError("NO_BOARD", "the board was archived or deleted");
         e.lastAgent = Date.now();
-        return fn({ board, room: e.room, save: () => save(e) });
+        return fn({ board, room: e.room, save: () => agentSave(e), editor: () => roomEditor(e), mark: (msg) => mark(e, msg) });
       };
       const p = e.queue.then(run, run);
       e.queue = p.catch(() => {});

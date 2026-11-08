@@ -8,7 +8,10 @@ import type { Rooms } from "./rooms.ts";
 
 export type RpcEvent = { id: string; method: string; params: ToolParams };
 
-export async function answerRpc(m: RpcEvent, rooms: Rooms, handleTool: HandleTool): Promise<{ result?: ToolResult; error?: string }> {
+/** `nameOf`: the board's name in the server's list (host.ts keeps it from the stream), undefined when unknown. */
+export async function answerRpc(
+  m: RpcEvent, rooms: Rooms, handleTool: HandleTool, nameOf: (board: string) => string | undefined = () => undefined,
+): Promise<{ result?: ToolResult; error?: string }> {
   try {
     if (m.method !== "tool") throw new ToolError("BAD_ARGS", `unknown method ${m.method}`);
     const p = m.params;
@@ -17,7 +20,7 @@ export async function answerRpc(m: RpcEvent, rooms: Rooms, handleTool: HandleToo
     if (p.name === "get_view") return { result: noViewText(p.board || target) };
     if (p.name === "show_board") return { result: noShowText(target) };
     if (!target) throw new ToolError("NO_BOARD", "the call names no board");
-    return { result: await rooms.withRoom(target, (room) => handleTool(room, { ...p, target })) };
+    return { result: await rooms.withRoom(target, (room) => handleTool(room, { ...p, target, targetName: nameOf(target) ?? target })) };
   } catch (err: any) {
     return { error: `${err?.code ? err.code + ": " : ""}${err?.message ?? String(err)}` };
   }

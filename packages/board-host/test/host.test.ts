@@ -1,6 +1,6 @@
 // The board host's loop against a fake server: windows (real tldraw sync clients) converge through it, messages that arrive while
 // a room loads are replayed, `gone` closes a session, saves follow changes, a quiet room closes with a save, agents' calls are
-// answered NOT_SUPPORTED, and server_stopping saves before it answers.
+// answered on the room, and server_stopping saves before it answers.
 // (first: the page before any tldraw module, as in src/bin.ts; rooms.ts → schema.ts imports tldraw)
 import "../src/node/install-page.ts";
 import { test } from "node:test";
@@ -206,10 +206,10 @@ test("an agent's tool is answered NOT_SUPPORTED on the loaded room; get_view in 
   } finally { await stop(r); }
 });
 
-test("the default seam answers every tool NOT_SUPPORTED", async () => {
+test("the tools Go answers, and unknown ones, are answered NOT_SUPPORTED", async () => {
   const r = rig();
   try {
-    for (const name of ["read_board", "apply", "delete_elements", "get_image"]) {
+    for (const name of ["list_boards", "create_board", "no_such_tool"]) {
       const reply = await r.server.reply(r.server.rpc(name));
       assert.match(reply.error!, /^NOT_SUPPORTED: /, name);
     }
