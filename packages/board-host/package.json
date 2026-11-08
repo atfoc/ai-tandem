@@ -5,7 +5,7 @@
   "type": "module",
   "description": "The board host (better-board): one tldraw TLSocketRoom per open new board, in a Node process that is a client of the server's client API. Windows' sync messages come and go through the server; agents' tools are answered here.",
   "scripts": {
-    "test": "node --test --experimental-strip-types 'test/*.test.ts'",
+    "test": "node --test --test-force-exit --experimental-strip-types 'test/*.test.ts'",
     "check": "tsc --noEmit"
   },
   "dependencies": {

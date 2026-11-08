@@ -1,5 +1,7 @@
 // The process around the loop: its configuration on stdin, its start within the limit, its end (stdin, a signal, the stream) with
 // every dirty room saved first, and no secret in any line it prints.
+// (first: the page before any tldraw module, as in src/bin.ts; rooms.ts → schema.ts imports tldraw)
+import "../src/node/install-page.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";

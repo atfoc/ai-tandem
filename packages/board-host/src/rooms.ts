@@ -1,5 +1,5 @@
-// The open boards (design 5.2, 4.2): one tldraw `TLSocketRoom` per board, loaded from the server's snapshot when the first
-// session or agent call needs it, with one proxy socket per window session. The proxy's `send` only queues the message on the
+// The open boards (design 5.2, 4.2): one tldraw `TLSocketRoom` per board, loaded from the server's snapshot (through
+// restore.ts's snapshotForRestore, decision O3) when the first session or agent call needs it, with one proxy socket per window session. The proxy's `send` only queues the message on the
 // link (link.ts); messages from the window are fed with `room.handleSocketMessage`. Messages that arrive while the room loads
 // wait and are replayed in order.
 //
@@ -7,9 +7,10 @@
 // flight per room, a change during a save scheduling the next one. `save` (the agent's, before its answer), `flushAll` (on
 // `server_stopping` and at exit) and the close of a quiet room save at once. A room with no session and no agent call for
 // `quietMs` is saved and closed.
-import { TLSocketRoom, type WebSocketMinimal } from "@tldraw/sync-core";
+import { TLSocketRoom, type RoomSnapshot, type WebSocketMinimal } from "@tldraw/sync-core";
 import { ToolError, type BoardRoom, type RoomHandle, type SessionMeta } from "./agent.ts";
 import type { Link } from "./link.ts";
+import { restoreSnapshot } from "./restore.ts";
 import { boardSchema, type BoardRecord, type BoardSchema } from "./schema.ts";
 
 /** The time from the first unsaved change of people to its save (design 4.2). */
@@ -140,7 +141,8 @@ export function createRooms(o: RoomsOptions): Rooms {
     try {
       const text = await o.store.load(e.board);
       if (!e.closed) {
-        const initialSnapshot = text ? JSON.parse(text) : undefined;
+        // (clock shifted past every saved clock, decision O3: restore.ts)
+        const initialSnapshot = restoreSnapshot(text) as RoomSnapshot | undefined;
         e.room = new TLSocketRoom<BoardRecord, SessionMeta>({
           schema: makeSchema(), initialSnapshot, onDataChange: () => changed(e), log: roomLog(e.board),
         });

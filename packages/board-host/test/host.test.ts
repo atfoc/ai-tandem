@@ -1,6 +1,8 @@
 // The board host's loop against a fake server: windows (real tldraw sync clients) converge through it, messages that arrive while
 // a room loads are replayed, `gone` closes a session, saves follow changes, a quiet room closes with a save, agents' calls are
 // answered NOT_SUPPORTED, and server_stopping saves before it answers.
+// (first: the page before any tldraw module, as in src/bin.ts; rooms.ts → schema.ts imports tldraw)
+import "../src/node/install-page.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { startHost, type Host, type HostOptions } from "../src/host.ts";
