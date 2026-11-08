@@ -139,7 +139,7 @@ board whose kind is `tl`, else `409 {"code":"not_tl"}`; an unknown board is `404
 
 | Route | Who | Body | Answer |
 |---|---|---|---|
-| `POST /api/tl/{id}/open` | a window | `{}` | `200 {"session":"s_…"}`. Starts the board host if it is not running and waits until its stream is open (D26). `503 {"code":"board_host_unavailable","error":"<reason>"}` when it cannot run. `409 {"code":"archived"}` for an archived board. |
+| `POST /api/tl/{id}/open` | a window | `{}` | `200 {"session":"s_…"}`. Starts the board host if it is not running and waits until its stream is open (D26). `503 {"code":"board_host_unavailable","error":"<reason>"}` when it cannot run. `409 {"code":"archived"}` for an archived board. **As built:** `409 {"code":"no_stream"}` when the calling client has no event stream open (the window opens again once its stream is up); see 2.8. |
 | `POST /api/tl/{id}/sync` | a window | `{"session":"s_…","messages":["<text>", …]}` | `200 {"ok":true}`. `410 {"code":"no_session"}` when the session is unknown, closed, of another client or of another board: the window then reopens. |
 | `POST /api/tl/{id}/close` | a window | `{"session":"s_…"}` | `200 {"ok":true}`, also for an unknown session. |
 | `POST /api/tl-host/out` | the board host only | `{"out":[{"session":"s_…","messages":["<text>", …]}], "closed":[{"session":"s_…","reason":"<text>"}]}` (either list may be absent) | `200 {"gone":["s_…", …]}`: the sessions of `out` that Go no longer knows (the host closes them in its room). `403 {"code":"not_board_host"}` from any other client. |
@@ -309,6 +309,60 @@ func (r *Relay) Status() Status                      // for `status -json` "boar
 - All of tlrelay's state is under its own mutex. It calls the bridge only with that mutex released, or through the bridge's
   methods that take the bridge's lock (never from inside the bridge's lock: `ClientEnded` is called by the bridge after it
   unlocks, D9).
+
+### 2.8 As built by the Go lane (differences from 2.2–2.7, 3.1–3.4, 5.1)
+
+Branch `bb-go`. Everything of 2.2–2.7 holds except what this list says. Other lanes: the items marked **(client)** change what a
+window or the board host sees.
+
+- **`open` refusals (client).** Besides 2.2's answers: `409 no_stream` when the caller has no event stream open (a session
+  nobody could be told about, which no `OnEnd` would ever drop); `404 not_found` / `409 archived` also when the board was deleted
+  or archived while the board host was starting (the session is closed again; the host sees `tl_open` then `tl_close`). The window
+  treats all of them as a failed open and reopens later; for `archived`/`not_found` it may stop.
+- **Other error answers (client).** Every refusal is `{"code","error"}`. A body over its limit is `413 too_large`; an unreadable
+  body or bad JSON `400 bad_request`; `messages` not an array `400 bad_request`; an invalid snapshot `400 bad_json`; no client id
+  `400 bad_request`. Host-only routes check the host first (`403 not_board_host`), then the board (`404`/`409 not_tl`). `open` and
+  `close` accept an empty body.
+- **`sync` on a dead host (client).** When the session's host is no longer the current one or has no stream, `sync` answers `410
+  no_session` and Go drops the session (the window reopens).
+- **`out` (client: host).** A session whose window's stream is gone is dropped and listed in `gone`.
+- **The host's id belongs to the manager.** `ClientEnded(host)` closes the sessions opened with that host (`tl_closed host_stopped`
+  to their windows) but does **not** forget the host's id: the board host's stream can end while its process lives on and reconnects
+  with the same client id. If the host is still `Known` at that moment (a replaced stream), it is also sent `tl_close` for each of
+  those sessions. The id is set by the adapter's `SetAway(id)` before the start and cleared only by `SetAway("")` in the manager's
+  `reap`, after the process exited, so the host's last saves during its shutdown are accepted. `tl_drop` is sent only to a host that
+  is `Known`.
+- **Locks.** One mutex in the relay; order `headless manager → relay → editor bridge`. The relay sends a session's events in the
+  same critical section as the session-table change (so `tl_open` precedes every `tl_sync`, nothing follows `tl_close`/`tl_closed`),
+  and never calls `CallBoard` or the `Host` while holding its mutex.
+- **`CallSpec.Client` (G2).** The call goes to that client only and is recorded as being about no board: no hand-off fails it,
+  a timeout returns `ErrTimeout` and takes nothing, and `Away` is ignored. On a `Screen` spec it names the window, in place of the
+  lookup by `ChatBoard`. `CallSpec.Lost` applies to any call whose client's record ends. `Bridge.OnEnd` also fires for records
+  ended by `CloseAll`; once per record, always after the bridge's unlock, on the stream's goroutine (never inside `SendTo`).
+- **`tlrelay.ToolCall`.** `type Agent struct{ Kind, Label string }`; `type ToolCall struct{ Chat, Branch, ChatBoard, Board, Tool
+  string; Args any; Agent Agent }`; params sent `{"chat","branch","board":ChatBoard,"target":Board,"name":Tool,"args","kind":"tl",
+  "agent"}`. `CallTool`'s error text is the agent's whole text (`HostStoppedText`, `TimeoutText`, `UnavailableText(reason)`, or the
+  host's own `"CODE: text"` unchanged); the errors unwrap to `ErrHostLost`, `editorbridge.ErrTimeout`, `headless.ErrUnavailable`.
+  The log line has no rpc id (`CallBoard` does not return it): `tl: <tool> board=<id> chat=<id> -> board host <ok|error CODE|lost|
+  timeout|unavailable> <ms>ms`.
+- **`tlrelay.Status`** `{available, reason, running, pid, sessions, calls: {<tool>: {ok, error, lost, timeout, unavailable}},
+  screenCalls}`; `status -json` puts it under `running.boardhost` (null from a server that does not tell); the human status prints
+  `Board host: running (pid N, S sessions) | available, not running | not available: <reason>`.
+- **Agent routing (3.1).** Go refuses mixed terms before asking anyone: on a tl board an `apply` with `create`/`update` →
+  `BAD_ARGS: this is a new board; use ops (see the tool description)`; on an old board an `apply` with `ops` → `BAD_ARGS: this is a
+  classic board; use create and update (see the tool description)`. `ops` missing on a tl board is the host's to answer. The
+  marker's label names the agent that calls (a Cursor subagent in a Claude chat is "Cursor"). A screen call on a tl chat board that
+  finds no window gets `screenText` also on a server without a background editor. `create_board` with another `kind` →
+  `BAD_ARGS: kind is "new" or "classic"`.
+- **`internal/headless` options (G3).** `Options.Program`, `Folder`, `Name` and also **`NodeEnv`** (the variable read when `Node` is
+  empty; the board host's manager uses `AIWB_BOARDHOST_NODE`). The flags named in reasons follow `Folder` (`-boardhost-node`,
+  `-boardhost-dir`); the process's output lines are prefixed `boardhost:`.
+- **Wiring (G6).** Flags `-boardhost-node` (else `AIWB_BOARDHOST_NODE`), `-boardhost-dir`, `-boardhost-quiet` (60 s, Go's process
+  quiet). Room quiet 30 s (the manager's `Quiet`, sent as `quietMs`). `quiet=` of `AIWB_TEST_WAITS` sets the process quiet to its
+  value and the room quiet to half of it. `App.BoardGone` is called only for tl boards, after the store's change, also for boards
+  archived or deleted with their group. The six routes are also in `web/dev/mock.mjs`'s route list and the level-5 contract table.
+- **Boards (G1).** `boards.ErrBadKind`, `ErrNotTL`, `ErrTLBoard`, `ErrBadSnapshot`; `Service.IsTL(id)`. `internal/server` maps
+  `ErrTLBoard`→409 `tl_board`, `ErrNotTL`→409 `not_tl`, `ErrBadKind`→400 `bad_kind` for every route.
 
 ---
 
@@ -486,6 +540,9 @@ if !screen && bd.Kind == model.KindTL {
   - `hello`, `snapshot` (nothing to keep; it ignores board lists);
   - `tl_open`, `tl_sync`, `tl_close`, `tl_drop`, `rpc`;
   - `server_stopping`: save every dirty room, then `POST /api/client/flushed`.
+    **As built (Go):** the bridge's `StopAndFlush` sends `server_stopping` only to clients that hold classic boards, so the board
+    host does not get it. At shutdown Go closes the board host's manager right after `StopAndFlush`, which closes its stdin, and the
+    host saves its dirty rooms then (4.2) while the client listener still serves. Handling `server_stopping` stays harmless.
 - **Rooms.** `rooms.ts` keeps `Map<boardId, RoomEntry>`:
 
   ```ts
