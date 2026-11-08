@@ -102,3 +102,12 @@ Each entry: the decision, who made it (user / orchestrator / architect), why.
   window lane could move `setNextStyles` into the model so both import one function.
 - O1 amended (orchestrator, accepting H-7): the agent's change is written with `room.storage.transaction`, not `room.updateStore` (in tldraw 5.6 `updateStore` defers its write, and a window's edit arriving in that gap would be overwritten). The rest of O1 stands.
 - O6 (orchestrator): the goal's checks of section 6 are confirmed by temporary scripts in /tmp (not committed), per the user's testing rules; their results and small screenshots go into the findings report. The free old-board scripts of 6.7 (`away`, `readers`) are run once, at the very end, on the final branch.
+- V2 (verify, fixes "Bug A" of the verification; refines H-4): a picture's pixel size is `floor(side × scale)` on both sides,
+  as tldraw's own export (`getSvgAsImage`: `Math.floor` of the canvas size, the SVG drawn stretched onto it), not
+  `round(width × scale)` with resvg's `fitTo: width` (resvg derived the height from the rounded width and rounded it up, so
+  capped tall pictures came out 1974–2009 px high and 1 px off the window's, e.g. 742×2001 vs 741×2000). `exportPng` sets
+  the root `<svg>`'s width/height to those pixels with `preserveAspectRatio="none"` (viewBox kept) and renders at its
+  original size. The cap's scale (`fitScale`) is 2000 / long side nudged past float error (plain `2000 / L × L` is
+  1999.999… for about one L in eight, which floor would make 1999), so a capped picture's long side is exactly 2000; a
+  picture is capped only when floor(long × scale) > 2000. The answer's text still names the scale (3 decimals).
+  `pictureSize`/`fitScale` in `packages/board-host/src/node/export.ts`, tested in `test/picsize.test.ts`.
