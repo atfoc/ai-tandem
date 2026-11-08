@@ -26,6 +26,7 @@ import { ASSET_URLS } from "./assets.ts";
 import { ContextBar } from "./ContextBar.tsx";
 import { installInteractions } from "./interactions.ts";
 import { MainToolbar, UI_OVERRIDES } from "./MainToolbar.tsx";
+import { QuickAdd } from "./QuickAdd.tsx";
 import { CAMERA, ConnectorTool, MiroSelectTool, OPTIONS } from "./navigation.ts";
 import { Zoom } from "./Zoom.tsx";
 
@@ -103,6 +104,7 @@ export function Board({ store, onMount }: BoardProps) {
       }}
     >
       <MainToolbar />
+      <QuickAdd />
       <Zoom />
     </Tldraw>
   );
