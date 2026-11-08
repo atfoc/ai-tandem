@@ -9,12 +9,13 @@
 
 import type { TLBinding, TLRecord, TLShape } from "tldraw";
 import { b64Vecs } from "@tldraw/tlschema";
-import type { Align, Point, Size, TlElement } from "./terms.ts";
+import type { Align, Point, TlElement } from "./terms.ts";
 import {
   BASE_FONT_SIZE,
   BORDER_WIDTH_PROP,
   FILL_COLOR_PROP,
   LABEL_FONT_SIZES,
+  LABEL_SIZE_PROP,
   LINE_HEIGHT,
   NOTE_TYPE,
   STICKY_SIZE,
@@ -26,6 +27,7 @@ import {
   inkFromStored,
   shapeFromGeo,
   sizeFromStored,
+  stickyFontSizeFromStored,
   stickyFromStored,
 } from "./palette.ts";
 
@@ -406,26 +408,27 @@ function elementOf(board: Board, s: ShapeRecord): TlElement {
       if (text) out.text = text;
       out.color = stickyFromStored(p.color, s.type);
       out.align = alignFromStored(p.align, "middle");
-      const fixed = s.type === STICKY_TYPE && p.fontSize !== "auto" && sizeFromStored(p.fontSize) === p.fontSize;
-      out.fontSize = fixed ? (p.fontSize as TlElement["fontSize"]) : "auto";
-      const shown =
-        typeof p.shownSize === "number"
-          ? p.shownSize
-          : fixed
-            ? BASE_FONT_SIZE * LABEL_FONT_SIZES[p.fontSize as Size] * num(p.scale, 1)
-            : labelFontSize(s) * num(p.fontSizeAdjustment, 1) * num(p.scale, 1);
-      out.shownSize = round(shown);
+      if (s.type === STICKY_TYPE) {
+        // ours: fontSize 0 = automatic, else fixed px; `fitted` is the size drawn (palette.ts STICKY_FONT_SIZES)
+        out.fontSize = stickyFontSizeFromStored(p.fontSize);
+        const fixed = num(p.fontSize, 0);
+        out.shownSize = round(num(p.fitted, fixed > 0 ? fixed : Math.floor(num(p.w, STICKY_SIZE) * 0.24)));
+      } else {
+        // tldraw's note: its label size shrunk by its font size adjustment, scaled
+        out.fontSize = "auto";
+        out.shownSize = round(labelFontSize(s) * num(p.fontSizeAdjustment, 1) * num(p.scale, 1));
+      }
       break;
     }
     case "shape": {
       if (text) out.text = text;
-      const fillColor = p[FILL_COLOR_PROP] ?? p.color;
-      out.fill = p.fill === "none" || p.fill === undefined ? "none" : inkFromStored(fillColor);
+      // styles.ts: fill colour = fillColor (drawn unless fill is none), border = color, border width = size, label = labelSize
+      out.fill = p.fill === "none" || p.fill === undefined ? "none" : inkFromStored(p[FILL_COLOR_PROP] ?? "white");
       out.border = inkFromStored(p.color);
-      out.borderWidth = sizeFromStored(p[BORDER_WIDTH_PROP] ?? p.size);
+      out.borderWidth = sizeFromStored(p[BORDER_WIDTH_PROP]);
       out.borderStyle = dashFromStored(p.dash);
       out.align = alignFromStored(p.align, "middle");
-      out.size = sizeFromStored(p.size);
+      out.size = sizeFromStored(p[LABEL_SIZE_PROP]);
       break;
     }
     case "text": {
