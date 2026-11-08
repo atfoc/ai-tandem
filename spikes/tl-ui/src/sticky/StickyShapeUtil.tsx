@@ -7,7 +7,6 @@
 // `editor.textMeasure`: the board host replaces that measure with its skia-canvas one, so the same code fits there.
 import {
   Box,
-  DefaultColorStyle,
   DefaultFontFamilies,
   DefaultFontStyle,
   DefaultHorizontalAlignStyle,
@@ -27,7 +26,6 @@ import {
   toRichText,
   type Editor,
   type RecordProps,
-  type TLDefaultColorStyle,
   type TLDefaultFontStyle,
   type TLDefaultHorizontalAlignStyle,
   type TLDefaultVerticalAlignStyle,
@@ -37,7 +35,7 @@ import {
   type TLShape,
 } from "tldraw";
 import { fitFontSize, type MeasureAt } from "./fit.ts";
-import { DEFAULT_STICKY_COLOR } from "../model/theme.ts";
+import { DEFAULT_STICKY_COLOR, STICKY_COLORS, StickyColorStyle, stickyTextColor, type StickyColor } from "../model/theme.ts";
 
 export const STICKY_TYPE = "sticky" as const;
 export const STICKY_SIZE = 200;
@@ -47,7 +45,7 @@ export const STICKY_LINE_HEIGHT = 1.35;
 export interface StickyProps {
   w: number;
   h: number;
-  color: TLDefaultColorStyle;
+  color: StickyColor;
   font: TLDefaultFontStyle;
   align: TLDefaultHorizontalAlignStyle;
   verticalAlign: TLDefaultVerticalAlignStyle;
@@ -100,7 +98,7 @@ export class StickyShapeUtil extends ShapeUtil<StickyShape> {
   static override props: RecordProps<StickyShape> = {
     w: T.nonZeroNumber,
     h: T.nonZeroNumber,
-    color: DefaultColorStyle,
+    color: StickyColorStyle,
     font: DefaultFontStyle,
     align: DefaultHorizontalAlignStyle,
     verticalAlign: DefaultVerticalAlignStyle,
@@ -113,7 +111,7 @@ export class StickyShapeUtil extends ShapeUtil<StickyShape> {
     return {
       w: STICKY_SIZE,
       h: STICKY_SIZE,
-      color: DEFAULT_STICKY_COLOR as TLDefaultColorStyle,
+      color: DEFAULT_STICKY_COLOR,
       font: "sans",
       align: "middle",
       verticalAlign: "middle",
@@ -177,9 +175,7 @@ export class StickyShapeUtil extends ShapeUtil<StickyShape> {
 
   override component(shape: StickyShape) {
     const { id, type, props } = shape;
-    const theme = this.editor.getCurrentTheme();
-    const colors = theme.colors[this.editor.getColorMode()] as any;
-    const c = colors[props.color] ?? colors.yellow;
+    const fill = STICKY_COLORS[props.color] ?? STICKY_COLORS[DEFAULT_STICKY_COLOR];
     const isSelected = shape.id === this.editor.getOnlySelectedShapeId();
     const isEditing = this.editor.getEditingShapeId() === shape.id;
     const empty = isEmpty(this.editor, props.richText);
@@ -187,7 +183,7 @@ export class StickyShapeUtil extends ShapeUtil<StickyShape> {
       <div
         id={id}
         className="aiwb-sticky"
-        style={{ width: props.w, height: props.h, backgroundColor: c.noteFill, boxShadow: "0 1px 3px rgba(0,0,0,.18)", overflow: "hidden" }}
+        style={{ width: props.w, height: props.h, backgroundColor: fill, boxShadow: "0 1px 3px rgba(0,0,0,.18)", overflow: "hidden" }}
       >
         {(isSelected || isEditing || !empty) && (
           <RichTextLabel
@@ -200,7 +196,7 @@ export class StickyShapeUtil extends ShapeUtil<StickyShape> {
             verticalAlign={props.verticalAlign}
             richText={props.richText}
             isSelected={isSelected}
-            labelColor={c.noteText}
+            labelColor={stickyTextColor(props.color)}
             wrap
             padding={STICKY_PADDING}
             showTextOutline={false}
@@ -218,12 +214,11 @@ export class StickyShapeUtil extends ShapeUtil<StickyShape> {
 
   override toSvg(shape: StickyShape) {
     const { props } = shape;
-    const colors = this.editor.getCurrentTheme().colors.light as any;
-    const c = colors[props.color] ?? colors.yellow;
+    const fill = STICKY_COLORS[props.color] ?? STICKY_COLORS[DEFAULT_STICKY_COLOR];
     const bounds = new Box(0, 0, props.w, props.h);
     return (
       <>
-        <rect width={props.w} height={props.h} fill={c.noteFill} />
+        <rect width={props.w} height={props.h} fill={fill} />
         <RichTextSVG
           bounds={bounds}
           richText={props.richText}
@@ -232,7 +227,7 @@ export class StickyShapeUtil extends ShapeUtil<StickyShape> {
           lineHeight={STICKY_LINE_HEIGHT}
           textAlign={H_ALIGN[props.align]}
           verticalAlign={props.verticalAlign}
-          labelColor={c.noteText}
+          labelColor={stickyTextColor(props.color)}
           padding={STICKY_PADDING}
           showTextOutline={false}
           wrap
