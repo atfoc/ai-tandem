@@ -246,6 +246,14 @@ export function openTlLink(board: string /* the board key */, deps?: TlLinkDeps 
   - Its unacknowledged local changes are rebased and pushed again by `TLSyncClient`. **[S-HOST]** confirms this. The prototype
     reports what happens to edits made while cut off (goal 3.4).
 - **What the window shows.** The tl view shows a small "Reconnecting…" pill while the link is not `online` (goal 6.6).
+- **As built (T3).** `view/socket.ts` `TransportSocket` as above, plus one case: a link that goes `offline` with one of tldraw's
+  fatal close reasons (`INVALID_RECORD`, `CLIENT_TOO_OLD`…, which the board host passes on unchanged as the `tl_closed` reason)
+  is socket status `error`, so `TLSyncClient` calls `onSyncError` and closes itself. `view/sync.ts` `TlSync` then makes a fresh
+  store and client (the unacknowledged edits, possibly the refused ones, are dropped) and shows the reason; after 3 rejections
+  with no connect in between it stops and shows the error for good. The store is `createTLStore({ schema: tlSchema, users:
+  {currentUser} })` with the person as the current user; presence `createPresenceStateDerivation`, `presenceMode: atom('full')`
+  (O2); status `loading` until tldraw's `onLoad`, then `synced-remote`. Edits made while offline are kept and pushed on the next
+  connect (`plans/better-board/win-view.md` T3).
 
 ### 2.6 Where each piece lives
 
@@ -540,6 +548,23 @@ if !screen && bd.Kind == model.KindTL {
 
 The handle the view gives is `{ getView(): { bounds, zoom, selected: TlElement[] }, zoomTo(refs: AgentRef[]): boolean }`. It is
 built in `board-tl/src/view/` from the editor and `model/read.ts`.
+
+**The mount as built (T3).** Global `window.aiwbTlView`; files `app/public/tl/tl.js` and `app/public/tl/tl.css` (no `fonts/`
+folder: tldraw's 16 woff2 are inlined in `tl.js` as `data:` URLs). The option types, free of tldraw's types, are in
+`packages/board-tl/src/web/types.ts` (`MountOptions`, `TlView`, `TlViewUser`):
+
+```ts
+window.aiwbTlView.mount(element: HTMLElement, {
+  board?: string,                 // the page's key; kept as data-board on the root element
+  link?: TlLink,                  // core's openTlLink(board) (structurally: status, send, onMessages, onStatus, restart);
+                                  //   the app opens and closes it; absent → a local store (the dev page)
+  user?: { id, name, color },     // D12; others see it on this window's cursor and selection
+  testID?: string,                // data-testid of the root element (div.aiwb-tl-root, focused at mount)
+  onHandle?(h: TlViewHandle | null),  // once the editor is ready (again if it is remade after a rejection), null at unmount
+  onMount?(editor: object),       // tldraw's Editor, once ready (research, the dev page)
+  seed?: boolean,                 // dev page only, ignored with a link
+}) → { unmount(): void }
+```
 
 ---
 
