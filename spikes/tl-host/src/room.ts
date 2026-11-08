@@ -39,6 +39,8 @@ import {
 import type { Editor, TLRecord, TLStore, TLStoreSnapshot } from 'tldraw'
 import { installPage } from './dom.ts'
 import { createEditor } from './editor.ts'
+import { installCanvasMeasure } from './measure.ts'
+import { fontAssetUrls } from './headless.ts'
 
 type Any = any
 
@@ -443,7 +445,8 @@ export async function connectEditor(room: Room, opts: PeerOptions): Promise<Edit
   await peer.whenConnected()
   const page = installPage()
   const container = page.container()
-  const editor = createEditor({ container, store: peer.store })
+  const editor = createEditor({ container, store: peer.store, fontAssetUrls: fontAssetUrls() })
+  installCanvasMeasure(editor) // real text measuring (measure.ts): the agent's sizes are what a window would store
   const close = peer.close
   return {
     ...peer,
