@@ -25,8 +25,8 @@ import { FillColorStyle } from "../model/styles.ts";
 import { ASSET_URLS } from "./assets.ts";
 import { ContextBar } from "./ContextBar.tsx";
 import { installInteractions } from "./interactions.ts";
-import { MainToolbar } from "./MainToolbar.tsx";
-import { CAMERA, MiroSelectTool, OPTIONS } from "./navigation.ts";
+import { MainToolbar, UI_OVERRIDES } from "./MainToolbar.tsx";
+import { CAMERA, ConnectorTool, MiroSelectTool, OPTIONS } from "./navigation.ts";
 import { Zoom } from "./Zoom.tsx";
 
 const UI_NULL: Required<{ [K in keyof TLUiComponents]: null }> = {
@@ -38,7 +38,7 @@ const UI_NULL: Required<{ [K in keyof TLUiComponents]: null }> = {
 };
 
 const COMPONENTS: TLComponents = { ...UI_NULL, InFrontOfTheCanvas: ContextBar };
-const TOOLS = [MiroSelectTool, StickyTool];
+const TOOLS = [MiroSelectTool, StickyTool, ConnectorTool];
 
 /** Loads the faces of the sans font (our elements' font) before anything is measured. */
 export async function fontsReady(editor: Editor) {
@@ -73,6 +73,7 @@ export function Board({ store, onMount }: BoardProps) {
       tools={TOOLS}
       cameraOptions={CAMERA}
       options={OPTIONS}
+      overrides={UI_OVERRIDES}
       assetUrls={ASSET_URLS}
       onMount={(editor) => {
         // tldraw's UI only knows English messages built in (no fetch: connect-src 'none'); other locales would fetch JSON
