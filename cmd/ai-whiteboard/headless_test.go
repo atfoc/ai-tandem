@@ -23,6 +23,7 @@ import (
 	"ai-whiteboard/internal/boardapi"
 	"ai-whiteboard/internal/headless"
 	"ai-whiteboard/internal/model"
+	"ai-whiteboard/internal/tlrelay"
 )
 
 // ---- the default set: flags, the test waits, the status ----
@@ -101,8 +102,12 @@ type fakeHeadless headless.Status
 
 func (f fakeHeadless) Status() headless.Status { return headless.Status(f) }
 
-// The control socket's /status gets "headless" and keeps everything else of it; every other
-// request is the control handler's.
+type fakeBoardhost tlrelay.Status
+
+func (f fakeBoardhost) Status() tlrelay.Status { return tlrelay.Status(f) }
+
+// The control socket's /status gets "headless" and "boardhost" and keeps everything else of it;
+// every other request is the control handler's.
 func TestWithHeadlessStatus(t *testing.T) {
 	t.Parallel()
 	next := http.NewServeMux()
@@ -112,7 +117,9 @@ func TestWithHeadlessStatus(t *testing.T) {
 	})
 	next.HandleFunc("GET /hello", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(`{"app":"x"}`)) })
 	next.HandleFunc("GET /broken", func(w http.ResponseWriter, r *http.Request) { http.Error(w, "no", http.StatusInternalServerError) })
-	h := withHeadlessStatus(next, fakeHeadless{Available: true, Running: true, PID: 42, Boards: 2})
+	bh := fakeBoardhost{Available: true, Running: true, PID: 43, Sessions: 3,
+		Calls: map[string]*tlrelay.Counts{"apply": {OK: 2, Lost: 1}}, ScreenCalls: 1}
+	h := withHeadlessStatus(next, fakeHeadless{Available: true, Running: true, PID: 42, Boards: 2}, bh)
 
 	get := func(path string) (int, string, http.Header) {
 		rec := httptest.NewRecorder()
@@ -121,19 +128,20 @@ func TestWithHeadlessStatus(t *testing.T) {
 	}
 	code, body, header := get("/status")
 	var st struct {
-		Client   map[string]any
-		MCP      map[string]any
-		Headless headless.Status
+		Client    map[string]any
+		MCP       map[string]any
+		Headless  headless.Status
+		Boardhost tlrelay.Status
 	}
 	if code != 200 || json.Unmarshal([]byte(body), &st) != nil || st.Client["listening"] != true || st.MCP["chats"] == nil ||
 		st.Headless != (headless.Status{Available: true, Running: true, PID: 42, Boards: 2}) || header.Get("X-Seen") != "yes" ||
-		header.Get("Content-Length") != strconv.Itoa(len(body)) {
+		header.Get("Content-Length") != strconv.Itoa(len(body)) || !reflect.DeepEqual(st.Boardhost, tlrelay.Status(bh)) {
 		t.Fatalf("/status: %d %s %v", code, body, header)
 	}
 	if code, body, _ := get("/hello"); code != 200 || body != `{"app":"x"}` {
 		t.Fatalf("/hello: %d %s", code, body)
 	}
-	if code, body, _ := get("/broken"); code != 500 || strings.Contains(body, "headless") {
+	if code, body, _ := get("/broken"); code != 500 || strings.Contains(body, "headless") || strings.Contains(body, "boardhost") {
 		t.Fatalf("/broken: %d %s", code, body)
 	}
 	rec := httptest.NewRecorder()

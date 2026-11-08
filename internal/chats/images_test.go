@@ -408,7 +408,7 @@ func TestDraftImages(t *testing.T) {
 func TestSendImages(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)
-	bd, err := e.bds.Create("Plan", gOne, false)
+	bd, err := e.bds.Create("Plan", gOne, false, model.KindClassic)
 	if err != nil {
 		t.Fatal(err)
 	}

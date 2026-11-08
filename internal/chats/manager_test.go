@@ -768,7 +768,7 @@ func TestCreateAppliesGroupDefaults(t *testing.T) {
 		t.Fatalf("plain token %q", m.Token)
 	}
 
-	bd, err := e.bds.Create("board", gTwo, false)
+	bd, err := e.bds.Create("board", gTwo, false, model.KindClassic)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1141,7 +1141,7 @@ func TestConfigureLockedAndAppFolder(t *testing.T) {
 func TestSendBlocks(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)
-	bd, err := e.bds.Create("board", gOne, false)
+	bd, err := e.bds.Create("board", gOne, false, model.KindClassic)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1224,7 +1224,7 @@ func TestSendBlocks(t *testing.T) {
 func TestSendPiBoardChat(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)
-	bd, err := e.bds.Create("board", gOne, false)
+	bd, err := e.bds.Create("board", gOne, false, model.KindClassic)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1260,7 +1260,7 @@ func TestSendPiBoardChat(t *testing.T) {
 func TestLegacyCursorBoardChatDisabled(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)
-	bd, err := e.bds.Create("board", gOne, false)
+	bd, err := e.bds.Create("board", gOne, false, model.KindClassic)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1310,7 +1310,7 @@ func TestNoNamerEntryMeansNoName(t *testing.T) {
 func TestSendNamesTheBoard(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)
-	bd, err := e.bds.Create("arch", gOne, false)
+	bd, err := e.bds.Create("arch", gOne, false, model.KindClassic)
 	if err != nil {
 		t.Fatal(err)
 	}

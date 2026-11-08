@@ -194,7 +194,7 @@ func TestHumanSendWithNothingOwed(t *testing.T) {
 func TestHumanSendCarryOnBoardChat(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)
-	bd, err := e.bds.Create("Arch", gOne, false)
+	bd, err := e.bds.Create("Arch", gOne, false, model.KindClassic)
 	if err != nil {
 		t.Fatal(err)
 	}

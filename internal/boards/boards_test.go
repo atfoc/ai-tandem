@@ -109,12 +109,12 @@ func TestCleanName(t *testing.T) {
 
 func TestCreate(t *testing.T) {
 	s, st, r := setup(t)
-	a, err := s.Create("", model.Ungrouped, false)
+	a, err := s.Create("", model.Ungrouped, false, model.KindClassic)
 	if err != nil {
 		t.Fatal(err)
 	}
 	r.wantBoardEvent(t, a)
-	b, err := s.Create("", groupID, true)
+	b, err := s.Create("", groupID, true, model.KindClassic)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,10 +147,10 @@ func TestCreate(t *testing.T) {
 
 func TestCreateUnknownGroup(t *testing.T) {
 	s, st, r := setup(t)
-	if _, err := s.Create("x", "g_missing", false); err == nil {
+	if _, err := s.Create("x", "g_missing", false, model.KindClassic); err == nil {
 		t.Fatal("created in an unknown group")
 	}
-	if _, err := s.Create("x", "", false); err == nil {
+	if _, err := s.Create("x", "", false, model.KindClassic); err == nil {
 		t.Fatal("created with an empty group")
 	}
 	if r.count() != 0 || len(s.List()) != 0 {
@@ -163,8 +163,8 @@ func TestCreateUnknownGroup(t *testing.T) {
 
 func TestRename(t *testing.T) {
 	s, st, r := setup(t)
-	a, _ := s.Create("alpha", model.Ungrouped, false)
-	b, _ := s.Create("beta", model.Ungrouped, false)
+	a, _ := s.Create("alpha", model.Ungrouped, false, model.KindClassic)
+	b, _ := s.Create("beta", model.Ungrouped, false, model.KindClassic)
 	got, err := s.Rename(b.ID, "alpha")
 	if err != nil {
 		t.Fatal(err)
@@ -196,7 +196,7 @@ func TestRename(t *testing.T) {
 
 func TestMoveSeenArchiveBroadcast(t *testing.T) {
 	s, st, r := setup(t)
-	a, _ := s.Create("a", model.Ungrouped, true)
+	a, _ := s.Create("a", model.Ungrouped, true, model.KindClassic)
 
 	if err := s.Move(a.ID, groupID); err != nil {
 		t.Fatal(err)
@@ -229,7 +229,7 @@ func TestScene(t *testing.T) {
 	if _, _, err := s.SceneAt("b_missing"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("unknown id: %v", err)
 	}
-	a, _ := s.Create("a", model.Ungrouped, false)
+	a, _ := s.Create("a", model.Ungrouped, false, model.KindClassic)
 	body := `{"type":"excalidraw","elements":[{"id":"x"}]}`
 	if _, err := s.SaveAt(a.ID, 0, []byte(body)); err != nil {
 		t.Fatal(err)
@@ -247,7 +247,7 @@ func TestScene(t *testing.T) {
 
 func TestSave(t *testing.T) {
 	s, st, _ := setup(t)
-	a, _ := s.Create("a", model.Ungrouped, false)
+	a, _ := s.Create("a", model.Ungrouped, false, model.KindClassic)
 	before, _ := os.ReadFile(filepath.Join(st.P.BoardDir(a.ID), "board.json"))
 
 	if _, err := s.SaveAt(a.ID, 0, []byte("{not json")); err == nil {
@@ -290,8 +290,8 @@ func TestSave(t *testing.T) {
 
 func TestDelete(t *testing.T) {
 	s, st, r := setup(t)
-	a, _ := s.Create("a", model.Ungrouped, false)
-	b, _ := s.Create("b", model.Ungrouped, false)
+	a, _ := s.Create("a", model.Ungrouped, false, model.KindClassic)
+	b, _ := s.Create("b", model.Ungrouped, false, model.KindClassic)
 	if err := s.Delete(a.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -318,9 +318,9 @@ func TestDelete(t *testing.T) {
 
 func TestLoad(t *testing.T) {
 	s, st, _ := setup(t)
-	a, _ := s.Create("a", model.Ungrouped, true)
-	b, _ := s.Create("b", groupID, false)
-	c, _ := s.Create("c", model.Ungrouped, false)
+	a, _ := s.Create("a", model.Ungrouped, true, model.KindClassic)
+	b, _ := s.Create("b", groupID, false, model.KindClassic)
+	c, _ := s.Create("c", model.Ungrouped, false, model.KindClassic)
 	if _, err := s.Rename(a.ID, "renamed"); err != nil {
 		t.Fatal(err)
 	}
@@ -376,7 +376,7 @@ func readRevFile(t *testing.T, st *store.Store, id string) string {
 func TestSaveAt(t *testing.T) {
 	t.Parallel()
 	s, st, r := setup(t)
-	a, _ := s.Create("a", model.Ungrouped, false)
+	a, _ := s.Create("a", model.Ungrouped, false, model.KindClassic)
 	if got := s.Rev(a.ID); got != 0 {
 		t.Errorf("new board at revision %d", got)
 	}
@@ -443,8 +443,8 @@ func TestSaveAt(t *testing.T) {
 func TestRevSurvivesReload(t *testing.T) {
 	t.Parallel()
 	s, st, _ := setup(t)
-	a, _ := s.Create("a", model.Ungrouped, false)
-	b, _ := s.Create("b", model.Ungrouped, false)
+	a, _ := s.Create("a", model.Ungrouped, false, model.KindClassic)
+	b, _ := s.Create("b", model.Ungrouped, false, model.KindClassic)
 	body := `{"elements":[{"id":"x"}]}`
 	for i := int64(0); i < 3; i++ {
 		if _, err := s.SaveAt(a.ID, i, []byte(body)); err != nil {
@@ -477,7 +477,7 @@ func TestRevSurvivesReload(t *testing.T) {
 func TestBoardWithoutRevFile(t *testing.T) {
 	t.Parallel()
 	s, st, _ := setup(t)
-	a, _ := s.Create("a", model.Ungrouped, false)
+	a, _ := s.Create("a", model.Ungrouped, false, model.KindClassic)
 	old := `{"elements":[{"id":"old"}]}`
 	if err := os.WriteFile(st.P.BoardFile(a.ID), []byte(old), 0o644); err != nil {
 		t.Fatal(err)
@@ -513,8 +513,8 @@ func TestBoardWithoutRevFile(t *testing.T) {
 func TestFailedDrawingWriteLeavesRev(t *testing.T) {
 	t.Parallel()
 	s, st, _ := setup(t)
-	a, _ := s.Create("a", model.Ungrouped, false)
-	b, _ := s.Create("b", model.Ungrouped, false)
+	a, _ := s.Create("a", model.Ungrouped, false, model.KindClassic)
+	b, _ := s.Create("b", model.Ungrouped, false, model.KindClassic)
 	if _, err := s.SaveAt(a.ID, 0, []byte(`{}`)); err != nil {
 		t.Fatal(err)
 	}
@@ -563,7 +563,7 @@ func TestFailedDrawingWriteLeavesRev(t *testing.T) {
 func TestDeleteThenNewBoardStartsAtZero(t *testing.T) {
 	t.Parallel()
 	s, st, _ := setup(t)
-	a, _ := s.Create("a", model.Ungrouped, false)
+	a, _ := s.Create("a", model.Ungrouped, false, model.KindClassic)
 	if _, err := s.SaveAt(a.ID, 0, []byte(`{}`)); err != nil {
 		t.Fatal(err)
 	}
@@ -579,7 +579,7 @@ func TestDeleteThenNewBoardStartsAtZero(t *testing.T) {
 	if _, err := os.Stat(st.P.BoardDir(a.ID)); !os.IsNotExist(err) {
 		t.Errorf("folder back after a refused write: %v", err)
 	}
-	b, _ := s.Create("a", model.Ungrouped, false)
+	b, _ := s.Create("a", model.Ungrouped, false, model.KindClassic)
 	if raw, rev, err := s.SceneAt(b.ID); err != nil || rev != 0 || string(raw) != EmptyScene {
 		t.Errorf("new board: %q %d %v", raw, rev, err)
 	}
@@ -612,7 +612,7 @@ func TestGroups(t *testing.T) {
 		"g_loop":        {"Loop"},
 		"g_orphan":      {"Orphan"},
 	} {
-		bd, err := s.Create("x", group, false)
+		bd, err := s.Create("x", group, false, model.KindClassic)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -651,7 +651,7 @@ func TestBroadcastOutsideTheLock(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		a, err := s.Create("a", model.Ungrouped, false)
+		a, err := s.Create("a", model.Ungrouped, false, model.KindClassic)
 		if err != nil {
 			t.Error(err)
 			return
@@ -705,7 +705,7 @@ func TestEventsKeepOrderUnderConnects(t *testing.T) {
 	o := &ordered{}
 	s := New(st, o)
 	o.s = s
-	a, _ := s.Create("start", model.Ungrouped, false)
+	a, _ := s.Create("start", model.Ungrouped, false, model.KindClassic)
 
 	const writers, each = 4, 25
 	done := make(chan struct{})
@@ -822,14 +822,14 @@ func TestEventsThroughSendBoard(t *testing.T) {
 		}
 	}
 
-	m, err := s.Create("m", model.Ungrouped, false)
+	m, err := s.Create("m", model.Ungrouped, false, model.KindClassic)
 	if err != nil {
 		t.Fatal(err)
 	}
 	want("a board", "send "+m.ID+" board")
 	bridge.wantBoardEvent(t, m)
 
-	p, err := s.Create("p", model.Ungrouped, true)
+	p, err := s.Create("p", model.Ungrouped, true, model.KindClassic)
 	if err != nil {
 		t.Fatal(err)
 	}

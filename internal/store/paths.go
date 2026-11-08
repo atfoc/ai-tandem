@@ -29,6 +29,11 @@ func (p Paths) BoardDir(id string) string  { return filepath.Join(p.Boards, id) 
 func (p Paths) BoardFile(id string) string { return filepath.Join(p.Boards, id, "drawing.excalidraw") }
 func (p Paths) ChatDir(id string) string   { return filepath.Join(p.Chats, id) }
 
+// BoardSnapshot is a tl board's stored room snapshot (the board host's, opaque to Go).
+func (p Paths) BoardSnapshot(id string) string {
+	return filepath.Join(p.Boards, id, "snapshot.tl.json")
+}
+
 // RemoveRemote removes the folder Root/remote with everything in it: an earlier version of the app
 // kept there what it knew of the chats, boards and runs on other servers. Nothing is kept of them
 // now, so the folder is never made again. removed is false when there was none.

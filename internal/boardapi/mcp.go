@@ -23,6 +23,7 @@ import (
 	"ai-whiteboard/internal/chats"
 	"ai-whiteboard/internal/editorbridge"
 	"ai-whiteboard/internal/model"
+	"ai-whiteboard/internal/tlrelay"
 )
 
 // callTimeout is how long a board tool call waits for the client's answer. A variable so that a
@@ -91,7 +92,29 @@ type Relay struct {
 	// lost by not answering. Nil: there is none, and a board call that no window holds fails with
 	// NoClientText.
 	Away AwayEditor
+	// TL is the relay of the new boards (kind tl): every board call about such a board goes to its
+	// board host, never to a window (design 3.1). Nil: this server cannot edit new boards, and a
+	// call about one fails with NoTLText.
+	TL TLCaller
 }
+
+// TLCaller is the relay of new boards as the board API sees it (tlrelay.Relay).
+type TLCaller interface {
+	// CallTool runs one agent tool call on a new board in the board host. An error's text is the
+	// agent's whole text.
+	CallTool(tlrelay.ToolCall) (json.RawMessage, error)
+	// ScreenClient returns the window that shows the board, for get_view and show_board.
+	ScreenClient(board string) (string, bool)
+}
+
+// NoTLText is what an agent is told about a new board on a server that has no relay for them.
+const NoTLText = "NOT_SUPPORTED: this server cannot edit new boards"
+
+// The refusals of an apply in the terms of the other kind of board (design 7.2).
+const (
+	MixedTLText      = "BAD_ARGS: this is a new board; use ops (see the tool description)"
+	MixedClassicText = "BAD_ARGS: this is a classic board; use create and update (see the tool description)"
+)
 
 // Call runs a board tool for the chat with this token and returns the text for the agent; a
 // picture the tool returns is left out (see CallResult).
@@ -156,6 +179,16 @@ func (r *Relay) CallResult(token, tool string, args json.RawMessage) ToolResult 
 		case bd.Archived:
 			return errResult("ARCHIVED: " + bd.Name + " is archived")
 		}
+		if tool == "apply" {
+			if text, refused := mixedTerms(bd.Kind, args); refused {
+				return errResult(text)
+			}
+		}
+		// A new board: its calls go to the board host, never to a window (goal 4.4). The screen
+		// calls are about the chat's board's window, below.
+		if tool != "show_board" && bd.Kind == model.KindTL {
+			return r.tlTool(caller, tool, target, args)
+		}
 	}
 	// The client knows the chat by its top-level id, also when a branch's agent calls; branch
 	// says which branch's agent (or subagent) it is, "main" for the chat's main line. board is
@@ -168,8 +201,17 @@ func (r *Relay) CallResult(token, tool string, args json.RawMessage) ToolResult 
 	}
 	spec := editorbridge.CallSpec{Method: "tool", Params: params, Board: target, ChatBoard: meta.Board}
 	screen := tool == "get_view" || tool == "show_board" // asked of the screen that shows the chat's board
+	tlScreen := false                                    // the chat's board is a new board
 	if screen {
 		spec.Board, spec.Screen = "", true
+		if bd, ok := r.Boards.Get(meta.Board); ok && bd.Kind == model.KindTL {
+			tlScreen = true
+			if r.TL != nil {
+				if window, found := r.TL.ScreenClient(meta.Board); found {
+					spec.Client = window
+				}
+			}
+		}
 	} else if !r.routeToAway(&spec, target) {
 		return errResult(r.noBoardText())
 	}
@@ -188,7 +230,7 @@ func (r *Relay) CallResult(token, tool string, args json.RawMessage) ToolResult 
 		return pageResult(tool, out)
 	case errors.Is(err, editorbridge.ErrNoClient):
 		switch {
-		case screen && r.Away != nil: // no window shows the board: not a failure of the board
+		case screen && (r.Away != nil || tlScreen): // no window shows the board: not a failure of the board
 			return textResult(r.screenText(tool, meta.Board, target), false)
 		case spec.Away:
 			return errResult(r.noBoardText())
@@ -207,6 +249,62 @@ func (r *Relay) CallResult(token, tool string, args json.RawMessage) ToolResult 
 		r.Away.CallTimedOut()
 	}
 	return errResult(err.Error())
+}
+
+// tlTool runs a board tool about a new board in the board host, through the relay of new boards. Its
+// answer is read as a page's is, so pictures, the Cursor file and the size limits are as for an old
+// board; an error's text is the agent's whole text.
+func (r *Relay) tlTool(caller chats.Caller, tool, target string, args json.RawMessage) ToolResult {
+	if r.TL == nil {
+		return errResult(NoTLText)
+	}
+	// The agent that calls (a subagent of another kind is named as itself), else the chat's.
+	kind := caller.Kind
+	if kind == "" {
+		kind = caller.Meta.Agent
+	}
+	out, err := r.TL.CallTool(tlrelay.ToolCall{
+		Chat: caller.Chat, Branch: caller.Branch, ChatBoard: caller.Meta.Board, Board: target,
+		Tool: tool, Args: args, Agent: tlrelay.Agent{Kind: string(kind), Label: agentLabel(kind)},
+	})
+	if err != nil {
+		return errResult(err.Error())
+	}
+	return pageResult(tool, out)
+}
+
+// agentLabel is an agent kind as a person reads it, the name of its marker on a new board.
+func agentLabel(kind model.AgentKind) string {
+	switch kind {
+	case model.Claude:
+		return "Claude"
+	case model.Cursor:
+		return "Cursor"
+	case model.Pi:
+		return "pi"
+	}
+	return string(kind)
+}
+
+// mixedTerms refuses an apply in the terms of the other kind of board: create or update on a new
+// board, ops on a classic one. A missing ops on a new board is the board host's to answer.
+func mixedTerms(kind string, args json.RawMessage) (string, bool) {
+	var p map[string]json.RawMessage
+	if json.Unmarshal(args, &p) != nil {
+		return "", false
+	}
+	if kind == model.KindTL {
+		_, create := p["create"]
+		_, update := p["update"]
+		if create || update {
+			return MixedTLText, true
+		}
+		return "", false
+	}
+	if _, ops := p["ops"]; ops {
+		return MixedClassicText, true
+	}
+	return "", false
 }
 
 // routeToAway prepares a call about a board for the background editor, when the server has one: the
@@ -297,6 +395,9 @@ func (r *Relay) listBoards(chatBoard string) string {
 	lines := make([]string, 0, len(list))
 	for _, bd := range list {
 		line := fmt.Sprintf("%s  (%s)  [%s]", bd.Name, bd.ID, groupText(groups[bd.ID]))
+		if bd.Kind == model.KindTL {
+			line += "  (new board)"
+		}
 		if bd.ID == chatBoard {
 			line += "  (this chat's board)"
 		}
@@ -316,15 +417,32 @@ func (r *Relay) createBoard(chatBoard string, args json.RawMessage) (text string
 		return "NO_BOARD: this chat's board " + chatBoard + " no longer exists", true
 	}
 	var p struct {
-		Name any `json:"name"`
+		Name any             `json:"name"`
+		Kind json.RawMessage `json:"kind"`
 	}
 	json.Unmarshal(args, &p)
 	name, _ := p.Name.(string)
-	bd, err := r.Boards.Create(name, own.Group, true)
+	kind := model.KindClassic
+	if len(p.Kind) > 0 && string(p.Kind) != "null" {
+		var k string
+		json.Unmarshal(p.Kind, &k)
+		switch k {
+		case "new":
+			kind = model.KindTL
+		case "classic":
+		default:
+			return `BAD_ARGS: kind is "new" or "classic"`, true
+		}
+	}
+	bd, err := r.Boards.Create(name, own.Group, true, kind)
 	if err != nil {
 		return err.Error(), true
 	}
-	return fmt.Sprintf("created %s (%s) in %s", bd.Name, bd.ID, groupText(r.Boards.Groups()[bd.ID])), false
+	text = fmt.Sprintf("created %s (%s) in %s", bd.Name, bd.ID, groupText(r.Boards.Groups()[bd.ID]))
+	if kind == model.KindTL {
+		text += ", a new board"
+	}
+	return text, false
 }
 
 func short(id string) string {

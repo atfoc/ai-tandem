@@ -362,7 +362,7 @@ func TestCreateWithAnIDWhichForms(t *testing.T) {
 func TestCreateWithATakenID(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)
-	bd, err := e.bds.Create("board", gTwo, false)
+	bd, err := e.bds.Create("board", gTwo, false, model.KindClassic)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -551,7 +551,7 @@ func TestSecondChatStartsAsTheFirst(t *testing.T) {
 func TestWhatTheFirstMessageRecords(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)
-	bd, err := e.bds.Create("board", gTwo, false)
+	bd, err := e.bds.Create("board", gTwo, false, model.KindClassic)
 	if err != nil {
 		t.Fatal(err)
 	}

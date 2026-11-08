@@ -40,11 +40,11 @@ type located struct {
 
 // locate finds what a start needs. Its error is the reason the headless writer is not available.
 func (m *Manager) locate() (located, error) {
-	rt, err := findRuntime(m.o.Node, m.look)
+	rt, err := findRuntimeAs(m.o.Node, m.names, m.look)
 	if err != nil {
 		return located{}, err
 	}
-	b, err := findBundle(m.o.Dir, version.Version, m.look)
+	b, err := findBundleAs(m.o.Dir, version.Version, m.names, m.look)
 	if err != nil {
 		return located{}, err
 	}
@@ -61,12 +61,12 @@ func (m *Manager) start(p *proc) {
 	}
 	m.mu.Lock()
 	if err != nil {
-		p.startErr = unavailable(err.Error())
+		p.startErr = m.unavailable(err.Error())
 		if m.cur == p {
 			m.cur = nil
 		}
 		m.failed, m.failedUntil = p.startErr, m.now().Add(m.o.Retry)
-		m.o.Logf("headless writer: not started: %s", err)
+		m.o.Logf("%s: not started: %s", m.o.Name, err)
 	} else {
 		p.started = true
 		m.failed = nil
@@ -107,7 +107,7 @@ func (m *Manager) launch(p *proc) error {
 	if at.Runtime.Electron {
 		cmd.Env = append(cmd.Env, "ELECTRON_RUN_AS_NODE=1")
 	}
-	out := &tail{logf: m.o.Logf}
+	out := &tail{logf: m.o.Logf, prefix: m.o.Folder}
 	cmd.Stdout, cmd.Stderr = out, out
 	cmd.WaitDelay = 2 * time.Second // a child that keeps the pipes open does not hold Wait
 	stdin, err := cmd.StdinPipe()
@@ -132,7 +132,7 @@ func (m *Manager) launch(p *proc) error {
 	p.cmd, p.stdin, p.out = cmd, stdin, out
 	p.pid.Store(int64(cmd.Process.Pid))
 	go m.reap(p)
-	m.o.Logf("headless writer: started %s (pid %d, %s)", at.Runtime.Path, cmd.Process.Pid, at.Runtime.Source)
+	m.o.Logf("%s: started %s (pid %d, %s)", m.o.Name, at.Runtime.Path, cmd.Process.Pid, at.Runtime.Source)
 	// A process that already exited does not read it; its exit is what the start reports.
 	stdin.Write(append(line, '\n'))
 	return nil
@@ -189,7 +189,7 @@ func (m *Manager) reap(p *proc) {
 	logIt := p.started && !p.stopping.Load()
 	m.mu.Unlock()
 	if logIt {
-		m.o.Logf("headless writer: the process ended by itself (%s)", exitText(err))
+		m.o.Logf("%s: the process ended by itself (%s)", m.o.Name, exitText(err))
 	}
 	close(p.done)
 }
@@ -228,11 +228,12 @@ func exitText(err error) string {
 	return err.Error()
 }
 
-// tail is the writer of the process's stdout and stderr: it logs each line, prefixed "headless:", and keeps
-// the last few for the reason of a start that failed. The process prints neither the secret nor board
-// content (D35); the lines are cut at maxLine in case.
+// tail is the writer of the process's stdout and stderr: it logs each line, prefixed "headless:" (the
+// manager's Folder), and keeps the last few for the reason of a start that failed. The process prints
+// neither the secret nor board content (D35); the lines are cut at maxLine in case.
 type tail struct {
-	logf func(string, ...any)
+	logf   func(string, ...any)
+	prefix string // "headless"; "" is "headless" too
 
 	mu    sync.Mutex
 	part  []byte
@@ -272,7 +273,11 @@ func (t *tail) line(s string) {
 	if strings.TrimSpace(s) == "" {
 		return
 	}
-	t.logf("headless: %s", s)
+	prefix := t.prefix
+	if prefix == "" {
+		prefix = FolderDefault
+	}
+	t.logf("%s: %s", prefix, s)
 	t.lines = append(t.lines, s)
 	if len(t.lines) > keepLast {
 		t.lines = t.lines[len(t.lines)-keepLast:]

@@ -55,8 +55,17 @@ type Board struct {
 	Group   string    `json:"group"` // group id or Ungrouped
 	Created time.Time `json:"created"`
 	New     bool      `json:"new,omitempty"` // made by an agent and not opened by the user yet
+	// Kind is KindClassic ("", an Excalidraw board; omitted, so old board.json files are untouched) or
+	// KindTL (a new board drawn with tldraw; better-board design 4.1, D7).
+	Kind string `json:"kind,omitempty"`
 	Archive
 }
+
+// The kinds of a board (Board.Kind).
+const (
+	KindClassic = ""   // an Excalidraw board, every board made before the new boards
+	KindTL      = "tl" // a new board, drawn with tldraw, held by the board host
+)
 
 // Archive marks an archived item. Op is the id of the archive action that archived it: every
 // item archived by one click shares it, so unarchiving puts back exactly what went together.

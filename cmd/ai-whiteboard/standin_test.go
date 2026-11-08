@@ -84,7 +84,8 @@ type standIn struct {
 	fingerprint string
 	names       []string
 
-	headless any // this build: the "headless" of its /status, left out when nil
+	headless  any // this build: the "headless" of its /status, left out when nil
+	boardhost any // this build: the "boardhost" of its /status, left out when nil
 
 	hit atomic.Int64 // the requests it got
 }
@@ -125,6 +126,9 @@ func (s *standIn) this(t *testing.T, root string, serverFile bool) string {
 			"listener": map[string]any{"port": 6006, "url": "http://localhost:6006/mcp", "up": true}, "chats": []any{}}}
 		if s.headless != nil {
 			status["headless"] = s.headless
+		}
+		if s.boardhost != nil {
+			status["boardhost"] = s.boardhost
 		}
 		json.NewEncoder(w).Encode(status)
 	})
