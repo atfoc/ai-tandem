@@ -35,6 +35,17 @@ export class RoomLink extends FakeLink {
   private proxy: { readyState: number; send(d: string): void; close(code?: number, reason?: string): void } | null = null;
   private session = "";
   readonly name: string;
+  /** Every message the room sent to this link, in order. */
+  readonly inbox: string[] = [];
+  /** Pushes this link sent that the room has not answered yet (tldraw's `push` / `push_result`). */
+  get unanswered() {
+    const count = (list: string[], what: string) => list.reduce((n, m) => n + m.split(what).length - 1, 0);
+    return count(this.sent.flat(), '"type":"push"') - count(this.inbox, '"type":"push_result"');
+  }
+  override deliver(messages: string[]) {
+    this.inbox.push(...messages);
+    super.deliver(messages);
+  }
   constructor(room: RoomLike, name: string) {
     super();
     this.room = room;

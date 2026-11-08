@@ -23,10 +23,10 @@ g.cancelAnimationFrame ??= (t) => clearTimeout(t as ReturnType<typeof setTimeout
 
 type Rec = { id: string; typeName: string; [k: string]: unknown };
 
-async function until(cond: () => boolean, what: string, ms = 5000) {
+async function until(cond: () => boolean, what: string, ms = 5000, state?: () => string) {
   const t0 = Date.now();
   while (!cond()) {
-    if (Date.now() - t0 > ms) throw new Error(`timed out: ${what}`);
+    if (Date.now() - t0 > ms) throw new Error(`timed out: ${what}${state ? ` ${state()}` : ""}`);
     await new Promise((r) => setTimeout(r, 5));
   }
 }
@@ -89,13 +89,20 @@ test("a sticky put by window A arrives at window B; B sees A's presence with A's
 });
 
 test("a link cut and opened again converges; edits made while cut off are kept", async () => {
-  const { window, done } = setup();
+  const { room, window, done } = setup();
   try {
     const a = window("a", ALICE), b = window("b", BOB);
     await until(() => loaded(a.sync) && loaded(b.sync), "both loaded");
     await ensurePage(a.sync);
     a.sync.store!.put([sticky("shape:s1", { x: 0 }) as never, sticky("shape:s2", { x: 0 }) as never, sticky("shape:gone") as never]);
     await until(() => shapes(b.sync).length === 3, "three at B");
+    // cut only once A has the room's answer to its pushes *and* has applied it. tldraw buffers the answers and applies them on
+    // its next frame (`rebase`, throttled by requestAnimationFrame: 16 ms here), and a cut empties that buffer. Cut before that,
+    // A still counts the creates as its own unconfirmed changes; an offline delete then cancels the create inside them (tldraw
+    // squashes the two) and the reconnect brings the room's copy back: the deleted sticky returns. Seen in ~1 run in 12 under
+    // load before this wait; a finding of the window lane (win-view.md, "Lane lead"), tldraw's behaviour, not ours.
+    await until(() => a.link.unanswered === 0, "A's pushes answered");
+    await new Promise((r) => setTimeout(r, 100)); // (timers fire in order of expiry: the 16 ms rebase runs first)
 
     a.link.cut();
     assert.equal(a.sync.getSnapshot().link, "offline");
@@ -118,7 +125,8 @@ test("a link cut and opened again converges; edits made while cut off are kept",
     };
     // (wait for the end state itself: right after the reconnect A holds the room's state, `gone` included, until its pending
     // changes are rebased and pushed, and on a loaded machine the two windows can match in that moment)
-    await until(() => loaded(a.sync) && !!get(b.sync, "shape:s3") && !get(b.sync, "shape:gone") && same(), "converged");
+    await until(() => loaded(a.sync) && !!get(b.sync, "shape:s3") && !get(b.sync, "shape:gone") && same(), "converged", 5000, () =>
+      JSON.stringify({ a: shapes(a.sync).map((r) => [r.id, r.x]), b: shapes(b.sync).map((r) => [r.id, r.x]), room: room.getCurrentSnapshot().documents.filter((d) => (d.state as unknown as Rec).typeName === "shape").map((d) => [(d.state as unknown as Rec).id, (d.state as unknown as Rec).x]), aSnap: { link: a.sync.getSnapshot().link, loaded: a.sync.getSnapshot().loaded, error: a.sync.getSnapshot().error, status: a.sync.getSnapshot().store.status } }));
     assert.equal(get(b.sync, "shape:gone"), undefined, "A's offline delete reached B");
     assert.equal(get(b.sync, "shape:s3")!.x, 900, "A's offline create reached B");
     assert.equal((get(a.sync, "shape:s2")!.props as { color: string }).color, "violet", "B's edit reached A");

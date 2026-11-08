@@ -439,8 +439,17 @@ into one `TLSocketRoom` running in the page, bundled with esbuild; Playwright 1.
   contextual toolbar; the bar now sits 36 px above the selection (`ctxModel.ts` `GAP`). `shots/win-combined.png`.
 - The temporary mock seed (`dev/seed.ts`) and the mount's `seed` option are deleted: `tl.js` carries no mock data; the
   dev page is an empty local board driven through `window.__tlEditor`.
-- `test/sync.test.ts` "a link cut and opened again converges" could pass its convergence wait in the moment right after
-  the reconnect (A holds the room's state, `gone` included, before its pending changes are rebased) and then fail under
-  the load of the root `npm test`; it now waits for the end state. Six concurrent runs pass.
+- **Finding (goal 3.4, risk 8.5): an element deleted while cut off can come back.** `test/sync.test.ts` "a link cut and
+  opened again converges" failed in about 1 run in 12 under load (twice in the root `npm test`). In those runs everything
+  converged except A's offline delete: the deleted sticky was back in A, B and the room. Cause, in tldraw 5.6's
+  `TLSyncClient`: the room's answers to a window's pushes are buffered and applied on the next frame (`rebase`, throttled by
+  `requestAnimationFrame`), and a lost connection (`resetConnection`) empties that buffer. A create made just before the cut
+  (within about a round trip plus a frame) therefore still counts as the window's own unconfirmed change; a delete of it
+  made while cut off cancels the create inside those changes (tldraw squashes the two into nothing), and on reconnect the
+  room's copy is applied: the element returns. Edits of such an element are kept (an update squashes into the create);
+  only the delete is lost. Rare in use (create, lose the connection within a few tens of ms, delete while offline), not
+  ours to fix without patching tldraw; a release could re-send deletes of records the room still has after reconnect, or
+  accept it. The test now waits until A has applied the room's answers before the cut (then 0 failures in 96 runs under
+  load), and the convergence wait checks the end state and prints the three stores when it times out.
 - Not looked at here: the real relay and board host in the loop (the Go lane and the host lane run in parallel; Wave 4
   checks it), and Electron.
