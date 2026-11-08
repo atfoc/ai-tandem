@@ -19,19 +19,22 @@ export interface EditorOptions {
   container: HTMLElement
   /** A store made elsewhere (a sync client's). Default: a new store with the default schema. */
   store?: TLStore
+  /** tldraw font name (`tldraw_sans_bold`…) → URL, for the SVG export's embedded @font-face (Node: file: URLs). */
+  fontAssetUrls?: Record<string, string>
 }
 
 export function createStore(): TLStore {
   return createTLStore({ shapeUtils: defaultShapeUtils, bindingUtils: defaultBindingUtils })
 }
 
-export function createEditor({ container, store }: EditorOptions): Editor {
+export function createEditor({ container, store, fontAssetUrls }: EditorOptions): Editor {
   const editor = new Editor({
     store: store ?? createStore(),
     shapeUtils: defaultShapeUtils,
     bindingUtils: defaultBindingUtils,
     tools: [...defaultTools, ...defaultShapeTools],
     getContainer: () => container,
+    fontAssetUrls,
     initialState: 'select',
     options: {
       text: { addFontsFromNode: defaultAddFontsFromNode, tipTapConfig: { extensions: tipTapDefaultExtensions } },
