@@ -6,7 +6,8 @@
   "scripts": {
     "build": "node build.mjs",
     "serve": "node serve.mjs",
-    "test": "node --test --experimental-strip-types 'test/*.test.ts'"
+    "test": "node --test --experimental-strip-types 'test/*.test.ts'",
+    "check": "../../node_modules/.bin/tsc -p ."
   },
   "dependencies": {
     "tldraw": "5.6.0",
