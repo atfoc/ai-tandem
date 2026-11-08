@@ -102,6 +102,10 @@ tldraw to a workspace records it in `decisions.md`, pinned exactly.
   - The file is `boardhost.mjs`. The manifest version check is the same (`dev` takes any).
 - The handshake is the headless writer's: one JSON line on stdin (D27), and the process opens its event stream only when it can
   work. The manager waits for that stream (`Bridge.Known`).
+- **Licence (orchestrator's decision, `licence.md`).** Both bundles are **development** builds of tldraw: `tl.js` is built with
+  `process.env.NODE_ENV = "development"` (a production `file://` page without a key goes blank after 5 s in the Electron window),
+  and so is `boardhost.mjs`. Nothing touches tldraw's licence check or watermark (goal 4.2). The rest of the app's web export
+  stays a production build; only `tl.js` differs.
 - Development and the checks of the prototype: `-boardhost-dir packages/board-host/dist -boardhost-node "$(command -v node)"`.
   Packaging the board host into the Mac app and `build-server.sh` is out of scope for the prototype (the findings report says
   what it would take: the same `extraResources` entry as `headless/`).
@@ -518,7 +522,7 @@ if !screen && bd.Kind == model.KindTL {
 | The board screen | `app/src/screens/board/BoardCanvas.tsx:91`: the present component is renamed `ClassicCanvas` (no other change), and `BoardCanvas` becomes a wrapper: `const kind = useStore((s) => s.boards[board]?.kind); return kind === "tl" ? <TlCanvas board={board} /> : <ClassicCanvas board={board} />;` (a wrapper, so the hooks of each keep their order). |
 | `TlCanvas` | `app/src/screens/board/TlCanvas.tsx` (**new**): makes `openTlLink(board)` on mount and `link.close()` on unmount; reads the person's name (D12); renders `<TlHost board link user onHandle />` and `<slots.BoardVoice>` like `ClassicCanvas`; no `RoleBar`, no `SaveBanner`, no `DroppedNote`, no `boardApp.show`/`attachView`. It registers the handle the view gives (`tlRegistry().setHandle(board, handle)`) for `get_view`/`show_board`. |
 | The mount | `app/src/platform/tlboard.web.tsx` (**new**): mounts `window.aiwbTlView.mount(element, { board, link, user, testID, onHandle })` into an RN `View`'s DOM node, as `board.web.tsx` mounts `aiwbBoardView`. `app/src/platform/tlboard.native.tsx` (**new**): a centred text "New boards are not available on this device yet." (phones are out of scope, goal 5). |
-| The web build | `packages/board-tl/build.mjs` writes `app/public/tl/{tl.js, tl.css, fonts/}` (git-ignored like `app/public/board/`). `app/scripts/export-web.mjs` step 0 also runs `npm run build:web` in `packages/board-tl` and checks `public/tl/tl.js` exists. `app/public/index.html` loads `./tl/tl.css` and `<script src="./tl/tl.js" defer>` beside `board.js` **[S-UI]**. |
+| The web build | `packages/board-tl/build.mjs` writes `app/public/tl/{tl.js, tl.css, fonts/}` (git-ignored like `app/public/board/`). `app/scripts/export-web.mjs` step 0 also runs `npm run build:web` in `packages/board-tl` and checks `public/tl/tl.js` exists. `app/public/index.html` loads `./tl/tl.css` and `<script src="./tl/tl.js" defer>` beside `board.js` **[S-UI]**. `tl.js` is a development build of tldraw (1.3, licence). |
 | Old boards' paths | Guards so no Excalidraw code runs for a tl board: `nav.ts select()` skips `boardApp.flush(prev.board)` for a tl board; `rows.tsx` rename skips `boardApp.flush` for a tl board; `packages/core/src/board/side.ts` `afterSnapshot`/`sectionBack` do not load a scene for a tl board on screen (one `isTl(key)` check where the board on screen is picked). `ClassicCanvas` is never rendered for a tl board, so `show`/`attachView` never see one. |
 | Agent `rpc` in the window | `packages/core/src/state/conn.ts` `answer` (`:155`): if the tool is `get_view` and the chat's board is a tl board, or the tool is `show_board` and its target (or the chat's board) is a tl board, `tlRegistry().answer(params)` instead of `boardSide().runTool`. `answer` returns the same shape (`string` or `{text}`). |
 
