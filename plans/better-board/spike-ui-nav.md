@@ -48,6 +48,15 @@ has clicked or tapped the board (then focus is `.tl-container` and all work). `e
 already true, which hides it. In the app the user usually clicks the board first; if shortcuts must work straight
 away, the mount should call `container.focus()` (or the editor's `focus()`), which belongs to the mount code, not here.
 
+**A pinch over our own UI zooms the page (not fixed, outside `src/nav/`; found after merging `bb-spike-ui`).** The
+context toolbar (`[data-testid=aiwb-contexttoolbar]`, `src/ui/`) has `touch-action: auto`, and the page's viewport
+meta is `width=device-width, initial-scale=1`. A two-finger pinch that starts over the toolbar is the browser's own
+page zoom: `visualViewport.scale` 1 → 3.13, board zoom unchanged. From then on every touch reaches tldraw shifted by
+the visual viewport offset (a long press on e1 landed ~240 px away), so the board seems to ignore touches. Fix
+(either, better both): `touch-action: none` on our overlay UI, and `maximum-scale=1, user-scalable=no` in the page's
+viewport meta (`build.mjs`; the app's own page needs the same). The touch rows above were re-checked on the merged
+build with nothing selected during the pinches (all pass).
+
 **Camera slide after Space/middle pans.** tldraw slides the camera after those pans (friction 0.09); our left-drag pan
 stops dead. Not wrong, but inconsistent; if we want one feel, `options.cameraSlideFriction` (or the same slide in
 `PanningCanvas`) is the knob. Not changed.
