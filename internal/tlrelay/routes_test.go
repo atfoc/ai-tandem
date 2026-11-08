@@ -225,6 +225,7 @@ func TestHostEndedClosesEverySession(t *testing.T) {
 	s2 := g.open("b2", "w1")
 	s3 := g.open("b1", "w2")
 	g.br.take("h1")
+	tries := g.br.triesTo("h1")
 	g.endClient("h1")
 	want := map[string][]closedEvent{
 		"w1": {{"tl_closed", "b1", s1, "host_stopped"}, {"tl_closed", "b2", s2, "host_stopped"}},
@@ -247,12 +248,72 @@ func TestHostEndedClosesEverySession(t *testing.T) {
 	if n := g.sessionCount(); n != 0 {
 		t.Fatalf("%d sessions left", n)
 	}
-	// the host is forgotten: out and snapshot are refused, a sync is 410
-	if code, m := g.do("POST", "/api/tl-host/out", "h1", map[string]any{}); code != 403 || m["code"] != "not_board_host" {
-		t.Fatalf("out of the old host: %d %v", code, m)
+	// the process is dead (its stream is not Known): nothing is sent to it
+	if n := g.br.triesTo("h1") - tries; n != 0 {
+		t.Fatalf("%d sends to the dead host", n)
 	}
 	if code, _ := g.do("POST", "/api/tl/b1/sync", "w1", map[string]any{"session": s1, "messages": []string{}}); code != 410 {
 		t.Fatalf("sync: %d", code)
+	}
+	// until the manager's reap, the exiting host's last saves are accepted
+	if code, m := g.do("PUT", "/api/tl/b1/snapshot", "h1", `{"last":true}`); code != 200 {
+		t.Fatalf("last save before the reap: %d %v", code, m)
+	}
+	// after it, the host is forgotten: out and snapshot are refused
+	g.ad.SetAway("")
+	if code, m := g.do("POST", "/api/tl-host/out", "h1", map[string]any{}); code != 403 || m["code"] != "not_board_host" {
+		t.Fatalf("out of the old host: %d %v", code, m)
+	}
+	if code, m := g.do("GET", "/api/tl/b1/snapshot", "h1", nil); code != 403 || m["code"] != "not_board_host" {
+		t.Fatalf("GET snapshot of the old host: %d %v", code, m)
+	}
+	if code, m := g.do("PUT", "/api/tl/b1/snapshot", "h1", `{}`); code != 403 || m["code"] != "not_board_host" {
+		t.Fatalf("PUT snapshot of the old host: %d %v", code, m)
+	}
+}
+
+// The host's stream is replaced (a reconnect with the same client id, or the bridge closing a full
+// stream) while its process lives on: the sessions are closed on both sides, and the host stays the host.
+func TestHostStreamReplaced(t *testing.T) {
+	t.Parallel()
+	g := newRig(t)
+	s1 := g.open("b1", "w1")
+	s2 := g.open("b2", "w2")
+	g.br.take("h1")
+	g.replaceStream("h1") // Known("h1") is true inside the hook
+	if evs := g.br.take("w1"); len(evs) != 1 || evs[0] != (closedEvent{"tl_closed", "b1", s1, "host_stopped"}) {
+		t.Fatalf("w1 got %#v", evs)
+	}
+	if evs := g.br.take("w2"); len(evs) != 1 || evs[0] != (closedEvent{"tl_closed", "b2", s2, "host_stopped"}) {
+		t.Fatalf("w2 got %#v", evs)
+	}
+	got := map[sessionEvent]bool{}
+	for _, ev := range g.br.take("h1") {
+		got[ev.(sessionEvent)] = true
+	}
+	if len(got) != 2 || !got[sessionEvent{"tl_close", "b1", s1}] || !got[sessionEvent{"tl_close", "b2", s2}] {
+		t.Fatalf("host got %v", got)
+	}
+	if n := g.r.Status().Sessions; n != 0 {
+		t.Fatalf("%d sessions", n)
+	}
+	// the host is still the host: a new open, its out and its saves are accepted
+	s := g.open("b1", "w1")
+	if evs := g.br.take("h1"); len(evs) != 1 || evs[0] != (sessionEvent{"tl_open", "b1", s}) {
+		t.Fatalf("host got %#v", evs)
+	}
+	code, m := g.do("POST", "/api/tl-host/out", "h1", map[string]any{"out": []any{map[string]any{"session": s, "messages": []string{"x"}}}})
+	if code != 200 {
+		t.Fatalf("out: %d %v", code, m)
+	}
+	if evs := g.br.take("w1"); len(evs) != 1 || typeOf(evs[0]) != "tl_sync" || sessionOf(evs[0]) != s {
+		t.Fatalf("w1 got %s", types(evs))
+	}
+	if code, m := g.do("PUT", "/api/tl/b1/snapshot", "h1", `{"a":1}`); code != 200 {
+		t.Fatalf("PUT snapshot: %d %v", code, m)
+	}
+	if code, _ := g.do("GET", "/api/tl/b1/snapshot", "h1", nil); code != 200 {
+		t.Fatalf("GET snapshot: %d", code)
 	}
 }
 
@@ -473,11 +534,17 @@ func TestBoardGone(t *testing.T) {
 	}
 	// no host: nothing to drop, nothing sent
 	g.br.take("h1")
-	g.endClient("h1")
+	g.endClient("h1") // the manager has not reaped it yet: the id stays, but its stream is gone
 	g.br.take("w2")
+	before := g.br.triesTo("h1")
 	g.r.BoardGone("b2", "deleted")
-	if evs := g.br.all("h1"); len(evs) != 0 {
-		t.Fatalf("a gone host got %#v", evs)
+	if n := g.br.triesTo("h1") - before; n != 0 {
+		t.Fatalf("%d sends to a gone host", n)
+	}
+	g.ad.SetAway("")
+	g.r.BoardGone("b2", "deleted")
+	if n := g.br.triesTo("h1") - before; n != 0 {
+		t.Fatalf("%d sends with no host", n)
 	}
 }
 

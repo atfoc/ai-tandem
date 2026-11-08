@@ -27,18 +27,20 @@ type fakeBridge struct {
 	known    map[string]bool
 	hasCalls map[string]bool
 	events   map[string][]any
+	tries    map[string]int // SendTo calls per client, sent or not
 	specs    []editorbridge.CallSpec
 	timeouts []time.Duration
 	call     func(spec editorbridge.CallSpec) (json.RawMessage, error)
 }
 
 func newFakeBridge() *fakeBridge {
-	return &fakeBridge{known: map[string]bool{}, hasCalls: map[string]bool{}, events: map[string][]any{}}
+	return &fakeBridge{known: map[string]bool{}, hasCalls: map[string]bool{}, events: map[string][]any{}, tries: map[string]int{}}
 }
 
 func (b *fakeBridge) SendTo(id string, ev any) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	b.tries[id]++
 	if !b.known[id] {
 		return false
 	}
@@ -83,6 +85,13 @@ func (b *fakeBridge) take(id string) []any {
 	ev := b.events[id]
 	delete(b.events, id)
 	return ev
+}
+
+// triesTo is the number of SendTo calls to id, delivered or not.
+func (b *fakeBridge) triesTo(id string) int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.tries[id]
 }
 
 func (b *fakeBridge) all(id string) []any {
@@ -252,6 +261,12 @@ func (g *rig) startHost(id string) {
 // endClient does what the bridge does when a stream ends: the record goes, then OnEnd.
 func (g *rig) endClient(id string) {
 	g.br.setKnown(id, false)
+	g.r.ClientEnded(id)
+}
+
+// replaceStream does what the bridge does when a client's stream is replaced by a new one with the
+// same id: the new record is already there when OnEnd runs.
+func (g *rig) replaceStream(id string) {
 	g.r.ClientEnded(id)
 }
 
