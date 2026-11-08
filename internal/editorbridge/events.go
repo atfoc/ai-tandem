@@ -33,6 +33,10 @@ type Rule struct {
 
 // Events is the event table: every type a server sends, by its "type". Broadcast, SendChat
 // and SendBoard route by it. A type that is missing here goes to no client, and is logged.
+//
+// Not in the table: the events of the new (tldraw) boards, tl_sync, tl_closed, tl_open, tl_close
+// and tl_drop. internal/tlrelay sends each of them to one client (a window or the board host) with
+// SendTo, which does not consult the table (better-board design 2.3).
 var Events = map[string]Rule{
 	"hello":           {Class: Role},
 	"snapshot":        {Class: Role},

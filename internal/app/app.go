@@ -31,6 +31,12 @@ type App struct {
 
 	Agents *usable.Set // nil: every kind of agent is usable
 
+	// BoardGone is told of every new (tldraw) board that is archived ("archived") or deleted
+	// ("deleted"), after the store's change, a board archived or deleted with its group too: the
+	// relay closes the board's sessions and the board host's room (tlrelay.Relay.BoardGone). nil:
+	// nobody is told. A classic board is never named.
+	BoardGone func(id, reason string)
+
 	// Set by main; reported in the snapshot.
 	Home       string // the user's home folder
 	DefaultCwd string // the server's default working folder
@@ -268,7 +274,17 @@ func (a *App) archiveBoard(id string, ar model.Archive) error {
 		return err
 	}
 	a.Bridge.FreeBoard(id, 0) // a client may have taken the board while its chats were archived
+	if b, ok := a.Boards.Get(id); ok {
+		a.boardGone(b, "archived")
+	}
 	return nil
+}
+
+// boardGone tells BoardGone of a new board that was archived or deleted.
+func (a *App) boardGone(b model.Board, reason string) {
+	if a.BoardGone != nil && b.Kind == model.KindTL {
+		a.BoardGone(b.ID, reason)
+	}
 }
 
 // plainChatsIn returns the plain chats of the groups in: the ones on no board.
@@ -494,7 +510,8 @@ func (a *App) DeleteChat(id string) error { return a.Chats.Delete(id) }
 
 // DeleteBoard deletes the board's chats (stopping their agents), then the board and its file.
 func (a *App) DeleteBoard(id string) error {
-	if _, ok := a.Boards.Get(id); !ok {
+	b, ok := a.Boards.Get(id)
+	if !ok {
 		return boards.ErrNotFound
 	}
 	a.Bridge.FreeBoard(id, freeWait) // as at an archive
@@ -507,6 +524,7 @@ func (a *App) DeleteBoard(id string) error {
 		return err
 	}
 	a.Bridge.FreeBoard(id, 0) // as at an archive
+	a.boardGone(b, "deleted")
 	return nil
 }
 

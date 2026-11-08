@@ -14,6 +14,7 @@ import (
 	"ai-whiteboard/internal/headless"
 	"ai-whiteboard/internal/remote"
 	"ai-whiteboard/internal/store"
+	"ai-whiteboard/internal/tlrelay"
 )
 
 // legacyPort is where the servers of the build before listened for their own page, and so where a
@@ -196,9 +197,10 @@ func legacyRemote(base string) (legacyRemoteStatus, bool) {
 
 // controlStatus is the control socket's /status.
 type controlStatus struct {
-	Client   clientStatus     `json:"client"`
-	MCP      map[string]any   `json:"mcp"`
-	Headless *headless.Status `json:"headless"` // nil from a server that does not tell
+	Client    clientStatus     `json:"client"`
+	MCP       map[string]any   `json:"mcp"`
+	Headless  *headless.Status `json:"headless"`  // nil from a server that does not tell
+	Boardhost *tlrelay.Status  `json:"boardhost"` // nil from a server that does not tell
 }
 
 // clientStatus is the client listener's part of /status.

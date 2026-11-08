@@ -1207,7 +1207,9 @@ export const CLIENT_ROUTES = [
   "POST /api/chats/{id}/images", "GET /api/chats/{id}/images/{image}", "POST /api/chats/{id}/open", "POST /api/chats/{id}/fork", "POST /api/chats/{id}/archive",
   "POST /api/chats/{id}/unarchive", "DELETE /api/chats/{id}", "POST /api/chats/{id}/unfollow", "GET /api/dirs", "GET /api/usage/{agent}",
   "POST /api/boards", "GET /api/boards/{id}/scene", "PUT /api/boards/{id}/scene", "POST /api/boards/{id}/take", "POST /api/boards/{id}/release", "POST /api/boards/{id}/follow", "POST /api/boards/{id}/unfollow", "POST /api/boards/{id}/rename",
-  "PATCH /api/boards/{id}", "POST /api/boards/{id}/archive", "POST /api/boards/{id}/unarchive", "POST /api/boards/{id}/seen", "DELETE /api/boards/{id}", "POST /api/rpc-reply",
+  "PATCH /api/boards/{id}", "POST /api/boards/{id}/archive", "POST /api/boards/{id}/unarchive", "POST /api/boards/{id}/seen", "DELETE /api/boards/{id}",
+  "POST /api/tl/{id}/open", "POST /api/tl/{id}/sync", "POST /api/tl/{id}/close", "POST /api/tl-host/out", "GET /api/tl/{id}/snapshot", "PUT /api/tl/{id}/snapshot",
+  "POST /api/rpc-reply",
   "GET /api/library", "POST /api/library/{server}/groups", "PATCH /api/library/{server}/groups/{id}", "DELETE /api/library/{server}/groups/{id}",
   "POST /api/library/{server}/prompts", "PATCH /api/library/{server}/prompts/{id}", "DELETE /api/library/{server}/prompts/{id}",
 ];
