@@ -72,7 +72,7 @@ test("exportPng: the size the export's bounds and the scale give, and something 
     const r = await exportPng(editor, undefined, { padding, scale, background: true });
     assert.ok(r);
     const bounds = editor.getCurrentPageBounds()!;
-    const expected = { width: Math.round((bounds.w + 2 * padding) * scale), height: Math.round((bounds.h + 2 * padding) * scale) };
+    const expected = { width: Math.floor((bounds.w + 2 * padding) * scale), height: Math.floor((bounds.h + 2 * padding) * scale) };
     assert.deepEqual({ width: r.width, height: r.height }, expected);
     assert.deepEqual(pngSize(r.png), expected);
 

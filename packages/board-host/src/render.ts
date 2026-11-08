@@ -14,7 +14,7 @@ import type { Editor, TLShape, TLShapeId } from "tldraw";
 import { Box } from "tldraw";
 import { keyOf } from "@aiwb/board-tl/model/read.ts";
 import { ToolError } from "./agent.ts";
-import { exportPng } from "./node/export.ts";
+import { exportPng, fitScale } from "./node/export.ts";
 
 /** The longest side of a picture, in pixels (decision O4). A larger picture is drawn at a lower scale. */
 export const MAX_PICTURE_SIDE = 2000;
@@ -133,8 +133,9 @@ export async function getImage(editor: Editor, args: unknown, board: { id: strin
   const long = Math.max(w1, h1);
   let scale = asked;
   let capped = false;
-  if (long * scale > MAX_PICTURE_SIDE) {
-    const fit = MAX_PICTURE_SIDE / long;
+  // pixels are floor(side × scale) (pictureSize, as tldraw's export), so the long side is MAX_PICTURE_SIDE exactly when capped
+  if (Math.floor(long * scale) > MAX_PICTURE_SIDE) {
+    const fit = fitScale(w1, h1, MAX_PICTURE_SIDE);
     if (fit < MIN_CAPPED_SCALE)
       throw new ToolError("TOO_LARGE", `the picture would be ${Math.round(w1)}×${Math.round(h1)} px at scale 1; the board host draws at most ${MAX_PICTURE_SIDE} px on the longest side, which would need scale ${fmt(fit)} (below ${MIN_CAPPED_SCALE}); ask for a smaller scope (refs or rect)`);
     scale = fit;

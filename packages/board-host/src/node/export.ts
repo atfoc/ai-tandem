@@ -258,34 +258,62 @@ export interface SvgResult {
 
 export interface PngResult {
   png: Buffer
-  /** The PNG's size in pixels: round(the SVG's size × scale). */
+  /** The PNG's size in pixels: floor(the SVG's size × scale), as tldraw's own export (pictureSize). */
   width: number
   height: number
   /** The SVG it was rasterized from. */
   svg: string
 }
 
-/** tldraw's SVG export, self-contained and without text elements. Undefined when there is nothing to export. */
-export async function exportSvg(editor: Editor, ids?: TLShapeId[], opts: ExportOptions = {}): Promise<SvgResult | undefined> {
+/** The PNG's size in pixels for an SVG of width × height page px at a scale: each side floor(side × scale), at least 1,
+ *  as tldraw's own export (getSvgAsImage: Math.floor of the canvas size, the SVG drawn stretched onto it). */
+export function pictureSize(width: number, height: number, scale: number): { width: number; height: number } {
+  return { width: Math.max(1, Math.floor(width * scale)), height: Math.max(1, Math.floor(height * scale)) }
+}
+
+/** The scale at which the long side of width × height page px is exactly `max` pixels by pictureSize: max / long, nudged up
+ *  past floating-point error (2000 / L × L is 1999.999… for about one L in eight, which floor would make 1999). */
+export function fitScale(width: number, height: number, max: number): number {
+  const long = Math.max(width, height)
+  let s = max / long
+  while (Math.floor(long * s) < max) s = s * (1 + Number.EPSILON) + Number.MIN_VALUE
+  return s
+}
+
+async function exportSvgElement(editor: Editor, ids: TLShapeId[] | undefined, opts: ExportOptions) {
   const shapes = ids ?? [...editor.getCurrentPageShapeIds()]
   const r = await editor.getSvgElement(shapes, { padding: opts.padding ?? 32, background: opts.background !== false, bounds: opts.bounds, darkMode: opts.darkMode })
   if (!r) return undefined
   // a colour asked for replaces tldraw's on the root (the text outlines take it too)
   if (typeof opts.background === 'string') (r.svg as Any).style.setProperty('background-color', opts.background)
   const svg = textToPaths(r.svg as SVGSVGElement, backgroundOf(r.svg))
-  const xml = new (globalThis as Any).XMLSerializer().serializeToString(svg) as string
-  return { svg: xml, width: r.width, height: r.height, background: opts.background === false ? null : backgroundOf(r.svg) }
+  return { svg, width: r.width, height: r.height, background: opts.background === false ? null : backgroundOf(r.svg) }
+}
+
+const serialize = (svg: Element) => new (globalThis as Any).XMLSerializer().serializeToString(svg) as string
+
+/** tldraw's SVG export, self-contained and without text elements. Undefined when there is nothing to export. */
+export async function exportSvg(editor: Editor, ids?: TLShapeId[], opts: ExportOptions = {}): Promise<SvgResult | undefined> {
+  const r = await exportSvgElement(editor, ids, opts)
+  if (!r) return undefined
+  return { svg: serialize(r.svg), width: r.width, height: r.height, background: r.background }
 }
 
 /** A PNG of the shapes (default: the whole page), as editor.toImage would make it in a window. Undefined when there is
  *  nothing to export. No cap on its size here: the caller (get_image) picks the scale (decision O4: 2000 px long side). */
 export async function exportPng(editor: Editor, ids?: TLShapeId[], opts: ExportOptions = {}): Promise<PngResult | undefined> {
-  const r = await exportSvg(editor, ids, opts)
+  const r = await exportSvgElement(editor, ids, opts)
   if (!r) return undefined
-  const scale = opts.scale ?? 1
-  const w = Math.max(1, Math.round(r.width * scale)), h = Math.max(1, Math.round(r.height * scale))
+  const { width: w, height: h } = pictureSize(r.width, r.height, opts.scale ?? 1)
+  // the root sized to the pixels, its viewBox stretched onto them (decision V2): resvg's fitTo would derive one side
+  // from the other and round it up (a tall picture 1 px or more too high), tldraw's canvas floors both
+  r.svg.setAttribute('width', String(w))
+  r.svg.setAttribute('height', String(h))
+  r.svg.setAttribute('preserveAspectRatio', 'none')
+  const svg = serialize(r.svg)
   // the background is CSS on the root <svg> (a browser paints it, resvg does not)
-  const resvg = new Resvg(r.svg, { fitTo: { mode: 'width', value: w }, font: { loadSystemFonts: false }, shapeRendering: 2, imageRendering: 0, ...(r.background ? { background: r.background } : {}) })
-  const png = resvg.render().asPng()
-  return { png, width: w, height: h, svg: r.svg }
+  const resvg = new Resvg(svg, { fitTo: { mode: 'original' }, font: { loadSystemFonts: false }, shapeRendering: 2, imageRendering: 0, ...(r.background ? { background: r.background } : {}) })
+  const img = resvg.render()
+  if (img.width !== w || img.height !== h) throw new Error(`resvg drew ${img.width}×${img.height} px, not the ${w}×${h} asked for`)
+  return { png: img.asPng(), width: w, height: h, svg }
 }

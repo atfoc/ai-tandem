@@ -97,8 +97,8 @@ test("scope all: every element, the size (bounds + 2 × 32) × scale rounded, so
   assert.equal(r.image.mimeType, "image/png");
   const b = editor.getCurrentPageBounds()!;
   assert.equal(r.text, `scope all, bounds x=${Math.round(b.x)} y=${Math.round(b.y)} w=${Math.round(b.w)} h=${Math.round(b.h)} (board coordinates), 8 elements, "Plan" (b1)`);
-  // export.ts promises round((bounds + 2 × padding) × scale), with the bounds passed exactly
-  assert.deepEqual(pngSize(Buffer.from(r.image.data, "base64")), { width: Math.round(b.w + 2 * PICTURE_PADDING), height: Math.round(b.h + 2 * PICTURE_PADDING) });
+  // export.ts promises floor((bounds + 2 × padding) × scale) as tldraw's export, with the bounds passed exactly
+  assert.deepEqual(pngSize(Buffer.from(r.image.data, "base64")), { width: Math.floor(b.w + 2 * PICTURE_PADDING), height: Math.floor(b.h + 2 * PICTURE_PADDING) });
   const px = await pixels(r.image.data);
   assert.ok(px.share > 0.03, `only ${(px.share * 100).toFixed(2)}% drawn`);
   assert.equal(px.bg[3], 255, "the background is opaque");
@@ -108,7 +108,7 @@ test("scope all: every element, the size (bounds + 2 × 32) × scale rounded, so
   const t1 = performance.now();
   const r2 = await getImage(editor, { scale: 2 }, BOARD);
   const warm = performance.now() - t1;
-  assert.deepEqual(pngSize(Buffer.from(r2.image.data, "base64")), { width: Math.round((b.w + 64) * 2), height: Math.round((b.h + 64) * 2) });
+  assert.deepEqual(pngSize(Buffer.from(r2.image.data, "base64")), { width: Math.floor((b.w + 64) * 2), height: Math.floor((b.h + 64) * 2) });
   assert.doesNotMatch(r2.text, /drawn at scale/, "scale 2 on a small board is honoured");
   console.log(`# small board (${Math.round(b.w)}×${Math.round(b.h)}): first ${cold.toFixed(0)} ms, warm at scale 2 ${warm.toFixed(0)} ms`);
 
@@ -130,8 +130,8 @@ test("scope refs of a frame: the frame and what it holds", async () => {
   assert.deepEqual(textBounds(r.text), { x: 600, y: 0, w: 300, h: 250 });
   assert.match(r.text, /, 3 elements, /);
   const px = await pixels(r.image.data);
-  assert.equal(px.width, Math.round(fb.w + 64));
-  assert.equal(px.height, Math.round(fb.h + 64));
+  assert.equal(px.width, Math.floor(fb.w + 64));
+  assert.equal(px.height, Math.floor(fb.h + 64));
   // the picture's background is the canvas's, not the frame's fill (tldraw's lone-frame export is not used), with padding
   assert.ok(!px.inked(5, 5));
   // the children: the red square at frame (40..120, 60..140), the blue circle at (180..260, 60..140)
@@ -170,9 +170,9 @@ test("the cap: a board 5000 px wide is drawn 2000 px wide, and the text names th
   const r = await getImage(e, { scale: 2 }, BOARD);
   const ms = performance.now() - t0;
   const { width, height } = pngSize(Buffer.from(r.image.data, "base64"));
-  assert.ok(Math.abs(width - MAX_PICTURE_SIDE) <= 1, `width ${width}`);
+  assert.equal(width, MAX_PICTURE_SIDE);
   const s = MAX_PICTURE_SIDE / 5064;
-  assert.ok(Math.abs(height - 564 * s) <= 1, `height ${height}`);
+  assert.equal(height, Math.floor(564 * s));
   assert.equal(r.text, `scope all, bounds x=0 y=0 w=5000 h=500 (board coordinates), 2 elements, "Plan" (b1), drawn at scale 0.395 (the board host's limit is 2000 px on the longest side)`);
   console.log(`# capped board (5000×500 → ${width}×${height}): ${ms.toFixed(0)} ms`);
 });

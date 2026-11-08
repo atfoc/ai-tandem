@@ -115,3 +115,12 @@ Each entry: the decision, who made it (user / orchestrator / architect), why.
   create deletes it even if someone else changed it. Not merged: tldraw's bail (a cancelled drag, Escape), which rewinds
   only the gesture in progress. Two undos in a row over a field someone else changed between them: the second compares with
   the first's write, so it can put back this window's older value (accepted edge).
+- V2 (verify, fixes "Bug A" of the verification; refines H-4): a picture's pixel size is `floor(side × scale)` on both sides,
+  as tldraw's own export (`getSvgAsImage`: `Math.floor` of the canvas size, the SVG drawn stretched onto it), not
+  `round(width × scale)` with resvg's `fitTo: width` (resvg derived the height from the rounded width and rounded it up, so
+  capped tall pictures came out 1974–2009 px high and 1 px off the window's, e.g. 742×2001 vs 741×2000). `exportPng` sets
+  the root `<svg>`'s width/height to those pixels with `preserveAspectRatio="none"` (viewBox kept) and renders at its
+  original size. The cap's scale (`fitScale`) is 2000 / long side nudged past float error (plain `2000 / L × L` is
+  1999.999… for about one L in eight, which floor would make 1999), so a capped picture's long side is exactly 2000; a
+  picture is capped only when floor(long × scale) > 2000. The answer's text still names the scale (3 decimals).
+  `pictureSize`/`fitScale` in `packages/board-host/src/node/export.ts`, tested in `test/picsize.test.ts`.
