@@ -33,7 +33,27 @@ const (
 	ServerProgramWindows = "ai-whiteboard.exe"
 	// NodeEnv names the runtime like -headless-node does.
 	NodeEnv = "AIWB_HEADLESS_NODE"
+	// FolderDefault is the bundle folder's name in the app, and the stem of the flags -headless-node and
+	// -headless-dir named in the reasons.
+	FolderDefault = "headless"
+	// NameDefault is how the log lines and the reasons call the process.
+	NameDefault = "headless writer"
 )
+
+// naming is what tells one manager's process from another's (the headless writer, the board host): the
+// program in the bundle, the bundle folder's name, the words for it, and the variable that names its
+// Node. defaultNaming is the headless writer's.
+type naming struct {
+	Program string // the program inside a bundle folder: "headless.mjs"
+	Folder  string // the bundle folder's name in the app: "headless"; also the stem of the flags -<folder>-node, -<folder>-dir
+	Name    string // "headless writer"
+	NodeEnv string // "AIWB_HEADLESS_NODE"
+}
+
+var defaultNaming = naming{Program: BundleFile, Folder: FolderDefault, Name: NameDefault, NodeEnv: NodeEnv}
+
+func (n naming) nodeFlag() string { return "-" + n.Folder + "-node" }
+func (n naming) dirFlag() string  { return "-" + n.Folder + "-dir" }
 
 // Runtime is the program that runs the bundle.
 type Runtime struct {
@@ -44,8 +64,8 @@ type Runtime struct {
 
 // Bundle is a bundle folder that can be used.
 type Bundle struct {
-	Dir     string // holds headless.mjs and manifest.json
-	Program string // Dir/headless.mjs
+	Dir     string // holds the program (headless.mjs) and manifest.json
+	Program string // Dir/headless.mjs, or Dir/<Options.Program>
 }
 
 // lookups are the things find asks of the machine, each replaceable by a test.
@@ -112,13 +132,18 @@ func nodeMajor(v string) (int, bool) {
 //
 // The error says why none could be used.
 func findRuntime(node string, l lookups) (Runtime, error) {
-	if node == "" {
-		node = l.Getenv(NodeEnv)
+	return findRuntimeAs(node, defaultNaming, l)
+}
+
+// findRuntimeAs is findRuntime for the process n names: its variable, and its flag in the reasons.
+func findRuntimeAs(node string, n naming, l lookups) (Runtime, error) {
+	if node == "" && n.NodeEnv != "" {
+		node = l.Getenv(n.NodeEnv)
 	}
 	if node != "" {
 		p, err := l.LookPath(node)
 		if err != nil {
-			return Runtime{}, fmt.Errorf("the Node given with -headless-node (%s) cannot be run: %v", node, unwrapPathErr(err))
+			return Runtime{}, fmt.Errorf("the Node given with %s (%s) cannot be run: %v", n.nodeFlag(), node, unwrapPathErr(err))
 		}
 		return Runtime{Path: p, Source: "flag"}, nil
 	}
@@ -146,7 +171,7 @@ func findRuntime(node string, l lookups) (Runtime, error) {
 	p, err := l.LookPath("node")
 	if err != nil {
 		why = append(why, "node is not on the PATH")
-		return Runtime{}, fmt.Errorf("no Node to run it with: %s; give one with -headless-node", strings.Join(why, ", "))
+		return Runtime{}, fmt.Errorf("no Node to run it with: %s; give one with %s", strings.Join(why, ", "), n.nodeFlag())
 	}
 	v, err := l.NodeVer(p)
 	if err != nil {
@@ -182,10 +207,16 @@ type Manifest struct {
 // server's version, unless the server is "dev", which takes any: the server and its headless writer are
 // one build. The error says why no folder could be used.
 func findBundle(dir, version string, l lookups) (Bundle, error) {
+	return findBundleAs(dir, version, defaultNaming, l)
+}
+
+// findBundleAs is findBundle for the process n names: its folder name in the lookups, its program, and its
+// words in the reasons.
+func findBundleAs(dir, version string, n naming, l lookups) (Bundle, error) {
 	if dir != "" {
-		b, err := checkBundle(dir, version, l)
+		b, err := checkBundleAs(dir, version, n, l)
 		if err != nil {
-			return Bundle{}, fmt.Errorf("the headless folder given with -headless-dir cannot be used: %v", err)
+			return Bundle{}, fmt.Errorf("the %s folder given with %s cannot be used: %v", n.Folder, n.dirFlag(), err)
 		}
 		return b, nil
 	}
@@ -196,26 +227,26 @@ func findBundle(dir, version string, l lookups) (Bundle, error) {
 	exeDir := filepath.Dir(exe)
 	var why []string
 	candidates := []string{
-		filepath.Join(exeDir, "..", "Resources", "headless"),
-		filepath.Join(exeDir, "headless"),
+		filepath.Join(exeDir, "..", "Resources", n.Folder),
+		filepath.Join(exeDir, n.Folder),
 	}
 	if l.GOOS == "windows" {
-		candidates = append(candidates, filepath.Join(exeDir, "resources", "headless"))
+		candidates = append(candidates, filepath.Join(exeDir, "resources", n.Folder))
 	}
 	for _, c := range candidates {
 		c = filepath.Clean(c)
-		b, err := checkBundle(c, version, l)
+		b, err := checkBundleAs(c, version, n, l)
 		if err == nil {
 			return b, nil
 		}
 		why = append(why, err.Error())
 	}
-	return Bundle{}, fmt.Errorf("no headless writer is installed with this server (%s)", strings.Join(why, "; "))
+	return Bundle{}, fmt.Errorf("no %s is installed with this server (%s)", n.Name, strings.Join(why, "; "))
 }
 
-// checkBundle says whether dir holds a bundle of the version.
-func checkBundle(dir, version string, l lookups) (Bundle, error) {
-	program := filepath.Join(dir, BundleFile)
+// checkBundleAs says whether dir holds a bundle of the version, with the program n names.
+func checkBundleAs(dir, version string, n naming, l lookups) (Bundle, error) {
+	program := filepath.Join(dir, n.Program)
 	if fi, err := l.Stat(program); err != nil || fi.IsDir() {
 		return Bundle{}, fmt.Errorf("%s is missing", program)
 	}
