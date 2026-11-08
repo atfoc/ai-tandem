@@ -518,8 +518,10 @@ The orchestrator ran these on the final branch:
 
 - **The lanes' own runs.** They also ran `AIWB_TEST_FULL=1` for every Go package they changed, and `-race` where goroutines
   share state. That covers `internal/editorbridge`, `internal/headless` and `internal/tlrelay`, which are design 9's checks.
-  The `tlrelay` commit records its concurrent tests under `-race`. The individual results are in the lanes' run reports, not
-  in `plans/better-board/`.
+  The Go lane's run report (to the orchestrator) gives the results: all passed. `-race` on `editorbridge`, `tlrelay`,
+  `headless`, `boardapi`, `app` and `server`; `AIWB_TEST_FULL=1` on `model`, `store`, `boards`, `server`, `editorbridge`,
+  `headless`, `tlrelay`, `boardapi`, `boardtools`, `app`, `chats`, `pi` and `cmd/ai-whiteboard` (26 s); `cd packages/conn &&
+  npm test` 205 passed.
 - **Load failures.** No failure caused by load was recorded in the notes.
 - **How old boards are kept apart.** Old boards' code paths did not change:
   - The old routes `scene` and `take` refuse a tl board with `409 tl_board` (D18).
