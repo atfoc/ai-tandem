@@ -1,11 +1,12 @@
-// The headless editor of the board host: the jsdom page (dom.ts) installed first, then tldraw, then an Editor whose text
-// measuring is the canvas one (measure.ts). Everything that imports tldraw is loaded dynamically, after the page.
+// The headless editor of the board host: the page (dom.ts, or the DOM TLHOST_DOM picks: dom-pick.ts) installed first,
+// then tldraw, then an Editor whose text measuring is the canvas one (measure.ts). Everything that imports tldraw is
+// loaded dynamically, after the page.
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { installPage } from './dom.ts'
 import { TLDRAW_FACES, tldrawFontDir } from './fonts.ts'
 import type { Editor, TLStore } from 'tldraw'
+import { loadDom } from './dom-pick.ts'
 
 const SUFFIX: Record<string, string> = { normal_normal: '', bold_normal: '_bold', normal_italic: '_italic', bold_italic: '_italic_bold' }
 
@@ -20,7 +21,7 @@ export function fontAssetUrls(): Record<string, string> {
 }
 
 export async function loadHost() {
-  const page = installPage()
+  const page = (await loadDom()).installPage()
   // The SVG export embeds the fonts it used (FontManager → fetch → Blob → FileReader): file: URLs read from disk, as
   // jsdom Blobs so jsdom's FileReader can read them. Anything else goes to Node's fetch.
   const w = page.window

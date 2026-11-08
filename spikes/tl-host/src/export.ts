@@ -91,7 +91,21 @@ function styleOf(el: Element | null): Record<string, string> {
     const i = p.indexOf(':')
     if (i > 0) out[p.slice(0, i).trim().toLowerCase()] = p.slice(i + 1).trim()
   }
+  if (out['font']) expandFont(out)
   return out
+}
+
+/** `font: [style] [variant] [weight] size[/line-height] family` → longhands (happy-dom serializes the shorthand when every
+ *  font longhand is set; jsdom never does). Longhands written after it are kept. */
+function expandFont(out: Record<string, string>) {
+  const m = /^((?:(?:italic|oblique|normal|small-caps|bold|bolder|lighter|\d{3})\s+)*)([\d.]+px)(?:\s*\/\s*([\d.]+(?:px)?|normal))?\s+(.+)$/.exec(out['font'])
+  if (!m) return
+  const pre = m[1].trim().split(/\s+/).filter(Boolean)
+  out['font-style'] ??= pre.find((t) => t === 'italic' || t === 'oblique') ?? 'normal'
+  out['font-weight'] ??= pre.find((t) => /^(bold|bolder|lighter|\d{3})$/.test(t)) ?? 'normal'
+  out['font-size'] ??= m[2]
+  if (m[3] && m[3] !== 'normal') out['line-height'] ??= m[3]
+  out['font-family'] ??= m[4]
 }
 
 const px = (v: string | undefined, d = 0) => (v ? parseFloat(v) : d)
