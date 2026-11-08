@@ -30,6 +30,7 @@ import { AgentMarker } from "./AgentMarker.tsx";
 import { ContextBar } from "./ContextBar.tsx";
 import { installInteractions } from "./interactions.ts";
 import { MainToolbar } from "./MainToolbar.tsx";
+import { QuickAdd } from "./QuickAdd.tsx";
 import { CAMERA, MiroSelectTool, OPTIONS } from "./navigation.ts";
 import type { AgentMarkers, TlUser } from "./sync.ts";
 import { Zoom } from "./Zoom.tsx";
@@ -117,6 +118,7 @@ export function Board({ store, onMount, user, markers }: BoardProps) {
       }}
     >
       <MainToolbar />
+      <QuickAdd />
       <Zoom />
       {markers && <AgentMarker markers={markers} />}
     </Tldraw>

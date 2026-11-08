@@ -1,0 +1,31 @@
+/* The context bar (ContextBar.tsx): one compact row, popovers under its buttons. Placed by ctxModel.ts (left/top, no transform). */
+.aiwb-ctx { position: absolute; z-index: 1000; display: flex; align-items: center; gap: 1px; padding: 3px; background: #fff;
+  border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,.12), 0 4px 14px rgba(0,0,0,.12); font: 12px system-ui, -apple-system, sans-serif;
+  color: #1d1d1f; white-space: nowrap; pointer-events: all; user-select: none; -webkit-user-select: none; }
+/* our overlay takes no browser gesture: a pinch that starts on it must not zoom the page */
+.aiwb-ctx, .aiwb-ctx * { touch-action: none; }
+.aiwb-ctx-group { display: inline-flex; }
+.aiwb-ctx-sep { width: 1px; align-self: stretch; margin: 4px 3px; background: #e6e6e6; }
+.aiwb-ctx-btn { display: inline-flex; align-items: center; justify-content: center; gap: 3px; min-width: 30px; height: 30px; padding: 0 6px;
+  border: 0; border-radius: 6px; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+.aiwb-ctx-btn:hover:not(:disabled) { background: #f1f1f3; }
+.aiwb-ctx-btn.on, .aiwb-ctx-btn.open { background: #e6ebff; color: #3047d6; }
+.aiwb-ctx-btn:disabled { opacity: .35; cursor: default; }
+.aiwb-ctx-btn.txt { font-weight: 600; font-size: 11.5px; }
+.aiwb-ctx-btn.trig { padding: 0 4px 0 6px; }
+.aiwb-ctx-btn.trig > svg:last-child { opacity: .55; }
+.aiwb-ctx-dot { display: inline-block; width: 18px; height: 18px; border-radius: 50%; box-shadow: inset 0 0 0 1px rgba(0,0,0,.15); }
+.aiwb-ctx-name { width: 120px; height: 26px; margin: 0 3px; padding: 0 6px; border: 1px solid #ddd; border-radius: 5px; font: inherit; }
+.aiwb-ctx-name:focus { outline: 2px solid #3047d6; outline-offset: -1px; border-color: transparent; }
+/* popovers */
+.aiwb-ctx-pop { position: absolute; z-index: 1; display: flex; flex-direction: column; gap: 8px; padding: 8px 10px 10px; background: #fff;
+  border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,.12), 0 6px 20px rgba(0,0,0,.16); white-space: normal; pointer-events: all; }
+.aiwb-ctx-lbl { margin-bottom: 4px; color: #777; font-size: 11px; }
+.aiwb-ctx-opts { display: flex; gap: 2px; }
+.aiwb-ctx-opts.mirror svg { transform: scaleX(-1); }
+.aiwb-ctx-swatches { display: grid; grid-template-columns: repeat(8, 22px); gap: 6px; }
+.aiwb-ctx-swatches.inks { grid-template-columns: repeat(7, 22px); }
+.aiwb-ctx-swatch { width: 22px; height: 22px; padding: 0; border: 0; border-radius: 50%; cursor: pointer;
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,.14); }
+.aiwb-ctx-swatch.on { outline: 2px solid #3047d6; outline-offset: 2px; }
+.aiwb-ctx-swatch.none { background: linear-gradient(135deg, transparent 45%, #e03131 45%, #e03131 55%, transparent 55%), #fff; }

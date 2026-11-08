@@ -1,0 +1,7 @@
+/* Quick add's "+" handles (QuickAdd.tsx): a screen-space overlay over the canvas. Above the context bar (z 1000): the top "+"
+   sits where the bar's bottom edge may be, and must stay clickable. */
+.aiwb-quickadd { position: absolute; inset: 0; pointer-events: none; z-index: 1001; }
+.aiwb-quickadd-plus { position: absolute; width: 22px; height: 22px; margin: -11px 0 0 -11px; padding: 0; border-radius: 50%;
+  border: 1px solid #2f46d0; background: #fff; color: #2f46d0; font: 600 16px/20px system-ui, sans-serif; text-align: center;
+  cursor: pointer; pointer-events: all; touch-action: none; box-shadow: 0 1px 4px rgba(0,0,0,.18); user-select: none; }
+.aiwb-quickadd-plus:hover { background: #2f46d0; color: #fff; }
