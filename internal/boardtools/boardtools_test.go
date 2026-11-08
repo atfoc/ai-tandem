@@ -200,6 +200,9 @@ func TestGetImageDescription(t *testing.T) {
 		"background false makes the picture transparent",
 		"over 8192 px on its longest side or over 32 megapixels is refused with its size",
 		"ask again for a smaller scope or scale",
+		"On a new board (marked (new board) in list_boards) the picture is drawn at most 2000 px on its longest side",
+		"a larger one is drawn at a lower scale, which the text line says",
+		"only one that would need a scale below 0.1 is refused (TOO_LARGE)",
 		"Errors: NO_SELECTION, EMPTY, UNKNOWN_REF, TOO_LARGE, BAD_ARGS, RENDER_FAILED.",
 	} {
 		if !strings.Contains(d, want) {

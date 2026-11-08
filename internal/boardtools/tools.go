@@ -79,6 +79,8 @@ var Tools = []Tool{
 			"Without scope: the selection if the board is on the user's screen and something is selected on it, else all. " +
 			"scale is 1 by default, above 0 and at most 2 (a larger value is used as 2; below 1 gives a smaller picture); background false makes the picture transparent. " +
 			"A picture over 8192 px on its longest side or over 32 megapixels is refused with its size: ask again for a smaller scope or scale. " +
+			"On a new board (marked (new board) in list_boards) the picture is drawn at most 2000 px on its longest side: a larger one is drawn at a lower scale, which the text line says, " +
+			"and only one that would need a scale below 0.1 is refused (TOO_LARGE); scope selection is not known there (NO_SELECTION): use all, refs or rect. " +
 			"Errors: NO_SELECTION, EMPTY, UNKNOWN_REF, TOO_LARGE, BAD_ARGS, RENDER_FAILED.",
 		Schema: obj(props{
 			"board": str(boardDesc),
