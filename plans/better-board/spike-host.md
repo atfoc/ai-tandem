@@ -22,8 +22,16 @@ recommendation here is `[proposed]`.
   laid out by the same code as the measuring, then rasterizes with resvg. The reference board: **same size as Chromium's
   export, 0.31% of pixels differ by more than a quarter of a channel** (goal 6.5 allows 2%), text within 0.3 px, no
   shape displaced. 100–180 ms per picture of a small board.
-- **D.** see section 4 (from `bb-spike-host-sync`).
-- **E.** see section 5.
+- **D. `TLSocketRoom` runs in Node with the headless editor as a sync client** over an in-process socket pair, beside
+  a second client standing in for a window. Changes reach the other side in ~30–50 ms (tldraw's 30 fps throttle), the
+  agent has presence (name, cursor, selection), and concurrent edits converge. **Risk 8.5 is real:** restoring a room
+  from an older snapshot as saved can leave a reconnecting window **permanently out of sync with no error**. Shifting
+  the room's clock on every load (`snapshotForRestore`) fixes it: every returning client then reloads the room's state
+  and resends its own unacknowledged edits. Edits the room acknowledged but never saved are lost everywhere.
+- **E. Cost**, bundled as it would ship, with linkedom as the DOM: ready in ~170 ms, 121 MB RSS loaded, **139 MB with
+  one room** (room + the agent's editor peer + a window client), **166 MB with ten**, an agent batch ~5 ms of CPU and
+  ~65–70 ms until the room has acknowledged it, a PNG of a small board ~100 ms. With jsdom: 176 / 191 / 213 MB.
+  Today's headless writer: 120–135 MB.
 
 ## 1. A: the Editor in Node
 
@@ -44,11 +52,20 @@ What tldraw reaches for, and what it got:
 | `window.fetch` of font URLs, `FileReader` | the export embeds the fonts it used as `@font-face` data URLs | a `fetch` for `file:` URLs in `headless.ts` (jsdom Blobs, so jsdom's FileReader reads them) |
 | `matchMedia`, `ResizeObserver`, `IntersectionObserver`, `requestIdleCallback`, `FontFace`, `document.fonts` | read at start or by managers | small stand-ins in `dom.ts` |
 
-**Stand-in page vs jsdom.** A hand-made stand-in page like `packages/board-engine/src/page.ts` was enough for
+**Stand-in page vs a DOM.** A hand-made stand-in page like `packages/board-engine/src/page.ts` was enough for
 Excalidraw's element code because that code only reached for a canvas and fonts. tldraw needs a DOM: TipTap serializes
 ProseMirror nodes with a document, and the export renders React components with react-dom and walks the result. A
-stand-in would be a DOM implementation of its own. jsdom works unchanged. Its cost (~80 MB RSS, ~190 ms) and the lighter
-DOMs are section 5 (`bb-spike-host-dom`).
+stand-in would be a DOM implementation of its own. Three real DOMs were tried (`TLHOST_DOM=jsdom|happy|linkedom`,
+`src/dom-pick.ts`; `spikes/tl-host/notes/dom.md`). On each one the corpus gives byte-identical JSON and the board PNG is
+byte-identical:
+
+| DOM (exact pin) | Shims beyond the common ones | RSS of the DOM alone | Import + install |
+|---|---|---|---|
+| jsdom 27.4.0 | none | +80 MB | 197 ms |
+| happy-dom 21.0.4 | 1 (iframe `contentDocument`), plus reading the `font` shorthand in `export.ts` | +56 MB | 119 ms |
+| linkedom 0.18.15 | 9, ~40 lines (`requestAnimationFrame`, `location`, `createHTMLDocument`, Blob/FileReader, `SVGSVGElement` by tag, empty `getComputedStyle`, iframe document, `XMLSerializer`, `styleSheets`) | +21 MB | 52 ms |
+
+The cost of an editor does not depend on the DOM (~2 MB each). The DOM is a fixed cost per process.
 
 **Not patched, not forked (goal 4.1).** The only seam used is replacing `editor.textMeasure` with an object of the same
 shape after construction (`installCanvasMeasure`), plus the editor's own `fontAssetUrls` option.
@@ -173,12 +190,156 @@ exactly what was measured.
 
 ## 4. D: the room, the editor as a peer, reconnecting (risk 8.5)
 
-(from `bb-spike-host-sync`)
+Code: `src/room.ts`, `dev/sync.ts`, `dev/reconnect.ts`; the full write-up with the source reading is
+`spikes/tl-host/notes/sync.md` (`bb-spike-host-sync`). Both scripts pass on jsdom and on linkedom.
+
+**What `room.ts` is** (the shape the board host can lift):
+
+- `createRoom({snapshot?, onDataChange?})`: a `TLSocketRoom` with tldraw's default schema.
+- `ProxySocket`: the server half of one session. It needs only `send`, `close` and `readyState`, and the host feeds it
+  with `room.handleSocketMessage` / `handleSocketClose`. This is goal 7.4's per-window proxy whose `send()` goes back
+  through Go.
+- `ClientSocket`: the client half (`TLPersistentClientSocket`), driven by its transport. The window's custom socket has
+  this shape.
+- `InProcessConnection`: joins the two halves with JSON strings, delivered asynchronously, and can cut and restore the
+  link (also onto a restored room).
+- `connectEditor(room, {userId, userName})`: **the agent as a peer**, a `TLSyncClient` with presence and the headless
+  Editor (canvas measuring) on its store, plus `setCursor(x, y)`. `connectClient`: a bare client (the window stand-in).
+  `whenSettled()`: resolves when every local change is pushed and acknowledged (it is in the room's storage).
+
+**Results:**
+
+1. The editor runs `buildBoard` in one transaction and the other client gets every record. Update, delete, and moving a
+   bound shape (the arrow follows) arrive in 27–49 ms, the other way round in 45 ms. **Latency comes from tldraw's
+   30 fps throttle**, not the transport.
+2. **Presence:** within ~30 ms the window gets an `instance_presence` with the agent's `userName`, color, cursor (page
+   point) and selection. What it needed: a `user:` id, `presenceMode` forced to `'full'` (otherwise the agent stays
+   invisible until it sees someone), and the cursor written to the pointer record directly (the editor only writes it on
+   pointer events).
+3. **Concurrency:** the same property changed at once ends with the last push to reach the room, the same in every
+   store; different properties or shapes are all kept (per-property patches); a burst of 50 interleaved edits converges.
+4. **Persistence:** `getCurrentSnapshot()` is plain JSON (5.7 KB for the board) with the clock and tombstones; a room
+   built from it is equal. `onDataChange` fires on every committed document change, synchronously and unthrottled, and
+   not for presence.
+5. **A lone window is slow unless the agent has presence.** `TLSyncClient` drops to 1 fps while it sees no other
+   presence ("solo" mode). Agent changes written with `room.updateStore` reached a lone window ~800 ms late; with the
+   editor peer publishing presence, ~35 ms. The first change after solo mode pays one ~900 ms frame.
+
+**Reconnecting (risk 8.5)**, the same for a plain client and for the headless editor:
+
+| Scenario | Room restored as saved | Restored with the clock shifted (`snapshotForRestore`) |
+|---|---|---|
+| a. Edits acknowledged, not yet saved; the room restarts from the older save | every client wipes and reloads: consistent, those edits lost everywhere | same |
+| a2/a3. Another client moves the restored room's clock up to or past the returning client's before it reconnects | **permanently diverged, no error** (incremental diff from a reused clock) | consistent (full reload) |
+| b. As a, plus edits made while cut off | they are resent and kept; patches to records only the lost edits had created are dropped silently | same |
+| c. The connection drops, the room stays up, edits made while cut off | **resent and kept** (goal 3.4's question); on the same property, the last to arrive wins | – |
+| d. Normal catch-up | incremental diff, consistent | – |
+
+Why: the client resends only its unacknowledged ("speculative") changes. On connect the room answers with the changes
+since the client's `lastServerClock`, which is only right if the clock was never reused. The snapshot already holds the
+clock, so saving it changes nothing. Moving the clock and the start of the tombstone history far ahead on every load
+forces a full reload for every returning client.
 
 ## 5. E: cost (risk 8.8)
 
-(measured; see below)
+`dev/cost.ts`, built as one bundle per DOM (`dev/bundle-cost.mjs <dom>`, so no type stripping and no other DOM loaded),
+`node --expose-gc out/cost-<dom>.mjs`, gc before each reading, two runs each (they agreed within 2 MB). A "room" is a
+`TLSocketRoom`, the agent's editor peer (canvas measuring) and one window client, holding the reference board.
 
-## 6. Recommendations for the board host
+| | linkedom | jsdom |
+|---|---|---|
+| Host loaded (DOM, tldraw, sync-core, skia-canvas, fonts), since process start | ~170 ms, 121 MB RSS / 32 MB heap | ~305 ms, 176 MB / 51 MB |
+| First room ready, since process start | ~270 ms | ~415 ms |
+| 1 room | **139 MB** / 35 MB | 191 MB / 54 MB |
+| 10 rooms | **166 MB** / 41 MB | 213 MB / 61 MB |
+| After 10 PNGs (resvg's native memory is not handed back) | 231 MB | 316 MB |
+| Agent batch (`buildBoard`: 9 shapes, 2 bindings, measured text) + acknowledged by the room | 68–72 ms (≈5 ms CPU + one or two 33 ms sync frames) | 65–69 ms |
+| Room snapshot to JSON (the save) | < 1 ms | < 1 ms |
+| PNG of the board (904×573), warm / first | 95–111 / ~180 ms | 98–113 / ~190 ms |
 
-(see below)
+Running the TypeScript sources directly adds ~32 MB (Node's type stripping). Other measurements:
+
+- A fresh editor costs 1–2 ms, loading a 450-shape snapshot into it 7 ms, and the first batch in a cold editor 5–15 ms
+  more than in a warm one (`dev/cost-editor.ts`).
+- The corpus (1,534 measured cases) takes ~0.8 s in Node and ~0.2 s in Chromium. A label is measured in ~0.5 ms
+  uncached; widths are cached per font and text.
+- A 189-shape board as a 4904×3373 PNG takes 2.5 s; at scale 0.25, 385 ms.
+
+Against today's headless writer (120–135 MB): about +20 MB for the first board, then ~3 MB per open board. That holds
+with linkedom. With jsdom, add ~55 MB.
+
+## 6. Recommendations for the board host `[proposed]`
+
+1. **A real DOM, linkedom, behind one module.** Run the editor on linkedom 0.18.15 with the shims of
+   `src/dom-linkedom.ts`, and keep jsdom selectable as the fallback (one module, the same `installPage()`). linkedom
+   saves ~55 MB and ~150 ms of start-up over jsdom with identical results. The risk is a tldraw upgrade that reaches for
+   a DOM API linkedom lacks: the faithfulness harness (corpus + picture against Chromium, and against jsdom) must run on
+   every tldraw upgrade. A hand-made stand-in page is not worth it: it would be a DOM implementation of its own.
+2. **A persistent editor peer per room with agent activity**, created at the agent's first call and disposed with the
+   room or after the agent's quiet time. It is the only way to get the agent's marker (3.4). It keeps a lone window at
+   30 fps instead of tldraw's 1 fps solo mode, behaves like a window in every reconnect case, and costs ~2–3 MB. One
+   agent call: apply the operations in one `editor.run`, then `whenSettled()` (pushed and acknowledged), then save the
+   room's snapshot, then answer.
+   - `whenSettled()` reads private fields of `TLSyncClient` 5.6.0. Watching `room.getCurrentDocumentClock()` until the
+     agent's records appear is the public alternative.
+   - A short-lived editor per call would also be cheap (~10–20 ms), but loses the marker and needs our window client to
+     force `presenceMode: 'full'`.
+3. **Rooms.** Always load a board's room through `snapshotForRestore()` (clock shifted). Save on `onDataChange` with a
+   throttle of a few seconds, on room close and on shutdown signals. Never push a record that fails validation: the
+   room closes that session for good (`INVALID_RECORD`) and the client does not reconnect. Going through the Editor
+   validates first.
+4. **Measuring: `src/measure.ts` + `src/fonts.ts` as they are**, with:
+   - `src/ascii-breaks.json` regenerated by the probe whenever the reference Chromium changes;
+   - the `serif` per-script fallback list made per platform;
+   - a decision on CJK (ship a CJK font with the board, or the PingFang correction on macOS);
+   - glyph positions from one shaping only if the Shantell overflow splits matter.
+
+   It goes into the board model package that both sides import, so the window can run the same corpus.
+5. **Pictures: tldraw's SVG export → `textToPaths` → resvg.** Not skia-canvas's SVG loader: it drops the emoji images and
+   is 6× slower. Cap the output size (for example 2000 px on the long side, scale chosen from it): a large board at
+   scale 1 takes seconds and the memory resvg does not hand back. Running the export on the editor peer reuses its
+   warm caches.
+6. **Fonts: tldraw's own 16 files from `@tldraw/assets` 5.6.0** (IBM Plex Sans/Serif/Mono, Shantell Sans; 1.3 MB woff2),
+   unless the board picks a Miro-like sans (goal 9). Then that face replaces one family in `TLDRAW_FACES` and the
+   window's `fontAssetUrls`; nothing else changes.
+7. **What the window must do so both sides agree:**
+   - Load the very same font files: bundled with the app, through tldraw's `fontAssetUrls` or `@font-face` rules
+     pointing at those files, never a CDN.
+     - The URLs must not equal the family names: tldraw's font embedder then rewrites the family name in the SVG
+       (seen by `bb-spike-host-chromium`).
+   - Let tldraw measure only once its fonts are loaded. A window that measures with a fallback font stores wrong sizes,
+     the same defect EN2 fixed for Excalidraw.
+   - Use tldraw's own DOM measuring (it *is* the reference). The host follows Chromium, not the other way round.
+   - CJK and emoji come from system fonts on both sides, so they follow the machine (risk 8.7). Shipping a CJK font
+     would make them agree too.
+   - `src/corpus.ts` and `dev/chromium/run.mjs` are the harness that shows whether the two sides still agree.
+8. **Open:** Linux and Windows (fallbacks and generic families there were not measured); tldraw's production React
+   build (the spike ran the development build); schema migrations between client and room versions; very large boards
+   (every window reloads the whole board after a host restart); the relayed transport's own batching on top of tldraw's
+   33 ms frames (risk 8.4).
+
+## 7. How to run it (`spikes/tl-host`)
+
+```sh
+cd spikes/tl-host && npm install && npm install --no-save playwright@1.64.1   # Chromium 156 for the reference
+node dev/chromium/run.mjs                              # Chromium: out/chromium-corpus.json, -board.png/.svg/-records.json, -fonts.json, -env.json
+node dev/node-corpus.ts && node dev/compare.ts out/chromium-corpus.json out/node-corpus.json   # B
+node dev/node-board.ts && node dev/picdiff.ts out/chromium-board.png out/node-board.png out/diff-board.png   # C
+node dev/sync.ts && node dev/reconnect.ts             # D (about 5 s and 25 s)
+node dev/bundle-cost.mjs linkedom && node --expose-gc out/cost-linkedom.mjs   # E (also jsdom)
+node --expose-gc dev/cost-editor.ts                    # persistent vs per-call editor
+ROUNDS=5 node dev/cost-dom.ts                          # the three DOMs
+node dev/probe/diff-lines.mjs cases.json               # research: Chromium's lines vs Node's for given texts
+node dev/probe/chromium-ascii-breaks.mjs               # regenerates src/ascii-breaks.json from Chromium
+TLHOST_DOM=jsdom|happy|linkedom                        # picks the DOM for any of the above (default jsdom)
+```
+
+| Module | What it is (what `board-host` lifts) |
+|---|---|
+| `src/dom.ts`, `dom-linkedom.ts`, `dom-happy.ts`, `dom-shims.ts`, `dom-globals.ts`, `dom-pick.ts` | the page: a DOM on `globalThis` before tldraw is imported |
+| `src/editor.ts` | the Editor, built the same in Node and in the page |
+| `src/headless.ts` | `loadHost()`: the page, tldraw, the canvas measuring, the font URLs and a `fetch` for `file:` |
+| `src/fonts.ts`, `src/measure.ts`, `src/ascii-breaks.json` | text measuring (B) |
+| `src/export.ts` | SVG export without HTML or text, PNG with resvg (C) |
+| `src/room.ts` | the room, the proxy socket, the client socket, the agent's editor peer (D) |
+| `src/corpus.ts`, `src/board.ts`, `dev/` | the faithfulness harness and the measurements |
