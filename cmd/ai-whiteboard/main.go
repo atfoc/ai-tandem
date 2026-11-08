@@ -294,6 +294,7 @@ func serve(o options) {
 	// of a new board or the first agent call on one, never at boot.
 	bhm := headless.New(tlr.HostAdapter(br), hl, waits.boardhostOptions(o))
 	tlr.SetHost(bhm)
+	relay.TL = tlr // agents' calls on new boards go to the board host, before the MCP listener serves
 	mcpHandler := srv.MCPHandler(mcpBoundPort)
 	mcpUp.Store(true)
 	go func() {
