@@ -110,6 +110,9 @@ The flags of `serve`, `launch` and `relaunch` (`-json` is for the last two):
 | `-headless-node` | the desktop app's Electron (the Mac app's, or on Windows the `AI Whiteboard.exe` next to `ai-whiteboard.exe`), else `node` 22 or later on `PATH` (or `AIWB_HEADLESS_NODE`) | program that runs the headless writer, which edits boards while no window is open |
 | `-headless-dir` | `headless/` beside the server (`Resources/headless/` in the Mac app; on Windows also `resources/headless/` beside `ai-whiteboard.exe`, as in the Windows app) | folder with the headless writer's `headless.mjs`, `manifest.json` and `engine/`; a bundle of another version than the server is not used (a development build takes any) |
 | `-headless-quiet` | `1m` | how long the headless writer keeps a board after an agent's last call on it, before it lets it go; above 0 |
+| `-boardhost-node` | as for `-headless-node` (or `AIWB_BOARDHOST_NODE`) | program that runs the board host, which holds the rooms of the new (tldraw) boards (better-board prototype) |
+| `-boardhost-dir` | `boardhost/` beside the server (`Resources/boardhost/` in the Mac app; on Windows also `resources/boardhost/`) | folder with the board host's `boardhost.mjs` and `manifest.json`; development: `packages/board-host/dist` |
+| `-boardhost-quiet` | `1m` | how long the board host keeps running after its last session or agent call on a new board, before it is stopped; above 0 |
 | `-json`    | off                | `launch` and `relaunch` only: one JSON line for the app |
 
 There is no flag for the port or for a web client to serve: the client port is the one the set-up

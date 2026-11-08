@@ -47,9 +47,23 @@ type Server struct {
 	// Usage returns an agent's plan usage limits (agent.UsageCache.Get); a missing agent = not available.
 	Usage map[model.AgentKind]func(fresh bool) (model.PlanUsage, error)
 
+	// TL serves the routes of the new (tldraw) boards, /api/tl/... and /api/tl-host/out
+	// (better-board design 2.2): a *tlrelay.Relay. routes() mounts them on the client API's mux
+	// behind ClientHandler; nil mounts nothing (and the table test then fails: every server sets it).
+	TL TLRoutes
+
 	// beforeTake is a test's hook: the take route calls it with the board's id between its check
 	// of the board and the grant. nil outside tests.
 	beforeTake func(board string)
+}
+
+// TLRoutes is what the server needs of internal/tlrelay: the mount of its routes. Each body limit is
+// the relay's own (32 MiB for sync and out, 128 MiB for a snapshot); nothing in front of them caps a
+// body.
+type TLRoutes interface {
+	Mount(mux interface {
+		HandleFunc(string, func(http.ResponseWriter, *http.Request))
+	}, clientHeader string)
 }
 
 // ---- helpers --------------------------------------------------------------
@@ -685,6 +699,10 @@ func (s *Server) routes() *routeMux {
 		}
 		ok(w)
 	})
+	// ---- the new (tldraw) boards: sessions, sync, the board host's out and snapshot ----
+	if s.TL != nil {
+		s.TL.Mount(mux, ClientHeader)
+	}
 	// ---- chats ----
 	// A new chat in a group or on a board. The chat is this server's: a body with "server",
 	// whatever its value, is refused (400 "server_refused") and nothing is made, and the first

@@ -13,6 +13,7 @@ import (
 
 	"ai-whiteboard/internal/editorbridge/bridgetest"
 	"ai-whiteboard/internal/model"
+	"ai-whiteboard/internal/tlrelay"
 )
 
 // The table of the remote port (contract 2.2 and 2.3): a client reaches every route of the
@@ -40,6 +41,9 @@ var l5Table = []string{
 	"POST /api/boards/{id}/follow", "POST /api/boards/{id}/unfollow",
 	"POST /api/boards/{id}/rename", "POST /api/boards/{id}/archive", "POST /api/boards/{id}/unarchive", "POST /api/boards/{id}/seen",
 	"DELETE /api/boards/{id}", "PATCH /api/boards/{id}",
+	// The new boards' relay (better-board design 2.2).
+	"POST /api/tl/{id}/open", "POST /api/tl/{id}/sync", "POST /api/tl/{id}/close", "POST /api/tl-host/out",
+	"GET /api/tl/{id}/snapshot", "PUT /api/tl/{id}/snapshot",
 	"POST /api/rpc-reply",
 	"GET /api/library", "POST /api/library/{server}/groups", "PATCH /api/library/{server}/groups/{id}", "DELETE /api/library/{server}/groups/{id}",
 	"POST /api/library/{server}/prompts", "PATCH /api/library/{server}/prompts/{id}", "DELETE /api/library/{server}/prompts/{id}",
@@ -222,6 +226,23 @@ func TestLevel5TableRoutesServeAClient(t *testing.T) {
 	ask("POST /api/boards/{id}/unarchive", board, "", nil, 200, done)
 	ask("DELETE /api/boards/{id}", bx, "", nil, 200, done)
 	ask("POST /api/rpc-reply", "", "", `{"id":"rpc_nobody_asked","result":{}}`, 409, `{"error":"not_asked"}`)
+
+	// The new boards' routes (better-board design 2.2), on a new board the client makes. No board host
+	// runs here, so the relay refuses the open; then X stands for the board host for out and the
+	// snapshot, as the board host's manager makes a client the host.
+	tlb := l5ID(t, ask("POST /api/boards", "", "", `{"name":"new-by-x","group":"`+group+`","kind":"tl"}`, 200, `"kind":"tl"`))
+	ask("POST /api/tl/{id}/open", tlb, "", `{}`, 503, `"code":"board_host_unavailable"`)
+	ask("POST /api/tl/{id}/sync", tlb, "", `{"session":"s_nobody","messages":[]}`, 410, `"code":"no_session"`)
+	ask("POST /api/tl/{id}/close", tlb, "", `{"session":"s_nobody"}`, 200, done)
+	e.s.TL.(*tlrelay.Relay).HostAdapter(e.s.Bridge).SetAway(apiX)
+	ask("POST /api/tl-host/out", "", "", `{"out":[{"session":"s_nobody","messages":[]}]}`, 200, `{"gone":["s_nobody"]}`)
+	ask("GET /api/tl/{id}/snapshot", tlb, "", nil, 204, "")
+	ask("PUT /api/tl/{id}/snapshot", tlb, "", `{"records":[]}`, 200, done)
+	ask("GET /api/tl/{id}/snapshot", tlb, "", nil, 200, `{"records":[]}`)
+	// Nothing in front of the relay caps a body below its own limits: a snapshot well above the JSON
+	// limit of the other calls (2 MiB) is saved.
+	big := `{"records":"` + strings.Repeat("x", 3<<20) + `"}`
+	ask("PUT /api/tl/{id}/snapshot", tlb, "", big, 200, done)
 
 	// What the client did is the server's state, the owner's too.
 	state := e.expect(200, "GET", "/api/state", "")

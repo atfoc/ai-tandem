@@ -23,10 +23,12 @@ import (
 //	         after its last use (chats.Deps.ImageWait, an hour); the cleanup that takes such
 //	         images by itself looks twelve times in it (chats.Manager.CleanImages)
 //	quiet    how long the headless writer keeps a board after an agent's last call on it
-//	         (-headless-quiet, headless.QuietDefault); it wins over the flag
-//	hstart   how long a start of the headless writer may take until its stream is open
-//	         (headless.Options.StartLimit, 20 s)
-//	linger   how often the headless writer is looked at for the idle stop (headless.Options.Linger, 5 s)
+//	         (-headless-quiet, headless.QuietDefault); it wins over the flag. It is also the board
+//	         host's process quiet (-boardhost-quiet, 60 s), and half of it its room quiet (30 s)
+//	hstart   how long a start of the headless writer (and of the board host) may take until its
+//	         stream is open (headless.Options.StartLimit, 20 s)
+//	linger   how often the headless writer (and the board host) is looked at for the idle stop
+//	         (headless.Options.Linger, 5 s)
 //	handover how long the holder of a board has to release it after another client took it
 //	         (the bridge's 10 s); the headless writer gets four fifths of it, as its 8 s are of 10 s
 //	calls    how long an agent's board call waits for the answer of the client it was given to
@@ -88,6 +90,37 @@ func (w testWaits) headlessOptions(o options) headless.Options {
 	}
 	if w.hov > 0 {
 		h.Handover = w.hov * 4 / 5
+	}
+	return h
+}
+
+// The board host's waits (better-board design 5.1, 5.2).
+const (
+	// boardhostQuietDefault is -boardhost-quiet's default: how long after its last session or tool
+	// call the board host counts as busy, so that its process is not stopped.
+	boardhostQuietDefault = 60 * time.Second
+	// boardhostRoomQuiet is the board host's own quiet time: how long a room with no session and no
+	// agent call stays loaded before it is saved and closed (its config line's quietMs). It is
+	// shorter than the process quiet, so the rooms are normally saved before the process stops.
+	boardhostRoomQuiet = 30 * time.Second
+)
+
+// boardhostQuiet is the relay's process quiet: the flag's, or quiet of the test waits when set.
+func (w testWaits) boardhostQuiet(o options) time.Duration {
+	if w.quiet > 0 {
+		return w.quiet
+	}
+	return o.boardhostQuiet
+}
+
+// boardhostOptions are the board host's manager's options: the headless writer's manager made with
+// the board host's program, folder, name and variable, the flags, the room quiet, and the test
+// waits where they are set (quiet= lowers the room quiet to half of it).
+func (w testWaits) boardhostOptions(o options) headless.Options {
+	h := headless.Options{Program: "boardhost.mjs", Folder: "boardhost", Name: "board host", NodeEnv: "AIWB_BOARDHOST_NODE",
+		Node: o.boardhostNode, Dir: o.boardhostDir, Quiet: boardhostRoomQuiet, StartLimit: w.hstart, Linger: w.linger}
+	if w.quiet > 0 {
+		h.Quiet = w.quiet / 2
 	}
 	return h
 }

@@ -127,6 +127,29 @@ test('body limits: JSON 2 MiB, a scene 128 MiB, an image 5 MiB; nothing is sent 
   });
 });
 
+test('body limits of the new boards: sync and out 32 MiB, a snapshot 128 MiB, open and close 2 MiB', async () => {
+  await connected(async ({ s, call }) => {
+    const size = (req, res, body) => ({ json: { size: body.length } });
+    for (const r of ['POST /api/tl/b_1/sync', 'POST /api/tl-host/out', 'PUT /api/tl/b_1/snapshot']) s.routes.set(r, size);
+    const before = s.requests.length;
+    const mib = 1 << 20;
+    const over = [
+      ['POST', '/api/tl/b_1/sync', 32 * mib + 1], ['POST', '/api/tl-host/out', 32 * mib + 1],
+      ['PUT', '/api/tl/b_1/snapshot', 128 * mib + 1], ['POST', '/api/tl/b_1/open', 2 * mib + 1], ['POST', '/api/tl/b_1/close', 2 * mib + 1],
+    ];
+    for (const [method, path, n] of over) {
+      const r = await call({ method, path, body: { bytes: new Uint8Array(n), type: 'application/json' } });
+      assert.deepEqual([r.status, JSON.parse(r.text).code], [413, 'too_large'], `${method} ${path}`);
+    }
+    assert.equal(s.requests.length, before);
+    // above the JSON limit, they go
+    for (const [method, path] of [['POST', '/api/tl/b_1/sync'], ['POST', '/api/tl-host/out'], ['PUT', '/api/tl/b_1/snapshot']]) {
+      const r = await call({ method, path, body: { json: '"' + 'x'.repeat(3 * mib) + '"' } });
+      assert.equal(JSON.parse(r.text).size, 3 * mib + 2, `${method} ${path}`);
+    }
+  });
+});
+
 test('an entry that is not connected: 503 server_unreachable and nothing sent; unfollow and release answer without it', async () => {
   const port = await closedPort();
   const h = make({ timing: { ...T, backoff: [60000] } });
@@ -199,10 +222,12 @@ test('the time limit of each route of the table', async () => {
   const limits = { call: 300, start: 1500, scene: 900, imageCall: 1200, delete: 2100, dirs: 600, usage: 1800, unfollow: 450 };
   await connected(async ({ s, call }) => {
     for (const p of ['/api/chats/c1/messages', '/api/chats/c1/fork', '/api/chats/c1/open', '/api/chats/c1/context', '/api/groups/g1/archive',
+      '/api/tl/b_1/open', '/api/tl/b_1/sync',
       '/api/boards/b_1/scene', '/api/chats/c1/images', '/api/groups/g1', '/api/dirs', '/api/usage/claude', '/api/chats/c1/unfollow', '/api/boards/b_1/unfollow', '/api/chats/c1/label']) s.hangPaths.add(p);
     const rows = [
       ['POST', '/api/chats/c1/messages', 'start'], ['POST', '/api/chats/c1/fork', 'start'], ['POST', '/api/chats/c1/open', 'start'],
       ['GET', '/api/chats/c1/context', 'start'], ['POST', '/api/groups/g1/archive', 'start'],
+      ['POST', '/api/tl/b_1/open', 'start'], ['POST', '/api/tl/b_1/sync', 'call'],
       ['GET', '/api/boards/b_1/scene', 'scene'], ['PUT', '/api/boards/b_1/scene', 'scene'],
       ['POST', '/api/chats/c1/images', 'imageCall'],
       ['DELETE', '/api/groups/g1?contents=delete', 'delete'], ['DELETE', '/api/groups/g1', 'call'], ['DELETE', '/api/groups/g1?contents=move', 'call'],

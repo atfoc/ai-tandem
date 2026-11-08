@@ -14,6 +14,17 @@ const MiB = 1 << 20;
 const MAX_BODY = 2 * MiB; // a JSON body
 const MAX_SCENE = 128 * MiB; // PUT /api/boards/{id}/scene
 const MAX_IMAGE = 5 * MiB; // POST /api/chats/{id}/images
+// The new boards' relay (better-board design 2.2): tldraw's sync messages and the board host's out, up
+// to the largest stream event this module accepts (MAX_STATE, text.js), and a room's snapshot as a scene.
+const MAX_SYNC = 32 * MiB; // POST /api/tl/{id}/sync, POST /api/tl-host/out
+const MAX_SNAPSHOT = 128 * MiB; // PUT /api/tl/{id}/snapshot
+// The body limit of a call that is not an image, by its route.
+const BODY_LIMIT = new Map([
+  ['PUT /api/boards/{id}/scene', MAX_SCENE],
+  ['POST /api/tl/{id}/sync', MAX_SYNC],
+  ['POST /api/tl-host/out', MAX_SYNC],
+  ['PUT /api/tl/{id}/snapshot', MAX_SNAPSHOT],
+]);
 const MAX_ANSWER = 160 * MiB;
 
 // The routes a call may name: every row of routes.json but the stream.
@@ -25,6 +36,7 @@ const CALLABLE = ROUTES.filter((r) => r !== 'GET /api/events').map((raw) => {
 const START = new Set([
   'POST /api/chats/{id}/messages', 'POST /api/chats/{id}/fork', 'POST /api/chats/{id}/open',
   'GET /api/chats/{id}/context', 'POST /api/groups/{id}/archive',
+  'POST /api/tl/{id}/open', // may wait for a cold start of the board host
 ]);
 const SCENE = new Set(['GET /api/boards/{id}/scene', 'PUT /api/boards/{id}/scene']);
 // The calls that stop a reading: they have their own limit, and a server that is not connected has nothing to stop.
@@ -122,7 +134,7 @@ async function call(mgr, req) {
   if (body) {
     if (raw === 'POST /api/chats/{id}/images') {
       if (body.data.length > MAX_IMAGE) return synth(413, 'the image is too large', 'image_too_large');
-    } else if (body.data.length > (raw === 'PUT /api/boards/{id}/scene' ? MAX_SCENE : MAX_BODY)) {
+    } else if (body.data.length > (BODY_LIMIT.get(raw) ?? MAX_BODY)) {
       return synth(413, 'the body is too large', 'too_large');
     }
   }

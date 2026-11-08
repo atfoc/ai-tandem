@@ -28,6 +28,7 @@ import (
 	"ai-whiteboard/internal/editorbridge"
 	"ai-whiteboard/internal/model"
 	"ai-whiteboard/internal/store"
+	"ai-whiteboard/internal/tlrelay"
 )
 
 // ---- fakes ----------------------------------------------------------------
@@ -171,7 +172,8 @@ func newRawEnv(t *testing.T, with ...func(*Server)) *env {
 		Spawners:   map[model.AgentKind]agent.Spawner{model.Claude: fakeSpawner{}, model.Cursor: fakeSpawner{}},
 		DefaultCwd: t.TempDir()})
 	a := &app.App{St: st, Boards: bds, Chats: cm, Bridge: br, DataDir: root, DefaultCwd: cm.DefaultCwd}
-	s := &Server{App: a, Relay: &boardapi.Relay{Bridge: br, Chats: cm, Boards: bds}, Bridge: br}
+	s := &Server{App: a, Relay: &boardapi.Relay{Bridge: br, Chats: cm, Boards: bds}, Bridge: br,
+		TL: tlrelay.New(br, bds, time.Minute, nil)}
 	for _, f := range with {
 		f(s)
 	}
