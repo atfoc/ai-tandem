@@ -13,6 +13,7 @@
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import { FontLibrary } from 'skia-canvas'
+import { FONT_FACES } from '@aiwb/board-tl/model/fonts.ts'
 
 const require = createRequire(import.meta.url)
 
@@ -39,35 +40,13 @@ export function fontDir(): string {
 type Weight = 'normal' | 'bold'
 type Style = 'normal' | 'italic'
 
-/** tldraw's DefaultFontFaces + defaultEditorAssetUrls.fonts, as file names.
- *  The window lane's `packages/board-tl/src/model/fonts.ts` will become the one list both builds (the window and the host)
- *  read; until it is on this branch, this is the host's copy. */
-export const TLDRAW_FACES: Record<string, Record<`${Weight}_${Style}`, string>> = {
-  tldraw_draw: {
-    normal_normal: 'Shantell_Sans-Informal_Regular.woff2',
-    bold_normal: 'Shantell_Sans-Informal_Bold.woff2',
-    normal_italic: 'Shantell_Sans-Informal_Regular_Italic.woff2',
-    bold_italic: 'Shantell_Sans-Informal_Bold_Italic.woff2',
-  },
-  tldraw_sans: {
-    normal_normal: 'IBMPlexSans-Medium.woff2',
-    bold_normal: 'IBMPlexSans-Bold.woff2',
-    normal_italic: 'IBMPlexSans-MediumItalic.woff2',
-    bold_italic: 'IBMPlexSans-BoldItalic.woff2',
-  },
-  tldraw_serif: {
-    normal_normal: 'IBMPlexSerif-Medium.woff2',
-    bold_normal: 'IBMPlexSerif-Bold.woff2',
-    normal_italic: 'IBMPlexSerif-MediumItalic.woff2',
-    bold_italic: 'IBMPlexSerif-BoldItalic.woff2',
-  },
-  tldraw_mono: {
-    normal_normal: 'IBMPlexMono-Medium.woff2',
-    bold_normal: 'IBMPlexMono-Bold.woff2',
-    normal_italic: 'IBMPlexMono-MediumItalic.woff2',
-    bold_italic: 'IBMPlexMono-BoldItalic.woff2',
-  },
-}
+/** tldraw's DefaultFontFaces + defaultEditorAssetUrls.fonts, as file names: family → `weight_style` → file. Made from the one
+ *  list both builds read, the shared model's `FONT_FACES` (packages/board-tl/src/model/fonts.ts; decision O5). */
+export const TLDRAW_FACES: Record<string, Record<`${Weight}_${Style}`, string>> = (() => {
+  const out: Record<string, Record<string, string>> = {}
+  for (const f of FONT_FACES) (out[f.family] ??= {})[`${f.weight}_${f.style}`] = f.file
+  return out as Record<string, Record<`${Weight}_${Style}`, string>>
+})()
 
 /**
  * What Chromium uses for a generic family or a family that is not installed, per platform. macOS values measured

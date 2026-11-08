@@ -5,7 +5,8 @@ import type { CallAnswer, CallRequest } from "@aiwb/conn";
 import { atom } from "@tldraw/state";
 import { Store } from "@tldraw/store";
 import { TLSyncClient, type TLPersistentClientSocket, type TLSocketStatusChangeEvent } from "@tldraw/sync-core";
-import { createTLSchema, type TLRecord } from "@tldraw/tlschema";
+import type { TLRecord } from "@tldraw/tlschema";
+import { tlSchema } from "@aiwb/board-tl/model/schema.ts";
 import type { ClientLike } from "../src/api.ts";
 import type { OutBody } from "../src/link.ts";
 
@@ -169,7 +170,7 @@ class WindowSocket implements TLPersistentClientSocket<any, any> {
 
 export function clientStore() {
   return new Store<TLRecord, any>({
-    schema: createTLSchema() as any,
+    schema: tlSchema as any, // (the window's schema: the shared model, as the host's rooms)
     props: { defaultName: "", assets: { upload: async () => ({ src: "" }), resolve: () => null, remove: async () => {} }, onMount: () => {} },
   });
 }
@@ -203,6 +204,7 @@ export function geo(id: string, pageId: string, x = 0) {
     meta: {}, props: {
       geo: "rectangle", w: 100, h: 50, color: "black", labelColor: "black", fill: "none", dash: "draw", size: "m", font: "draw",
       align: "middle", verticalAlign: "middle", growY: 0, url: "", scale: 1, flipX: false, flipY: false, richText: { type: "doc", content: [{ type: "paragraph" }] },
+      fillColor: "white", labelSize: "m",
     },
   } as any;
 }

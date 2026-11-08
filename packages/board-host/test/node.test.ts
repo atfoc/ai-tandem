@@ -118,7 +118,7 @@ test("the jsdom fallback measures as linkedom does", async () => {
     process.stdout.write(JSON.stringify({ dom: rt.dom, res }));
     process.exit(0);`;
   const out = await new Promise<string>((resolve, reject) => {
-    execFile(process.execPath, [...process.execArgv.filter((a) => a.startsWith("--experimental")), "--input-type=module", "-e", script],
+    execFile(process.execPath, [...process.execArgv.filter((a, i, all) => a.startsWith("--experimental") || a.startsWith("--import") || all[i - 1] === "--import"), "--input-type=module", "-e", script],
       { env: { ...process.env, AIWB_BOARDHOST_DOM: "jsdom" }, timeout: 60_000, maxBuffer: 1 << 24 },
       (err, stdout, stderr) => (err ? reject(new Error(`${err.message}\n${stderr}`)) : resolve(stdout)));
   });
