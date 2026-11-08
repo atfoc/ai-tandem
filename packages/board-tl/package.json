@@ -8,6 +8,8 @@
     "./*": "./src/*"
   },
   "scripts": {
+    "build:web": "node build.mjs",
+    "dev-page": "node build.mjs --dev-page",
     "test": "node --test --experimental-strip-types 'test/*.test.ts'",
     "check": "tsc --noEmit"
   },

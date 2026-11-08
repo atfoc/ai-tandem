@@ -10,6 +10,8 @@ app/dist-web/
 app/.env.local
 packages/*/dist*/
 app/public/board/
+app/public/tl/
+packages/board-tl/dev-dist/
 app/e2e/.tools/
 app/e2e/.state/
 app/e2e/out/

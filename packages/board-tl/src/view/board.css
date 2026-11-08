@@ -1,0 +1,3 @@
+/* tldraw leaves the font of its own chrome (the frame names) to the page; the board font, not the page's */
+.tl-container { font-family: var(--tl-font-sans); }
+/* (our toolbars' styles are in toolbar.css, contextbar.css, quickadd.css and sync.css, beside their components) */

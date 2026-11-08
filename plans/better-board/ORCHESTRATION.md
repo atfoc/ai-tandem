@@ -48,6 +48,7 @@ space; workspace links are relative):
 ```sh
 P=<parent worktree>
 cp -c -R $P/node_modules ./node_modules && cp -c -R $P/app/node_modules ./app/node_modules 2>/dev/null
+for d in $P/packages/*/node_modules; do cp -c -R "$d" "./packages/$(basename $(dirname $d))/node_modules"; done
 ```
 
 Run `npm install` only when your branch changes a `package.json` or the lock file. For `web/` and `desktop/`, clone

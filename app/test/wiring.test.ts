@@ -446,7 +446,8 @@ test("selecting a board never takes it: select, a chat's row, a board's row and 
   assert.ok(/export function openChat\(c: ChatView\): void \{\s+select\(selOf\(c\)\);/.test(nav), "a chat's row and a chat reference");
   assert.ok(nav.includes("export function openBoard(id: string, withChat") && /select\(\{ board: id, chat: withChat \? [^\n]*\}\);/.test(nav));
   // making a board is the one explicit take outside the button (D12)
-  assert.ok(/upsertBoard\(b\);\s+select\(\{ board: b\.id, chat: null \}\);\s+void boardApp\.takeBoard\(b\.id\);/.test(nav), "newBoard takes the board it made");
+  // (a new board, kind "tl", has no writer to take: plans/better-board/design.md 6)
+  assert.ok(/upsertBoard\(b\);\s+select\(\{ board: b\.id, chat: null \}\);\s+if \(kind !== "tl"\) void boardApp\.takeBoard\(b\.id\);/.test(nav), "newBoard takes the board it made");
   assert.equal(count(nav, /takeBoard\(/g), 1);
 });
 

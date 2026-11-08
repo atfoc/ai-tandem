@@ -1,0 +1,24 @@
+/* The main toolbar (left, vertical) and the zoom controls (bottom left). Bottom right stays free: tldraw's licence watermark
+   (goal 4.2). No browser gesture on them (touch-action: none: a pinch starting here must not zoom the page, spike-ui-nav). */
+.aiwb-tools, .aiwb-zoombar {
+  position: absolute; z-index: 1000; display: flex; gap: 2px; padding: 4px; background: #fff; border-radius: 10px;
+  box-shadow: 0 1px 3px rgba(0,0,0,.12), 0 4px 12px rgba(0,0,0,.10); pointer-events: all; touch-action: none;
+  user-select: none; -webkit-user-select: none; font: 12px system-ui, sans-serif; color: #2a2a33;
+}
+.aiwb-tools { left: 12px; top: 50%; transform: translateY(-50%); flex-direction: column; }
+.aiwb-zoombar { left: 12px; bottom: 12px; align-items: center; }
+.aiwb-tools button, .aiwb-zoombar button {
+  display: flex; align-items: center; justify-content: center; width: 36px; height: 36px; padding: 0; border: 0;
+  border-radius: 7px; background: transparent; color: inherit; cursor: pointer; font: inherit; touch-action: none;
+}
+.aiwb-zoombar button { width: 32px; height: 32px; }
+.aiwb-zoombar button.pct { width: 48px; font-variant-numeric: tabular-nums; }
+.aiwb-tools button:hover, .aiwb-zoombar button:hover { background: #f1f1f4; }
+.aiwb-tools button.on, .aiwb-tools button.on:hover { background: #e3e9ff; color: #2f46d0; }
+/* the shape button: a small corner mark says it opens the types */
+.aiwb-tools-shape { position: relative; }
+.aiwb-tools button.more::after { content: ""; position: absolute; right: 4px; bottom: 4px; border: 3px solid transparent;
+  border-right-color: currentColor; border-bottom-color: currentColor; opacity: .55; }
+.aiwb-tools-flyout { position: absolute; left: calc(100% + 10px); top: 50%; transform: translateY(-50%); display: flex; gap: 2px;
+  padding: 4px; background: #fff; border-radius: 10px; box-shadow: 0 1px 3px rgba(0,0,0,.12), 0 4px 12px rgba(0,0,0,.10);
+  touch-action: none; }
