@@ -168,7 +168,7 @@ export const BoardNode = memo(function BoardNode({ b, editing, setEditing }: Edi
   const rename = async (v: string) => {
     setEditing(null);
     if (!v || v === b.name) return;
-    try { await boardApp.flush(b.id); upsertBoard(await api.renameBoard(b.id, v)); setErr(""); }
+    try { if (b.kind !== "tl") await boardApp.flush(b.id); upsertBoard(await api.renameBoard(b.id, v)); setErr(""); }
     catch (e: any) { setErr(e?.message ?? String(e)); }
   };
   const press = useDoublePress(() => openBoard(b.id), () => { if (!b.archived) setEditing(key); });
@@ -203,6 +203,7 @@ export const BoardNode = memo(function BoardNode({ b, editing, setEditing }: Edi
               {editing === key
                 ? <InlineName value={b.name} onDone={(v) => void rename(v)} />
                 : <Text {...tid("side-name")} numberOfLines={1} weight="500" tone={on && sel.chat ? "accent" : "text"} style={styles.grow}>{b.name}</Text>}
+              {b.kind === "tl" && <NewKindTag />}
               {b.new && <NewDot />}
               {b.archived && <ArchivedTag />}
               {!open && chats.length > 0 && <Count n={chats.length} />}
@@ -223,6 +224,12 @@ export const BoardNode = memo(function BoardNode({ b, editing, setEditing }: Edi
     </View>
   );
 });
+
+/** The mark of a new board (kind "tl", plans/better-board/design.md 6) next to its name: "New". */
+export function NewKindTag() {
+  const t = useTokens();
+  return <View {...tid("tl-tag")} style={[styles.tlTag, { backgroundColor: t.accentSoft }]}><Text size={10} weight="600" tone="accent">New</Text></View>;
+}
 
 // ---------------------------------------------------------------- a chat
 
@@ -287,6 +294,7 @@ export const ChatRow = memo(function ChatRow({ c, editing, setEditing, nested }:
 });
 
 const styles = StyleSheet.create({
+  tlTag: { borderRadius: 4, paddingHorizontal: 4, flexShrink: 0, justifyContent: "center" },
   zone: { borderRadius: 8, paddingVertical: 1 },
   loose: { minHeight: 6 },
   group: { marginTop: 8 },

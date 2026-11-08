@@ -40,6 +40,7 @@ import { RoleBar, editHere } from "./RoleBar.tsx";
 import { EDIT_HERE } from "./rolebar.ts";
 import { FILL } from "./fill.ts";
 import { usePhoneBoard } from "./usePhoneBoard.ts";
+import { TlCanvas } from "./TlCanvas.tsx";
 
 // The view of the board on screen (where it is scrolled and how far it is zoomed), for the browser checks of the pick layer (P7.4-board.mjs): a build
 // made for the checks (version "uicheck", `buildAppDist`) shows it as `window.__aiwbView()`; no other build does.
@@ -88,7 +89,14 @@ function useBoardToasts(board: string, on: boolean) {
   }, [on, role]);
 }
 
+/** The board screen's canvas: a new board (kind "tl") has its own (TlCanvas.tsx), an old one this file's. A wrapper, so that the
+ *  hooks of each keep their order. */
 export function BoardCanvas({ board }: { board: string }) {
+  const kind = useStore((s) => s.boards[board]?.kind);
+  return kind === "tl" ? <TlCanvas board={board} /> : <ClassicCanvas board={board} />;
+}
+
+function ClassicCanvas({ board }: { board: string }) {
   const { tokens: t } = useTheme();
   const b = useStore((s) => s.boards[board]);
   const role = useStore((s) => s.roles[board]);

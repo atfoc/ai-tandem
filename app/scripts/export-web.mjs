@@ -3,7 +3,8 @@
 //   --connect-self (or AIWB_CONNECT_SELF=1): the build for the browser checks, whose CSP also has `connect-src 'self'` (U3)
 // 0. `@aiwb/board-view`'s `build:web` writes the board into public/board/ (board.js, board.css, fonts/; generated, git-ignored).
 //    Metro never bundles Excalidraw (AD-40): the page loads this build of it, the one the phone's web view runs, and a stale
-//    one never ships because it is built again here.
+//    one never ships because it is built again here. `@aiwb/board-tl`'s `build:web` writes the new board (kind "tl") into
+//    public/tl/ (tl.js, tl.css; a development bundle of tldraw, fonts inlined; generated, git-ignored) the same way.
 // 1. `expo export --platform web` (web.output "single", experiments.baseUrl "."): public/ is copied as it is (public/index.html
 //    with its links to ./board/, public/board/), so the export names its bundle, chunks and assets relative to the page and
 //    the window can load it from file://.
@@ -32,6 +33,8 @@ export const csp = cspFor();
 export function transformIndex(html, bundles, { connectSelf = false } = {}) {
   if (!html.includes('<link rel="stylesheet" href="./board/board.css">') || !html.includes('<script src="./board/board.js" defer></script>'))
     throw new Error("public/index.html needs the links to the board: ./board/board.css and ./board/board.js (defer)");
+  if (!html.includes('<link rel="stylesheet" href="./tl/tl.css">') || !html.includes('<script src="./tl/tl.js" defer></script>'))
+    throw new Error("public/index.html needs the links to the new board: ./tl/tl.css and ./tl/tl.js (defer)");
   if (bundles.length !== 1) throw new Error(`expected one web bundle, found ${bundles.length}: ${bundles.join(", ")}`);
   const metaAt = html.indexOf('<meta charset="utf-8">');
   const rootAt = html.indexOf('<div id="root"></div>');
@@ -82,6 +85,9 @@ async function main() {
   const outDir = path.resolve(appRoot, at >= 0 ? process.argv[at + 1] : "dist-web");
   const board = spawnSync("npm", ["run", "build:web"], { cwd: path.join(appRoot, "../packages/board-view"), stdio: "inherit" });
   if (board.status !== 0) process.exit(board.status ?? 1);
+  const tl = spawnSync("npm", ["run", "build:web"], { cwd: path.join(appRoot, "../packages/board-tl"), stdio: "inherit" });
+  if (tl.status !== 0) process.exit(tl.status ?? 1);
+  if (!fs.existsSync(path.join(appRoot, "public/tl/tl.js"))) throw new Error("public/tl/tl.js is missing: board-tl's web build did not write it");
   const run = spawnSync("npx", ["expo", "export", "--platform", "web", "--output-dir", outDir], { cwd: appRoot, stdio: "inherit" });
   if (run.status !== 0) process.exit(run.status ?? 1);
   const index = path.join(outDir, "index.html");
@@ -89,7 +95,7 @@ async function main() {
   fs.writeFileSync(index, transformIndex(fs.readFileSync(index, "utf8"), bundlesOf(outDir), { connectSelf }));
   checkRelative(outDir);
   fs.writeFileSync(path.join(outDir, "THIRD-PARTY-NOTICES.txt"), await noticeText());
-  for (const f of ["board/board.js", "board/board.css", "board/fonts/Nunito"]) {
+  for (const f of ["board/board.js", "board/board.css", "board/fonts/Nunito", "tl/tl.js", "tl/tl.css"]) {
     if (!fs.existsSync(path.join(outDir, f))) throw new Error(`the export has no ${f}: the board's web build did not reach it`);
   }
   console.log(`Page ready: ${index}`);

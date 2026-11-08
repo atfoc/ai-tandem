@@ -54,7 +54,7 @@ const MOVE_FIRST = 10;
 /** What a screen reader says of a row: "Checkout, 2 boards · 1 group, 3 need you". */
 export function rowLabel(item: RowItem): string {
   const a = item.attention;
-  return [item.name, item.sub, a.kind === "count" ? `${a.n} need you` : a.kind === "dot" ? "needs you" : ""].filter(Boolean).join(", ");
+  return [item.name, item.tl ? "new board" : "", item.sub, a.kind === "count" ? `${a.n} need you` : a.kind === "dot" ? "needs you" : ""].filter(Boolean).join(", ");
 }
 
 export function HomeRow({ item, onPress, swipe, left, archived, onLongPress, dim, last, places }: HomeRowProps) {
@@ -81,7 +81,12 @@ export function HomeRow({ item, onPress, swipe, left, archived, onLongPress, dim
         {a.kind === "dot" ? <View {...tid(H1_TID.rowDot)} importantForAccessibility="no-hide-descendants" accessibilityElementsHidden style={[styles.dot, { backgroundColor: t.warn, borderColor: t.bg }]} /> : null}
       </View>
       <View style={styles.words}>
-        <Text {...tid(H1_TID.rowName)} size={TYPE.control} numberOfLines={2}>{item.name}</Text>
+        {item.tl ? (
+          <View style={styles.nameLine}>
+            <Text {...tid(H1_TID.rowName)} size={TYPE.control} numberOfLines={2} style={styles.name}>{item.name}</Text>
+            <View {...tid("tl-tag")} style={[styles.tlTag, { backgroundColor: t.accentSoft }]}><Text size={TYPE.secondary} weight="600" tone="accent">New</Text></View>
+          </View>
+        ) : <Text {...tid(H1_TID.rowName)} size={TYPE.control} numberOfLines={2}>{item.name}</Text>}
         <Text {...tid(H1_TID.rowSub)} size={TYPE.secondary} numberOfLines={1} style={{ color: item.subTone ? wordColour(t, item.subTone) : t.muted }}>{item.sub}</Text>
       </View>
       {a.kind === "count" ? (
@@ -114,6 +119,9 @@ const styles = StyleSheet.create({
   tile: { width: TILE, height: TILE, borderRadius: 8, alignItems: "center", justifyContent: "center" },
   dot: { position: "absolute", top: -2, right: -2, width: DOT + 2, height: DOT + 2, borderRadius: (DOT + 2) / 2, borderWidth: 1 },
   words: { flex: 1, minWidth: 0 },
+  nameLine: { flexDirection: "row", alignItems: "center", gap: 6 },
+  name: { flexShrink: 1 },
+  tlTag: { borderRadius: 4, paddingHorizontal: 5, paddingVertical: 1, flexShrink: 0 },
   badge: { minWidth: BADGE, height: BADGE, borderRadius: BADGE / 2, paddingHorizontal: 6, alignItems: "center", justifyContent: "center" },
   separator: { position: "absolute", right: 0, bottom: 0, left: PHONE.margin + TILE + 12, height: StyleSheet.hairlineWidth },
 });
