@@ -44,6 +44,12 @@ type Bridge struct {
 	// sets it. Set it before the first request.
 	PingEvery time.Duration
 
+	// OnEnd, when set, is called once for every client record that ends: a stream that ended,
+	// a record replaced by a newer stream with the same id, or one ended by CloseAll. It is
+	// called after the bridge's lock is released, so it may call any method of the Bridge.
+	// Set it before the first request.
+	OnEnd func(clientID string)
+
 	mu      sync.Mutex
 	away    string                   // the id of the headless writer's client; "" for none
 	followN int64                    // the last follow sequence number given
@@ -86,6 +92,7 @@ type call struct {
 	client, board string
 	reply         chan RPCReply
 	err           error // set when the bridge failed the call (ErrNoClient, ErrTaken, ErrAwayLost); before the reply is queued
+	lost          error // CallSpec.Lost: the error when the client's stream ends; nil for the default
 }
 
 // RPCReply is a client's answer to an rpc event (POST /api/rpc-reply).
@@ -107,9 +114,10 @@ type CallSpec struct {
 	// away client is connected, the bridge makes it the holder of Board and asks it. Ignored
 	// for a Screen call.
 	Away bool
-	// Client, when set (and Screen is not), sends the call to that client only: it fails with
-	// ErrNoClient when that client has no open stream, and it never grants a board
-	// (better-board design 2.7, G2).
+	// Client, when set, sends the call to that client only: it fails with ErrNoClient when that
+	// client has no open stream, never falls back to another client, ignores Away, and never
+	// grants, takes or changes a board (better-board design 3.4, G2). On a Screen call it names
+	// the window asked, in place of the lookup by ChatBoard.
 	Client string
 	// Lost is the error the call fails with when its client's stream ends while it runs; nil keeps
 	// today's error (G2).
@@ -176,16 +184,22 @@ func (b *Bridge) Serve(w http.ResponseWriter, r *http.Request, id string, snapsh
 	c := newClient(id)
 	c.snap = snapshot
 	b.mu.Lock()
-	b.startLocked(c)
+	replaced := b.startLocked(c)
 	b.welcomeLocked(c)
 	b.mu.Unlock()
+	if replaced {
+		b.ended(id)
+	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 
 	defer func() {
 		b.mu.Lock()
-		defer b.mu.Unlock()
-		b.endLocked(c)
+		gone := b.endLocked(c)
+		b.mu.Unlock()
+		if gone {
+			b.ended(id)
+		}
 	}()
 
 	write := func(msg []byte) {
@@ -231,12 +245,21 @@ func newClient(id string) *client {
 	}
 }
 
-// startLocked makes c the record of its id, ending an older one.
-func (b *Bridge) startLocked(c *client) {
+// startLocked makes c the record of its id, ending an older one. It reports whether it ended
+// one; the caller then calls ended after the unlock.
+func (b *Bridge) startLocked(c *client) (replaced bool) {
 	if old := b.clients[c.id]; old != nil {
-		b.endLocked(old)
+		replaced = b.endLocked(old)
 	}
 	b.clients[c.id] = c
+	return replaced
+}
+
+// ended calls OnEnd for an ended record. b.mu must not be held.
+func (b *Bridge) ended(id string) {
+	if b.OnEnd != nil {
+		b.OnEnd(id)
+	}
 }
 
 // Known reports whether clientID has an open stream.
@@ -348,13 +371,17 @@ func (b *Bridge) TakeBoard(clientID, board string, ifFree bool) (state string, r
 // queued for a client is still written before its stream ends.
 func (b *Bridge) CloseAll() int {
 	b.mu.Lock()
-	defer b.mu.Unlock()
-	n := 0
+	var ids []string
 	for _, c := range b.clients {
-		b.endLocked(c)
-		n++
+		if b.endLocked(c) {
+			ids = append(ids, c.id)
+		}
 	}
-	return n
+	b.mu.Unlock()
+	for _, id := range ids {
+		b.ended(id)
+	}
+	return len(ids)
 }
 
 // ReleaseBoard ends the client's hold of the board. It answers "handed" when another client
@@ -493,6 +520,13 @@ func (b *Bridge) SendTo(clientID string, ev any) bool {
 // open call fails when its client loses the board the call is about (ErrTaken), when the stream
 // of the away client ends (ErrAwayLost) or when the stream of a window ends (ErrNoClient).
 //
+// A call with spec.Client goes to that client only, Screen or not: holders, followers and the
+// away client are not consulted (Away is ignored), no board is granted, taken or changed, and the
+// call fails with ErrNoClient at once when that client has no open stream. Such a call is about
+// no board: it does not fail when a board changes hands, and its timeout is ErrTimeout and
+// changes nothing. spec.Lost, when set, is the error the call fails with when its client's
+// stream ends (or is replaced) while it is open, in place of ErrNoClient or ErrAwayLost.
+//
 // A call not answered within timeout fails. When it was about a board and its client is a window
 // that still holds the board, the window loses the board as a holder that does not release does
 // (passLocked): it is sent superseded, a client waiting for the board gets it, the followers are
@@ -512,7 +546,7 @@ func (b *Bridge) CallBoard(spec CallSpec, timeout time.Duration) (json.RawMessag
 		b.mu.Unlock()
 		return nil, ErrNoClient
 	}
-	k := &call{client: c.id, board: board, reply: make(chan RPCReply, 1)}
+	k := &call{client: c.id, board: board, reply: make(chan RPCReply, 1), lost: spec.Lost}
 	b.rpcs[id] = k
 	c.calls[id] = k
 	b.sendRawLocked(c, msg)
@@ -586,6 +620,14 @@ func (e *unansweredError) Unwrap() error { return ErrUnanswered }
 // call about one screen). See CallBoard for the rules. A free board given to the away client is
 // granted here, under the lock that found it free, so that no window can be overtaken.
 func (b *Bridge) chooseLocked(spec CallSpec) (c *client, board string) {
+	if spec.Client != "" {
+		// Only that client; the call is about no board, so that no hand-off fails it and its
+		// timeout takes nothing (better-board design 3.4, the guard).
+		if c := b.clients[spec.Client]; c != nil && !c.closed {
+			return c, ""
+		}
+		return nil, ""
+	}
 	if spec.Screen {
 		return b.screenLocked(spec.ChatBoard), ""
 	}
@@ -808,10 +850,12 @@ func (b *Bridge) sendFollowersLocked(it Item, ev any) {
 }
 
 // endLocked ends the record of c, whose stream ended or was replaced: its boards are freed
-// (their waiters get them), its waits and follows are dropped and all its calls fail.
-func (b *Bridge) endLocked(c *client) {
+// (their waiters get them), its waits and follows are dropped and all its calls fail. It reports
+// whether it ended the record (false when it had ended already); the caller then calls ended
+// after the unlock.
+func (b *Bridge) endLocked(c *client) bool {
 	if b.clients[c.id] != c {
-		return
+		return false
 	}
 	delete(b.clients, c.id)
 	b.closeLocked(c)
@@ -833,6 +877,7 @@ func (b *Bridge) endLocked(c *client) {
 	}
 	clear(c.follows)
 	b.poke()
+	return true
 }
 
 // welcomeLocked sends hello and the snapshot to a newly connected client.
@@ -895,15 +940,20 @@ func (b *Bridge) resolveLocked(id string, k *call, r RPCReply) {
 	}
 }
 
-// failCallsLocked ends c's calls about the board with err; with all set, every call of c.
+// failCallsLocked ends c's calls about the board with err; with all set (c's stream ended),
+// every call of c, each with its own Lost error if it has one.
 func (b *Bridge) failCallsLocked(c *client, board string, all bool, err error) {
 	for id, k := range c.calls {
 		if all || k.board == board {
 			delete(b.rpcs, id)
 			delete(c.calls, id)
-			k.err = err
+			e := err
+			if all && k.lost != nil {
+				e = k.lost
+			}
+			k.err = e
 			select {
-			case k.reply <- RPCReply{Error: err.Error()}:
+			case k.reply <- RPCReply{Error: e.Error()}:
 			default:
 			}
 		}
