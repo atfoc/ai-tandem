@@ -41,3 +41,11 @@ Each entry: the decision, who made it (user / orchestrator / architect), why.
 - Why: the latest stable release on npm that day (`latest` dist-tag 5.6.0; `next` is 5.7.0-next).
 - Measured by the spike (`plans/better-board/spike-host.md`): tldraw 5.6.0's Editor, text measuring, SVG export and
   `TLSocketRoom` run in Node; see there for the DOM (linkedom recommended, jsdom fallback) and rasterizer (resvg) choices.
+
+## Orchestrator, after both spikes
+
+- O1: the agent edits through a room editor that is not a sync peer (D15) and writes with `room.updateStore` (measured to broadcast; resolves after the commit, so save-then-answer follows directly). The marker is the custom message of D11. Not the persistent peer of spike-host 6.2, because its `whenSettled()` reads private fields of `TLSyncClient`, and D15 keeps `apply` synchronous and atomic. (orchestrator)
+- O2: consequence of O1: the window's `TLSyncClient` always runs with `presenceMode: 'full'` (never useSync's solo switch), so a lone window sees agent changes at ~35 ms and not tldraw's 1 fps solo rate. (orchestrator)
+- O3: every room is loaded through the spike's `snapshotForRestore()` (clock shifted forward on load, risk 8.5). (orchestrator)
+- O4: the board host runs the editor on linkedom (jsdom selectable as fallback, one module), measures with spike-host's `measure.ts`/`fonts.ts`, renders pictures by SVG export → `textToPaths` → resvg, capped at 2000 px on the long side. (orchestrator)
+- O5: fonts: tldraw's own files from `@tldraw/assets` 5.6.0 (IBM Plex Sans for our elements), the same files in the window and the host; the window measures only once they are loaded. (orchestrator)
