@@ -4,6 +4,7 @@ import { DefaultFontStyle, Tldraw, type Editor, type TLComponents, type TLUiComp
 import { ASSET_URLS } from "./assets.ts";
 import { CAMERA, OPTIONS } from "./nav/options.ts";
 import { MiroSelectTool } from "./nav/select.ts";
+import { AiwbFrameShapeUtil, AiwbGeoShapeUtil } from "./model/shapes.ts";
 import { StickyShapeUtil } from "./sticky/StickyShapeUtil.tsx";
 import { StickyTool } from "./sticky/StickyTool.ts";
 import { ContextToolbar } from "./ui/ContextToolbar.tsx";
@@ -18,7 +19,7 @@ const UI_NULL: Required<{ [K in keyof TLUiComponents]: null }> = {
 };
 
 const COMPONENTS: TLComponents = { ...UI_NULL, InFrontOfTheCanvas: ContextToolbar };
-const SHAPES = [StickyShapeUtil];
+const SHAPES = [StickyShapeUtil, AiwbGeoShapeUtil, AiwbFrameShapeUtil];
 const TOOLS = [MiroSelectTool, StickyTool];
 
 export function Board({ onMount }: { onMount?: (editor: Editor) => void }) {
