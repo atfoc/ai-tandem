@@ -107,6 +107,13 @@ type CallSpec struct {
 	// away client is connected, the bridge makes it the holder of Board and asks it. Ignored
 	// for a Screen call.
 	Away bool
+	// Client, when set (and Screen is not), sends the call to that client only: it fails with
+	// ErrNoClient when that client has no open stream, and it never grants a board
+	// (better-board design 2.7, G2).
+	Client string
+	// Lost is the error the call fails with when its client's stream ends while it runs; nil keeps
+	// today's error (G2).
+	Lost error
 }
 
 // ErrNoClient is returned by CallBoard when there is no client to ask, and given to the calls
