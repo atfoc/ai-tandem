@@ -4,7 +4,8 @@
 // tldraw is not patched. Its SelectTool is subclassed with two of its child states replaced by subclasses of themselves
 // (found by id in `SelectTool.children()`, since the state classes are not exported) and one state added:
 // - `pointing_canvas`: the selection is cleared on pointer up (a click), not on pointer down, so a pan keeps it; a drag goes
-//   to `panning_canvas`, or to tldraw's own `brushing` when Shift/Ctrl/⌘ was held at pointer down.
+//   to `panning_canvas`, or to tldraw's own `brushing` when Shift/Ctrl/⌘ was held at pointer down. A pointer down inside
+//   an unfilled shape goes to tldraw's `pointing_shape` instead, so a drag there moves the shape (spike-ui-nav.md, item 10).
 // - `idle`: a double-click on empty canvas creates a sticky (tldraw's own text-on-double-click is off by option).
 // - `panning_canvas`: moves the camera with the pointer, from the point where the pointer went down.
 // Everything else (wheel, pinch, Space+drag, middle drag, zoom limits) is tldraw's camera options and editor options
@@ -28,6 +29,15 @@ class PointingCanvas extends PointingCanvasBase {
   override onEnter(info: TLPointerEventInfo) {
     // (tldraw's own clears the selection here; ours waits for the pointer up, so a drag-to-pan keeps the selection)
     this.additive = !!(info.shiftKey || info.accelKey);
+    // tldraw treats the inside of an unfilled shape as canvas (a drag there would pan); Miro moves the shape, so a
+    // pointer down inside one is handed to tldraw's own pointing_shape (select on down, drag translates, click selects).
+    // Frames are not hit inside (hitFrameInside stays false), so a drag on a frame's empty area still pans.
+    if (!this.additive) {
+      const hollow = this.editor.getShapeAtPoint(this.editor.inputs.getCurrentPagePoint(), { hitInside: true, margin: 0, renderingOnly: true });
+      if (hollow && (this.editor.options.selectLockedShapes || !hollow.isLocked)) {
+        this.parent.transition("pointing_shape", { ...info, target: "shape", shape: hollow });
+      }
+    }
   }
 
   override onPointerMove(info: TLPointerEventInfo) {
