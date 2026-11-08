@@ -232,7 +232,7 @@ export async function exportSvg(editor: Editor, ids?: TLShapeId[], opts: ExportO
   if (!r) return undefined
   const svg = textToPaths(r.svg as SVGSVGElement, backgroundOf(r.svg))
   const xml = new (globalThis as Any).XMLSerializer().serializeToString(svg) as string
-  return { svg: xml, width: r.width, height: r.height }
+  return { svg: xml, width: r.width, height: r.height, background: opts.background === false ? null : backgroundOf(r.svg) }
 }
 
 export type Rasterizer = 'resvg' | 'skia'
@@ -245,7 +245,8 @@ export async function exportPng(editor: Editor, ids?: TLShapeId[], opts: ExportO
   const w = Math.max(1, Math.round(r.width * scale)), h = Math.max(1, Math.round(r.height * scale))
   let png: Buffer
   if ((opts.rasterizer ?? 'resvg') === 'resvg') {
-    const resvg = new Resvg(r.svg, { fitTo: { mode: 'width', value: w }, font: { loadSystemFonts: false }, shapeRendering: 2, imageRendering: 0 })
+    // the background is CSS on the root <svg> (a browser paints it, resvg does not)
+    const resvg = new Resvg(r.svg, { fitTo: { mode: 'width', value: w }, font: { loadSystemFonts: false }, shapeRendering: 2, imageRendering: 0, ...(r.background ? { background: r.background } : {}) })
     png = resvg.render().asPng()
   } else {
     const img = new SkiaImage()
@@ -253,6 +254,7 @@ export async function exportPng(editor: Editor, ids?: TLShapeId[], opts: ExportO
     await img.decode?.()
     const canvas = new Canvas(w, h)
     const ctx = canvas.getContext('2d') as Any
+    if (r.background) { ctx.fillStyle = r.background; ctx.fillRect(0, 0, w, h) }
     ctx.drawImage(img, 0, 0, w, h)
     png = await canvas.toBuffer('png')
   }
