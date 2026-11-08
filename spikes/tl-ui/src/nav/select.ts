@@ -88,7 +88,10 @@ class Idle extends IdleBase {
   static override id = "idle";
 
   override onDoubleClick(info: TLClickEventInfo) {
-    if (info.phase === "down" && info.target === "canvas" && !this.editor.getIsReadonly()) {
+    // On the second pointer *up*, not down: two fingers landing < 40 px apart (the start of a pinch-out) are a "double
+    // click" for tldraw's ClickManager at the second finger's down, but a pinch never delivers that pointer up
+    // (spike-ui-nav.md, item 9). A double click/tap ends with an up, which comes here once pointing_canvas went back to idle.
+    if (info.phase === "up" && info.target === "canvas" && !this.editor.getIsReadonly() && !this.editor.inputs.getIsPinching()) {
       const p = this.editor.inputs.getCurrentPagePoint();
       const hit = this.editor.getShapeAtPoint(p, { hitInside: true, margin: this.editor.getHitTestMargin() });
       if (!hit) {
