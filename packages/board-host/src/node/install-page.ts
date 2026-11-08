@@ -4,4 +4,11 @@
 // starts; rooms.ts → schema.ts imports tldraw statically).
 import { installPage } from './page.ts'
 
-installPage()
+// The process cannot start without its page (AIWB_BOARDHOST_DOM names an unknown DOM, or jsdom when it is not installed): the
+// reason on stderr and the start-up failure code (main.ts EXIT_START_FAILED, not imported: main.ts brings tldraw), not a stack.
+try {
+  installPage()
+} catch (e) {
+  process.stderr.write(`cannot start the board host: ${(e as Error)?.message ?? String(e)}\n`)
+  process.exit(3)
+}

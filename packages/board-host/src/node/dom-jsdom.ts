@@ -23,7 +23,14 @@ let page: Page | null = null
 /** Installs the jsdom page on the global object. Idempotent. Must run before `tldraw` is evaluated. */
 export function installPage(): Page {
   if (page) return page
-  const { JSDOM } = createRequire(import.meta.url)('jsdom') as { JSDOM: Any }
+  let JSDOM: Any
+  try {
+    ;({ JSDOM } = createRequire(import.meta.url)('jsdom') as { JSDOM: Any })
+  } catch (e) {
+    // the bundle does not ship jsdom (a development option): a reason, not a stack
+    if ((e as Any)?.code === 'MODULE_NOT_FOUND') throw new Error('AIWB_BOARDHOST_DOM=jsdom but jsdom is not installed next to the bundle', { cause: e })
+    throw e
+  }
   const dom = new JSDOM('<!doctype html><html><head></head><body></body></html>', {
     url: 'http://localhost/',
     pretendToBeVisual: true, // requestAnimationFrame
