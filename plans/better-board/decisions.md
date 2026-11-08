@@ -100,3 +100,5 @@ Each entry: the decision, who made it (user / orchestrator / architect), why.
   the smoke's picture: an agent's sticky came out in tldraw's draw font, because `createShapes` fills a style prop left out
   from the editor's next-shape style. So what an agent leaves out is what a person gets, also for a shape's fill (white). The
   window lane could move `setNextStyles` into the model so both import one function.
+- O1 amended (orchestrator, accepting H-7): the agent's change is written with `room.storage.transaction`, not `room.updateStore` (in tldraw 5.6 `updateStore` defers its write, and a window's edit arriving in that gap would be overwritten). The rest of O1 stands.
+- O6 (orchestrator): the goal's checks of section 6 are confirmed by temporary scripts in /tmp (not committed), per the user's testing rules; their results and small screenshots go into the findings report. The free old-board scripts of 6.7 (`away`, `readers`) are run once, at the very end, on the final branch.
