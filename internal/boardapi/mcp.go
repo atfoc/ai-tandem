@@ -258,9 +258,10 @@ func (r *Relay) tlTool(caller chats.Caller, tool, target string, args json.RawMe
 	if r.TL == nil {
 		return errResult(NoTLText)
 	}
-	kind := caller.Meta.Agent
+	// The agent that calls (a subagent of another kind is named as itself), else the chat's.
+	kind := caller.Kind
 	if kind == "" {
-		kind = caller.Kind
+		kind = caller.Meta.Agent
 	}
 	out, err := r.TL.CallTool(tlrelay.ToolCall{
 		Chat: caller.Chat, Branch: caller.Branch, ChatBoard: caller.Meta.Board, Board: target,
