@@ -58,3 +58,22 @@ Each entry: the decision, who made it (user / orchestrator / architect), why.
 - W4 (window lane): our geo extends tldraw's `GeoShapeUtil` with type `geo` and two style props, `fillColor` (`aiwb:fill-color`, tldraw's colour names, default white) and `labelSize` (`aiwb:label-size`, s/m/l/xl, default m), drawn through `getCustomDisplayValues`; `color` is the border, `size` the border width, `labelColor` the text; agent `fill: <Color>` → `fill: "fill"` + `fillColor`. The rounded rectangle is the custom geo value `rounded-rectangle`, added to `GeoShapeGeoStyle` by `model/styles.ts` so it validates in the schema.
 - W5 (window lane): frames are `FrameShapeUtil.configure({ showColors: true })`.
 - W6 (window lane): fonts are tldraw's own 16 woff2 of `@tldraw/assets` 5.6.0 (O5), listed once in `model/fonts.ts`; no font file is committed, the builds read them from `node_modules/@tldraw/assets/fonts/` (`tl.js` as `data:` URLs).
+
+## Host lane (`bb-host`)
+
+- H-1 (host lane): the board host's node runtime lives in `packages/board-host/src/node/` (page, fonts, measure, export,
+  editor, runtime), not in `packages/board-tl/src/model/`: it needs skia-canvas, resvg and a DOM, which the window's bundle must
+  not pull in. What the window shares is in the model: the font list (`model/fonts.ts`, which the host's `node/fonts.ts` reads)
+  and the measuring corpus (`model/corpus.ts`, so the Chromium side runs the same cases).
+- H-2 (host lane): the page is linkedom unless `AIWB_BOARDHOST_DOM=jsdom` (O4). It is installed by `src/node/install-page.ts`,
+  the first import of `src/bin.ts` (and of every test that loads tldraw), so it exists before any tldraw module is evaluated;
+  `page.ts` also makes tldraw's `BroadcastChannel` not hold the process. jsdom is **not shipped** in the bundle (a development
+  fallback); asking for it in a bundle without it exits 3 with the reason.
+- H-3 (host lane): the host takes the shared schema of the window lane as soon as it existed (commit `705bd472` of `bb-win-t1b`,
+  merged alone): `src/schema.ts` imports `tlSchema` and `SHAPE_UTILS` from `@aiwb/board-tl/model`, so rooms and the room editor
+  validate exactly what windows write. The host's tests load `.tsx` through an esbuild hook (`test/tsx-hook.ts`), as board-tl's.
+- H-4 (host lane, O4 made concrete): `get_image` never refuses for size below a scale of 0.1: when (bounds + 2 × 32 px padding)
+  × scale would exceed 2000 px on the long side, the scale is lowered to fit and the answer says so; `TOO_LARGE` only when that
+  would need a scale below 0.1. Padding is tldraw's export default (32 px, a window's own export), not old boards' 16.
+- H-5 (host lane): the board host's bundle is a development build of tldraw and React (`NODE_ENV=development`), as the
+  orchestrator's licence decision says for `tl.js`; nothing it prints reaches stdout except through the log.
