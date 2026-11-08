@@ -18,11 +18,11 @@ import (
 // and the next write of board.json leaves both out.
 func TestLevel5NoMarkAfterLoad(t *testing.T) {
 	s, st, _ := setup(t)
-	plain, err := s.Create("plain", model.Ungrouped, false)
+	plain, err := s.Create("plain", model.Ungrouped, false, model.KindClassic)
 	if err != nil {
 		t.Fatal(err)
 	}
-	marked, err := s.Create("marked", groupID, true)
+	marked, err := s.Create("marked", groupID, true, model.KindClassic)
 	if err != nil {
 		t.Fatal(err)
 	}

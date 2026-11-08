@@ -1002,7 +1002,7 @@ func newE2EBoardEnv(t *testing.T) *e2eBoardEnv {
 	if err := m.Load(); err != nil {
 		t.Fatal(err)
 	}
-	bd, err := bds.Create("e2e", model.Ungrouped, false)
+	bd, err := bds.Create("e2e", model.Ungrouped, false, model.KindClassic)
 	if err != nil {
 		t.Fatal(err)
 	}

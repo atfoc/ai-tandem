@@ -100,7 +100,7 @@ func TestSectionChatsOfAnotherServerBecomeLocal(t *testing.T) {
 	e.setDefaults(model.Defaults{Groups: map[string]model.GroupDefaults{gOne: model.LocalDefaults(model.ServerDefaults{
 		Cwd: dirOne, ByAgent: map[model.AgentKind]model.ModelChoice{model.Claude: {Model: "opus", Effort: "low"}},
 		Subagents: &model.SubLimits{Depth: 2, Cap: 10}})}})
-	bd, err := e.bds.Create("Board", gTwo, false)
+	bd, err := e.bds.Create("Board", gTwo, false, model.KindClassic)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -246,7 +246,7 @@ func TestSectionChatsOfAnotherServerBecomeLocal(t *testing.T) {
 func TestSectionChatsWithNoBoards(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)
-	bd, err := e.bds.Create("Board", gTwo, false)
+	bd, err := e.bds.Create("Board", gTwo, false, model.KindClassic)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,7 +277,7 @@ func TestSectionNewChatIsLocal(t *testing.T) {
 		gOne:            {Servers: map[string]model.ServerDefaults{"inst-bee": stale}},
 		model.Ungrouped: {Servers: map[string]model.ServerDefaults{"inst-bee": stale}},
 	}})
-	bd, err := e.bds.Create("Board", gOne, false)
+	bd, err := e.bds.Create("Board", gOne, false, model.KindClassic)
 	if err != nil {
 		t.Fatal(err)
 	}
