@@ -10,3 +10,14 @@
 .aiwb-contexttoolbar .swatch.on { outline: 2px solid #2f46d0; outline-offset: 1px; }
 /* tldraw leaves the font of its own chrome (the frame names) to the page; the board font, not the page's */
 .tl-container { font-family: var(--tl-font-sans); }
+/* contextual toolbar controls (spike-ui-ctx) */
+.aiwb-contexttoolbar { flex-wrap: wrap; max-width: 560px; justify-content: center; row-gap: 4px; }
+.aiwb-contexttoolbar.below { transform: translate(-50%, 12px); }
+.aiwb-contexttoolbar .group { display: inline-flex; gap: 2px; align-items: center; padding: 0 4px; border-left: 1px solid #eee; flex-wrap: wrap; }
+.aiwb-contexttoolbar .group:first-child { border-left: 0; }
+.aiwb-contexttoolbar .ctl { display: inline-flex; gap: 3px; align-items: center; color: #666; font-size: 11px; padding: 0 2px; }
+.aiwb-contexttoolbar select, .aiwb-contexttoolbar input.name { font: 12px system-ui, sans-serif; padding: 2px; border: 1px solid #ddd; border-radius: 4px; background: #fff; }
+.aiwb-contexttoolbar input.name { width: 120px; }
+.aiwb-contexttoolbar button.on { background: #e3e9ff; color: #2f46d0; }
+.aiwb-contexttoolbar button:disabled { opacity: .35; cursor: default; }
+.aiwb-contexttoolbar button:hover:not(:disabled) { background: #f1f1f1; }

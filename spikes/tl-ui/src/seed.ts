@@ -14,7 +14,7 @@ export async function seed(editor: Editor) {
   editor.run(() => {
     editor.createShapes([
       { id: id("frame"), type: "frame", x: -40, y: -60, props: { w: 760, h: 320, name: "Sprint" } },
-      { id: id("s1"), type: "sticky", x: 0, y: 0, props: { richText: toRichText("Idea"), color: "light-yellow" } },
+      { id: id("s1"), type: "sticky", x: 0, y: 0, props: { richText: toRichText("Idea") } },
       { id: id("s2"), type: "sticky", x: 240, y: 0, props: { color: "light-green", richText: toRichText("The quick brown fox jumps over the lazy dog, and then writes a much longer note than anyone should put on one sticky, so the text has to shrink to fit") } },
       { id: id("s3"), type: "sticky", x: 480, y: 0, props: { color: "light-pink", richText: toRichText("Ship it") } },
       { id: id("r1"), type: "geo", x: 0, y: 400, props: { geo: "rectangle", w: 200, h: 100, richText: toRichText("API"), fill: "solid", color: "blue" } },
