@@ -91,22 +91,31 @@ func (r *Relay) closeToWindowLocked(s *session, reason string) {
 	r.bridge.SendTo(s.window, closedEvent{Type: "tl_closed", Board: s.board, Session: s.id, Reason: reason})
 }
 
-// ClientEnded is the bridge's OnEnd hook: a client's stream ended or was replaced. For the board host
-// (or an older one) every session opened with it is closed with "host_stopped"; for a window its
-// sessions are closed and their host is sent tl_close. It is called without the bridge's lock.
+// ClientEnded is the bridge's OnEnd hook: a client's stream ended or was replaced. It is called
+// without the bridge's lock.
+//
+// For the board host (or an older one) every session opened with it is closed with "host_stopped"
+// to its window. The host id itself is not touched: it is owned by the manager alone, through the
+// adapter's SetAway, because a host's stream can end while its process lives on and reconnects with
+// the same client id (a dropped connection, or a stream the bridge replaced; then the new stream is
+// already registered and Known(clientID) is true here). In that case the host is also sent tl_close
+// for each dropped session, so its room forgets those sockets; the windows open new sessions.
+//
+// For a window its sessions are closed and their host is sent tl_close.
 func (r *Relay) ClientEnded(clientID string) {
 	if clientID == "" {
 		return
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if clientID == r.hostID {
-		r.hostID = ""
-	}
+	alive := r.bridge.Known(clientID)
 	for _, s := range r.sessions {
 		switch clientID {
 		case s.host:
 			r.closeToWindowLocked(s, ReasonHostStopped)
+			if alive {
+				r.bridge.SendTo(s.host, sessionEvent{Type: "tl_close", Board: s.board, Session: s.id})
+			}
 		case s.window:
 			r.closeToHostLocked(s)
 		}
@@ -114,7 +123,8 @@ func (r *Relay) ClientEnded(clientID string) {
 }
 
 // BoardGone closes every session of the board (tl_closed with reason, "archived" or "deleted") and
-// tells the current board host to close its room (tl_drop). Call it after the store's change.
+// tells the current board host, if its stream is there, to close its room (tl_drop). Call it after
+// the store's change.
 func (r *Relay) BoardGone(id, reason string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -123,7 +133,7 @@ func (r *Relay) BoardGone(id, reason string) {
 			r.closeToWindowLocked(s, reason)
 		}
 	}
-	if r.hostID != "" {
+	if r.hostID != "" && r.bridge.Known(r.hostID) {
 		r.bridge.SendTo(r.hostID, dropEvent{Type: "tl_drop", Board: id, Reason: reason})
 	}
 }

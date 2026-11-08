@@ -5,6 +5,12 @@
 //
 // # Locking
 //
+// The board host's client id is owned by the headless manager alone: it is set through the adapter's
+// SetAway before the host starts and cleared ("") only after the process has exited, so the host's
+// last saves while it shuts down are still accepted. The end of the host's stream (ClientEnded)
+// closes the sessions opened with it but leaves the id, since the process may reconnect its stream
+// with the same id.
+//
 // All of the relay's state (the current host id, the session table, the time of the last tool call,
 // the counters) is under one mutex, Relay.mu. The lock order is
 //
@@ -99,7 +105,7 @@ type Relay struct {
 
 	mu          sync.Mutex
 	host        Host
-	hostID      string // the board host's client id, as last given through the adapter's SetAway
+	hostID      string // the board host's client id, as last given through the adapter's SetAway; only SetAway changes it
 	sessions    map[string]*session
 	seq         uint64    // order of the sessions' opening, for ScreenClient
 	lastCall    time.Time // start or end of the last tool call
@@ -174,8 +180,10 @@ type adapter struct {
 func (a *adapter) Known(id string) bool    { return a.b.Known(id) }
 func (a *adapter) HasCalls(id string) bool { return a.b.HasCalls(id) }
 
-// SetAway records the board host's client id ("" after its exit). The sessions of an older host
-// stay until that host's ClientEnded; a sync on one of them is refused meanwhile.
+// SetAway records the board host's client id: the manager sets it before the process starts and
+// clears it ("") after the process has exited. It is the only writer of the host id (ClientEnded
+// leaves it). The sessions of an older host stay until that host's ClientEnded; a sync on one of
+// them is refused meanwhile.
 func (a *adapter) SetAway(id string) {
 	a.r.mu.Lock()
 	a.r.hostID = id

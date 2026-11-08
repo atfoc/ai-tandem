@@ -76,14 +76,24 @@ func TestConcurrentInvariants(t *testing.T) {
 	var hostSeq atomic.Int64
 	hostSeq.Store(1)
 	// Ensure returns the current host; a quarter of the time that host dies right after (before the
-	// open registers), and the manager starts a new one.
+	// open registers), and the manager starts a new one. As the manager does: the stream ends, then,
+	// sometimes, the reap clears the id before the next start sets it.
 	var dieMu sync.Mutex // one host death at a time, as one manager does
 	kill := func() {
 		dieMu.Lock()
 		defer dieMu.Unlock()
 		id := g.hostID()
 		g.endClient(id)
+		if rand.IntN(2) == 0 {
+			g.ad.SetAway("")
+		}
 		g.startHost(fmt.Sprintf("h%d", hostSeq.Add(1)))
+	}
+	// The host's stream is replaced while its process lives on: same id, still Known.
+	replace := func() {
+		dieMu.Lock()
+		defer dieMu.Unlock()
+		g.replaceStream(g.hostID())
 	}
 	g.host.mu.Lock()
 	g.host.ensure = func(context.Context) (string, error) {
@@ -168,13 +178,15 @@ func TestConcurrentInvariants(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for i := 0; i < rounds/3; i++ {
-			switch rand.IntN(3) {
+			switch rand.IntN(4) {
 			case 0:
 				w := windows[rand.IntN(len(windows))]
 				g.endClient(w)
 				g.br.setKnown(w, true)
 			case 1:
 				kill()
+			case 2:
+				replace()
 			default:
 				g.r.BoardGone(boards[rand.IntN(len(boards))], "deleted")
 			}
@@ -297,6 +309,9 @@ func TestOpenRacesHostDeath(t *testing.T) {
 			}
 			dieMu.Lock()
 			g.endClient(g.hostID())
+			if seq.Load()%2 == 0 {
+				g.ad.SetAway("")
+			}
 			g.startHost(fmt.Sprintf("h%d", seq.Add(1)))
 			dieMu.Unlock()
 			for j := 0; j < 20; j++ { // let some opens through between the deaths
