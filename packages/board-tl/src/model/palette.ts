@@ -2,14 +2,14 @@
 //
 // What is stored never depends on the theme: a record keeps a colour *name* (tldraw's own style values for inks, our sticky
 // names for the sticky); the theme only decides how a name is drawn. Every mapping between the agent's names and stored
-// values is in the tables of this file, so `apply.ts` (writing) and `read.ts` (reading) cannot disagree, and the tables can be
-// aligned with the sticky's style prop (T1b) in one place.
+// values is in the tables of this file, so `apply.ts` (writing) and `read.ts` (reading) cannot disagree; the style props of
+// `styles.ts` and the sticky's util take their names and hexes from here.
 //
 // Pure data and functions: no tldraw runtime import, so it loads anywhere.
 
 import type { Align, Arrowhead, Color, ShapeKind, Size, StickyColor } from "./terms.ts";
 
-/** The placeholder type name of our sticky shape until T1b defines it. tldraw's `note` is read as a sticky too. */
+/** The type name of our sticky shape (`shapes/sticky.tsx`). tldraw's `note` is read as a sticky too. */
 export const STICKY_TYPE = "aiwb-sticky";
 /** tldraw's own sticky, also read as a sticky (its colour is one of tldraw's inks). */
 export const NOTE_TYPE = "note";
@@ -42,27 +42,36 @@ export const INK: Record<Color, TlColor> = {
 const INK_EXTRA: Partial<Record<string, Color>> = { "light-violet": "violet" };
 
 /**
- * Sticky colours. `stored` is the value of our sticky's colour prop (our own name, so the sticky's palette is ours, not the
- * theme's); `note` is the closest tldraw ink, for tldraw's `note` shape; `hex` is the note's fill as drawn (a proposal until
- * the sticky's look is settled, S-UI).
+ * Sticky colours: Miro's 16 (decisions.md, window lane). `stored` is the value of our sticky's colour prop (`aiwb:sticky-color`,
+ * our own names, so the sticky's palette is ours, not the theme's); `note` is the closest tldraw ink, for tldraw's `note`
+ * shape; `hex` is the sticky's fill as drawn (the same in every theme, goal 4.10).
  */
 export const STICKY: Record<StickyColor, { stored: string; note: TlColor; hex: string }> = {
-  yellow: { stored: "yellow", note: "yellow", hex: "#fff176" },
   "light-yellow": { stored: "light-yellow", note: "yellow", hex: "#fff9b1" },
-  orange: { stored: "orange", note: "orange", hex: "#ffc06e" },
-  red: { stored: "red", note: "red", hex: "#ff8a80" },
-  pink: { stored: "pink", note: "light-red", hex: "#f8bbd9" },
-  violet: { stored: "violet", note: "violet", hex: "#d4b8f0" },
-  blue: { stored: "blue", note: "blue", hex: "#8fb8f5" },
-  "light-blue": { stored: "light-blue", note: "light-blue", hex: "#c6e4fb" },
-  green: { stored: "green", note: "green", hex: "#9be29b" },
-  "light-green": { stored: "light-green", note: "light-green", hex: "#d5f6c8" },
-  grey: { stored: "grey", note: "grey", hex: "#e0e0e0" },
-  white: { stored: "white", note: "white", hex: "#ffffff" },
+  yellow: { stored: "yellow", note: "yellow", hex: "#f5d128" },
+  orange: { stored: "orange", note: "orange", hex: "#ff9d48" },
+  "light-green": { stored: "light-green", note: "light-green", hex: "#d5f692" },
+  green: { stored: "green", note: "green", hex: "#c9df56" },
+  "dark-green": { stored: "dark-green", note: "green", hex: "#93d275" },
+  cyan: { stored: "cyan", note: "light-blue", hex: "#67c6c0" },
+  "light-pink": { stored: "light-pink", note: "light-red", hex: "#ffcee0" },
+  pink: { stored: "pink", note: "light-red", hex: "#ea94bb" },
+  violet: { stored: "violet", note: "violet", hex: "#c6a2d2" },
+  red: { stored: "red", note: "red", hex: "#f0939d" },
+  "light-blue": { stored: "light-blue", note: "light-blue", hex: "#a6ccf5" },
+  blue: { stored: "blue", note: "blue", hex: "#6cd8fa" },
+  "dark-blue": { stored: "dark-blue", note: "blue", hex: "#9ea9ff" },
+  grey: { stored: "grey", note: "grey", hex: "#e6e6e6" },
+  black: { stored: "black", note: "black", hex: "#1a1a1a" },
 };
 
-/** A new sticky's colour when the agent names none. */
-export const DEFAULT_STICKY: StickyColor = "yellow";
+/** A new sticky's colour when the agent (or a person) names none. */
+export const DEFAULT_STICKY: StickyColor = "light-yellow";
+
+/** The text colour on a sticky of a colour: white on black, near-black on every other. */
+export function stickyTextHex(c: StickyColor): string {
+  return c === "black" ? "#ffffff" : "#1a1a1a";
+}
 
 export const INK_NAMES = Object.keys(INK) as Color[];
 export const STICKY_NAMES = Object.keys(STICKY) as StickyColor[];
@@ -83,13 +92,17 @@ export function stickyToStored(c: StickyColor, recordType: string = STICKY_TYPE)
   return recordType === NOTE_TYPE ? STICKY[c].note : STICKY[c].stored;
 }
 
-/** A stored sticky colour → our name. A `note`'s tldraw ink maps to the first sticky colour drawn with it. */
+/**
+ * A stored sticky colour → our name. A `note`'s tldraw ink reads as the sticky colour of the same name, else as the first
+ * sticky colour drawn with it (`light-red` → `light-pink`); tldraw's `light-violet` as violet, `white` as grey.
+ */
 export function stickyFromStored(v: unknown, recordType: string = STICKY_TYPE): StickyColor {
   if (typeof v !== "string") return DEFAULT_STICKY;
   if (recordType === NOTE_TYPE) {
+    if (STICKY_NAMES.includes(v as StickyColor) && STICKY[v as StickyColor].note === v) return v as StickyColor;
     for (const name of STICKY_NAMES) if (STICKY[name].note === v) return name;
     if (v === "light-violet") return "violet";
-    if (v === "black") return "grey";
+    if (v === "white") return "grey";
     return DEFAULT_STICKY;
   }
   for (const name of STICKY_NAMES) if (STICKY[name].stored === v) return name;
@@ -99,16 +112,24 @@ export function stickyFromStored(v: unknown, recordType: string = STICKY_TYPE): 
 // ---- Other stored values the agent's names map onto (one table each) ----
 
 /**
- * Our shape's own props (goal 7.2: our styles are style props). Until T1b defines them, `read.ts` falls back to tldraw's: the
- * fill colour to the border colour (`color`), the border width to `size`.
+ * A shape (`geo`) in the stored props (goal 7.2: our styles are style props; `styles.ts`). tldraw's geo has one colour for
+ * border and fill and one size for border width and label; ours adds two style props so they are separate (goal 3.2, 3.3):
+ * - the border colour is tldraw's `color`, the text colour tldraw's `labelColor`;
+ * - the fill colour is our `fillColor` (`aiwb:fill-color`, tldraw's colour names), drawn when `fill` is not `none`;
+ * - the border width is tldraw's `size`;
+ * - the label's font size is our `labelSize` (`aiwb:label-size`, s/m/l/xl through tldraw's label font sizes).
  */
 export const FILL_COLOR_PROP = "fillColor";
-export const BORDER_WIDTH_PROP = "borderWidth";
+export const BORDER_WIDTH_PROP = "size";
+export const LABEL_SIZE_PROP = "labelSize";
 
-/** Shape kinds ↔ tldraw `geo` values. `rounded` is a geo value our schema adds (T1b); tldraw has no rounded rectangle. */
+/** The custom geo value of the rounded rectangle (tldraw 5.6 has none; `styles.ts` adds it to `GeoShapeGeoStyle`). */
+export const ROUNDED_GEO = "rounded-rectangle";
+
+/** Shape kinds ↔ tldraw `geo` values. */
 export const SHAPE_GEO: Record<ShapeKind, string> = {
   rectangle: "rectangle",
-  rounded: "rounded",
+  rounded: ROUNDED_GEO,
   ellipse: "ellipse",
   triangle: "triangle",
   diamond: "diamond",
@@ -119,8 +140,8 @@ export function shapeFromGeo(geo: unknown): ShapeKind | undefined {
   return undefined;
 }
 
-/** A filled shape's tldraw `fill` style (a fill colour of its own is the prop above). */
-export const FILL_STYLE = "solid";
+/** A filled shape's tldraw `fill` style: `fill` draws the fill colour itself (`solid` would draw a lighter tint of it). */
+export const FILL_STYLE = "fill";
 
 /** Arrowheads ↔ tldraw's. tldraw has more; they read as the nearest of ours. */
 export const ARROWHEAD: Record<Arrowhead, string> = {
@@ -164,5 +185,23 @@ export const BASE_FONT_SIZE = 16;
 export const LINE_HEIGHT = 1.35;
 export const LABEL_FONT_SIZES: Record<Size, number> = { s: 1.125, m: 1.375, l: 1.625, xl: 2 };
 export const TEXT_FONT_SIZES: Record<Size, number> = { s: 1.125, m: 1.5, l: 2.25, xl: 2.75 };
-/** A sticky's side when it was not resized (tldraw's note). */
+/** A sticky's side when it was not resized. */
 export const STICKY_SIZE = 200;
+
+/**
+ * A sticky's font size. Stored as a number in the record's `fontSize` (0 = automatic: shrink to fit; else a fixed size in px);
+ * the size it is drawn at is the record's `fitted` (written by the fit only). The agent's `"auto"` is 0 and a `Size` is the px
+ * of this table; reading, 0 is `"auto"` and any other px the nearest `Size`.
+ */
+export const STICKY_FONT_SIZES: Record<Size, number> = { s: 16, m: 24, l: 32, xl: 48 };
+
+export function stickyFontSizeToStored(v: "auto" | Size): number {
+  return v === "auto" ? 0 : STICKY_FONT_SIZES[v];
+}
+
+export function stickyFontSizeFromStored(v: unknown): "auto" | Size {
+  if (typeof v !== "number" || !Number.isFinite(v) || v <= 0) return "auto";
+  let best: Size = "m";
+  for (const s of SIZES) if (Math.abs(STICKY_FONT_SIZES[s] - v) < Math.abs(STICKY_FONT_SIZES[best] - v)) best = s;
+  return best;
+}
