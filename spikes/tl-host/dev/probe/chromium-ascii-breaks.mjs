@@ -7,6 +7,7 @@ import fs from 'fs'
 const chars = []
 for (let c = 0x21; c <= 0x7e; c++) chars.push(String.fromCharCode(c))
 const b = await chromium.launch(); const p = await b.newPage()
+const version = b.version()
 await p.setContent(`<!doctype html><style>div{font:16px Helvetica;width:0;white-space:pre-wrap;overflow-wrap:normal;word-break:normal;line-break:normal}</style><body></body>`)
 const res = await p.evaluate((chars) => {
   const out = {}
@@ -24,5 +25,5 @@ const res = await p.evaluate((chars) => {
 }, chars)
 await b.close()
 const file = new URL('../../src/ascii-breaks.json', import.meta.url)
-fs.writeFileSync(file, JSON.stringify({ chromium: (await import('playwright')).chromium.name(), pairs: Object.keys(res) }, null, 0))
+fs.writeFileSync(file, JSON.stringify({ chromium: version, pairs: Object.keys(res) }, null, 0))
 console.log(Object.keys(res).length, 'breaking pairs of', chars.length ** 2)
