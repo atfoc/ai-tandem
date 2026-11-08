@@ -10,6 +10,8 @@ export const H2_TID = {
   newChange: "new-change",
   newChat: "new-chat",
   newBoard: "new-board",
+  /** The New sheet's "New board" tile: a new board (kind "tl", plans/better-board/design.md 6). */
+  newTlBoard: "new-tl-board",
   newGroup: "new-group",
   newCrumb: "new-crumb",
   newPut: "new-put",

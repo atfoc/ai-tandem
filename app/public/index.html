@@ -34,6 +34,10 @@
      window.aiwbBoardView). It is loaded before the app's bundle, which scripts/export-web.mjs adds after the root. -->
 <link rel="stylesheet" href="./board/board.css">
 <script src="./board/board.js" defer></script>
+<!-- The new board (kind "tl", plans/better-board/design.md 6): @aiwb/board-tl's web target, built into public/tl/ by its
+     `npm run build:web` (a development bundle of tldraw, fonts inlined; it defines window.aiwbTlView). -->
+<link rel="stylesheet" href="./tl/tl.css">
+<script src="./tl/tl.js" defer></script>
 <noscript>You need to enable JavaScript to run this app.</noscript>
 <div id="root"></div>
 </html>

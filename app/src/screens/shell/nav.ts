@@ -9,6 +9,7 @@ import { reachable } from "@aiwb/core/logic/sections.ts";
 import { boardChats } from "@aiwb/core/logic/tree.ts";
 import { dropLeft, loadItems, loadTree } from "@aiwb/core/state/conn.ts";
 import type { Ui } from "@aiwb/core/state/ports.ts";
+import { isTl } from "@aiwb/core/tl/registry.ts";
 import { getState, lastChat, safeSet, setState, shownBranch, upsertBoard, upsertChat, type ConfirmRequest, type Sel } from "@aiwb/core/state/store.ts";
 import { attempt, confirm, reportError } from "./confirm.ts";
 import type { ChatView } from "@aiwb/core/types.ts";
@@ -46,7 +47,7 @@ export { attempt, confirm, reportError };
  *  screen: left, it goes, and cannot be opened again until that server is back (conn.ts dropLeft). */
 export function select(sel: Sel): void {
   const prev = getState().sel;
-  if (prev.board && prev.board !== sel.board) void boardApp.flush(prev.board); // closing a board writes it
+  if (prev.board && prev.board !== sel.board && !isTl(prev.board)) void boardApp.flush(prev.board); // closing a board writes it (a new board is written by its server)
   setState({ sel }); safeSet("aiwb.sel", JSON.stringify(sel));
   if (sel.board !== prev.board || sel.chat !== prev.chat) clearPushed(); // opening content from a pushed screen shows the content, not the screen over it
   if (sel.chat !== prev.chat) setState({ subDrawer: null });
@@ -93,12 +94,13 @@ export async function newChat(where: ChatPlace, o?: { open?: boolean }): Promise
 }
 
 /** Returns the new board's key. The board is made on the server its group is on, and this window takes it at once: making a board
- *  is the person's own act, and a new empty board opened view-only would ask for a second press (D12). */
-export async function newBoard(group: string): Promise<string> {
-  const b = await api.newBoard(group);
+ *  is the person's own act, and a new empty board opened view-only would ask for a second press (D12). A new board (kind "tl",
+ *  plans/better-board/design.md 6) has no writer to take: many people edit it at once. */
+export async function newBoard(group: string, kind?: "tl"): Promise<string> {
+  const b = await api.newBoard(group, undefined, false, kind);
   upsertBoard(b);
   select({ board: b.id, chat: null });
-  void boardApp.takeBoard(b.id);
+  if (kind !== "tl") void boardApp.takeBoard(b.id);
   return b.id;
 }
 
@@ -112,9 +114,9 @@ let expandBoardRow: (board: string) => void = () => {}; // opens a board's row i
 /** The sidebar registers what opens the row of a board, so that a chat made on the board shows under it; nothing while it is not mounted. */
 export function setExpandBoardRow(f: (board: string) => void): void { expandBoardRow = f; }
 
-/** "New whiteboard": the board is made at once in its group, its row in rename mode. */
-export function addBoard(group: string): void {
-  attempt(CREATE_FAILED, async () => editRow("board:" + await newBoard(group)));
+/** "New whiteboard" (and the New sheet's "New board", kind "tl"): the board is made at once in its group, its row in rename mode. */
+export function addBoard(group: string, kind?: "tl"): void {
+  attempt(CREATE_FAILED, async () => editRow("board:" + await newBoard(group, kind)));
 }
 
 // ---------------------------------------------------------------- the sidebar's hiding

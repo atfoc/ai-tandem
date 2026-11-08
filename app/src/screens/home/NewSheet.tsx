@@ -1,6 +1,6 @@
 // The "New" sheet of "+ New" (ux-improvements goal 3.4, package H2; plans/ux-improvements/h2-design.md §4, mockups 11a, 11b): where first (a card
 // with the server and the group, pre-chosen to the place the person is in), a bigger gap, then what to make (Chat and Whiteboard as tiles, Group
-// as a row). The card's Change pushes the Where page inside the same sheet: one level of the selected server's tree at a time.
+// as a row; a second row with the "New board" tile, a new board of kind "tl"). The card's Change pushes the Where page inside the same sheet: one level of the selected server's tree at a time.
 import { useMemo, useState, type ReactNode } from "react";
 import { Platform, Pressable, StyleSheet, View } from "react-native";
 
@@ -53,6 +53,7 @@ function NewSheet({ place }: { place: NewPlace }) {
   const make = (run: () => void) => () => { haptic("impact"); closeNewSheet(); run(); };
   const makeChat = make(() => { void newChat({ group }); });
   const makeBoard = make(() => addBoard(group));
+  const makeTlBoard = make(() => addBoard(group, "tl"));
   // (the Rename sheet rises once this one is gone: iOS shows no second modal while the first is still going, about 0.3 s)
   const makeGroup = make(() => attempt("Couldn't create the group", async () => {
     const gone = new Promise((done) => setTimeout(done, Platform.OS === "web" ? 0 : DISMISS_MS));
@@ -68,7 +69,7 @@ function NewSheet({ place }: { place: NewPlace }) {
     <Sheet open onClose={closeNewSheet} label={page === "what" ? "New" : "Where"} testID={H1_TID.newSheet} dataSet={{ page, group: chosen }} head={head}>
       {page === "what"
         ? <What serverName={serverName} path={where.path} here={chosen === here} tone={dot} wordText={word.text}
-            onChange={goWhere} onChat={makeChat} onBoard={makeBoard} onGroup={makeGroup} />
+            onChange={goWhere} onChat={makeChat} onBoard={makeBoard} onTlBoard={makeTlBoard} onGroup={makeGroup} />
         : <Where serverName={serverName} path={where.path} children={where.children} chosen={chosen} tone={dot} wordText={word.text}
             onLevel={setLevel} onPut={(key) => { haptic("select"); setPicked(key); goWhat(); }} />}
     </Sheet>
@@ -79,10 +80,10 @@ function NewSheet({ place }: { place: NewPlace }) {
 
 type WhatProps = {
   serverName: string; path: { key: string; name: string }[]; here: boolean; tone: string; wordText: string;
-  onChange(): void; onChat(): void; onBoard(): void; onGroup(): void;
+  onChange(): void; onChat(): void; onBoard(): void; onTlBoard(): void; onGroup(): void;
 };
 
-function What({ serverName, path, here, tone, wordText, onChange, onChat, onBoard, onGroup }: WhatProps) {
+function What({ serverName, path, here, tone, wordText, onChange, onChat, onBoard, onTlBoard, onGroup }: WhatProps) {
   const t = useTokens();
   const card = cardWords(serverName, path, here);
   return (
@@ -111,6 +112,12 @@ function What({ serverName, path, here, tone, wordText, onChange, onChat, onBoar
           glyph={<View style={[styles.glyph, { backgroundColor: t.claudeSoft, borderColor: t.claude }]}><AgentGlyph agent="claude" size={18} /></View>} />
         <MakeTile id={H2_TID.newBoard} title="Whiteboard" note="A board agents can draw on" onPress={onBoard}
           glyph={<View style={[styles.glyph, { backgroundColor: t.accentSoft, borderColor: t.accent }]}><BoardIcon size={18} color={t.accent} /></View>} />
+      </View>
+      {/* (a new board, kind "tl": made without being taken, many people edit it at once) */}
+      <View style={[styles.tiles, styles.tilesNext]}>
+        <MakeTile id={H2_TID.newTlBoard} title="New board" note="Miro-like board, many people at once" onPress={onTlBoard}
+          glyph={<View style={[styles.glyph, { backgroundColor: t.accent, borderColor: t.accent }]}><BoardIcon size={18} color={t.bg} /></View>} />
+        <View style={styles.tileSpace} />
       </View>
       <Pressable {...tid(H2_TID.newGroup)} accessibilityRole="button" accessibilityLabel="Group, name it next" onPress={onGroup}
         style={({ pressed }: { pressed: boolean }) => [styles.groupRow, { borderColor: t.line, backgroundColor: pressed ? t.hover2 : t.bg }]}>
@@ -212,6 +219,8 @@ const styles = StyleSheet.create({
   dot: { width: 8, height: 8, borderRadius: 4, marginTop: 6 },
   change: { minHeight: PHONE.target, flexDirection: "row", alignItems: "center", gap: 4 },
   tiles: { flexDirection: "row", gap: 12 },
+  tilesNext: { marginTop: 12 },
+  tileSpace: { flex: 1 },
   tile: { flex: 1, minHeight: TILE_HEIGHT, borderWidth: 1, borderRadius: 10, padding: 12, justifyContent: "space-between", gap: 8 },
   glyph: { width: 32, height: 32, borderWidth: 1.5, borderRadius: 4, alignItems: "center", justifyContent: "center" },
   groupRow: { minHeight: PHONE.sheetRow, marginTop: 12, flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 12, borderWidth: 1, borderRadius: 10 },

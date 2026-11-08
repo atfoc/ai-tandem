@@ -47,6 +47,8 @@ export type RowItem = {
   attention: RowAttention;
   /** A chat's agent, for its glyph. */
   agent?: string;
+  /** A new board (kind "tl", plans/better-board/design.md 6): its row has a "New" mark next to the name. */
+  tl?: boolean;
 };
 
 export type PlaceLists = { groups: RowItem[]; boards: RowItem[]; chats: RowItem[] };
@@ -94,7 +96,7 @@ export function placeLists(input: PlaceInput, server: string, group: string | nu
     }),
     boards: boards.map((b): RowItem => {
       const own = boardChats(input.chats, b.id, false);
-      return { kind: "board", key: b.id, server, name: b.name, sub: boardSub(own.length), attention: own.some(needsYou) ? { kind: "dot" } : { kind: "none" } };
+      return { kind: "board", key: b.id, server, name: b.name, sub: boardSub(own.length), attention: own.some(needsYou) ? { kind: "dot" } : { kind: "none" }, ...(b.kind === "tl" ? { tl: true } : {}) };
     }),
     chats: chats.map((c): RowItem => {
       const w = chatWord(c);

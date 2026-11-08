@@ -24,6 +24,7 @@ import { pointRef, selectionRef, type Ref } from "../logic/refs.ts";
 import { flash, getState, markBusy, markGone, reloadScene, setDropped, setOutage, setRole, setSaveSaid, setState, setWriter, subscribe } from "../state/store.ts";
 import { ownId, sameServer, serverOfKey } from "../logic/keys.ts";
 import { reachable } from "../logic/sections.ts";
+import { isTl } from "../tl/registry.ts";
 import { api as serverApi, ApiError } from "../api.ts";
 import { ui, type BoardSide, type ToolCall, type ToolResult } from "../state/ports.ts";
 import { branchNameFor, editLabel } from "../logic/attribution.ts";
@@ -762,7 +763,8 @@ export function createBoardSide(options: BoardSideOptions = {}): BoardApp {
    *  (a grant saves it at the same revision and drops it at another, granted). */
   function sectionBack(server: string) {
     const st = getState(), on = st.sel.board;
-    if (on && serverOfKey(on) === server && st.boards[on] && !st.gone[on] && !scenes.has(on)) reloadScene(on);
+    // (a new board on screen, kind "tl", has no scene here: its view syncs with the server itself)
+    if (on && serverOfKey(on) === server && st.boards[on] && !isTl(on) && !st.gone[on] && !scenes.has(on)) reloadScene(on);
     if (wanted && serverOfKey(wanted) === server && !st.gone[wanted]) follow(wanted); // (the server ended the follows with the connection)
   }
 

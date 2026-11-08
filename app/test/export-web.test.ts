@@ -115,6 +115,15 @@ test("the page loads the board's web build from ./board/ before the app's bundle
   assert.throws(() => transformIndex(template.replace('<script src="./board/board.js" defer></script>', ""), ["a.js"]), /board/);
 });
 
+test("the page loads the new board's web build (kind \"tl\") from ./tl/ beside board.js, before the app's bundle", () => {
+  const html = transformIndex(template, ["_expo/static/js/web/index-abc.js"]);
+  const tl = html.indexOf('<script src="./tl/tl.js" defer></script>');
+  assert.ok(tl > html.indexOf('<script src="./board/board.js" defer></script>') && tl < html.indexOf("index-abc.js"), "tl.js is after board.js and before the bundle");
+  assert.ok(html.includes('<link rel="stylesheet" href="./tl/tl.css">'));
+  assert.throws(() => transformIndex(template.replace('<script src="./tl/tl.js" defer></script>', ""), ["a.js"]), /new board/);
+  assert.throws(() => transformIndex(template.replace('<link rel="stylesheet" href="./tl/tl.css">', ""), ["a.js"]), /new board/);
+});
+
 test("Excalidraw's fonts are not copied by the export step any more (they are in board/fonts/)", async () => {
   const mod = await import("../scripts/export-web.mjs");
   assert.equal("copyExcalidrawFonts" in mod, false);
