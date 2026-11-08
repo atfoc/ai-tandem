@@ -93,6 +93,13 @@ const thing = <T = void>(kind: Kind, key: string, method: string, rest = "", bod
   return call<T>(p.server, method, p.path + rest, body, keepalive, signal);
 };
 
+/** A call of a new board's sync session: `/api/tl/<id>/<what>` on the server the board key names. */
+const tlPath = (board: string, what: "open" | "sync" | "close") => ({ server: serverOfKey(board), path: `/api/tl/${ownId(board)}/${what}` });
+const tlCall = <T,>(board: string, what: "open" | "sync" | "close", body: unknown): Promise<T> => {
+  const p = tlPath(board, what);
+  return call<T>(p.server, "POST", p.path, body);
+};
+
 /** The query part of the call that reads the folders or the plan usage of a server: the server is the call's. */
 const onBranch = (branch: string) => `?branch=${encodeURIComponent(branch)}`;
 
@@ -129,8 +136,21 @@ export const api = {
   unarchive: (k: Kind, id: string) => thing(k, id, "POST", "/unarchive"),
   deleteGroup: (id: string, contents: "delete" | "keep") => thing("groups", id, "DELETE", `?contents=${contents}`),
   /** group: the group the board is made in, which is on the server the board is made on. */
-  newBoard: (group: string, name?: string, isNew = false) =>
-    call<Board>(serverOfKey(group), "POST", "/api/boards", { name, group: ownId(group), new: isNew }).then((b) => boardIn(serverOfKey(group), b)),
+  newBoard: (group: string, name?: string, isNew = false, kind?: "tl") =>
+    call<Board>(serverOfKey(group), "POST", "/api/boards", { name, group: ownId(group), new: isNew, ...(kind === "tl" ? { kind } : {}) })
+      .then((b) => boardIn(serverOfKey(group), b)),
+  /** Opens a session of a new board (kind "tl") for this window: the board host is started if it is not running. The session's
+   *  sync messages come as `tl_sync` events of the board's server (tl/registry.ts). Refused 503 "board_host_unavailable", 409
+   *  "archived" or "not_tl", 404. */
+  tlOpen: (board: string) => tlCall<{ session: string }>(board, "open", {}),
+  /** Sends a session's sync messages (tldraw's, each one JSON text) in order. Refused 410 "no_session" when the server no longer
+   *  knows the session: the ApiError keeps the status and the code, and the link opens a new one. */
+  tlSync: async (board: string, session: string, messages: string[]): Promise<void> => {
+    const p = tlPath(board, "sync");
+    await send(p.server, "POST", p.path, { session, messages });
+  },
+  /** Ends a session; an unknown one is no error. */
+  tlClose: (board: string, session: string) => tlCall<void>(board, "close", { session }),
   /** A board's drawing, and the revision it is stored at (0 for a board never written). */
   scene: async (id: string): Promise<{ scene: any; rev: number }> => {
     const p = pathOf("boards", id), r = await send(p.server, "GET", `${p.path}/scene`);
