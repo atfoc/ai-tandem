@@ -81,9 +81,10 @@ export async function run(deps: Deps): Promise<void> {
   try { c = parseConfig(config); } catch (e) { await stop(EXIT_START_FAILED, (e as Error).message); return done; }
   secret = c.secret;
   if (deps.captureConsole) {
-    const was = { error: console.error, warn: console.warn, log: console.log };
+    const was = { error: console.error, warn: console.warn, log: console.log, info: console.info, debug: console.debug };
     const text = (a: unknown[]) => a.map((x) => (x instanceof Error ? x.message : typeof x === "string" ? x : JSON.stringify(x))).join(" ");
-    console.error = console.warn = console.log = (...a: unknown[]) => log(text(a));
+    // (all five: the server reads stdout and stderr as its log, and nothing may reach stdout unredacted)
+    console.error = console.warn = console.log = console.info = console.debug = (...a: unknown[]) => log(text(a));
     restoreConsole = () => { Object.assign(console, was); };
   }
   for (const sig of ["SIGTERM", "SIGINT"]) deps.signals?.once(sig, () => void stop(0, `stopped by ${sig}`));
