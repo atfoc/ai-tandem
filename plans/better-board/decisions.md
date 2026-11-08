@@ -135,3 +135,11 @@ Each entry: the decision, who made it (user / orchestrator / architect), why.
   to its right (left edge = its right edge + 8); in a view too narrow for that it goes above or below the obstacle (the
   nearer side that fits), else stays. A new control over the canvas at z-index 1000 belongs in `OBSTACLES`. The pill's
   hold Space leaves Space to the tl board when the focus is inside `.aiwb-tl-root` (as `.excalidraw`).
+- V4 (verify, lead): recorded as limits of the prototype, not fixed: (1) CJK text of an auto-width text element is up to
+  0.5% wider in the board host than in Chromium on macOS (Chromium draws Han characters in PingFang SC, a system font;
+  heights and line breaks equal; risk 8.7); (2) the board host's memory is not given back after rooms close (352 MB with
+  10 rooms stays 353 MB; V8 keeps its heap; no leak test); (3) an edit the room confirmed but had not yet saved (≤ 1 s, D8)
+  is lost when the board host is killed, in the pages too (the room's answer already cleared it from the window's
+  unconfirmed changes); an edit not yet confirmed is pushed again on reconnect and kept; (4) a right-click on the board
+  opens the browser's own context menu in the web build (no tldraw menu); (5) tldraw's hidden shortcuts that need no UI
+  still work (⌘⇧C copies the selection as PNG). Details: `verify.md`.
