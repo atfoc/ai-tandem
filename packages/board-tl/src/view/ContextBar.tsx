@@ -82,6 +82,19 @@ function read(editor: Editor) {
 }
 type Info = NonNullable<ReturnType<typeof read>>;
 
+/** Our toolbars over the canvas (the main toolbar, the zoom bar), in the viewport's coordinates: the bar and its popovers keep clear of them. */
+const OBSTACLES = ['[data-testid="aiwb-maintoolbar"]', '[data-testid="aiwb-zoom"]'];
+function obstacles(editor: Editor): Box[] {
+  const vp = editor.getViewportScreenBounds();
+  const root = editor.getContainer();
+  const out: Box[] = [];
+  for (const q of OBSTACLES) {
+    const r = root.querySelector(q)?.getBoundingClientRect();
+    if (r && r.width && r.height) out.push({ minX: r.left - vp.x, minY: r.top - vp.y, maxX: r.right - vp.x, maxY: r.bottom - vp.y });
+  }
+  return out;
+}
+
 // --- colours as tldraw's light theme draws them -----------------------------------------------------------------------
 const THEME = DEFAULT_THEME.colors.light as unknown as Record<string, { solid?: string; fill?: string } | string>;
 function inkHex(stored: string, variant: "solid" | "fill" = "solid"): string {
@@ -215,8 +228,8 @@ function face(id: GroupId, info: Info): ReactNode {
 }
 const GROUP_TITLE: Record<string, string> = { shape: "Shape", color: "Colour", text: "Text", line: "Line", ends: "Arrowheads", more: "Arrange" };
 
-function Popover({ group, anchor, bar, view, children }: {
-  group: string; anchor: () => HTMLElement | null; bar: { left: number; top: number }; view: Size; children: ReactNode;
+function Popover({ group, anchor, bar, view, avoid, children }: {
+  group: string; anchor: () => HTMLElement | null; bar: { left: number; top: number }; view: Size; avoid: readonly Box[]; children: ReactNode;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
@@ -226,7 +239,7 @@ function Popover({ group, anchor, bar, view, children }: {
     if (!el || !a) return;
     const ax = bar.left + a.offsetLeft;
     const ay = bar.top + a.offsetTop;
-    const p = placePopover({ minX: ax, minY: ay, maxX: ax + a.offsetWidth, maxY: ay + a.offsetHeight }, { w: el.offsetWidth, h: el.offsetHeight }, view);
+    const p = placePopover({ minX: ax, minY: ay, maxX: ax + a.offsetWidth, maxY: ay + a.offsetHeight }, { w: el.offsetWidth, h: el.offsetHeight }, view, avoid);
     const next = { left: p.left - bar.left, top: p.top - bar.top };
     if (!pos || pos.left !== next.left || pos.top !== next.top) setPos(next);
   });
@@ -274,11 +287,12 @@ export function ContextBar() {
   }, [openId]);
 
   if (!info) return null;
-  const pos = placeBar(info.sel, size, info.view);
+  const avoid = obstacles(editor);
+  const pos = placeBar(info.sel, size, info.view, avoid);
   const toggle = (id: string) => setOpen(openId === id ? null : { sel: info.selKey, id });
   const popover = (id: string, children: ReactNode) =>
     openId === id ? (
-      <Popover group={id} anchor={() => anchors.current[id]} bar={pos} view={info.view}>{children}</Popover>
+      <Popover group={id} anchor={() => anchors.current[id]} bar={pos} view={info.view} avoid={avoid}>{children}</Popover>
     ) : null;
   const trigger = (id: string, content: ReactNode) => (
     <button ref={(el) => { anchors.current[id] = el; }} data-testid={`ctx-pop-${id}`} title={GROUP_TITLE[id]}

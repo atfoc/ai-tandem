@@ -204,22 +204,44 @@ export const MARGIN = 8;
 const clamp = (v: number, lo: number, hi: number) => (hi < lo ? lo : Math.min(Math.max(v, lo), hi));
 
 /**
- * The bar's top-left, in the viewport's coordinates: centred above the selection, below it when there is no room above,
- * clamped into the viewport (a selection that fills it gets the bar inside, at the top or bottom).
+ * Moves a box (top-left `left`, `top`, size `size`) clear of the obstacles (the main toolbar on the left, the zoom bar at the
+ * bottom left: they sit above the canvas at the same z-index and win the clicks). A box that overlaps one, with MARGIN to
+ * spare, goes to its right (left edge at its right edge + MARGIN) when it still fits in the view; in a view too narrow for
+ * that it goes above or below the obstacle (the nearer side that fits), else it stays where it was.
  */
-export function placeBar(sel: Box, bar: Size, view: Size): { left: number; top: number; below: boolean } {
-  const left = clamp((sel.minX + sel.maxX) / 2 - bar.w / 2, MARGIN, view.w - MARGIN - bar.w);
-  const above = sel.minY - GAP - bar.h;
-  if (above >= MARGIN) return { left, top: Math.min(above, view.h - MARGIN - bar.h), below: false };
-  return { left, top: clamp(sel.maxY + GAP, MARGIN, view.h - MARGIN - bar.h), below: true };
+export function clearOf(left: number, top: number, size: Size, view: Size, obstacles: readonly Box[]): { left: number; top: number } {
+  for (const o of obstacles) {
+    const hits = top < o.maxY + MARGIN && top + size.h > o.minY - MARGIN && left < o.maxX + MARGIN && left + size.w > o.minX - MARGIN;
+    if (!hits) continue;
+    const right = o.maxX + MARGIN;
+    if (right + size.w <= view.w - MARGIN) { left = right; continue; }
+    const up = o.minY - MARGIN - size.h, down = o.maxY + MARGIN;
+    const fitsUp = up >= MARGIN, fitsDown = down + size.h <= view.h - MARGIN;
+    if (fitsUp && (!fitsDown || top - up <= down - top)) top = up;
+    else if (fitsDown) top = down;
+  }
+  return { left, top };
 }
 
-/** A popover's top-left, in the viewport's coordinates: under its button, above it when there is no room below, clamped. */
-export function placePopover(anchor: Box, pop: Size, view: Size): { left: number; top: number; up: boolean } {
+/**
+ * The bar's top-left, in the viewport's coordinates: centred above the selection, below it when there is no room above,
+ * clamped into the viewport (a selection that fills it gets the bar inside, at the top or bottom), and clear of the
+ * obstacles (`clearOf`).
+ */
+export function placeBar(sel: Box, bar: Size, view: Size, obstacles: readonly Box[] = []): { left: number; top: number; below: boolean } {
+  const left = clamp((sel.minX + sel.maxX) / 2 - bar.w / 2, MARGIN, view.w - MARGIN - bar.w);
+  const above = sel.minY - GAP - bar.h;
+  if (above >= MARGIN) return { ...clearOf(left, Math.min(above, view.h - MARGIN - bar.h), bar, view, obstacles), below: false };
+  return { ...clearOf(left, clamp(sel.maxY + GAP, MARGIN, view.h - MARGIN - bar.h), bar, view, obstacles), below: true };
+}
+
+/** A popover's top-left, in the viewport's coordinates: under its button, above it when there is no room below, clamped, and
+ *  clear of the obstacles (`clearOf`). */
+export function placePopover(anchor: Box, pop: Size, view: Size, obstacles: readonly Box[] = []): { left: number; top: number; up: boolean } {
   const left = clamp(anchor.minX, MARGIN, view.w - MARGIN - pop.w);
   const down = anchor.maxY + 6;
-  if (down + pop.h <= view.h - MARGIN) return { left, top: down, up: false };
+  if (down + pop.h <= view.h - MARGIN) return { ...clearOf(left, down, pop, view, obstacles), up: false };
   const up = anchor.minY - 6 - pop.h;
-  if (up >= MARGIN) return { left, top: up, up: true };
-  return { left, top: clamp(down, MARGIN, view.h - MARGIN - pop.h), up: false };
+  if (up >= MARGIN) return { ...clearOf(left, up, pop, view, obstacles), up: true };
+  return { ...clearOf(left, clamp(down, MARGIN, view.h - MARGIN - pop.h), pop, view, obstacles), up: false };
 }

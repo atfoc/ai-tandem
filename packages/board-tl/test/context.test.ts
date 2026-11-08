@@ -15,6 +15,7 @@ import {
   GAP,
   placeBar,
   placePopover,
+  clearOf,
   readValues,
   withBold,
   type ShapeLike,
@@ -156,4 +157,43 @@ test("a popover: under its button, above it when no room below, clamped", () => 
   // neither fits: clamped into the viewport
   const tiny = placePopover({ minX: 10, minY: 50, maxX: 40, maxY: 80 }, pop, { w: 300, h: 150 });
   assert.equal(tiny.top, 150 - 8 - 120);
+});
+
+// The main toolbar as the desktop board draws it (left 12 px, 44 px wide, vertically centred) and the zoom bar (bottom left).
+const TOOLS = { minX: 12, minY: 210, maxX: 56, maxY: 550 };
+const ZOOM = { minX: 12, minY: 712, maxX: 160, maxY: 748 };
+
+test("the bar keeps clear of the main toolbar (a click on it must not press a tool under it)", () => {
+  const view = { w: 616, h: 760 }; // the board pane of the desktop viewport (the bug's repro: a text near the left edge)
+  const bar = { w: 300, h: 36 };
+  const sel = { minX: 60, minY: 500, maxX: 160, maxY: 530 };
+  assert.deepEqual(placeBar(sel, bar, view), { left: 8, top: 500 - GAP - 36, below: false }, "no obstacle: the old place, over the toolbar");
+  assert.deepEqual(placeBar(sel, bar, view, [TOOLS, ZOOM]), { left: 56 + 8, top: 500 - GAP - 36, below: false });
+  // out of the toolbar's height: the left edge stays at the margin
+  assert.equal(placeBar({ minX: 60, minY: 140, maxX: 160, maxY: 170 }, bar, view, [TOOLS]).left, 8);
+  // further right than the toolbar: untouched
+  assert.equal(placeBar({ minX: 300, minY: 400, maxX: 400, maxY: 430 }, bar, view, [TOOLS]).left, 200);
+  // the selection fills the view: the bar at the bottom, clear of the zoom bar
+  const bottom = placeBar({ minX: 0, minY: -50, maxX: 200, maxY: 900 }, bar, view, [TOOLS, ZOOM]);
+  assert.deepEqual(bottom, { left: 160 + 8, top: 760 - 8 - 36, below: true });
+});
+
+test("in a view too narrow to put the bar beside the toolbar, it goes above or below the toolbar, the nearer side", () => {
+  const view = { w: 390, h: 844 };
+  const tools = { minX: 12, minY: 252, maxX: 56, maxY: 592 };
+  const bar = { w: 340, h: 36 };
+  assert.deepEqual(placeBar({ minX: 20, minY: 400, maxX: 120, maxY: 430 }, bar, view, [tools]), { left: 8, top: 252 - 8 - 36, below: false });
+  assert.deepEqual(placeBar({ minX: 20, minY: 580, maxX: 120, maxY: 610 }, bar, view, [tools]), { left: 8, top: 592 + 8, below: false });
+  // fits neither way: it stays (nothing better to do)
+  assert.deepEqual(clearOf(8, 100, { w: 340, h: 300 }, { w: 390, h: 400 }, [{ minX: 12, minY: 20, maxX: 56, maxY: 380 }]), { left: 8, top: 100 });
+});
+
+test("a popover opened from the bar keeps clear of the toolbar too", () => {
+  const view = { w: 616, h: 760 };
+  const pop = { w: 240, h: 120 };
+  // the bar's button at the left: the popover under it, to the toolbar's right
+  assert.equal(placePopover({ minX: 30, minY: 300, maxX: 60, maxY: 330 }, pop, view, [TOOLS]).left, 64);
+  // clamped from the right edge onto the toolbar in a narrow view: pushed off it
+  const narrow = placePopover({ minX: 100, minY: 300, maxX: 130, maxY: 330 }, pop, { w: 300, h: 760 }, [TOOLS]);
+  assert.deepEqual(narrow, { left: 300 - 8 - 240, top: TOOLS.maxY + 8, up: false }, "no room beside it: below the toolbar");
 });

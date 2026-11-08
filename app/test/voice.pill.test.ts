@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import type { ChatView } from "@aiwb/core/types.ts";
 
 import { NO_HOLD, TAP_MS, WORDS_WAIT_MS, settle, spaceDown, spaceUp, wakeAt, type Hold } from "../src/screens/voice/pill/hold.ts";
+import { spaceFocusOf } from "../src/screens/voice/pill/holdkeys.web.ts";
 import { barHeights, captionTexts, chipChats, countdownAt, hiddenCount, orbState, pickTarget, pillSize, selectionKey } from "../src/screens/voice/pill/logic.ts";
 
 const chat = (id: string, o: Partial<ChatView> = {}): ChatView => ({ id, board: "b", created: id, ...o }) as unknown as ChatView;
@@ -162,4 +163,18 @@ test("while Space is held a countdown is cancelled (the release decides); a sess
     assert.deepEqual(settle(down, { phase, words: true }, 1500), { hold: NO_HOLD, act: null }, phase);
     assert.deepEqual(settle({ kind: "released", at: 1000 }, { phase, words: true }, 1500), { hold: NO_HOLD, act: null }, `released, ${phase}`);
   }
+});
+
+// A focused element as far as `closest` goes: the simple selectors it or its ancestors match.
+const focused = (...matches: string[]) => ({ closest: (sel: string) => (sel.split(",").some((s) => matches.includes(s.trim())) ? {} : null) });
+
+test("hold Space leaves Space to either board while the focus is inside it (panning never opens the microphone, voice goal 4.9)", () => {
+  assert.equal(spaceFocusOf(focused(".excalidraw")), null, "the Excalidraw canvas");
+  assert.equal(spaceFocusOf(focused(".tl-container", ".aiwb-tl-root")), null, "tldraw's container, inside our mount");
+  assert.equal(spaceFocusOf(focused(".aiwb-tl-root")), null, "our mount itself (it takes the focus when the board mounts)");
+  assert.equal(spaceFocusOf(focused("textarea")), null, "a text box");
+  assert.equal(spaceFocusOf(focused("button")), null, "a button");
+  assert.equal(spaceFocusOf(focused("[data-testid='pill-orb']", "button")), "take", "the orb itself");
+  assert.equal(spaceFocusOf(focused()), "take", "anywhere else");
+  assert.equal(spaceFocusOf(null), "take", "nothing focused");
 });

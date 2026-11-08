@@ -124,3 +124,10 @@ Each entry: the decision, who made it (user / orchestrator / architect), why.
   1999.999… for about one L in eight, which floor would make 1999), so a capped picture's long side is exactly 2000; a
   picture is capped only when floor(long × scale) > 2000. The answer's text still names the scale (3 decimals).
   `pictureSize`/`fitScale` in `packages/board-host/src/node/export.ts`, tested in `test/picsize.test.ts`.
+
+- **V3 (verify) — the context bar and its popovers keep clear of our toolbars.** `placeBar`/`placePopover`
+  (`packages/board-tl/src/view/ctxModel.ts`) take obstacles: `ContextBar.tsx` measures `[data-testid="aiwb-maintoolbar"]`
+  and `[data-testid="aiwb-zoom"]` from the DOM each render. A bar or popover that overlaps one (with 8 px to spare) moves
+  to its right (left edge = its right edge + 8); in a view too narrow for that it goes above or below the obstacle (the
+  nearer side that fits), else stays. A new control over the canvas at z-index 1000 belongs in `OBSTACLES`. The pill's
+  hold Space leaves Space to the tl board when the focus is inside `.aiwb-tl-root` (as `.excalidraw`).
