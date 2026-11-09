@@ -154,7 +154,7 @@ On a physical iPhone or iPad, release build, with the same board on each run:
   same result as before.
 - **Live switch:** with a board open, changing the theme through every dark and flavour theme and back to light,
   each takes effect at once.
-- **The tests of the repository** that `AGENTS.md` names for a change to the app's packages: the unit tests and type
+- **The tests of the repository** for a change to the app's packages: the unit tests and type
   checks at the root, and the board view's own checks of the phone target in a browser. The device test that covers
   the board in a web view runs once, on the simulator you name, as a regression check of the page and not as a
   measure of smoothness.

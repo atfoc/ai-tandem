@@ -325,7 +325,7 @@ where it can show them, and by the person on a device where it cannot.
 
 - The Go tests are untouched in what they test, and nothing in the Go server changed.
 - An app with voice never switched on makes no request to the voice service and asks for no microphone permission.
-- The tests of the repository that `AGENTS.md` names for the packages changed: from the root `npm test && npm run
+- The tests of the repository for the packages changed: from the root `npm test && npm run
   check`, `cd web && npm test`, `cd desktop && npm test`, and the browser checks that touch the screens changed. The
   device test that covers the microphone and the audio session runs once, on a simulator you name, only because the
   native side changed.

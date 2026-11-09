@@ -140,7 +140,7 @@ resume is a turn that carries results like any other.
 - **Clients are older than servers and servers than clients.** The new status and the retry fields are
 additions. A client that does not know a status shows the subagent without breaking, and a server answers a
 client that does not know the new fields as before.
-- **Tests follow the repository's rules** (`AGENTS.md`): the default set stays fast and passes on a loaded
+- **Tests follow the repository's rules**: the default set stays fast and passes on a loaded
 machine, the waits of the retry are made short for tests the way the other production waits are, no test calls a paid
 model, and what is too slow for the default set goes to the full set with the default-set test that covers the same behaviour named.
 - **Wait values stay as the production ones** in a built server; only a test lowers them.

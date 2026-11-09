@@ -1,6 +1,6 @@
 // The self-test screen of the hardware keyboard (architecture AD-73, AD-83; package N3): the real keys port (platform/keys, the
 // aiwb-keys module) with the real window shortcuts of the shell (screens/shell/shortcuts.ts: ⌘J, ⌘N, ⌘B) over the real store, and a
-// text box. A device test sends the keys (iOS: the XCUITest bundle app/e2e/xcuitest/keys, Android: adb input) and reads this
+// text box. A device test sends the keys (iOS: XCUITest, Android: adb input) and reads this
 // screen; the screen says "keys self-test ok" once every shortcut of the module's list (but the optional ones, below) has come exactly as the platform makes it,
 // and "keys self-test FAILED" at the first key that is not one of them (a typed letter must never come here).
 import { useEffect, useReducer, useRef, useState } from "react";

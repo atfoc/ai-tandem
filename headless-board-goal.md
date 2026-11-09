@@ -209,7 +209,7 @@ cannot run behaves as today.
 
 - A board file opened and shown by a reader is not written.
 - A call an agent makes while a window holds the board gives the result it gave before.
-- The tests of the repository that `AGENTS.md` names for the packages changed (the Go default set for each, the full set
+- The tests of the repository for the packages changed (the Go default set for each, the full set
   of each changed package once before finishing, `-race` where goroutines share state, and the unit tests and type
   checks of the app's packages). The device test that covers the board runs once, on a simulator you name, only if the
   board's window or the native side changed.

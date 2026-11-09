@@ -1,5 +1,5 @@
 // The native module on a device (architecture AD-83, flow net-selftest): the Connector over the real module (or, under Node,
-// over the Node ports: `run.mjs --platform node`) against a scratch Go server and four stand-ins the runner started. It runs
+// over the Node ports) against a scratch Go server and four stand-ins the runner started. It runs
 //   1. the connector contract (packages/conn/test/contract): the cases that need a server the case can script (writes on the
 //      event stream, cuts, requests it saw) are skipped with their reason, since a real Go server cannot be scripted; the rest run
 //      against the stand-ins (a refused port, a listener that is not TLS, TLS without h2, a handshake that never ends) and the server;

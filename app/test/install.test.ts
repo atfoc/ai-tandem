@@ -100,7 +100,7 @@ test("known failures are explained, and an unknown one is not made up", () => {
 });
 
 test("what the iOS install needs from the Apple account is told in the stop", () => {
-  for (const word of ["Apple Account", "AIWB_IOS_TEAM_ID", "AIWB_IOS_BUNDLE_ID", "Developer Mode", "Trust This Computer", "docs/development.md"]) assert.ok(signingNeeds.includes(word), word);
+  for (const word of ["Apple Account", "AIWB_IOS_TEAM_ID", "AIWB_IOS_BUNDLE_ID", "Developer Mode", "Trust This Computer"]) assert.ok(signingNeeds.includes(word), word);
 });
 
 test("--help prints the usage and stops with status 0; a missing platform is status 2", () => {

@@ -1,5 +1,5 @@
-// The control server of the device self-test of `aiwb-net` (src/dev/netSelfTest.ts in the app), started by the runner
-// (app/e2e/lib/scratch.mjs `startStandIns`) on the computer the simulator or the emulator reaches (127.0.0.1; the Android
+// The control server of the device self-test of `aiwb-net` (src/dev/netSelfTest.ts in the app), started by the device
+// test runner on the computer the simulator or the emulator reaches (127.0.0.1; the Android
 // emulator through `adb reverse`).
 //
 // The connector contract (packages/conn/test/contract) needs a server a real Go server cannot be: one that lists the requests

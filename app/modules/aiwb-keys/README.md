@@ -16,7 +16,7 @@ decisions (what ⌘N does, under which dialog it does nothing) are the page's ow
 | `android/.../AiwbKeysModule.kt` | the activity window's `dispatchKeyEvent` |
 | `../../src/platform/nativekeys.ts`, `keys.native.ts` | the adapters `keysOver(module): OnKey` (the keys port) and `tabOver(module)` (Tab on request), and the port itself (`onKey`, `takeTab`) |
 | `../../test/nativekeys.test.ts` | the adapters over the fake; the list against what `@aiwb/core` reads; the list and the Tab handling against the Swift and Kotlin sources |
-| `../../src/dev/KeysSelfTest.tsx`, `../../e2e/maestro/keys.yaml`, `../../e2e/xcuitest/keys/` | the device test (below) |
+| `../../src/dev/KeysSelfTest.tsx` | the self-test screen (below) |
 
 ## The list
 
@@ -82,12 +82,9 @@ no such function and `takeTab` does nothing there.
 
 Not verified on a device yet: the Swift and the Kotlin are checked by `app/test/nativekeys.test.ts` only as sources.
 
-## The device test
+## The self-test screen
 
-`node app/e2e/run.mjs keys --platform ios --device <udid>` (`ORCHESTRATION.md`: your own simulator). The flow
-`app/e2e/maestro/keys.yaml` opens the keys self-test screen of the development build and types into its text box (Maestro can type
-but cannot send ⌘ combinations on iOS); the runner then runs the XCUITest bundle `app/e2e/xcuitest/keys`, which sends the shortcuts as
-a keyboard does, from the text box, and reads the screen: the sidebar, the panel and the chat counter changed by the real shell
-shortcut handler, the last key as the page's predicates read it, and that nothing typed reached a shortcut. The screen's verdict
-(`keys self-test ok` / `FAILED`) is posted to the runner like the other self-tests'. On Android the same screen is driven with
-`adb shell input keycombination` (API 33+).
+A development build made with `EXPO_PUBLIC_AIWB_SELFTEST=1` has a keys self-test screen (`src/dev/KeysSelfTest.tsx`): a text box
+over the real shell shortcut handler. Keys sent to it (on iOS from XCUITest, on Android with `adb shell input keycombination`,
+API 33+) change the sidebar, the panel and the chat counter, and the screen shows the last key as the page's predicates read it,
+that nothing typed reached a shortcut, and its verdict (`keys self-test ok` / `FAILED`).

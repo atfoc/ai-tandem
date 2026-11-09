@@ -1,6 +1,6 @@
 // What the device self-tests share (architecture AD-83): a way to run cases one after the other and say what each did, with
 // no test framework (Hermes has none; node:test is not there). The logic files (connSelfTest.ts, netSelfTest.ts) import
-// nothing of React Native, so the same cases also run under Node (app/test/selftest.test.ts, `run.mjs --platform node`).
+// nothing of React Native, so the same cases also run under Node (app/test/selftest.test.ts).
 
 export type Outcome = { name: string; status: "pass" | "fail" | "skip"; detail?: string; ms: number };
 /** `skip(reason)` skips the case; `note(text)` says something about a case that passed (a measurement), shown beside it. */

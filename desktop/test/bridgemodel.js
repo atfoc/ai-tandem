@@ -1,7 +1,7 @@
 // Helpers of the bridge tests (no Electron): a fake electron module for the preload, a fake ipcRenderer wired to
 // the REAL IPC face of the desktop app (ipcface.js) through a fake ipcMain, and a model of what contextBridge does
 // to what crosses it. The model is written from what the Electron run of the spike found
-// (plans/rn-rewrite/spikes/electron.md); the Electron run (npm run e2e) is the proof, the model is what lets
+// (plans/rn-rewrite/spikes/electron.md); the model is what lets
 // `node --test` catch a regression of the bridge's shape without a window.
 const Module = require('node:module');
 const { createIpcFace } = require('../ipcface.js');

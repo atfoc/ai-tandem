@@ -35,14 +35,14 @@
 //  - Android: editable={false} disables the view (nothing can be selected), so a read-only box stays editable to the
 //    platform with no keyboard and no caret, and refuses every change. An arrow key at either end of the text moves the
 //    focus to the next view, as in any Android field.
-//  - Checked on the simulator and the emulator (`node app/e2e/run.mjs composer-chips`): the flow in the real composer of a board chat and on the dev gallery, the hardware keys (XCUITest on
+//  - Checked on the simulator and the emulator: the flow in the real composer of a board chat and on the dev gallery, the hardware keys (XCUITest on
 //    iOS, adb key events on Android), and on Android Gboard's own typing next to a chip with a suggestion picked. Not
 //    verified (by hand, goal 7.5): IME composition of Japanese, Chinese, Korean and dictation; autocorrect replacing a word
 //    next to a chip (unit-tested in applyChange; neither keyboard corrected a misspelling in the runs); undo/redo (shake,
 //    ⌘Z); dragging the selection handles across a chip; fast typing on a real device (the runs tap keys about twice a
 //    second). Each is a place where a field that has its text re-set can fight the platform. The Enter of `editing` with the soft
 //    keyboard (the tab kept, the list continued) and the key row (its presses keep the keyboard and the caret) passed on the iPhone
-//    simulator (`node app/e2e/run.mjs ux-editkeys`). Not verified on a device: Android, a hardware Enter, the hardware Tab through
+//    simulator. Not verified on a device: Android, a hardware Enter, the hardware Tab through
 //    the keys port, and how often the frame of the bare line break shows.
 import React, { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { Platform, StyleSheet, Text, TextInput, type NativeSyntheticEvent, type TextInputKeyPressEventData, type TextInputSelectionChangeEventData } from "react-native";

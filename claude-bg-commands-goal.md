@@ -178,7 +178,7 @@ A subagent or chat that waits on one stays waiting, and counts against the cap, 
 it. No time limit is added by this goal. `[not verified]` whether that is enough in practice.
 
 **4.10 The tests spend nothing.** `[standing]` The tests of this work use a stand-in agent that plays recorded streams
-of the real process. No paid model is called to confirm it. Following `AGENTS.md`, the default set of the packages
+of the real process. No paid model is called to confirm it. Following the repository's test rules, the default set of the packages
 changed while working, the full set of them and the whole default run before finishing, and the checks of what a screen
 shows if the waiting state is shown by a screen.
 

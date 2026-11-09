@@ -5,7 +5,7 @@ The product work is the work packages of that document.
 
 ```sh
 cd spikes/headless-engine
-npm install && npm install --no-save playwright@1.64.1      # Chromium 156 is the reference (see AGENTS.md)
+npm install && npm install --no-save playwright@1.64.1      # Chromium 156 is the reference
 (cd ../../packages/board-view && node build.mjs web --out ../../spikes/headless-engine/out/web)   # the window, as shipped
 node build.mjs                                              # the Node engine -> out/engine.mjs (skia-canvas by default; AIWB_CANVAS=napi)
 cd harness

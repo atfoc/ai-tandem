@@ -1,7 +1,7 @@
 // The native chip input's document (package K2, AD-61 (a)): the composer spike's 13 tests of
 // spikes/composer/test/chipdoc.test.ts, then the offsets of the contract (AD-60), which count in the value, mapped to the
 // string the field shows and back. The field itself is checked by web/dev/checks/L4b-chipdoc.mjs (in Chromium, on the
-// gallery's ?gallery=chipdoc) and on the simulator and the emulator by app/e2e (`run.mjs composer-chips`: the real composer, the iOS keys).
+// gallery's ?gallery=chipdoc) and on the simulator and the emulator in the device checks (the real composer, the iOS keys).
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { FmtElement } from "@aiwb/core/format.ts";

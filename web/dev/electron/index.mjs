@@ -7,7 +7,7 @@
 // Run it with `cd web && npm run uicheck:electron` (web/dev/uicheck-electron.mjs).
 //
 // What it is: the browser only. The page is served by the check's mock over HTTP, with no preload, no bridge and no app window
-// (desktop/e2e/app.e2e.mjs is that); a window opens for each page, and the last line of the summary names this Chromium.
+// (the desktop app is that); a window opens for each page, and the last line of the summary names this Chromium.
 // Why windows: Electron over CDP makes no browser context and no target (`Target.createBrowserContext` and `Target.createTarget`
 // fail), so a page can only be a BrowserWindow that the main process opens.
 // Known: `A6.3-markdown` (a page for each theme and stage, one after the other, each with a clock and the still style) fails here, its
@@ -34,7 +34,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const web = path.resolve(here, "../..");
 const realDir = process.env.AIWB_REAL_PLAYWRIGHT || path.join(web, "node_modules/playwright");
-if (!fs.existsSync(path.join(realDir, "index.mjs"))) throw new Error(`no Playwright in ${realDir}: install it in web/ (AGENTS.md) or set AIWB_REAL_PLAYWRIGHT`);
+if (!fs.existsSync(path.join(realDir, "index.mjs"))) throw new Error(`no Playwright in ${realDir}: install it in web/ or set AIWB_REAL_PLAYWRIGHT`);
 const pw = await import(pathToFileURL(path.join(realDir, "index.mjs")).href);
 
 function electronPath() {

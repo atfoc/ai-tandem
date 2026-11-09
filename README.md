@@ -120,8 +120,7 @@ a server is down, its section says so and the others keep working.
 ![The sidebar with three sections: this computer and two remote servers, one connected with its own groups, whiteboards and chats and one that is unreachable; the open chat runs on one of the remote servers](docs/screenshots/remote-servers.png)
 
 Servers are meant for a private network or a VPN, not for the open internet: the secret that
-connects an app gives access to everything on that server. Set-up is in
-[docs/remote-servers.md](docs/remote-servers.md).
+connects an app gives access to everything on that server.
 
 ### Stay organised, and stay local
 
@@ -136,7 +135,7 @@ connects an app gives access to everything on that server. Set-up is in
   an Android device it is the same app with the layout of its screen: the sidebar and the chat are
   screens one after the other on a phone, side by side on a tablet and a desktop. A phone or
   tablet has no server of its own: it connects to the servers you add, each one on
-  [another machine](docs/remote-servers.md) (the form takes the output of the server's set-up
+  another machine (the form takes the output of the server's set-up
   script, or the code the script draws, which the camera scans).
 - **Themes.** Light, dark, follow the system, or one of the four Catppuccin flavours. The board's
   canvas follows the theme too, and the board file does not change.
@@ -180,8 +179,7 @@ scripts/install-app.sh  # copies it to ~/Applications, so Spotlight finds it
 On a Mac, `scripts/build-app.sh` with no argument makes the macOS app for the Mac's own processor. The
 other processor, and the Windows app (an unpacked folder, `bin/windows-<arch>/AI Whiteboard/`, built on
 a Mac or on Linux), are named with `--os macos|windows` and `--arch arm64|x64`; the Windows app is not
-tested on a Windows computer yet. See
-[Build and install the desktop app](docs/development.md#build-and-install-the-desktop-app).
+tested on a Windows computer yet.
 
 **Set the server up, once.** The app starts the server of your computer itself, but the server
 does not start until it has been set up: set-up makes its certificate and its secret. Run it once
@@ -203,11 +201,6 @@ app's own; an iOS install needs an Apple Account signed in to Xcode, a free one 
 node app/scripts/install.mjs --platform android
 node app/scripts/install.mjs --platform ios --device "Ana's iPhone"
 ```
-
-What the tools and the accounts must provide is in [docs/development.md](docs/development.md#install-the-app-on-a-phone-or-tablet).
-
-Running the app from a checkout in development, the tests and the device tests are in
-[docs/development.md](docs/development.md).
 
 ## How it works
 
@@ -254,8 +247,6 @@ flowchart LR
   the desktop the main process does, so the key stays out of the page. A spoken turn reaches the server as the ordinary
   message that a typed one is.
 
-More in [docs/architecture.md](docs/architecture.md).
-
 ## Good to know
 
 - **One writer per board.** Any number of windows can show a board and follow it live, but one
@@ -269,13 +260,11 @@ More in [docs/architecture.md](docs/architecture.md).
   told that no board is open. Text in Excalidraw's own fonts is laid out as a window lays it out; Chinese,
   Japanese, Korean and emoji text uses the machine's fonts, so a Linux server wants Noto CJK and Noto
   Color Emoji installed. Showing the board to you, your selection and your
-  view need a window, so the agent cannot use them while it works away. See
-  [Who changes a board](docs/architecture.md#who-changes-a-board) and
-  [The board engine in Node](docs/architecture.md#the-board-engine-in-node).
+  view need a window, so the agent cannot use them while it works away.
 - **Voice needs ElevenLabs and your key.** The audio of dictation, speech mode and Read aloud goes to ElevenLabs under your
   own account and plan (it uses credits), and the key never goes to a server of AI Whiteboard. On the desktop the main
   process makes the calls, so the key never enters the page. Pressing a voice control without a key opens a popover, not
-  a microphone. See [Voice](docs/architecture.md#voice).
+  a microphone.
 - **One instance per machine.** The MCP port is fixed at 6006, so a second AI Whiteboard server
   on the same machine does not start.
 - **A server's secret is all or nothing.** Whoever has a server's secret reads and changes every
@@ -283,23 +272,3 @@ More in [docs/architecture.md](docs/architecture.md).
   port inside a network you trust.
 - **pi runs its tools without asking.** pi chats show no permission cards; only access to the
   app's own data folder is refused, and that guard is not a sandbox.
-
-The full list, with the caps, is in [docs/limitations.md](docs/limitations.md).
-
-## Documentation
-
-- [docs/README.md](docs/README.md): the index of everything below
-- [docs/architecture.md](docs/architecture.md): server, the app on its four targets, who changes a
-  board (readers, the writer and the headless writer), the connection between them, voice, the MCP
-  listener and the board tools, subagents, images
-- [docs/prompt-library.md](docs/prompt-library.md): the prompt library in full
-- [docs/remote-servers.md](docs/remote-servers.md): this computer and other servers as sections of
-  the sidebar, building a server for another machine and using it from the app, and updating from
-  the version before
-- [docs/server-reference.md](docs/server-reference.md): server commands and flags
-- [docs/troubleshooting.md](docs/troubleshooting.md): when an agent does not get its board tools,
-  and when this computer's server does not start
-- [docs/limitations.md](docs/limitations.md): limitations and caps
-- [docs/development.md](docs/development.md): build, run and test while working on the app; the
-  install script for a phone or tablet; trying voice against a stand-in; the browser checks and the device tests
-- [AGENTS.md](AGENTS.md): for contributors, which tests to run and how to write them

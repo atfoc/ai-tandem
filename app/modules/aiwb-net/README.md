@@ -270,8 +270,8 @@ The fake (`src/fake.ts`) gets the first group of rows from the scripted server o
 1. **The fake**, in `node --test` (`cd app && npm test`): `app/test/aiwbnet.test.ts` (the error shape, the table through the fake, the events).
 2. **The adapter over the fake**, the same contract the Node connector passes (`packages/conn/test/contract/connector-contract.js`,
    `runConnectorContract(makeConnector, env)`): `app/test/nativeConnector.test.ts`.
-3. **The real module on a simulator or emulator** (N1, N2, V5): `node app/e2e/run.mjs net-selftest --platform ios|android --device <id>`
-   builds the development build, starts a scratch Go server and the stand-ins, and the screen `src/dev/SelfTestRoot.tsx` runs
+3. **The real module on a simulator or emulator** (N1, N2, V5): in a development build made for the self-tests, against a scratch
+   Go server and the stand-ins, the screen `src/dev/SelfTestRoot.tsx` runs
    `runNetSelfTest` (`src/dev/netSelfTest.ts`) twice, with the server reached as `127.0.0.1` and by a dotted name
    (`localtest.me`, AD-36): `runConnectorContract` with `nativeConnector(AiwbNetModule)`, cases against the real Go server (the pin,
    the secret, the event stream, the limits, a POST of non-ASCII bytes, the platform's own trust, a name that does not resolve, a

@@ -1,5 +1,5 @@
 // A line on the screen of the app that says what the secure store and MMKV hold of the servers (package V4, `storage-picker-permission`): a
-// device test reads it. Only a build made with EXPO_PUBLIC_AIWB_PROBE=1 has it (app/e2e/run.mjs, flows with `devhooks=1`), for a scratch server whose
+// device test reads it. Only a build made with EXPO_PUBLIC_AIWB_PROBE=1 has it, for a scratch server whose
 // secret the build was told (EXPO_PUBLIC_AIWB_PROBE_SECRET); it never shows a secret, only whether the one it was told is where it should be.
 //
 //   probe: list=<entries in the saved list> secure=<of them with a secret in the secure store> match=<of them whose secret is the told one>

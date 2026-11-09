@@ -12,7 +12,6 @@
 //    The palette's licence notice (Catppuccin, MIT) is written beside the page as THIRD-PARTY-NOTICES.txt (noticeText): the
 //    licence asks that every copy carries it, and the bundle's own copy of the text is a string of an unused function.
 // 3. The check that nothing is named by an absolute path (index.html, the bundle's strings): such an export is blank under file://.
-//    desktop/e2e/app.e2e.mjs (AIWB_PAGE=../app/dist-web/index.html) loads the result in the window itself.
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";

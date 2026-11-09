@@ -1,4 +1,4 @@
-// The self-test screen of the overlays on a phone (package P1; flow app/e2e/maestro/sheets.yaml): the real Sheet, Dialog, Popover and Menu of ui/ with the
+// The self-test screen of the overlays on a phone (package P1): the real Sheet, Dialog, Popover and Menu of ui/ with the
 // real text fields of the Servers form, on a device with its on-screen keyboard. A device test reads and presses what it shows:
 //  - a sheet with three text boxes and its buttons below them keeps the box that has the focus and the buttons above the keyboard (the test
 //    types, and presses a button while the keyboard is up: a button under the keyboard would not be pressed, a key would);

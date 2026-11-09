@@ -8,7 +8,7 @@
 //                   red (`data-missing` true), the line `agent-reason` says "… is not installed …", and the Agent sheet lists that agent first,
 //                   dimmed, with the reason. The row hides while the box has the focus with the keyboard up: on the web build `useKeyboardUp`
 //                   (app/src/platform/keyboard.web.tsx) is always false, so what is asserted here is that the row STAYS while the box has the focus;
-//                   the hiding itself is the device flow's (app/e2e composer-chips). A new chat opens with its box unfocused (the shell's focus
+//                   the hiding itself is the device flow's. A new chat opens with its box unfocused (the shell's focus
 //                   keeps off a chat with a chip row at the phone), so on a device the keyboard is down and the row in sight.
 //   2 Agent         `agent-sheet` titled "Agent", sub "New chat"; a `picker-row` per agent with its note; the chosen one tinted with ✓ (`picker-check`);
 //                   `picker-foot` "A new agent starts with its own default model and effort."; no Done, no Cancel; a tap on another agent sends the

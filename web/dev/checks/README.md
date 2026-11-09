@@ -20,8 +20,8 @@ VIEWPORT=phone node web/dev/checks/L1-primitives.mjs   # one viewport only
 
 The runner builds the web export once for the whole run (`buildAppDist` of `dev/shot.mjs`: `npm run build:web` in `app/` into a
 temporary folder; about 5 s), gives it to each check as `DIST`, and runs the checks one after the other, each in a process of its own.
-Playwright is no dependency of the repository: `npm install --no-save playwright && npx playwright install chromium` in `web/`
-(`AGENTS.md`). No check calls a paid model. A later `npm install` in `web/` removes that Playwright, and the runner then takes the
+Playwright is no dependency of the repository: `npm install --no-save playwright && npx playwright install chromium` in `web/`.
+No check calls a paid model. A later `npm install` in `web/` removes that Playwright, and the runner then takes the
 newest one of the npx cache, whatever its age: the summary's last line names the Playwright and the Chromium that drew the pages. The
 folder passes on Chromium 156 (Playwright 1.64.1). On older ones two checks fail by the browser, not the build: L8 on 151 (an answer
 that grows by more than 40 px between two scroll events is not followed to the end; 153 passes, and so does the whole of L8 in
@@ -253,4 +253,4 @@ rasters of one page, so `P0.7` uses 2.
   (headless-board W11): a check that draws, selects or takes a point first presses **Edit here** with `editHere(page)` of `boarddraw.mjs`.)
 - A board tool call of an agent is made through the page with the mock's `rpc` knob (`await rpc({ chat, board, target, name, args })` through
   `mockEval`, its header says what comes back); `dev/agenttools.mjs` is the scenario that `L6-agenttools.mjs` runs.
-- Nothing here runs on a device: that is Maestro (AD-83, Track V).
+- Nothing here runs on a device.

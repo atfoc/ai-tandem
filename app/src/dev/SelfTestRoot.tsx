@@ -1,5 +1,5 @@
 // The root of a self-test build (architecture AD-83): shown instead of the app when EXPO_PUBLIC_AIWB_SELFTEST=1 (App.tsx).
-// One button per self-test; the Maestro flows (app/e2e/maestro) press one and wait for its verdict text. Every element a flow
+// One button per self-test; a device test presses one and wait for its verdict text. Every element a test
 // reads has a testID. The runner learns what each case did from the report URL it gave this build.
 import { useCallback, useRef, useState } from "react";
 import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";

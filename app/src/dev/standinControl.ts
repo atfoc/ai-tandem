@@ -1,7 +1,7 @@
 // The stand-in of the connector contract, driven from the device (architecture AD-83, package N1). A real Go server cannot be
 // scripted, so 13 of the contract's 19 cases cannot run against it. The stand-in of @aiwb/conn's tests can: it lists the
 // requests it got, cuts its connections, hangs a path, holds an event stream open and writes to it. It lives on the computer
-// (modules/aiwb-net/dev/control.mjs, started by app/e2e/lib/scratch.mjs) and the device reaches it through a small control
+// (modules/aiwb-net/dev/control.mjs) and the device reaches it through a small control
 // server. The contract reads `requests()` and `connections()` synchronously, so they are a mirror, refreshed after every
 // call of the connector that settles and every 30 ms while a stand-in is in use; the calls that act (`write`, `cut`, `hang`...)
 // go in order, and the next call of the connector waits for them. Nothing here imports React Native: it runs under Node too.

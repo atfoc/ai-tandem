@@ -166,10 +166,9 @@ done without them; they are the first thing to run when such a computer is there
 
 ### 6.5 Nothing else moved
 
-- The tests of the repository that `AGENTS.md` names for what changed run and pass: `npm test && npm run check` at the root,
+- The tests of the repository for what changed run and pass: `npm test && npm run check` at the root,
   `cd desktop && npm test`, `cd packages/headless && npm test && npm run check` for the headless writer, and the Go tests for
   the packages touched.
-- The desktop end-to-end check (`cd desktop && npm run e2e`) still passes on the macOS build.
 - The docs that say how the app is built and installed (`docs/development.md`, `README.md`, and `docs/architecture.md` where
   it describes the bundle) say what is now true: the arguments, the four targets, where each build lands, and how to install.
 

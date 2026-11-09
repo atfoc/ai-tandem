@@ -4,7 +4,7 @@
 //  - In a browser: `/?gallery=chipdoc`, drawn with the spike's web field (chipdocfield.web.tsx), for
 //    web/dev/checks/L4b-chipdoc.mjs.
 //  - On iOS and Android: the app shows it when its bundle was made with EXPO_PUBLIC_AIWB_GALLERY=chipdoc (App.tsx), drawn with
-//    the native field, for the device checks of app/e2e (`run.mjs composer-chips`: its second part, the Maestro flow composer-chips-gallery.yaml; on Android its keys).
+//    the native field, for the device checks.
 //    With EXPO_PUBLIC_AIWB_REPORT_URL set, it posts there what it holds after every change and on each press of Mark, what is
 //    sent, its height, and the selections the field reported before the snap.
 import React, { useRef, useState } from "react";

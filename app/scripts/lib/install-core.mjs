@@ -101,8 +101,7 @@ export const signingNeeds = `An install on a real iPhone or iPad is signed with 
   3. A bundle id that is yours alone, when the default (local.aiwhiteboard.app) is taken by another team:
        export AIWB_IOS_BUNDLE_ID=com.yourname.aiwhiteboard
   4. The device: connected by cable (or paired for wireless debugging), unlocked, "Trust This Computer" answered, and Developer Mode on
-     (Settings > Privacy & Security > Developer Mode, then restart).
-Everything is in docs/development.md, "Install the app on a phone or tablet".`;
+     (Settings > Privacy & Security > Developer Mode, then restart).`;
 
 /** Known failures of the tools → what the user has to do. The first rule that matches the log wins. */
 const RULES = [

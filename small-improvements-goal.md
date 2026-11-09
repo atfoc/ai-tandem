@@ -224,10 +224,9 @@ Each statement is true when the checks below pass. Every check is repeatable and
 ### 6.5 Nothing else moved
 
 - An app with voice never switched on makes no request to the voice service and asks for no microphone permission.
-- The tests of the repository that `AGENTS.md` names for the packages changed run and pass: from the root
+- The tests of the repository for the packages changed run and pass: from the root
   `npm test && npm run check`, `cd web && npm test`, `cd desktop && npm test`, the browser checks that touch the screens
-  changed (the voice checks `VC` and the checks of the Subagents chip and sheet), and the voice scripts of `AGENTS.md`
-  (`web/e2e/voice.e2e.mjs`, and the desktop end-to-end run if the way Read aloud reaches the desktop's player changed). The
+  changed (the voice checks `VC` and the checks of the Subagents chip and sheet). The
   device test runs once, on a simulator you name, only if the native side changed; the speed is meant to need no native
   change (4.3).
 - The tests that assumed the old choices (the old speeds, the delay's list, the cap's rows, a speed in the voice service

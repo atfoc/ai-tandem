@@ -1,6 +1,6 @@
 // A line on the screen that says what the voice engine and the audio module are doing, for the device flow `voice-mic` (package P17, goal 6.6): a
 // Maestro flow cannot ask the player whether it drained, so the app writes it. Only a development build made with EXPO_PUBLIC_AIWB_VOICE_BASE has
-// it (devline.ts registers it under that condition; app/e2e/run.mjs gives the variable to flows whose header says `needs=voice`).
+// it (devline.ts registers it under that condition).
 //
 //   voice-dev: phase=<idle|starting|listening|…> reading=<the key of the message read aloud, or none> drained=<n> marks=<n>
 //   (testID voice-dev-devices) mic=<none|default|builtIn|external> tested=<n>

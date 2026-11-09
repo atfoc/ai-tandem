@@ -28,7 +28,7 @@ with the typed messages of the bridge and nothing else.
 npm test && npm run check && npm run build:web && npm run build:webview && node dev/harness.mjs
 ```
 
-The harness needs Playwright (no dependency of the repository; see `AGENTS.md`). `app/scripts/export-web.mjs` runs `build:web`
+The harness needs Playwright (no dependency of the repository: `npm install --no-save playwright && npx playwright install chromium` in `web/`). `app/scripts/export-web.mjs` runs `build:web`
 before `expo export`, so a stale board never ships.
 
 ## `changed` is a delta

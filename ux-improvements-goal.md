@@ -529,7 +529,7 @@ changed to describe the new one in the same piece of work; it is not left failin
 
 ## 6. How it is confirmed
 
-The work follows `AGENTS.md`: the change is to `app/` and the packages, so the unit tests and type checks at the root and the
+The work follows the repository's test rules: the change is to `app/` and the packages, so the unit tests and type checks at the root and the
 tests of `web/` and `desktop/` each time; no Go test unless the server is touched. No paid model is called.
 
 ### 6.1 Every screen against its mockup
@@ -568,15 +568,14 @@ prompt library.
 Swipe and long press on rows (with the haptic and the drag after 10 pt), the swipe back from the edge and its exclusion on a
 board, the sheet's detents and keyboard avoidance, Take photo and the system pickers, the camera scan, Local Network, the board's
 bottom row with the orb docked (and the fallback if the inset breaks), landscape on a board and a table, and Android's back are
-confirmed with the device flows of `app/e2e` on an iOS simulator and an Android emulator the person names, as `AGENTS.md` says:
+confirmed on an iOS simulator and an Android emulator the person names:
 only for the screens whose change only a device shows, never "to be sure".
 
 ### 6.4 What does not change
 
 - The tablet and desktop layouts look and behave as before; their browser checks pass unchanged.
 - What is sent in a message, what an agent receives for a selection, a point or a quote, and what is stored are as before.
-- The voice checks of `AGENTS.md` (the unit tests, `VC`, the voice end-to-end script and, if the key's store or the desktop bridge
-  changed, the desktop end-to-end) pass with the changes of 4.9 reflected in them and nothing else.
+- The voice checks (the unit tests and `VC`) pass with the changes of 4.9 reflected in them and nothing else.
 - Nothing about a board's content or its engine changes (4.4): the board engine's tests and its faithful comparison still pass.
 
 ### 6.5 Not confirmed by tests

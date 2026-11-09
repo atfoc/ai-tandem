@@ -1,4 +1,4 @@
-// What the runner (app/e2e/run.mjs) tells a self-test build, through EXPO_PUBLIC_* variables of the Metro it starts. Each is read
+// What the device test runner tells a self-test build, through EXPO_PUBLIC_* variables of the Metro it starts. Each is read
 // by its literal name: that is the form Metro puts the value in at bundle time. Nothing here is a secret of a user: the server
 // is a scratch server of the run.
 import type { NetSelfTestConfig } from "./netSelfTest.ts";

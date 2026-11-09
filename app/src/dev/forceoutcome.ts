@@ -1,5 +1,5 @@
 // A forced outcome for the device tests (package V4): the iOS simulator never asks for the local network, so `local_network_denied` cannot be had
-// from the system there. A build made with EXPO_PUBLIC_AIWB_FORCE_OUTCOME=local_network_denied:<host> (app/e2e/run.mjs, flows with `devhooks=1`) ends every
+// from the system there. A build made with EXPO_PUBLIC_AIWB_FORCE_OUTCOME=local_network_denied:<host> ends every
 // connection to that host as the module ends one the system refused, with the module's own outcome and detail (modules/aiwb-net/ios/NetSession.swift), so the
 // app's words and its "Open settings" can be seen. Development builds only (__DEV__): a Release build has no such thing.
 import { Problem, type Connector } from "@aiwb/conn";

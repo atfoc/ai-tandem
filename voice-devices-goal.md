@@ -197,9 +197,9 @@ and on a real device by the person where it does not.
 - The Go tests are untouched in what they test, and nothing in the Go server changed.
 - An app with voice never switched on makes no request to the voice service, asks for no microphone permission and lists
   no devices.
-- The tests of the repository that `AGENTS.md` names for the packages changed run and pass: from the root
+- The tests of the repository for the packages changed run and pass: from the root
   `npm test && npm run check`, `cd web && npm test`, `cd desktop && npm test`, the browser checks that touch the screens
-  changed (`VC` and the ones for Settings), and the voice checks of `AGENTS.md`. The device test runs once, on a
+  changed (`VC` and the ones for Settings). The device test runs once, on a
   simulator you name, only because the native side changed.
 - The docs of voice (`docs/architecture.md` and the voice plans) say what is now true: devices, the fallback, and the
   platforms' limits.

@@ -19,11 +19,11 @@ import { Shell } from "./screens/shell/Shell.tsx";
 import { ThemeProvider, useTheme } from "./ui/theme.tsx";
 
 /** The gallery asked for: on web by the URL, `/?gallery` (the primitives, package U2), `/?gallery=chipdoc` (the native chip
- *  input's logic, package K2) or `/?gallery=kit` (the phone kit, ux-improvements package F1); on iOS and Android by the bundle, EXPO_PUBLIC_AIWB_GALLERY=chipdoc (the device checks of app/e2e). */
+ *  input's logic, package K2) or `/?gallery=kit` (the phone kit, ux-improvements package F1); on iOS and Android by the bundle, EXPO_PUBLIC_AIWB_GALLERY=chipdoc (the device checks). */
 const gallery = (): string | null =>
   Platform.OS === "web" ? new URLSearchParams(window.location.search).get("gallery") : process.env.EXPO_PUBLIC_AIWB_GALLERY ?? null;
 
-/** A build made for the device tests (AD-83) shows their root instead of the app: `EXPO_PUBLIC_AIWB_SELFTEST=1`, set by app/e2e/run.mjs. */
+/** A build made for the device tests (AD-83) shows their root instead of the app: `EXPO_PUBLIC_AIWB_SELFTEST=1`. */
 const selfTest = process.env.EXPO_PUBLIC_AIWB_SELFTEST === "1";
 
 /** The device test of the secure storage reads a line the app shows of it (package V4, dev/StorageProbe.tsx): EXPO_PUBLIC_AIWB_PROBE=1, development builds only. */

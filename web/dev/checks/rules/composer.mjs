@@ -4,7 +4,7 @@
 // board "Pipeline" (UXB2 opens the pick on a board, which is the board group's screen, not the composer's).
 // How each screen is reached is how UX.C1-composer, UX.C2-pickers and UX.S4.3-prompt reach it (composer.mjs: openChoice, phoneChip).
 // What the web build cannot show: the soft keyboard (useKeyboardUp is false there: the chip row stays with the box focused; the hiding is the
-// device flow's, app/e2e composer-chips). The "box focused" steps below audit the box with the focus in it (the focus-ring rule).
+// device flow's). The "box focused" steps below audit the box with the focus in it (the focus-ring rule).
 import zlib from "node:zlib";
 import { act, byTid, openChat, press, tidSel } from "../sel.mjs";
 import { openChoice, phoneChip } from "../composer.mjs";

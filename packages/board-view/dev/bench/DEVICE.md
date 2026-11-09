@@ -61,7 +61,7 @@ When the install is done (or at once with `--no-install`) the script prints thes
 ### On the simulator (no taps by hand)
 
 `--simulator --device <your simulator> --auto` builds a Release bench build and waits like the above; the one tap, **Open board self-test**,
-can be made with Maestro (`sh app/e2e/get-maestro.sh` puts it in `app/e2e/.tools/`, git-ignored). A flow of four lines, kept outside the
+can be made with Maestro (installed by you). A flow of four lines, kept outside the
 repository:
 
 ```yaml
@@ -73,7 +73,7 @@ appId: dev.atfoc.aiwb
 ```
 
 ```sh
-T=app/e2e/.tools; JAVA_HOME=$PWD/$T/java-home PATH=$PWD/$T/maestro/maestro/bin:$PATH maestro --device <udid> test tap.yaml
+maestro --device <udid> test tap.yaml
 ```
 
 The run of `--modes replacement` took 11 minutes on the simulator (the estimate: 11); the build 2.5 minutes. Delete the simulator afterwards.

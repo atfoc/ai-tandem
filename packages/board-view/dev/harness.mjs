@@ -15,7 +15,7 @@
 // Save, a dropped file). Usage: npm run build:webview && node dev/harness.mjs [--keep]   (--keep leaves the second page in a temp folder;
 // ONLY=behaviours runs the web target and those steps alone, a few seconds, while one is being written)
 // Needs Playwright (no dependency of the repository: `npm install --no-save playwright && npx playwright install chromium`
-// in web/ as AGENTS.md says); found through PLAYWRIGHT=<dir of the playwright package>, node's own resolution, the web/
+// in web/); found through PLAYWRIGHT=<dir of the playwright package>, node's own resolution, the web/
 // of this checkout or of the main one, or the npx cache. No server is started and no network is used.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";

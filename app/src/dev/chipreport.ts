@@ -1,4 +1,4 @@
-// What the native chip input tells the device runner (app/e2e/run.mjs), package V3. Active only in a bundle made with
+// What the native chip input tells the device runner, package V3. Active only in a bundle made with
 // EXPO_PUBLIC_AIWB_REPORT_URL (the runner sets it for a flow whose header says `report=1`); with none, `report` does nothing and
 // `reportState` / `reportRaw` are undefined, so the box in a build for people draws and posts nothing. Used by the chipdoc gallery
 // (its Mark and Send buttons) and by ChipInput.native.tsx (the composer's own box: what it holds after every change, and the
