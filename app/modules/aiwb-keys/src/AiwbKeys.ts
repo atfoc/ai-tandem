@@ -55,10 +55,11 @@ export const SHORTCUTS: readonly Shortcut[] = [
 ];
 
 /** The keys taken only on request (`setTabKeys(true)`: the composer's box has the focus and code editing is on), not part of
- *  `SHORTCUTS`. No command key; the event's `key` is "Tab" with Shift too. */
+ *  `SHORTCUTS`. No command key; the event's `key` is "Tab" with Shift too. Shift+Tab is taken only so the focus stays in the box (it
+ *  edits nothing), so it has no label: the iPadOS list of keys does not show it. */
 export const TAB_KEYS: readonly Shortcut[] = [
   { code: "Tab", key: "Tab", mod: false, shift: false, label: "Indent" },
-  { code: "Tab", key: "Tab", mod: false, shift: true, label: "Outdent" },
+  { code: "Tab", key: "Tab", mod: false, shift: true, label: "" },
 ];
 
 /** The event of a shortcut as the platform's module makes it. */

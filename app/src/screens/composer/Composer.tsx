@@ -98,8 +98,9 @@ function ComposerOf({ chatId, branch }: { chatId: string; branch: string }) {
   const onScreen = useStore((s) => s.sel.board);
   const role = useStore((s) => (c?.board ? s.roles[c.board] : undefined));
   const picking = useStore((s) => s.picking === chatId);
-  // Tab, Shift+Tab and Enter in the box (Settings > Composer). Not on iOS and Android while a dialog or a popup is open: the box keeps its
+  // Tab, Backspace and Enter in the box (Settings > Composer). Not on iOS and Android while a dialog or a popup is open: the box keeps its
   // focus under one there, and a hardware Tab would indent it unseen (the web box takes keys only while the page's focus is in it).
+  // How a tab is drawn and the native hanging indent stay as they are under one (`tabWidth` on the box), so the box does not reflow.
   const dialog = useStore(dialogOpen);
   const settings = useEditingSettings();
   const editing = Platform.OS !== "web" && dialog ? undefined : settings;
@@ -126,7 +127,7 @@ function ComposerOf({ chatId, branch }: { chatId: string; branch: string }) {
   const [note, setNote] = useState("");
   const [sending, setSending] = useState(false);
   const [focused, setFocused] = useState(false);
-  const keyboardUp = useKeyboardUp(); // (the key row of Indent and Outdent stands over the soft keyboard: EditKeys.tsx)
+  const keyboardUp = useKeyboardUp(); // (the key row with Indent stands over the soft keyboard: EditKeys.tsx)
   const input = useRef<ChipInputHandle>(null);
   const [boxRefs, setBoxRefs] = useState<Ref[]>([]); // the phone: the references the message holds (RefBox keeps them out of the box's text; the chips show them)
   const plusAt = useRef<{ start: number; end: number } | null>(null); // the phone: the box's caret when "+" opened its sheet
@@ -446,16 +447,16 @@ function ComposerOf({ chatId, branch }: { chatId: string; branch: string }) {
   // (the phone's box holds the plain text and the references stand as chips in the context row: screens/board/RefBox.tsx)
   const box = phone ? (
     <RefBox ref={input as ReactRef<RefBoxHandle>} placeholder={placeholder} locked={readOnly} readOnly={readOnly} onChange={onChange} onKey={onKey}
-      onImages={parts.ImageStrip ? (files) => add(files) : undefined} testID="composer-input" size="phone" onRefs={setBoxRefs} editing={editing} />
+      onImages={parts.ImageStrip ? (files) => add(files) : undefined} testID="composer-input" size="phone" onRefs={setBoxRefs} editing={editing} tabWidth={settings.tabWidth} />
   ) : (
     <ChipInput ref={input} placeholder={placeholder} locked={readOnly} readOnly={readOnly} onChange={onChange} onKey={onKey}
-      onImages={parts.ImageStrip ? (files) => add(files) : undefined} testID="composer-input" size={undefined} editing={editing} />
+      onImages={parts.ImageStrip ? (files) => add(files) : undefined} testID="composer-input" size={undefined} editing={editing} tabWidth={settings.tabWidth} />
   );
 
-  // Indent and Outdent over the soft keyboard (iOS, Android: it has no Tab), right under the box, while the box edits like code and is
+  // Indent over the soft keyboard (iOS, Android: it has no Tab), right under the box, while the box edits like code and is
   // being typed in; not in speech mode (the box is hidden) nor on a block that takes the box's place (none is drawn then).
   const keyRow = Platform.OS !== "web" && editing && focused && keyboardUp && !readOnly && !speech
-    ? <EditKeys onIndent={(outdent) => input.current?.indent?.(outdent)} /> : null;
+    ? <EditKeys onIndent={() => input.current?.indent?.()} /> : null;
 
   if (phone) {
     const why = left ? goneText(where.name) : frozen ? notConnectedLine(where.name) : "";

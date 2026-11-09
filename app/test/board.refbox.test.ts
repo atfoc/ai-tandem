@@ -122,7 +122,7 @@ test("shiftRefs: replacing the whole text moves every tag to 0; no change change
   assert.deepEqual(shiftRefs(refs, "x", "y").map((p) => p.ref), [A, B], "the references themselves are kept");
 });
 
-test("shiftRefs: an Enter that keeps the indent, and Tab or Shift+Tab over several lines (the composer's editing)", () => {
+test("shiftRefs: an Enter that keeps the indent, and Tab over several lines (the composer's editing)", () => {
   // Enter at 5 of "  ab cd" puts in "\n  ": a tag before it stays, one after it moves by 3
   assert.deepEqual(at(shiftRefs([{ ref: A, at: 4 }, { ref: B, at: 6 }], "  ab cd", "  ab \n  cd", 8)), [4, 9]);
   // an empty list item ended ("- a\n- " to "- a\n"): the tag at the end goes to the new end
@@ -131,7 +131,7 @@ test("shiftRefs: an Enter that keeps the indent, and Tab or Shift+Tab over sever
   const before = "one x\ntwo y\nthree z", after = "\tone x\n\ttwo y\n\tthree z";
   const refs: Placed[] = [{ ref: A, at: 4 }, { ref: B, at: 10 }, { ref: A, at: 18 }];
   assert.deepEqual(at(shiftRefs(refs, before, after, after.length)), [5, 12, 21]);
-  assert.deepEqual(at(shiftRefs(shiftRefs(refs, before, after), after, before)), [4, 10, 18], "Shift+Tab gives them back");
+  assert.deepEqual(at(shiftRefs(shiftRefs(refs, before, after), after, before)), [4, 10, 18], "the indent deleted again gives them back");
   // a tag at a line's start goes after the new indent; one inside an old indent stays inside the new one
   assert.deepEqual(at(shiftRefs([{ ref: A, at: 6 }], "one x\ntwo y", "  one x\n  two y")), [10]);
   assert.deepEqual(at(shiftRefs([{ ref: A, at: 9 }], "    a\n    b", "  a\n  b")), [6]);

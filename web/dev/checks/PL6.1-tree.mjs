@@ -43,7 +43,7 @@
 
 import fs from "node:fs";
 import { callOfRequest, check, mockEval, seed, until } from "../shot.mjs";
-import { byTid, longPress, pointerDragger, press, showList, tidSel, touchDrag } from "./sel.mjs";
+import { byTid, fieldText, longPress, pointerDragger, press, showList, tidSel, touchDrag } from "./sel.mjs";
 import { misshapen, seen, shape } from "./library.mjs";
 import { barOf, holdOpen, openGroup, openLibrary, pressSheetRow, rowsOf, sectionsOf, sheetOf, topScreen } from "./libphone.mjs";
 import { atRest } from "./settings.mjs";
@@ -356,7 +356,7 @@ async function phoneHalf({ url, open, fail, note }) {
     await press(page, byTid(page, "sheet-right").last());
     if (!await until(async () => (await byTid(page, "form-error").count()) === 1, WAIT)) fail("a refused save shows no error in the form");
     else if (await tx("form-error") !== SENTENCE_TAKEN) fail(`the refusal in the form reads ${J(await tx("form-error"))}`);
-    if ((await field("editor-text").inputValue()) !== "Typed text that must stay." || (await field("editor-name").inputValue()) !== "TODO" || await rowText("editor-group-row") !== "Group Top level") fail("a refused save lost what was typed");
+    if ((await fieldText(field("editor-text"))) !== "Typed text that must stay." || (await field("editor-name").inputValue()) !== "TODO" || await rowText("editor-group-row") !== "Group Top level") fail("a refused save lost what was typed");
     if (!(await byTid(page, "prompt-editor").count())) fail("a refused save closed the editor");
     if ((await item("TODO")).parent !== "g_misc") fail("a refused save moved the prompt");
     await discard("prompt-editor");

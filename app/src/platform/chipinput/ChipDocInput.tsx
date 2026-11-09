@@ -7,6 +7,8 @@
 // The truth is a Doc (chipdoc.ts): text and Refs in order. The field shows layout(doc).text, each chip a styled run of
 // characters. What the field reports (a new string, a new selection, a key) is applied to the Doc by applyChange and snap,
 // and the field is told what the Doc says (its text, and a selection when that moved). The value is serialize(doc).
+// With `noChips` (the prompt library's text field) every chipdoc.ts call gets chips false: the Doc is plain text, a tag in it stays
+// text, and insertRef and openInsert do nothing.
 //
 // The two rules of the spike (AD-61), kept:
 //  1. the owner is told of a change from the handler that made it (the state and onChange in one render), never from an
@@ -19,7 +21,7 @@ import { openInsertPopup } from "@aiwb/core/logic/insert.ts";
 import { serializeRef } from "@aiwb/core/logic/refs.ts";
 import type { KeyLike } from "../keys.types.ts";
 import {
-  applyChange, beforeCaret, copyOf, docOf, enterChange, indentChange, insertRef as insertRefAt, insertText, layout, replaceBeforeCaret as replaceAt, snap, toShown, toValue, valueOf,
+  applyChange, backspaceChange, beforeCaret, copyOf, docOf, enterChange, indentChange, insertRef as insertRefAt, insertText, layout, replaceBeforeCaret as replaceAt, snap, toShown, toValue, valueOf,
   type Doc, type Ref, type Span,
 } from "./chipdoc.ts";
 import type { ChipInputHandle, ChipInputProps } from "./types.ts";
@@ -55,6 +57,14 @@ export type FieldProps = {
   /** No autocorrect, spelling or capitals from the keyboard (the device checks type what they type). */
   plain?: boolean;
   testID: string;
+  /** ChipInputProps.label, as given (the native field: unset, its testID). */
+  label?: string;
+  /** How wide a tab is drawn, and the native field's hanging indent (ChipInputProps.tabWidth, else `editing`'s). 0 or unset: none
+   *  (the platform's own tab and wrap). The dev web field ignores it. */
+  tabWidth?: number;
+  /** ChipInputProps.look and accessoryId, as given (the native field draws with them; the gallery's web field ignores them). */
+  look?: ChipInputProps["look"];
+  accessoryId?: string;
 };
 
 /** What the field shows after a change, for the checks (the gallery's readouts, the device runner's collector). */
@@ -67,7 +77,6 @@ export type ChipDocInputProps = ChipInputProps & {
   /** Dev only (the galleries): what the field shows after every change, and the selection it reported before the snap. */
   onState?(s: DocState): void;
   onRaw?(s: Span): void;
-  plain?: boolean;
   /** Given to the field (FieldProps.onFocusChange). */
   onFocusChange?(focused: boolean): void;
 };
@@ -163,13 +172,17 @@ export const ChipDocInput = forwardRef<ChipInputHandle, ChipDocInputProps>(funct
     // makes the field take the runs again, also when the document is now empty (an empty list item ended: the field is cleared).
     // On Android an update that arrives after the next keystroke is dropped by the field; the onText that follows is then
     // measured from the document, so the box stays consistent (the indent is lost, never doubled).
-    const e = own.current.editing ? enterChange(d0, next, s0) : null;
+    // Backspace in an indent of spaces is read the same way (chipdoc.ts backspaceChange): the field has deleted one space, the
+    // document loses the spaces back to the previous tab stop; the same frame and the same Android caveat.
+    const ed = own.current.editing;
+    const chips = !own.current.noChips;
+    const e = ed ? enterChange(d0, next, s0, chips) ?? backspaceChange(d0, next, s0, ed, chips) : null;
     if (e) {
       put(e.doc, caretAt(e.caret));
       setRev((r) => r + 1);
       return;
     }
-    const c = applyChange(d0, next, s0, known.current);
+    const c = applyChange(d0, next, s0, known.current, chips);
     if (c.same) return;
     put(c.doc, caretAt(c.caret)); // (an edit not taken as it came, half a chip, gives other runs: the field is told them)
   };
@@ -205,7 +218,7 @@ export const ChipDocInput = forwardRef<ChipInputHandle, ChipDocInputProps>(funct
       return { start: toValue(d, Math.min(s.start, s.end)), end: toValue(d, Math.max(s.start, s.end)) };
     },
     insertRef(ref: Ref, at?: { start: number; end: number } | null) {
-      if (own.current.locked || own.current.readOnly) return;
+      if (own.current.locked || own.current.readOnly || own.current.noChips) return;
       const { doc: d0, selection: s0 } = now.current;
       const r = insertRefAt(d0, at ? { start: toShown(d0, at.start), end: toShown(d0, at.end) } : s0, ref);
       put(r.doc, caretAt(r.caret));
@@ -214,11 +227,11 @@ export const ChipDocInput = forwardRef<ChipInputHandle, ChipDocInputProps>(funct
     replaceBeforeCaret(n: number, s: string) {
       if (own.current.locked || own.current.readOnly) return;
       const { doc: d0, selection: s0 } = now.current;
-      const r = replaceAt(d0, s0, n, s);
+      const r = replaceAt(d0, s0, n, s, !own.current.noChips);
       if (r) put(r.doc, caretAt(r.caret));
     },
     set(text: string) {
-      const d = docOf(text), end = layout(d).text.length;
+      const d = docOf(text, !own.current.noChips), end = layout(d).text.length;
       marked.current = null;
       put(d, caretAt(end));
     },
@@ -227,7 +240,7 @@ export const ChipDocInput = forwardRef<ChipInputHandle, ChipDocInputProps>(funct
       put(d, { start: toShown(d, at.start), end: toShown(d, at.end) });
     },
     openInsert(at?: { start: number; end: number } | null) {
-      if (own.current.locked || own.current.readOnly) return;
+      if (own.current.locked || own.current.readOnly || own.current.noChips) return;
       const d = now.current.doc;
       marked.current = { at: at ? { start: toShown(d, at.start), end: toShown(d, at.end) } : now.current.selection, doc: d };
       openInsertPopup({
@@ -236,7 +249,7 @@ export const ChipDocInput = forwardRef<ChipInputHandle, ChipDocInputProps>(funct
           marked.current = null;
           // a box filled anew meanwhile (set) has no such place left: the text goes to its end
           const at = m && m.doc === d0 ? m.at : caretAt(layout(d0).text.length);
-          const r = insertText(d0, at, text);
+          const r = insertText(d0, at, text, !own.current.noChips);
           put(r.doc, caretAt(r.caret));
           field.current?.focus();
         },
@@ -249,12 +262,11 @@ export const ChipDocInput = forwardRef<ChipInputHandle, ChipDocInputProps>(funct
       });
     },
     focus() { field.current?.focus(); },
-    indent(outdent: boolean) {
+    indent() {
       const ed = own.current.editing;
       if (!ed || own.current.locked || own.current.readOnly) return;
       const { doc: d0, selection: s0 } = now.current;
-      const r = indentChange(d0, s0, ed, outdent);
-      if (!r) return;
+      const r = indentChange(d0, s0, ed, !own.current.noChips);
       put(r.doc, r.selection);
       setRev((n) => n + 1);
     },
@@ -286,6 +298,10 @@ export const ChipDocInput = forwardRef<ChipInputHandle, ChipDocInputProps>(funct
       onFocusChange={props.onFocusChange}
       plain={plain}
       testID={testID}
+      label={props.label}
+      tabWidth={props.tabWidth ?? props.editing?.tabWidth}
+      look={props.look}
+      accessoryId={props.accessoryId}
     />
   );
 });

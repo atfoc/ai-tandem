@@ -11,7 +11,7 @@
 //   (d) An overlay over an overlay: Tab cycles in the top one only, and closing it gives the focus to the one under it (the library's dialog with a question over it: Cancel and Esc give
 //       the focus to the button that asked; a menu's pick that asks gives it to where the menu came from).
 import { callMatcher, check, mockEval, seed, until } from "../shot.mjs";
-import { back, byTid, longPress, openFoot, press, showList, tidSel } from "./sel.mjs";
+import { back, byTid, fieldText, longPress, openFoot, press, showList, tidSel } from "./sel.mjs";
 import { pressSheetRow } from "./libphone.mjs";
 import { chip, closeChoice, openChoice, openState, phoneChip } from "./composer.mjs";
 import { firstMsg, menuOfRow, openTree, pressAct, treeRow } from "./fork.mjs";
@@ -38,7 +38,7 @@ async function typedInto(page, id, word, say, what) {
   await page.evaluate(() => new Promise((ok) => { let n = 0; const f = () => (++n < 20 ? requestAnimationFrame(f) : ok()); f(); }));
   const field = byTid(page, id).first();
   if ((await where(page)).id !== id) say(`${what}: the focus left ${id} for ${(await where(page)).id} after the word was typed`);
-  else if (await field.inputValue().catch(() => null) !== word) say(`${what}: the word typed went to ${JSON.stringify(await field.inputValue().catch(() => null))}, not to ${id}`);
+  else if (await fieldText(field).catch(() => null) !== word) say(`${what}: the word typed went to ${JSON.stringify(await fieldText(field).catch(() => null))}, not to ${id}`);
 }
 
 await check("L21 the overlays' focus: a field opened by a menu keeps it, a menu gives it back, Tab stays in the top overlay", async ({ url, layout, open, fail, note, touch }) => {
@@ -91,7 +91,7 @@ await check("L21 the overlays' focus: a field opened by a menu keeps it, a menu 
         await press(page, byTid(page, "confirm-cancel").last());
         if (!await until(async () => !await Q.count(), 10000)) say("Keep editing left the question open");
         if (!await byTid(page, "prompt-editor").count()) say("Keep editing closed the form too");
-        else if (await byTid(page, "editor-text").first().inputValue().catch(() => null) !== "Not saved yet.") say("Keep editing lost the text");
+        else if (await fieldText(byTid(page, "editor-text").first()).catch(() => null) !== "Not saved yet.") say("Keep editing lost the text");
       } else {
         await press(page, byTid(page, "confirm-go").last());
         if (!await until(async () => !await byTid(page, "prompt-editor").count() && !await Q.count(), 10000)) say("Discard changes left the form or the question open");
@@ -150,7 +150,8 @@ await check("L21 the overlays' focus: a field opened by a menu keeps it, a menu 
     const at = await where(page);
     if (!at.top || at.id === "nothing") say(`Cancel on a question that a menu's pick asked left the focus on ${at.id} (inside the library: ${at.top})`);
 
-    // Tab and Shift+Tab in the library's dialog: it never reaches the page; Esc: the focus is on the button that opened it
+    // Tab and Shift+Tab in the library's dialog: it never reaches the page; Esc: the focus is on the button that opened it (the Text box takes Tab, to
+    // indent: tabRing steps over it, as it is marked data-keeps-tab)
     const ring = await tabRing(page, D);
     if (!ring.ok) say(`Tab and Shift+Tab in the library popup reach ${JSON.stringify(ring.out)}, outside it`);
     await page.keyboard.press("Escape");
@@ -231,13 +232,25 @@ await check("L21 the overlays' focus: a field opened by a menu keeps it, a menu 
   note("a field a menu opens has the focus at once and keeps it; Esc, a pick and a press outside give it back to the trigger; Tab and Shift+Tab stay in the top overlay; a question over the library gives the focus to the button that asked");
 }, { viewports, page: false });
 
-/** Tab from the last control of `root` (an overlay's content) and Shift+Tab from its first, and Tab through it twice over: the focus never leaves it. Answers { ok, out } (where it went). */
+/** Tab from the last control of `root` (an overlay's content) and Shift+Tab from its first, and Tab through it twice over: the focus never leaves it. Answers { ok, out } (where it went).
+ *  A control that takes Tab itself (inside `[data-keeps-tab]`: the prompt library's Text box, where Tab indents and Shift+Tab does nothing; the model menu's search) is stepped over:
+ *  the focus is moved past it to the next or the previous control as the browser would, since its own way out (Esc, then Tab) would close the library's dialog first. */
 async function tabRing(page, root) {
   const out = [];
   const inside = async () => root.evaluate((r) => r.contains(document.activeElement));
   const here = async () => { const w = await where(page); return w.id; };
-  const tabbables = await root.evaluate((r) => [...r.querySelectorAll('button, input, select, textarea, [tabindex]')].filter((x) => x.tabIndex >= 0 && !x.disabled && x.getClientRects().length > 0).length);
-  const stays = async (key) => { await page.keyboard.press(key); if (!await inside()) out.push(`${key}: ${await here()}`); };
+  const tabbables = await root.evaluate((r) => [...r.querySelectorAll('button, input, select, textarea, [tabindex], [contenteditable="plaintext-only"], [contenteditable="true"]')].filter((x) => x.tabIndex >= 0 && !x.disabled && x.getClientRects().length > 0).length);
+  const hop = (key) => root.evaluate((r, back) => {
+    const at = document.activeElement;
+    if (!at?.closest("[data-keeps-tab]")) return false;
+    const els = [...r.querySelectorAll('button, input, select, textarea, [tabindex], [contenteditable="plaintext-only"], [contenteditable="true"]')]
+      .filter((x) => x.tabIndex >= 0 && !x.disabled && x.getClientRects().length > 0 && !x.closest("[data-keeps-tab]"));
+    const after = els.filter((x) => at.compareDocumentPosition(x) & Node.DOCUMENT_POSITION_FOLLOWING);
+    const before = els.filter((x) => at.compareDocumentPosition(x) & Node.DOCUMENT_POSITION_PRECEDING);
+    (back ? before[before.length - 1] ?? els[els.length - 1] : after[0] ?? els[0])?.focus();
+    return true;
+  }, key === "Shift+Tab");
+  const stays = async (key) => { if (!await hop(key)) await page.keyboard.press(key); if (!await inside()) out.push(`${key}: ${await here()}`); };
   for (let i = 0; i < tabbables + 2; i++) await stays("Tab");
   for (let i = 0; i < tabbables + 2; i++) await stays("Shift+Tab");
   return { ok: !out.length, out };

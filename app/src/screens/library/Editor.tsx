@@ -1,22 +1,34 @@
 // The editor of the library popup (the old page's Library.tsx, `editor` and `about`): the chosen prompt's Name and Text (a group's Name), where the item is ("In <path>" /
 // "At the top level": the tree sets it, the editor only says it), Save, Revert and Delete. It has no choice of a group. What is typed is the popup's state, not
 // this component's: leaving, a second window's change and a move all go through it.
-import type { Ref } from "react";
-import { StyleSheet, TextInput, View, type TextStyle } from "react-native";
+// The Text field is the composer's box (PromptText.tsx): it edits as a chat's message does (Tab indents as Settings > Composer says, Enter keeps
+// the indent and continues a list, Backspace in spaces goes back a tab stop). On web a Tab in it always indents, also when it is the dialog's
+// last control (the wrapper is marked `data-keeps-tab`, which the overlay's Tab ring leaves alone: ui/modal.web.tsx); Esc then Tab leaves the box,
+// but Esc also closes the dialog. On the iPad the key row with Indent stands under it while it has the focus and the soft keyboard is up
+// (composer/EditKeys.tsx); a hardware Tab indents through the box.
+import { useRef, useState, type Ref } from "react";
+import { Platform, StyleSheet, TextInput, View, type TextStyle } from "react-native";
 
 import { offText, placeText, type Fields, type Place } from "@aiwb/core/logic/libraryview.ts";
 import type { LibraryView } from "@aiwb/core/logic/library.ts";
 
+import { useKeyboardUp } from "../../platform/keyboard";
 import { Button } from "../../ui/Button.tsx";
 import { DialogError } from "../../ui/Dialog.tsx";
-import { MONO } from "../../ui/fonts.ts";
 import { Text } from "../../ui/Text.tsx";
 import { useTokens } from "../../ui/theme.tsx";
 import { tid } from "../../ui/tid.ts";
 import { useControlRef } from "../../ui/useControlRef";
 import { webStyle } from "../../ui/webstyle.ts";
+import { EditKeys } from "../composer/EditKeys.tsx";
+import { PromptText, type PromptTextHandle } from "./PromptText.tsx";
 
 export const NONE_TEXT = "Choose a prompt to edit it, or make a new one. Right-click in the list to make one there; drag a prompt or a group to move it.";
+
+/** The Text box's look: the monospace face at 12 px; it takes the height the dialog leaves it, at least 100 with its border. */
+const TEXT_LOOK = { mono: true, fontSize: 12, minHeight: 94, grow: true } as const;
+/** The iPad's key row under the Text box. */
+const LIB_EDIT_KEYS_IDS = { row: "lib-editkeys", indent: "lib-indent" } as const;
 
 const count = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
 
@@ -41,7 +53,7 @@ export type EditorProps = {
   onSave(): void;
   onDelete(): void;
   onRevert(): void;
-  /** The focus is in one of the two boxes (⌘↵ / Ctrl+↵ saves from there). */
+  /** The focus is in one of the two boxes (⌘↵ / Ctrl+↵ saves from there; the Text box leaves that key to the keys port). */
   inField(on: boolean): void;
 };
 
@@ -49,6 +61,11 @@ export function Editor(p: EditorProps) {
   const t = useTokens();
   const head = p.fresh ? `New ${p.kind}` : p.kind === "prompt" ? "Prompt" : "Group";
   const whereTip = useControlRef(p.fresh ? "Where it will be in the tree." : "Where it is in the tree. Drag it there to move it.");
+  const [textFocused, setTextFocused] = useState(false);
+  const keyboardUp = useKeyboardUp();
+  const textBox = useRef<PromptTextHandle>(null);
+  // (the box's focus events bubble to the View around it, as the composer's do: Composer.tsx boxHandlers)
+  const textHandlers = { onFocus: () => { setTextFocused(true); p.inField(true); }, onBlur: () => { setTextFocused(false); p.inField(false); } } as object;
   const box = [styles.input, { color: t.text, borderColor: t.line2, backgroundColor: p.off ? t.panel : t.bg }, webStyle({ outlineStyle: "none" }) as TextStyle | undefined];
   return (
     <View {...tid("lib-form", { kind: p.kind, fresh: p.fresh || undefined })} style={styles.form}>
@@ -66,8 +83,11 @@ export function Editor(p: EditorProps) {
       {p.kind === "prompt" ? (
         <View style={[styles.field, styles.textField]}>
           <Text size={12} tone="muted">Text</Text>
-          <TextInput {...tid("lib-text-input")} value={p.shown.text} readOnly={p.off} onChangeText={p.onText} multiline spellCheck={false} autoCorrect={false} autoCapitalize="none"
-            onFocus={() => p.inField(true)} onBlur={() => p.inField(false)} accessibilityLabel="Text" textAlignVertical="top" style={[box, styles.text]} />
+          {/* (keepsTab: the overlay's Tab ring leaves a Tab in the box to the box, which indents with it; a read-only box takes no Tab, so the ring keeps it) */}
+          <View {...tid("lib-text-box", { keepsTab: p.off ? undefined : true })} {...textHandlers} style={[styles.input, styles.textBox, { borderColor: t.line2, backgroundColor: p.off ? t.panel : t.bg }]}>
+            <PromptText ref={textBox} testID="lib-text-input" value={p.shown.text} onChangeText={p.onText} readOnly={p.off} look={TEXT_LOOK} />
+          </View>
+          {Platform.OS !== "web" && textFocused && keyboardUp && !p.off ? <EditKeys ids={LIB_EDIT_KEYS_IDS} onIndent={() => textBox.current?.indent()} /> : null}
         </View>
       ) : null}
       {p.problem ? <Text {...tid("lib-problem")} size={12} tone="muted" style={styles.problem}>{p.problem}</Text> : null}
@@ -108,7 +128,7 @@ const styles = StyleSheet.create({
   textField: { flex: 1, minHeight: 120 },
   input: { marginTop: 3, borderWidth: 1, borderRadius: 6, paddingVertical: 5, paddingHorizontal: 8, fontSize: 13 },
   name: { fontFamily: undefined },
-  text: { flex: 1, minHeight: 100, fontFamily: MONO, fontSize: 12, lineHeight: 18 },
+  textBox: { flex: 1, minHeight: 100, paddingVertical: 2 }, // (the box adds 3 above and below its text)
   problem: { marginTop: 8 },
   actions: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 12 },
   grow: { flex: 1 },

@@ -10,21 +10,32 @@
 // while it is locked or read-only; the caret is reported to onChange also when it only moves (a touch on the text, the
 // selection handles of a phone), which is what keeps the @ list in step with the caret (C-RF-26).
 //
-// Given `editing`, Tab, Shift+Tab and Enter edit like a code editor (core logic/indent.ts): the edit is typed over its span with the
-// browser's own commands, so ⌘Z undoes it as one step; a line break is a "\n" in the text, as the browser's Enter puts it (edits.ts).
-// Esc, then Tab or Shift+Tab, is the way out of such a box by the keyboard: that Tab is the browser's, and moves the focus.
-import React, { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
+// Given `editing`, Tab and Enter edit like a code editor (core logic/indent.ts), and so does Backspace in an indent of spaces (back to
+// the previous tab stop): the edit is typed over its span with the browser's own commands, so ⌘Z undoes it as one step; a line break
+// is a "\n" in the text, as the browser's Enter puts it (edits.ts). Shift+Tab is taken (the focus stays in the box) and edits
+// nothing: an indent is taken away by deleting it. Esc, then Tab or Shift+Tab, is the way out of such a box by the keyboard: that
+// Tab is the browser's, and moves the focus.
+//
+// Given `editing`, a line that starts with tabs or spaces and wraps also hangs at its indent: its continuation lines start where its text
+// starts, not at the box's left edge (hanging.ts, hangingdom.ts). It is the box's ::before, a float whose `shape-outside` is a staircase of
+// one band per such line, sized by three CSS variables set on the box after every change of it (changed()), of its width, font or tab
+// width. It changes no node of the box, so the browser's undo and the offset mapping are untouched; it waits while an input method composes.
+//
+// With `noChips` (the prompt library's text field) the box is plain text: nodesOf and a paste read no tags, and insertRef, openInsert
+// and ⌘P put nothing in. `look` sets the CSS variables of its font, size and heights.
+import React, { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef } from "react";
 
 import { pastedImages, pastedName } from "@aiwb/core/logic/chatimage.ts";
-import { applyEdit, indentUnit, newlineEdit, outdentEdit, tabEdit, type Edit } from "@aiwb/core/logic/indent.ts";
+import { applyEdit, backspaceEdit, indentUnit, newlineEdit, tabEdit, type Edit } from "@aiwb/core/logic/indent.ts";
 import { insertText, isInsertKey, lines, openInsertPopup, sameBox } from "@aiwb/core/logic/insert.ts";
 import { serializeRef, type Ref } from "@aiwb/core/logic/refs.ts";
 import { TYPE } from "../../ui/metrics.ts";
 import { BASE_SIZE } from "../../ui/Text.tsx";
-import { SANS } from "../../ui/fonts.ts";
+import { MONO, SANS } from "../../ui/fonts.ts";
 import { useTokens } from "../../ui/theme.tsx";
 import { chipSpacing, chipTitle, piecesOf } from "./chipvalue.ts";
 import { boxText, boxValue, hunksOf } from "./edits.ts";
+import { layoutHanging } from "./hangingdom.ts";
 import type { ChipInputHandle, ChipInputProps } from "./types.ts";
 
 export type { ChipInputHandle, ChipInputProps } from "./types.ts";
@@ -35,6 +46,9 @@ const CLASS = "aiwb-chipinput", CHIP = "aiwb-chip";
 const STYLES = `
 .${CLASS} { position: relative; flex: 1 1 auto; min-width: 0; box-sizing: border-box; outline: 0; padding: 3px 0; min-height: var(--cin-min, calc(3 * 1.45em + 6px)); max-height: var(--cin-max, max(calc(6 * 1.45em), 40vh)); overflow-y: auto; overscroll-behavior: contain; white-space: pre-wrap; overflow-wrap: anywhere; cursor: text; color: var(--cin-text); font-family: var(--cin-font); font-size: var(--cin-size); line-height: 1.45; }
 .${CLASS}.is-empty::before { content: attr(data-placeholder); position: absolute; left: 0; top: 3px; color: var(--cin-faint); pointer-events: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+/* (the hanging indent, given editing: a float whose shape shortens the continuation lines of each wrapped indented line; hangingdom.ts sets
+   the variables, and none is set without it) */
+.${CLASS}:not(.is-empty)::before { content: ""; float: left; width: var(--cin-hang-w, 0px); height: var(--cin-hang-h, 0px); shape-outside: var(--cin-hang-shape, none); pointer-events: none; }
 .${CLASS}[aria-readonly="true"] { color: var(--cin-muted); cursor: default; caret-color: transparent; }
 .${CHIP} { display: inline-flex; align-items: center; gap: 4px; vertical-align: baseline; max-width: 100%; box-sizing: border-box; margin: 0 1px; padding: 0 6px 0 5px; border: 1px solid color-mix(in srgb, var(--cin-accent) 30%, transparent); border-radius: 5px; background: var(--cin-bg); color: var(--cin-accent); font-weight: 600; font-size: 12px; line-height: 1.5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: default; }
 .${CHIP}::before { content: ""; flex: none; width: 8px; height: 8px; box-sizing: border-box; }
@@ -80,8 +94,9 @@ function textOf(root: Node): string {
 /** The value of the box: what it reads as, less the break the browser adds to draw an empty last line (edits.ts). */
 const valueOf = (root: Node): string => boxValue(textOf(root));
 
-/** What a box is made of for `text`: text nodes, and a chip for each tag (and the break that draws an empty last line). */
-const nodesOf = (text: string) => piecesOf(boxText(text)).map((p) => ("tag" in p ? chipNode(p.ref) : document.createTextNode(p.text)));
+/** What a box is made of for `text`: text nodes, and a chip for each tag (and the break that draws an empty last line). `chips`
+ *  false (noChips): tags stay text. */
+const nodesOf = (text: string, chips: boolean) => piecesOf(boxText(text), chips).map((p) => ("tag" in p ? chipNode(p.ref) : document.createTextNode(p.text)));
 
 /** How much of the box's value is before a point in it. */
 function offsetOf(root: HTMLElement, node: Node, offset: number): number {
@@ -176,9 +191,9 @@ function typeText(text: string) {
   });
 }
 
-/** Pasting text with tags in it gives chips again; plain text goes in as text. */
-function pasteValue(t: string, el: HTMLDivElement | null) {
-  const pieces = piecesOf(t);
+/** Pasting text with tags in it gives chips again; plain text goes in as text (all of it, with `chips` false). */
+function pasteValue(t: string, el: HTMLDivElement | null, chips: boolean) {
+  const pieces = piecesOf(t, chips);
   if (!el || pieces.every((p) => !("tag" in p))) { document.execCommand("insertText", false, t); return; }
   for (const p of pieces) {
     if (!("tag" in p)) { document.execCommand("insertText", false, p.text); continue; }
@@ -194,7 +209,7 @@ function pasteValue(t: string, el: HTMLDivElement | null) {
 }
 
 export const ChipInput = forwardRef<ChipInputHandle, ChipInputProps>(function ChipInput(props, ref) {
-  const { placeholder, locked = false, readOnly = false, testID = "composer-input", size } = props;
+  const { placeholder, locked = false, readOnly = false, testID = "composer-input", size, look } = props;
   const t = useTokens();
   const box = useRef<HTMLDivElement>(null);
   const last = useRef<Range | null>(null); // the caret, kept while focus is elsewhere
@@ -205,6 +220,17 @@ export const ChipInput = forwardRef<ChipInputHandle, ChipInputProps>(function Ch
   const escaped = useRef(false); // Esc was the last key: the next Tab or Shift+Tab is the browser's (the focus leaves the box)
   const now = useRef(props); // the latest props, for the handlers that live longer than a render
   now.current = props;
+  const composing = useRef(false); // an input method is composing: the hanging indent waits for its end
+  const width = useRef(-1); // the box's width at the last hanging layout
+
+  /** Lays out the hanging indent of wrapped indented lines (hangingdom.ts), or removes it without `editing`. Not while an input method
+   *  composes (its end calls this again). */
+  const hang = () => {
+    const el = box.current;
+    if (!el || composing.current) return;
+    width.current = el.clientWidth;
+    layoutHanging(el, !!now.current.editing);
+  };
 
   useEffect(ensureStyles, []);
 
@@ -220,6 +246,7 @@ export const ChipInput = forwardRef<ChipInputHandle, ChipInputProps>(function Ch
     keep();
     const isEmpty = !valueOf(el).trim();
     if (isEmpty !== empty.current) { empty.current = isEmpty; el.classList.toggle("is-empty", isEmpty); }
+    hang(); // (before showCaret, which must see the lines where they end up)
     report(el);
     showCaret(el);
   };
@@ -268,6 +295,20 @@ export const ChipInput = forwardRef<ChipInputHandle, ChipInputProps>(function Ch
     return () => document.removeEventListener("selectionchange", onMoved);
   }, []);
 
+  // The hanging indent follows the settings that change how wide an indent is drawn (the tab width, the box's font and its size), and goes with
+  // `editing`; a box whose width changed (not only its height, which every new line changes) or whose font has loaded is laid out again.
+  const editingOn = !!props.editing, tabWidth = props.editing?.tabWidth;
+  useLayoutEffect(hang, [editingOn, tabWidth, size, look?.mono, look?.fontSize]);
+  useEffect(() => {
+    const el = box.current;
+    if (!el) return;
+    const ro = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => { if (el.clientWidth !== width.current) hang(); });
+    ro?.observe(el);
+    const fonts = document.fonts;
+    fonts?.addEventListener("loadingdone", hang);
+    return () => { ro?.disconnect(); fonts?.removeEventListener("loadingdone", hang); };
+  }, []);
+
   // While the box is locked or read-only nothing is typed, pasted or dropped into it, and nothing is deleted from it.
   useEffect(() => {
     const el = box.current;
@@ -298,6 +339,7 @@ export const ChipInput = forwardRef<ChipInputHandle, ChipInputProps>(function Ch
   const openInsert = (at?: { start: number; end: number } | null) => {
     const el = box.current;
     if (!el || now.current.locked || now.current.readOnly) return;
+    if (now.current.noChips) return;
     mark.current = at ? spanOf(el, at) : where(el);
     const back = (): { el: HTMLDivElement; at: Range } | null => {
       const el = box.current, at = mark.current;
@@ -314,7 +356,7 @@ export const ChipInput = forwardRef<ChipInputHandle, ChipInputProps>(function Ch
         place(b.at);
         document.execCommand("insertText", false, lines(text)); // keeps the browser's undo
         // What the browser did not do as told (a selection that ends inside a chip) is done here: the box is made anew.
-        if (!sameBox(valueOf(b.el), want.value)) { b.el.replaceChildren(...nodesOf(want.value)); place(caretAt(b.el, want.caret)); }
+        if (!sameBox(valueOf(b.el), want.value)) { b.el.replaceChildren(...nodesOf(want.value, !now.current.noChips)); place(caretAt(b.el, want.caret)); }
         changed();
       },
       cancel() {
@@ -331,22 +373,28 @@ export const ChipInput = forwardRef<ChipInputHandle, ChipInputProps>(function Ch
   const applyBoxEdit = (el: HTMLDivElement, edit: Edit) => {
     const value = valueOf(el), want = applyEdit(value, edit);
     if (!el.querySelector("div, p")) for (const h of hunksOf(value, edit)) { place(spanOf(el, h)); typeText(h.text); }
-    if (valueOf(el) !== want.value) el.replaceChildren(...nodesOf(want.value));
+    if (valueOf(el) !== want.value) el.replaceChildren(...nodesOf(want.value, !now.current.noChips));
     place(spanOf(el, want.selection));
     changed();
   };
 
-  /** Tab, Shift+Tab, Enter and Shift+Enter as a code editor has them, when the box is given `editing` (types.ts). True: the key was
-   *  taken (Shift+Tab with nothing to outdent too, so the focus stays in the box). */
+  /** Tab, Enter and Shift+Enter as a code editor has them, when the box is given `editing` (types.ts), and Backspace in an indent of
+   *  spaces (core logic/indent.ts backspaceEdit). True: the key was taken (Shift+Tab too, with no edit, so the focus stays in the box;
+   *  a Backspace only when it made its edit, else it is the browser's). */
   const editKey = (key: KeyboardEvent): boolean => {
     const ed = now.current.editing, el = box.current, sel = getSelection();
     if (!ed || !el || now.current.locked || now.current.readOnly || key.ctrlKey || key.metaKey || key.altKey) return false;
-    if (key.key !== "Tab" && key.key !== "Enter") return false;
+    if (key.key !== "Tab" && key.key !== "Enter" && !(key.key === "Backspace" && !key.shiftKey)) return false;
+    if (key.key === "Tab" && key.shiftKey) return true;
     if (!sel?.rangeCount || !el.contains(sel.getRangeAt(0).startContainer)) return false;
     const r = sel.getRangeAt(0), value = valueOf(el);
     const at = { start: offsetOf(el, r.startContainer, r.startOffset), end: offsetOf(el, r.endContainer, r.endOffset) };
-    const edit = key.key === "Enter" ? newlineEdit(value, at) : key.shiftKey ? outdentEdit(value, at, ed.tabWidth) : tabEdit(value, at, indentUnit(ed));
-    if (edit) applyBoxEdit(el, edit);
+    if (key.key === "Backspace") {
+      const edit = backspaceEdit(value, at, ed);
+      if (edit) applyBoxEdit(el, edit);
+      return !!edit;
+    }
+    applyBoxEdit(el, key.key === "Enter" ? newlineEdit(value, at) : tabEdit(value, at, indentUnit(ed)));
     return true;
   };
 
@@ -364,6 +412,7 @@ export const ChipInput = forwardRef<ChipInputHandle, ChipInputProps>(function Ch
     insertRef(r: Ref, at?: { start: number; end: number } | null) {
       const el = box.current;
       if (!el || now.current.locked || now.current.readOnly) return;
+      if (now.current.noChips) return;
       const range = at ? spanOf(el, at) : where(el);
       el.focus();
       range.deleteContents();
@@ -396,7 +445,7 @@ export const ChipInput = forwardRef<ChipInputHandle, ChipInputProps>(function Ch
     set(text: string) {
       const el = box.current;
       if (!el) return;
-      el.replaceChildren(...nodesOf(text));
+      el.replaceChildren(...nodesOf(text, !now.current.noChips));
       last.current = mark.current = null;
       // (a selection left in the box while the focus is elsewhere is now at its start, where nobody put it: the box has no place then, so
       // what goes in without a place goes to the value's end, `where`)
@@ -427,10 +476,10 @@ export const ChipInput = forwardRef<ChipInputHandle, ChipInputProps>(function Ch
     const out = escaped.current;
     if (!["Shift", "Control", "Alt", "Meta"].includes(key.key)) escaped.current = key.key === "Escape";
     if (out && key.key === "Tab") return;
-    // ⌘P opens the insert popup, and the page is not printed.
+    // ⌘P opens the insert popup (with noChips: nothing), and the page is not printed.
     if (isInsertKey(key, navigator.platform)) {
       e.preventDefault();
-      openInsert();
+      if (!now.current.noChips) openInsert();
       return;
     }
     // Backspace / Delete next to a chip remove the whole chip.
@@ -465,6 +514,11 @@ export const ChipInput = forwardRef<ChipInputHandle, ChipInputProps>(function Ch
     // (a tab character is as wide as the editing settings say; the box is white-space: pre-wrap, so tabs and indents show)
     ...(props.editing ? { tabSize: props.editing.tabWidth, MozTabSize: props.editing.tabWidth } : null),
     ...(size === "phone" ? { "--cin-min": "calc(1.45em + 6px)", "--cin-max": "calc(6 * 1.45em + 6px)" } : null),
+    // (`look`, over what `size` gave: grow takes the greatest height away; the rule's flex: 1 1 auto fills a column parent)
+    ...(look?.mono ? { "--cin-font": MONO } : null),
+    ...(look?.fontSize ? { "--cin-size": `${look.fontSize}px` } : null),
+    ...(look?.minHeight !== undefined ? { "--cin-min": `${look.minHeight}px` } : null),
+    ...(look?.grow ? { "--cin-max": "none" } : null),
   } as React.CSSProperties;
 
   return (
@@ -478,12 +532,15 @@ export const ChipInput = forwardRef<ChipInputHandle, ChipInputProps>(function Ch
       aria-multiline="true"
       aria-readonly={readOnly || undefined}
       aria-placeholder={placeholder}
+      aria-label={props.label}
       data-placeholder={placeholder}
-      spellCheck
+      spellCheck={!props.plain}
       suppressContentEditableWarning
       onPointerDown={() => { escaped.current = false; }}
       onPointerUp={() => moved.current()}
       onInput={changed}
+      onCompositionStart={() => { composing.current = true; }}
+      onCompositionEnd={() => { composing.current = false; hang(); }}
       onKeyDown={onKeyDown}
       onBlur={() => { escaped.current = false; keep(); }}
       onCopy={(e) => { copyValue(e); }}
@@ -499,7 +556,7 @@ export const ChipInput = forwardRef<ChipInputHandle, ChipInputProps>(function Ch
         if (locked || readOnly) { e.preventDefault(); return; }
         if (!text) return;
         e.preventDefault();
-        pasteValue(text, box.current);
+        pasteValue(text, box.current, !now.current.noChips);
         changed();
       }}
     />

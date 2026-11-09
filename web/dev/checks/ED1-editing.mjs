@@ -1,10 +1,12 @@
-// ED1 (new; the composer's code-editor editing): Tab, Shift+Tab and Enter in the web chip input (app/src/platform/chipinput/ChipInput.web.tsx,
+// ED1 (new; the composer's code-editor editing): Tab, Shift+Tab, Backspace and Enter in the web chip input (app/src/platform/chipinput/ChipInput.web.tsx,
 // the contract's `editing` in types.ts; the edits are core logic/indent.ts, cut into replaces by chipinput/edits.ts). It has no old check
 // to port. On the gallery (`/?gallery`, section "Chip input": "Tab", "2 spaces" and "Enter: line" switch the box's editing on and leave a
 // plain Enter to it), whose readout is the box's exact value:
 //   Tab puts in a tab character ("Tab") or the spaces to the next stop ("2 spaces"); the focus stays in the box; ⌘Z (Ctrl+Z) undoes it
-//   as one step. Shift+Tab takes one level off, and with nothing to take off still keeps the focus. A selection over several lines:
-//   Tab and Shift+Tab indent and outdent every line, one ⌘Z undoes it. Enter (and Shift+Enter) keep the line's indent; on "- item" the
+//   as one step. Shift+Tab edits nothing and keeps the focus (an indent is taken away by deleting it). A selection over several lines:
+//   Tab indents every line, one ⌘Z undoes it, Shift+Tab leaves it as it is. Backspace with "2 spaces" right after an indent of
+//   spaces takes it back to the previous tab stop (two spaces in one press, one ⌘Z gives them back); after a letter it deletes one
+//   character. Enter (and Shift+Enter) keep the line's indent; on "- item" the
 //   next line starts "- ", and Enter on an empty "- " ends the list. A chip in the lines stays the same node, its tag whole.
 //   Line breaks round-trip: the value read back is the edit's, with a line break at the very end of the box (the browser's extra break
 //   that draws the empty last line is no part of it), right after a chip, and after `set` of a value that ends in one; typing goes on
@@ -26,7 +28,7 @@ const BOX = tidSel("composer-input");
 const POST = /\/chats\/(\w+)\/messages(\?|$)/;
 const SETTINGS = "aiwb.composer.settings";
 
-await check("ED1 the composer's box edits like code: Tab, Shift+Tab, Enter's indent and lists, undo, chips, line breaks", async ({ url, viewport, open, fail }) => {
+await check("ED1 the composer's box edits like code: Tab, Shift+Tab (nothing), Backspace in an indent, Enter's indent and lists, undo, chips, line breaks", async ({ url, viewport, open, fail }) => {
   const phone = viewport === "phone";
   const enterKey = phone ? "Enter" : "Shift+Enter"; // (both are line breaks in the real composer: one of each, by the layout)
 
@@ -78,11 +80,14 @@ await check("ED1 the composer's box edits like code: Tab, Shift+Tab, Enter's ind
     await step("Shift+Tab", async () => {
       await set("\tx"); await toEnd();
       await key("Shift+Tab");
-      await holds("x", "Shift+Tab on \"\\tx\"");
+      await page.waitForTimeout(150);
+      await holds("\tx", "Shift+Tab on \"\\tx\" (no edit)");
+      if (!await inBox()) fail("Shift+Tab took the focus out of the box");
+      await set("x"); await toEnd();
       await key("Shift+Tab");
       await page.waitForTimeout(150);
-      await holds("x", "Shift+Tab with nothing to outdent");
-      if (!await inBox()) fail("Shift+Tab with nothing to outdent took the focus out of the box");
+      await holds("x", "Shift+Tab on \"x\"");
+      if (!await inBox()) fail("Shift+Tab with no indent took the focus out of the box");
     });
 
     await step("Esc, then Tab, leaves the box", async () => {
@@ -120,9 +125,8 @@ await check("ED1 the composer's box edits like code: Tab, Shift+Tab, Enter's ind
       await key("Tab");
       await holds("\ta\n\tb\n\tc", "Tab over three lines");
       await key("Shift+Tab");
-      await holds("a\nb\nc", "Shift+Tab over three lines");
-      await key("Tab");
-      await holds("\ta\n\tb\n\tc", "Tab over three lines again");
+      await page.waitForTimeout(150);
+      await holds("\ta\n\tb\n\tc", "Shift+Tab over three lines (no edit)");
       await key("ControlOrMeta+z");
       await holds("a\nb\nc", "⌘Z after a Tab over three lines (one step)");
     });
@@ -196,8 +200,6 @@ await check("ED1 the composer's box edits like code: Tab, Shift+Tab, Enter's ind
       await key("Tab");
       await holds(`\t${tag} a\n\tb`, "Tab over two lines, a chip in the first");
       if (!await page.$(`${BOX} ${tidSel("ref-chip")}[data-mark="same"]`)) fail("Tab over lines with a chip made the chip anew (or took it out)");
-      await key("Shift+Tab");
-      await holds(`${tag} a\nb`, "Shift+Tab over two lines, a chip in the first");
       await set(`x ${tag}`); await toEnd();
       await page.evaluate(() => window.__aiwbChip.select({ start: 0, end: 0 })); // (⌘← from after a chip stops before the chip)
       await key("Tab");
@@ -217,7 +219,26 @@ await check("ED1 the composer's box edits like code: Tab, Shift+Tab, Enter's ind
       await key("Tab");
       await holds("  a", "Tab at a line's start with 2 spaces");
       await key("Shift+Tab");
-      await holds("a", "Shift+Tab with 2 spaces");
+      await page.waitForTimeout(150);
+      await holds("  a", "Shift+Tab with 2 spaces (no edit)");
+      // Backspace right after an indent of spaces: back to the previous tab stop, one ⌘Z gives it back
+      await set("    a"); await toEnd();
+      await home();
+      await key("ArrowRight"); await key("ArrowRight"); await key("ArrowRight"); await key("ArrowRight");
+      await key("Backspace");
+      await holds("  a", "Backspace after 4 spaces with 2 spaces (to the stop before)");
+      await key("Backspace");
+      await holds("a", "Backspace after 2 spaces with 2 spaces");
+      await key("ControlOrMeta+z");
+      await holds("  a", "⌘Z after a Backspace in the indent (one step)");
+      await set("   a"); await toEnd();
+      await home();
+      await key("ArrowRight"); await key("ArrowRight"); await key("ArrowRight");
+      await key("Backspace");
+      await holds("  a", "Backspace at column 3 with 2 spaces (to column 2)");
+      await set("  ab"); await toEnd();
+      await key("Backspace");
+      await holds("  a", "Backspace after a letter (one character)");
     });
 
     await step("locked", async () => {

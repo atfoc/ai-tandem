@@ -30,6 +30,7 @@ export const S4_TID = {
   editorBar: "editor-kbar",              // the bar over the keyboard
   editorBarState: "editor-kbar-state",   // "Edited · not saved"
   editorBarDone: "editor-kbar-done",
+  editorBarIndent: "editor-kbar-indent", // Indent at the bar's left, while the text has the focus (iOS, Android)
   editorDelete: "editor-delete",         // Delete prompt… at the end
   editorOff: "editor-off-notice",        // the server is not connected: fields locked
   // the move picker (P2) and the group form (P3)

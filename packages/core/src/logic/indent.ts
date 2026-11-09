@@ -1,7 +1,9 @@
-// Editing a composer's text box like code: Tab indents, Shift+Tab outdents, Enter keeps the line's indent and goes on with a markdown
-// list. DOM-free: each function answers one edit over the box's value (the text, with each reference as its tag, refs.ts), which the
-// box applies as a single replace (on the web with execCommand insertText over the edit's span, so undo keeps it), or null when the
-// key does nothing here.
+// Editing a composer's text box (and the prompt library's text field) like code: Tab indents, Enter keeps the line's indent and goes on
+// with a markdown list, and with spaces for indent Backspace in the indent takes back one level (to the previous tab stop). Shift+Tab
+// does nothing in such a box (the box takes the key so the focus stays, and edits nothing): an indent is taken away by deleting it.
+// DOM-free: each function answers one edit over the box's value (the text, with each reference as its tag, refs.ts), which the box
+// applies as a single replace (on the web with execCommand insertText over the edit's span, so undo keeps it), or null when the key
+// does nothing here.
 //
 // A reference's tag is opaque text: it holds no line break (serializeRef writes one line), so a line's start and its leading
 // whitespace are never inside a tag, and an edit only ever lands at a line's start or on the box's own selection, which the box keeps
@@ -93,17 +95,22 @@ export function tabEdit(value: string, sel: Span, unit: string): Edit {
   return lineEdit(value, lines.map((at) => [at, unit.length]), unit, s, s.start !== lines[0]);
 }
 
-/** Shift+Tab: one level less on every line the selection (or the caret) touches: a leading "\t", else up to `size` leading
- *  spaces; a line with less indent loses what it has. null when no line has any. */
-export function outdentEdit(value: string, sel: Span, size: number): Edit | null {
+/** Backspace with spaces for indent ("spaces" mode): a caret whose text before it on its line is all indent ("\t" and spaces, never
+ *  a tag: a tag is never in leading whitespace) and ends in a space deletes back to the previous tab stop (the columns as `column`
+ *  counts them), so the spaces one Tab put in go in one press: at least one space, only spaces (a "\t" before them stops it), never
+ *  past the line's start. null otherwise (the platform's own Backspace): a selection, text before the caret on its line, a caret at
+ *  the line's start or right after a "\t", and always in "tab" mode, where the box's own Backspace already deletes the "\t". */
+export function backspaceEdit(value: string, sel: Span, style: IndentStyle): Edit | null {
+  if (style.tabInserts !== "spaces") return null;
   const s = ordered(value, sel);
-  const changes: [number, number][] = [];
-  for (const at of touchedLines(value, s)) {
-    const n = value[at] === "\t" ? 1 : /^ */.exec(value.slice(at, at + Math.max(1, size)))![0].length;
-    if (n) changes.push([at, -n]);
-  }
-  if (!changes.length) return null;
-  return lineEdit(value, changes, "", s, true);
+  if (s.start !== s.end) return null;
+  const before = value.slice(lineStart(value, s.start), s.start);
+  if (!/^[ \t]* $/.test(before)) return null;
+  const w = Math.max(1, style.tabWidth), col = column(value, s.start, w);
+  const back = col % w || w;
+  const spaces = / *$/.exec(before)![0].length;
+  const start = s.start - Math.min(back, spaces);
+  return { start, end: s.start, text: "", caret: { start, end: start } };
 }
 
 /** A markdown list item's start, up to the caret: the indent, the marker ("-", "*", "+", "3." or "3)"), the space after it and a

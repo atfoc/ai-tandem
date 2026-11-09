@@ -8,7 +8,8 @@
 //     lib-name, lib-twist, lib-guide, lib-off, lib-count, lib-path, lib-pname   its parts
 //   lib-empty, lib-none, lib-about, lib-hint (a move by the keys), lib-tree-err, lib-notice
 //   lib-new (the buttons' place) with lib-new-prompt, lib-new-group, or lib-top [drop] (the bar of the top level, during a move)
-//   lib-form [kind, fresh] with lib-form-head, lib-where, lib-name-input, lib-text-input, lib-problem, lib-err, lib-delete, lib-revert, lib-save, lib-notice
+//   lib-form [kind, fresh] with lib-form-head, lib-where, lib-name-input, lib-text-input (the composer's box, a contenteditable: `form.text` is its
+//     text, `form.fields` lists it as "box", the focus in it is "text"; lib-text-box is the bordered View around it), lib-problem, lib-err, lib-delete, lib-revert, lib-save, lib-notice
 //   lib-menu (the popover or sheet) with lib-menu-note, lib-menu-item (told apart by text; aria-disabled)
 //   insert-row [key, server] (role option, aria-selected) with lib-path, lib-pname, lib-off, insert-text; insert-list, insert-empty, insert-none, insert-open-library, insert-edit-library
 //   confirm-dialog   the question
@@ -20,6 +21,8 @@ const T = tidSel;
 export function seen() {
   const T = (id, data) => `[data-testid="${id}"]` + Object.entries(data ?? {}).map(([k, v]) => `[data-${k}="${v}"]`).join("");
   const q = (root, id) => root?.querySelector(T(id)), qa = (root, id) => [...(root?.querySelectorAll(T(id)) ?? [])];
+  // (the Text field is the composer's box, a contenteditable: its text, not a value; null when there is none)
+  const boxText = (e) => (e ? e.innerText.replace(/\n$/, "") : null);
   const text = (e) => e?.textContent ?? "", dlg = document.querySelector(T("library-dialog")), at = document.activeElement;
   const all = qa(dlg, "lib-row"), rows = all.filter((r) => r.dataset.new !== "true"), fresh = all.find((r) => r.dataset.new === "true");
   const name = (r) => text(q(r, "lib-name")), level = (r) => Number(r.getAttribute("aria-level"));
@@ -37,13 +40,13 @@ export function seen() {
     off: rows.filter((r) => q(r, "lib-off")).map(line), closed: rows.filter((r) => r.getAttribute("aria-expanded") === "false").map(name),
     fixed: rows.filter((r) => r.dataset.fixed === "true" || r.dataset.kind === "server").map(name),
     says: text(q(dlg, "lib-empty")), none: text(q(dlg, "lib-none")), about: text(q(dlg, "lib-about")),
-    form: form ? { head: text(q(form, "lib-form-head")), name: q(form, "lib-name-input").value, text: q(form, "lib-text-input")?.value ?? null, fixed: q(form, "lib-name-input").readOnly,
-      where: text(q(form, "lib-where")), fields: [...form.querySelectorAll("input, textarea, select")].map((e) => e.tagName.toLowerCase()).join(),
+    form: form ? { head: text(q(form, "lib-form-head")), name: q(form, "lib-name-input").value, text: boxText(q(form, "lib-text-input")), fixed: q(form, "lib-name-input").readOnly,
+      where: text(q(form, "lib-where")), fields: [...form.querySelectorAll(`input, textarea, select, ${T("lib-text-input")}`)].map((e) => (e.isContentEditable || e.hasAttribute("contenteditable") ? "box" : e.tagName.toLowerCase())).join(),
       err: text(q(form, "lib-err")), notice: text(q(form, "lib-notice")), problem: text(q(form, "lib-problem")),
       off: buttons(form).filter(off).map(text), buttons: buttons(form).map(text) } : null,
     ask: ask ? { title: text(heading), body: text(heading?.nextElementSibling), err: text(ask.querySelector('[role="alert"]')), buttons: askButtons } : null,
     focus: !at || at === document.body ? "nothing" : at.matches(T("library-btn")) ? "button" : at.matches(T("lib-search")) ? "search" : at.matches(T("lib-row")) ? "row " + line(at).trim()
-      : at.matches(T("lib-name-input")) ? "name" : at.matches(T("lib-menu-item")) ? "menu " + text(at) : at.matches(T("lib-top")) ? "top" : at.closest(T("confirm-dialog")) ? "question"
+      : at.matches(T("lib-name-input")) ? "name" : at.matches(T("lib-text-input")) ? "text" : at.matches(T("lib-menu-item")) ? "menu " + text(at) : at.matches(T("lib-top")) ? "top" : at.closest(T("confirm-dialog")) ? "question"
       : at.closest(T("library-dialog")) ? "popup " + at.tagName.toLowerCase() : at.tagName.toLowerCase() + "[" + (at.dataset.testid ?? "") + "]",
     lit: { head: all.filter((r) => r.dataset.drop === "drop").map(name), inside: all.filter((r) => r.dataset.drop === "drop-in").map(name), all: list?.dataset.drop === "true", top: top?.dataset.drop === "true" },
     moved: rows.filter((r) => r.dataset.moved === "true").map(name), top: top ? { text: text(top), off: off(top) } : null,

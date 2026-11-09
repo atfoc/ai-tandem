@@ -2,7 +2,7 @@
 // selection; each case puts the edit to the value and reads the box back the same way.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { applyEdit, indentUnit, newlineEdit, outdentEdit, tabEdit, type Edit, type Span } from "../src/logic/indent.ts";
+import { applyEdit, indentUnit, backspaceEdit, newlineEdit, tabEdit, type Edit, type Span } from "../src/logic/indent.ts";
 import { pointRef, serializeRef } from "../src/logic/refs.ts";
 
 function parse(box: string): { value: string; sel: Span } {
@@ -25,7 +25,7 @@ function run(box: string, key: (value: string, sel: Span) => Edit | null): strin
   return show(r.value, r.selection);
 }
 const tab = (unit: string) => (v: string, s: Span) => tabEdit(v, s, unit);
-const outdent = (size: number) => (v: string, s: Span) => outdentEdit(v, s, size);
+const back = (tabWidth: number, tabInserts: "tab" | "spaces" = "spaces") => (v: string, s: Span) => backspaceEdit(v, s, { tabInserts, tabWidth });
 const enter = (v: string, s: Span) => newlineEdit(v, s);
 
 test("indentUnit: a tab character or tabWidth spaces", () => {
@@ -88,27 +88,35 @@ test("Tab keeps a tag whole on a line it indents", () => {
   assert.equal(run(`«${tag} a\nb»`, tab("\t")), `«\t${tag} a\n\tb»`);
 });
 
-test("Shift+Tab takes one level off each line touched", () => {
-  assert.equal(run("\tab|", outdent(4)), "ab|");
-  assert.equal(run("    ab|", outdent(4)), "ab|");
-  assert.equal(run("      ab|", outdent(4)), "  ab|");
-  assert.equal(run("  ab|", outdent(4)), "ab|", "less than a level: what there is");
-  assert.equal(run("\t\tab|", outdent(4)), "\tab|");
-  assert.equal(run(" \tab|", outdent(4)), "\tab|", "only leading spaces are taken");
-  assert.equal(run("\t«a\n    b\nc»", outdent(4)), "«a\nb\nc»");
-  assert.equal(run("x\n\t«a\n\tb\n»\tc", outdent(4)), "x\n«a\nb\n»\tc");
+test("Backspace with spaces deletes back to the previous tab stop", () => {
+  assert.equal(run("    |ab", back(4)), "|ab");
+  assert.equal(run("        |ab", back(4)), "    |ab");
+  assert.equal(run("      |ab", back(4)), "    |ab", "off a stop: to the stop before");
+  assert.equal(run(" |", back(4)), "|", "less than a level: what there is");
+  assert.equal(run("    |", back(2)), "  |");
+  assert.equal(run("   |", back(2)), "  |");
+  assert.equal(run("          |x", back(8)), "        |x");
+  assert.equal(run("        |x", back(8)), "|x");
+  assert.equal(run("a\n    |b\nc", back(4)), "a\n|b\nc", "never past the line's start");
+  assert.equal(run("  |  ab", back(4)), "|  ab", "a caret inside the indent: what is before it");
 });
 
-test("Shift+Tab moves a caret inside the removed indent to the line's start", () => {
-  assert.equal(run("  |  ab", outdent(4)), "|ab");
-  assert.equal(run("\t|ab", outdent(4)), "|ab");
-  assert.equal(run("      a|b", outdent(2)), "    a|b");
+test("Backspace with spaces: a tab before the spaces counts by its column and stops the delete", () => {
+  assert.equal(run("\t  |x", back(4)), "\t|x", "column 6: back to 4");
+  assert.equal(run("\t    |x", back(4)), "\t|x", "column 8: back to 4");
+  assert.equal(run("  \t |x", back(4)), "  \t|x", "column 5: back to 4");
+  assert.equal(run(" \t    |x", back(8)), " \t|x", "column 12: back to 8");
+  assert.equal(run("\t|x", back(4)), null, "right after a tab: the platform's own Backspace");
 });
 
-test("Shift+Tab with nothing to take is null", () => {
-  assert.equal(run("ab|", outdent(4)), null);
-  assert.equal(run("|", outdent(4)), null);
-  assert.equal(run("«a\nb»", outdent(4)), null);
+test("Backspace is the platform's own (null) elsewhere", () => {
+  assert.equal(run("ab  |", back(4)), null, "text before the caret on its line");
+  assert.equal(run("  a |b", back(4)), null);
+  assert.equal(run("|ab", back(4)), null, "at the line's start");
+  assert.equal(run("x\n|", back(4)), null);
+  assert.equal(run("«    »ab", back(4)), null, "a selection");
+  assert.equal(run("    |ab", back(4, "tab")), null, "tab mode");
+  assert.equal(run("\t|ab", back(4, "tab")), null);
 });
 
 test("Enter keeps the indent of the line", () => {

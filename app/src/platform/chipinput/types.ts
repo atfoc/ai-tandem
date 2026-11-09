@@ -1,4 +1,5 @@
-// The chip input (AD-60): the composer's text box, which holds plain text with board-reference chips (⌘L, ⌘⇧L) in it.
+// The chip input (AD-60): the composer's text box, which holds plain text with board-reference chips (⌘L, ⌘⇧L) in it. The prompt
+// library's text field is the same box with no chips (`noChips`, `look`), so that a prompt's text edits as the composer's does.
 // One contract, two implementations: ChipInput.web.tsx (a contenteditable, today's RefInput) and ChipInput.native.tsx
 // (K2). The box's value is the message text with each reference as its inline tag (core logic/refs.ts serializeRef /
 // parseRefs), so drafts, sending, the thread and the agent are unchanged.
@@ -16,7 +17,7 @@
 //    be selected and copied.
 // Undo of a chip is not required (C-RF-20).
 import type { Picked } from "@aiwb/core/logic/chatimage.ts";
-import type { EditingSettings } from "@aiwb/core/logic/editing.ts";
+import type { EditingSettings, TabWidth } from "@aiwb/core/logic/editing.ts";
 import type { Ref } from "@aiwb/core/logic/refs.ts";
 
 import type { KeyLike } from "../keys.types.ts";
@@ -44,10 +45,10 @@ export type ChipInputHandle = {
   select(at: { start: number; end: number }): void;
   /** Gives the box the focus. atEnd: the caret goes to the end of what it holds (the composer a sent move went to takes it so). */
   focus(atEnd?: boolean): void;
-  /** Tab (false) or Shift+Tab (true) at the caret or over the selection, as `editing` says (core logic/indent.ts): the soft
-   *  keyboard's key row and a hardware Tab on iOS and Android. Native only (the web box takes Tab itself); nothing without
-   *  `editing`, or while locked or read-only; the focus stays where it is. */
-  indent?(outdent: boolean): void;
+  /** Tab at the caret or over the selection, as `editing` says (core logic/indent.ts): the soft keyboard's key row and a hardware
+   *  Tab on iOS and Android. Native only (the web box takes Tab itself); nothing without `editing`, or while locked or read-only;
+   *  the focus stays where it is. There is no outdent: an indent is taken away by deleting it. */
+  indent?(): void;
 };
 
 export type ChipInputProps = {
@@ -73,14 +74,42 @@ export type ChipInputProps = {
   onImages?(files: Picked[]): void;
   /** The box's testID (AD-80); the chips in it are "ref-chip", each with dataSet {kind: "selection" | "point"}. */
   testID?: string;
+  /** What a screen reader calls the box (the prompt library's "Text"). Unset: on iOS and Android the testID, as before (the device
+   *  checks of the composer find its box by it); on web no label. */
+  label?: string;
+  /** No autocorrect, spelling marks or capitals from the keyboard (the prompt library's text, which is often code; the device checks'
+   *  galleries too). Unset: the platform's own. */
+  plain?: boolean;
   /** The box's size. Unset: today's (13 pt, three lines to six, or 40% of the window on web). "phone": 17 pt text (the placeholder too), one line
    *  high when empty, growing to six lines and then scrolling inside (ux-improvements goal 3.6). */
   size?: "phone";
   /** Code-editor editing (core logic/indent.ts), for keys `onKey` did not handle: Tab indents (a tab character or spaces, as the
-   *  settings say), Shift+Tab outdents, Enter and Shift+Enter add a line that keeps the indent of the caret's line and continues a
-   *  markdown list. `tabWidth` is also how wide a tab character is drawn. Unset: Tab and Enter are the platform's own (focus, a bare
+   *  settings say; over several lines every line), Shift+Tab is taken and does nothing (the focus stays in the box), Backspace in an
+   *  indent of spaces deletes back to the previous tab stop (with a tab character the platform's own Backspace takes the "\t"), Enter
+   *  and Shift+Enter add a line that keeps the indent of the caret's line and continues a markdown list. How wide a tab character is drawn is
+   *  the prop `tabWidth` (which defaults to this one's). Unset: Tab and Enter are the platform's own (focus, a bare
    *  line break). Nothing is edited while `locked` or `readOnly`. On web, a Tab or Shift+Tab right after Esc is the browser's: it moves the
    *  focus out of the box (the keyboard's way out; any other key, a press in the box or a blur in between ends that). Esc itself still
-   *  goes to `onKey` as before. */
+   *  goes to `onKey` as before. On web, a line that starts with tabs or spaces and wraps continues at its indent: its further visual
+   *  lines start where its text starts, not at the box's left edge (hanging.ts). On iOS and Android the same, drawn by the aiwb-indent
+   *  module with the width of `tabWidth` (below), which follows this one's unless given. */
   editing?: EditingSettings;
+  /** How wide a tab character is drawn (2, 4 or 8 columns) and, on iOS and Android, the hanging indent: a line that wraps goes on at
+   *  its own indent, where its text starts after its leading tabs and spaces (the aiwb-indent module; ChipInput.native.tsx). Unset:
+   *  `editing?.tabWidth`. Its own prop because the composer gives no `editing` on iOS and Android while a dialog or a popup is open
+   *  (screens/composer/underdialog.ts: a hardware Tab must not indent a box hidden under one), and the box behind it must not reflow
+   *  when one opens. The web box reads `editing` (it gets it under dialogs too). */
+  tabWidth?: TabWidth;
+  /** The box holds plain text, not references (the prompt library's text field): text that reads as a reference tag (core logic/refs.ts
+   *  REF_SRC) is that text and never a chip, whether it was set, typed, pasted or moved by an edit of `editing`; a paste is its plain
+   *  text. insertRef, openInsert and ⌘P put nothing in (⌘P is still taken, so the page is not printed). */
+  noChips?: boolean;
+  /** The box's look where it is not the composer's (the prompt library's text field), over what `size` gives: `mono`, the text in
+   *  the monospace face (ui/fonts.ts MONO); `fontSize`, its size in pt/px (the placeholder's too; a line stays 1.45 times as high);
+   *  `minHeight`, the least height in pt/px (the 3 above and below the text included); `grow`, no greatest height: the box grows with
+   *  its text and takes the height its parent leaves it (as a flex child), and scrolls inside once its parent bounds it. */
+  look?: { mono?: boolean; fontSize?: number; minHeight?: number; grow?: boolean };
+  /** iOS: the nativeID of the InputAccessoryView shown over the keyboard while the box has the focus (TextInput's
+   *  inputAccessoryViewID; the library's phone editor's bar). Ignored elsewhere. */
+  accessoryId?: string;
 };

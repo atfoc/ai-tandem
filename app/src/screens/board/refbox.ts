@@ -70,7 +70,7 @@ export function splitRefs(value: string): { text: string; refs: Placed[] } {
   return { text: plain, refs: kept };
 }
 
-/** Tab or Shift+Tab over several lines (the composer's `editing`, core logic/indent.ts): `before` and `after` have the same lines
+/** Tab over several lines (the composer's `editing`, core logic/indent.ts): `before` and `after` have the same lines
  *  but for the leading white space of two or more of them. Taken as one edit, a tag on a line between the first and the last
  *  changed one would go to the edit's start; here each tag keeps its line and its place in the line's text (a tag inside the old
  *  indent stays inside the new one, at most at its end). null for any other change. */

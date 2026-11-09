@@ -39,7 +39,7 @@ function trimmed(at: number, a: string, b: string): Hunk | null {
 }
 
 /** The replaces that make `edit` on `value`, last first (so each one's offsets hold when it is made): one, from the first character that
- *  changes to the last, when that span holds no tag; else, when the edit keeps the same tags in the same order (an indent or outdent of
+ *  changes to the last, when that span holds no tag; else, when the edit keeps the same tags in the same order (an indent of
  *  lines with chips in them), one per run of text between tags that changes, so no chip is taken out and put back. An edit that takes
  *  tags out (a Tab over a selection with a chip in it) is one replace of its whole span, chips and all. */
 export function hunksOf(value: string, edit: Edit): Hunk[] {

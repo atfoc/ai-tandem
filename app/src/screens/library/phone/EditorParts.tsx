@@ -1,15 +1,18 @@
 // The small parts the library's phone sheets share (package S4, chunk 2): the glyphs of the move picker's rows, a labelled one-line field in a card, the line that says what is
-// wrong with a name, and the Group row's value line.
+// wrong with a name, the Group row's value line, and the bar over the keyboard (with Indent while the prompt's text has the focus on iOS and Android: the soft keyboard
+// has no Tab; a hardware Tab indents through the text's box itself).
 import type { ReactNode, Ref } from "react";
 import { Pressable, StyleSheet, TextInput, View, type TextStyle } from "react-native";
 import Svg, { Path, Rect } from "react-native-svg";
 
+import { IconButton } from "../../../ui/IconButton.tsx";
 import { DisclosureChevron, Folder } from "../../../ui/icons.tsx";
 import { webStyle } from "../../../ui/webstyle.ts";
 import { Text } from "../../../ui/Text.tsx";
 import { useTokens } from "../../../ui/theme.tsx";
 import { tid } from "../../../ui/tid.ts";
 import { PHONE, TYPE } from "../../../ui/metrics.ts";
+import { IndentIcon } from "../../composer/phone/icons.tsx";
 import { S4_TID } from "./ids.ts";
 import { INDENT } from "./sheetlogic.ts";
 
@@ -68,11 +71,17 @@ const styles = StyleSheet.create({
   problem: { marginTop: -12, marginBottom: 16, marginHorizontal: 20 },
 });
 
-/** The bar over the keyboard (06b): at the left "Edited · not saved" while there are unsaved changes, at the right a 44 pt Done that takes the focus away. */
-export function KeyboardBar({ dirty, onDone }: { dirty: boolean; onDone(): void }) {
+/** The bar over the keyboard (06b): at the left "Edited · not saved" while there are unsaved changes, at the right a 44 pt Done that takes the focus away.
+ *  `onIndent`: an Indent button first, at the very left (as the composer's key row, composer/EditKeys.tsx: a press keeps the focus and the selection). */
+export function KeyboardBar({ dirty, onDone, onIndent }: { dirty: boolean; onDone(): void; onIndent?(): void }) {
   const t = useTokens();
   return (
     <View {...tid(S4_TID.editorBar)} style={[styles.bar, { backgroundColor: t.panel, borderColor: t.line }]}>
+      {onIndent ? (
+        <IconButton {...tid(S4_TID.editorBarIndent)} size="touch" title="Indent" keepFocus onPress={() => onIndent()}>
+          {(color: string) => <IndentIcon color={color} />}
+        </IconButton>
+      ) : null}
       <Text {...tid(S4_TID.editorBarState)} size={TYPE.secondary} tone="muted" numberOfLines={1} style={styles.barState}>{dirty ? "Edited · not saved" : ""}</Text>
       <Pressable {...tid(S4_TID.editorBarDone)} accessibilityRole="button" accessibilityLabel="Done" onPress={onDone} style={styles.done}>
         <Text size={TYPE.control} tone="accent" weight="600">Done</Text>

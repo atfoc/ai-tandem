@@ -1,9 +1,11 @@
 // The prompt editor on the phone (package S4; 06b of the design): a P3 form, "Cancel · Prompt · Save", with the name and the Group row in one card, the text in another (mono, Return adds
-// a line and never saves), a bar over the keyboard ("Edited · not saved", Done) while a field has the focus, and "Delete prompt…" at the end. The Group row opens the move picker over the
+// a line and never saves), a bar over the keyboard ("Edited · not saved", Done) while a field has the focus, and "Delete prompt…" at the end. The text is the composer's box
+// (../PromptText.tsx): it edits as a chat's message does (Return keeps the indent and continues a list, Backspace in spaces goes back a tab stop, a hardware Tab indents as
+// Settings > Composer says), and on iOS and Android the bar has Indent at its left while the text has the focus, since the soft keyboard has no Tab. The Group row opens the move picker over the
 // form; a pick is saved with the rest. Closing a changed form asks (06b-f: Discard changes, Save and close, Keep editing). A prompt whose library is not connected is read-only.
 // `open` says what it is on: a saved prompt (`edit`) or a new one made in `at`.
 import { useEffect, useMemo, useRef, useState } from "react";
-import { InputAccessoryView, Keyboard, Platform, StyleSheet, TextInput, View, type TextStyle } from "react-native";
+import { InputAccessoryView, Keyboard, Platform, StyleSheet, TextInput, View } from "react-native";
 
 import { libraryApi } from "@aiwb/core/libraryapi.ts";
 import { insertItem } from "@aiwb/core/logic/library.ts";
@@ -13,13 +15,13 @@ import { getState, setState } from "@aiwb/core/state/store.ts";
 import { Cell, CellGroup } from "../../../ui/Cells.tsx";
 import { ConfirmSheet } from "../../../ui/ConfirmSheet.tsx";
 import { FormSheet } from "../../../ui/FormSheet.tsx";
-import { MONO } from "../../../ui/fonts.ts";
 import { PHONE, TYPE } from "../../../ui/metrics.ts";
 import { InSheetFooter } from "../../../ui/sheetfooter.tsx";
 import { Text } from "../../../ui/Text.tsx";
 import { useTokens } from "../../../ui/theme.tsx";
 import { tid } from "../../../ui/tid.ts";
 import { webStyle } from "../../../ui/webstyle.ts";
+import { PromptText, type PromptTextHandle } from "../PromptText.tsx";
 import { useLibraries } from "../useLibraries.ts";
 import { GroupRow, KeyboardBar, NameCard, NameInput, Problem } from "./EditorParts.tsx";
 import { S4_SHEET_TID, S4_TID } from "./ids.ts";
@@ -32,6 +34,8 @@ import { whenStore } from "./whenstore.ts";
 const ACCESSORY = "prompt-editor-bar";
 /** How long the bar stays after a field lost the focus: a press on Done itself first takes the focus away. */
 const BAR_LINGER_MS = 250;
+/** The text's look: the monospace face at 14.5 pt, at least 190 high, growing with its text. */
+const TEXT_LOOK = { mono: true, fontSize: 14.5, minHeight: 190, grow: true } as const;
 /** How long a sheet over this one takes to be dismissed on iOS (as FormSheet's). */
 const DISMISS_MS = 400;
 
@@ -64,8 +68,15 @@ export function PromptEditor({ open, onClose }: { open: EditorOpen; onClose(): v
   useEffect(() => () => clearTimeout(linger.current), []);
   const gotFocus = () => { clearTimeout(linger.current); setFocused(true); };
   const lostFocus = () => { clearTimeout(linger.current); linger.current = setTimeout(() => setFocused(false), BAR_LINGER_MS); };
-  const nameRef = useRef<TextInput>(null), textRef = useRef<TextInput>(null);
-  const done = () => { Keyboard.dismiss(); nameRef.current?.blur(); textRef.current?.blur(); };
+  // The text's own focus (Indent in the bar is for it alone): its box's focus events bubble to the View around it.
+  const [textFocused, setTextFocused] = useState(false);
+  const textHandlers = { onFocus: () => { setTextFocused(true); gotFocus(); }, onBlur: () => { setTextFocused(false); lostFocus(); } } as object;
+  const nameRef = useRef<TextInput>(null), textRef = useRef<PromptTextHandle>(null);
+  // (Keyboard.dismiss blurs the focused field on iOS and Android, the text's box too; on web the box is a contenteditable, blurred as the page's active element)
+  const done = () => {
+    Keyboard.dismiss(); nameRef.current?.blur();
+    if (Platform.OS === "web") (globalThis as { document?: { activeElement?: { blur?(): void } | null } }).document?.activeElement?.blur?.();
+  };
 
   const onSave = async () => {
     if (open.mode === "new") {
@@ -82,7 +93,7 @@ export function PromptEditor({ open, onClose }: { open: EditorOpen; onClose(): v
   const closeAfter = () => { if (Platform.OS === "ios") setTimeout(onClose, DISMISS_MS); else onClose(); };
 
   const words = deleteWords(saved?.name ?? "", lib?.name ?? (edit ? open.server : ""));
-  const bar = <KeyboardBar dirty={state.dirty} onDone={done} />;
+  const bar = <KeyboardBar dirty={state.dirty} onDone={done} onIndent={Platform.OS !== "web" && textFocused && !off ? () => textRef.current?.indent() : undefined} />;
   const body = useMemo(() => ({ backgroundColor: t.panel }), [t.panel]);
 
   return (
@@ -99,9 +110,10 @@ export function PromptEditor({ open, onClose }: { open: EditorOpen; onClose(): v
         </CellGroup>
         <Problem id={S4_SHEET_TID.editorProblem} text={state.problem} />
         <CellGroup title="Text">
-          <TextInput ref={textRef} {...tid(S4_TID.editorText)} accessibilityLabel="Text" value={draft.text} onChangeText={(text) => setEdits((e) => ({ ...e, text }))} multiline editable={!off}
-            submitBehavior="newline" autoCorrect={false} autoCapitalize="none" spellCheck={false} placeholderTextColor={t.faint} textAlignVertical="top"
-            onFocus={gotFocus} onBlur={lostFocus} inputAccessoryViewID={ACCESSORY} style={[styles.text, { color: t.text }, webStyle({ outlineStyle: "none" }) as TextStyle | undefined]} />
+          <View {...textHandlers} style={styles.text}>
+            <PromptText ref={textRef} testID={S4_TID.editorText} value={draft.text} onChangeText={(text) => setEdits((e) => ({ ...e, text }))} readOnly={off} look={TEXT_LOOK}
+              accessoryId={ACCESSORY} />
+          </View>
         </CellGroup>
         {edit ? (
           <CellGroup>
@@ -125,6 +137,6 @@ const styles = StyleSheet.create({
   // the page of the form is `panel`, the cards `bg` (as the pushed screens): the body bleeds over the sheet's own side padding
   body: { marginHorizontal: -8, paddingTop: 12, paddingBottom: 12, minHeight: 360 },
   off: { marginHorizontal: PHONE.margin, marginBottom: 12 },
-  text: { fontFamily: MONO, fontSize: 14.5, lineHeight: 21, minHeight: 190, paddingHorizontal: PHONE.margin, paddingVertical: 12 },
+  text: { paddingHorizontal: PHONE.margin, paddingVertical: 9 }, // (the box adds 3 above and below its text)
   sticky: { ...(webStyle({ position: "sticky", bottom: 0, zIndex: 2 }) ?? {}) },
 });

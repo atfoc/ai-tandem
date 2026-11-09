@@ -3,7 +3,7 @@
 //   the context row (ContextChips), the chip row of a new chat (ChipRow, package C2's), the lines of today (a pending move's
 //   banner, the model notice, voice's notice), then the box: the images, the text (17 pt, up to 6 lines, then it scrolls) and, in the toolbar's
 //   place, either what blocks sending (the composer part `useBlock`, package V1's: Blocked.tsx) or the toolbar (PhoneToolbar); under the box the
-//   key row of Outdent and Indent while the box is typed in with the soft keyboard up (EditKeys.tsx; just above the keys), then the speech bar. "+" opens the Add to message sheet (PlusSheet). What blocks sending is said once (goal 3.7.1): a block that replaces the box (an
+//   key row with Indent while the box is typed in with the soft keyboard up (EditKeys.tsx; just above the keys), then the speech bar. "+" opens the Add to message sheet (PlusSheet). What blocks sending is said once (goal 3.7.1): a block that replaces the box (an
 //   archived chat, the old board connection, no agent) stands alone with the lines; the others add a card above the box or take the toolbar's
 //   place, and with any of them the box has no placeholder and nothing is said under it (a refused send is the red card above the box).
 // The toast stands above the composer (ui/Toast.tsx useToastLift). The wide layouts keep Composer.tsx's own tree.
@@ -47,7 +47,7 @@ export type PhoneComposerProps = {
   plus: Omit<PlusSheetProps, "open" | "onClose">;
   /** "+" was pressed: the sheet is about to take the focus (the composer notes the box's caret for Insert a prompt). */
   onPlusOpen?: () => void;
-  /** The key row of Outdent and Indent (EditKeys.tsx), or null: drawn right under the box, not when a block takes the box's place. */
+  /** The key row with Indent (EditKeys.tsx), or null: drawn right under the box, not when a block takes the box's place. */
   keyRow?: ReactNode;
   /** The speech bar while speech mode is on. */
   speechBar: ReactNode;

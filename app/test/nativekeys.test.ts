@@ -175,7 +175,7 @@ test("the Swift and the Kotlin source take Tab and Shift+Tab on request", () => 
   const swift = read("../modules/aiwb-keys/ios/AiwbKeysModule.swift");
   assert.match(swift, /Function\("setTabKeys"\)/);
   assert.match(swift, /input: "\\t"/);
-  assert.match(swift, /\[\(false, "Indent"\), \(true, "Outdent"\)\]/);
+  assert.match(swift, /\[\(false, "Indent"\), \(true, ""\)\]/);
   assert.match(swift, /input: "\\t"[\s\S]*?wantsPriorityOverSystemBehavior = true/);
   assert.match(swift, /"key": "Tab", "code": "Tab"/);
   const kotlin = read("../modules/aiwb-keys/android/src/main/java/expo/modules/aiwbkeys/AiwbKeysModule.kt");

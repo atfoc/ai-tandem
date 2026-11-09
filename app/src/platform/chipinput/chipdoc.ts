@@ -12,9 +12,12 @@
 // a chip is its tag; AD-60: replaceBeforeCaret, beforeCaret, the insert popup's core logic/insert.ts). toValue and toShown
 // map between them; the text between chips is the same characters in both.
 //
+// A box with `noChips` (the prompt library's text field) passes `chips` false to every function that reads a value or an inserted
+// text into a Doc: tags stay text, so its Doc is one string and no chip ever comes up.
+//
 // No React, no DOM: node tests run it (test/chipdoc.test.ts). The value is serialize(doc), refs.ts's own.
 import type { EditingSettings } from "@aiwb/core/logic/editing.ts";
-import { applyEdit, indentUnit, newlineEdit, outdentEdit, tabEdit } from "@aiwb/core/logic/indent.ts";
+import { applyEdit, backspaceEdit, indentUnit, newlineEdit, tabEdit } from "@aiwb/core/logic/indent.ts";
 import { insertText as insertTextInValue } from "@aiwb/core/logic/insert.ts";
 import { parseRefs, serialize, serializeRef, type Ref } from "@aiwb/core/logic/refs.ts";
 
@@ -47,8 +50,8 @@ export function normalize(parts: Part[]): Doc {
   return out;
 }
 
-/** The document a value stands for (a draft, a pasted text): its tags are chips again. */
-export const docOf = (value: string): Doc => normalize(parseRefs(value));
+/** The document a value stands for (a draft, a pasted text): its tags are chips again. chips false: tags stay text. */
+export const docOf = (value: string, chips = true): Doc => normalize(chips ? parseRefs(value) : [value]);
 
 /** The value of a document: the text with each reference as its tag. */
 export const valueOf = (doc: Doc): string => serialize(doc);
@@ -147,10 +150,11 @@ export type Change = { doc: Doc; text: string; caret: number; same: boolean };
  * The input reports `next` for a document that shows `layout(doc).text`. `hint` is the selection the input had before
  * the edit, when known: it tells which of several equal readings of the edit was meant (a backspace and a
  * forward delete in a run of equal characters) and is checked against the strings, so a stale one does no harm.
- * `known` are the references the input has held, for a paste of copied chips (restoreChips).
+ * `known` are the references the input has held, for a paste of copied chips (restoreChips). chips false: the inserted text
+ * stays text (no tags read, no chips restored).
  */
-export function applyChange(doc: Doc, next: string, hint?: Span, known: readonly Ref[] = []): Change {
-  const { text: cur, chips } = layout(doc);
+export function applyChange(doc: Doc, next: string, hint?: Span, known: readonly Ref[] = [], chips = true): Change {
+  const { text: cur, chips: drawn } = layout(doc);
   if (next === cur) return { doc, text: cur, caret: hint?.end ?? cur.length, same: true };
 
   // what changed: [a, b) of the old string became `ins`
@@ -180,13 +184,13 @@ export function applyChange(doc: Doc, next: string, hint?: Span, known: readonly
 
   // a chip is never cut or typed into
   if (a === b) {
-    const c = chipAround(chips, a);
+    const c = chipAround(drawn, a);
     if (c) a = b = hint && (hint.start === c.start || hint.start === c.end) ? hint.start : a - c.start < c.end - a ? c.start : c.end;
   } else {
-    for (const c of chips) if (a < c.end && b > c.start) { a = Math.min(a, c.start); b = Math.max(b, c.end); }
+    for (const c of drawn) if (a < c.end && b > c.start) { a = Math.min(a, c.start); b = Math.max(b, c.end); }
   }
 
-  const put = normalize(restoreChips(parseRefs(ins), known)); // a text pasted with reference tags, or with a chip's display, gives chips
+  const put = chips ? normalize(restoreChips(parseRefs(ins), known)) : normalize([ins]); // a text pasted with reference tags, or with a chip's display, gives chips
   const out = normalize([...splitAt(doc, a)[0], ...put, ...splitAt(doc, b)[1]]);
   const caret = a + layout(put).text.length;
   return { doc: out, text: layout(out).text, caret, same: false };
@@ -227,21 +231,21 @@ export function insertRef(doc: Doc, sel: Span, ref: Ref): { doc: Doc; caret: num
 
 /** The `n` characters of the value before the caret replaced with `s` (an @ mention completed, AD-60). The `n` characters
  *  are text of the caret's text part (a chip is never taken in part): null when there are not that many, or when the
- *  caret is a selection. `s` may hold tags: they become chips. */
-export function replaceBeforeCaret(doc: Doc, caret: Span, n: number, s: string): { doc: Doc; caret: number } | null {
+ *  caret is a selection. `s` may hold tags: they become chips (chips false: tags stay text). */
+export function replaceBeforeCaret(doc: Doc, caret: Span, n: number, s: string, chips = true): { doc: Doc; caret: number } | null {
   if (caret.start !== caret.end || n < 0 || beforeCaret(doc, caret.end).length < n) return null;
   const at = caret.end;
-  const put = docOf(s);
+  const put = docOf(s, chips);
   const out = normalize([...splitAt(doc, at - n)[0], ...put, ...splitAt(doc, at)[1]]);
   return { doc: out, caret: at - n + layout(put).text.length };
 }
 
 /** `text` put where `sel` is, as the insert popup puts it (core logic/insert.ts insertText, which counts in the value):
- *  in place of what was selected, the caret right after it. Tags in it become chips. */
-export function insertText(doc: Doc, sel: Span, text: string): { doc: Doc; caret: number } {
+ *  in place of what was selected, the caret right after it. Tags in it become chips (chips false: tags stay text). */
+export function insertText(doc: Doc, sel: Span, text: string, chips = true): { doc: Doc; caret: number } {
   const lo = Math.min(sel.start, sel.end), hi = Math.max(sel.start, sel.end);
   const want = insertTextInValue(valueOf(doc), { start: toValue(doc, lo), end: toValue(doc, hi) }, text);
-  const out = docOf(want.value);
+  const out = docOf(want.value, chips);
   return { doc: out, caret: toShown(out, want.caret) };
 }
 
@@ -271,9 +275,10 @@ export const copyOf = (doc: Doc, sel: Span): string => serialize(slice(doc, Math
  * the same string: which line's indent to copy is unknown). null leaves the change to applyChange (the bare line break): when
  * the span cannot be told, when its edge is inside a chip, when newlineEdit adds nothing, and for any other change (a paste of
  * more than the "\n", an autocorrect that changed a word in the same event, a paste of several lines), which is never touched.
+ * chips false: tags stay text.
  */
-export function enterChange(doc: Doc, next: string, hint?: Span): { doc: Doc; caret: number } | null {
-  const { text: cur, chips } = layout(doc);
+export function enterChange(doc: Doc, next: string, hint?: Span, chips = true): { doc: Doc; caret: number } | null {
+  const { text: cur, chips: drawn } = layout(doc);
   if (next.length < 1 || next.length > cur.length + 1) return null;
   const fits = (lo: number, hi: number) => next === cur.slice(0, lo) + "\n" + cur.slice(hi);
   let span: [number, number] | null = null;
@@ -290,22 +295,51 @@ export function enterChange(doc: Doc, next: string, hint?: Span): { doc: Doc; ca
   }
   if (!span) return null;
   const [lo, hi] = span;
-  if (chipAround(chips, lo) || chipAround(chips, hi)) return null;
+  if (chipAround(drawn, lo) || chipAround(drawn, hi)) return null;
   const value = valueOf(doc), at = { start: toValue(doc, lo), end: toValue(doc, hi) };
   const edit = newlineEdit(value, at);
   if (edit.start === at.start && edit.end === at.end && edit.text === "\n") return null;
-  const r = applyEdit(value, edit), out = docOf(r.value);
+  const r = applyEdit(value, edit), out = docOf(r.value, chips);
   return { doc: out, caret: toShown(out, r.selection.end) };
 }
 
-/** Tab (`outdent` false) or Shift+Tab over the selection `sel` (in the shown string), as core logic/indent.ts tabEdit and
- *  outdentEdit do it to the value: the document after, and the selection (in the new shown string). null when Shift+Tab finds
- *  no indent to take away. */
-export function indentChange(doc: Doc, sel: Span, settings: EditingSettings, outdent: boolean): { doc: Doc; selection: Span } | null {
+/**
+ * Backspace in the indent of a box that edits like code with spaces (core logic/indent.ts backspaceEdit): up to one level of
+ * spaces goes, back to the previous tab stop. As with Enter (enterChange), the field has deleted one character already when JS hears
+ * of it, so the change is read instead: `next` that is `layout(doc).text` with exactly one space taken away right before the caret,
+ * the caret's line before it all indent, is a Backspace there, and the answer is the document with backspaceEdit applied to the old
+ * value at that caret, and the caret (in the new shown string). `hint` is the selection before the edit: a caret right after the
+ * deleted space; without it (or when it does not fit) the place is read from the common prefix, but only when the space was alone
+ * between other characters (in a run of spaces any of them gives the same string: where the caret was is unknown). null leaves the
+ * change to applyChange (the bare one-space delete): in "tab" mode, when the place cannot be told, when backspaceEdit takes no more
+ * than that one space, and for any other change. chips false: tags stay text.
+ */
+export function backspaceChange(doc: Doc, next: string, hint: Span | undefined, settings: EditingSettings, chips = true): { doc: Doc; caret: number } | null {
+  if (settings.tabInserts !== "spaces") return null;
+  const cur = layout(doc).text;
+  if (next.length !== cur.length - 1) return null;
+  const fits = (at: number) => at > 0 && cur[at - 1] === " " && next === cur.slice(0, at - 1) + cur.slice(at);
+  let at = -1;
+  if (hint && hint.start === hint.end && fits(hint.start)) at = hint.start;
+  if (at < 0) {
+    let p = 0;
+    while (p < next.length && cur[p] === next[p]) p++;
+    // (the prefix ends at the run's last space, wherever in the run the key was pressed)
+    if (!fits(p + 1) || (p > 0 && cur[p - 1] === " ")) return null;
+    at = p + 1;
+  }
+  const value = valueOf(doc), caret = toValue(doc, at);
+  const edit = backspaceEdit(value, { start: caret, end: caret }, settings);
+  if (!edit || edit.end - edit.start <= 1) return null;
+  const r = applyEdit(value, edit), out = docOf(r.value, chips);
+  return { doc: out, caret: toShown(out, r.selection.end) };
+}
+
+/** Tab over the selection `sel` (in the shown string), as core logic/indent.ts tabEdit does it to the value: the document after, and
+ *  the selection (in the new shown string). chips false: tags stay text. */
+export function indentChange(doc: Doc, sel: Span, settings: EditingSettings, chips = true): { doc: Doc; selection: Span } {
   const lo = Math.min(sel.start, sel.end), hi = Math.max(sel.start, sel.end);
   const value = valueOf(doc), at = { start: toValue(doc, lo), end: toValue(doc, hi) };
-  const edit = outdent ? outdentEdit(value, at, settings.tabWidth) : tabEdit(value, at, indentUnit(settings));
-  if (!edit) return null;
-  const r = applyEdit(value, edit), out = docOf(r.value);
+  const r = applyEdit(value, tabEdit(value, at, indentUnit(settings))), out = docOf(r.value, chips);
   return { doc: out, selection: { start: toShown(out, r.selection.start), end: toShown(out, r.selection.end) } };
 }

@@ -86,8 +86,8 @@ async function playPhone({ url, open, fail, note }) {
   const editorOf = () => page.evaluate(() => {
     const T = (id) => [...document.querySelectorAll(`[data-testid="${id}"]`)].pop();
     if (!T("prompt-editor")) return null;
-    const txt = (id) => T(id)?.innerText.replace(/\s+/g, " ").trim() ?? "", off = (id) => T(id)?.getAttribute("aria-disabled") === "true", ro = (e) => !!e && (e.readOnly || e.disabled);
-    return { title: txt("sheet-title"), name: T("editor-name")?.value ?? "", text: T("editor-text")?.value ?? "", group: txt("editor-group-row"), problem: txt("editor-problem"), err: txt("form-error"),
+    const txt = (id) => T(id)?.innerText.replace(/\s+/g, " ").trim() ?? "", off = (id) => T(id)?.getAttribute("aria-disabled") === "true", ro = (e) => !!e && !!(e.readOnly || e.disabled || e.getAttribute("aria-readonly") === "true");
+    return { title: txt("sheet-title"), name: T("editor-name")?.value ?? "", text: T("editor-text")?.innerText.replace(/\n$/, "") ?? "", /* (the composer's box, a contenteditable: PromptText.tsx) */ group: txt("editor-group-row"), problem: txt("editor-problem"), err: txt("form-error"),
       notice: txt("editor-off-notice"), saveOff: off("sheet-right"), groupOff: off("editor-group-row"), deleteOff: T("editor-delete") ? off("editor-delete") : null, roName: ro(T("editor-name")), roText: ro(T("editor-text")) };
   });
   /** The group form on top, or null. */
@@ -525,7 +525,7 @@ await check("PL4.1 the library popup: the tree, the search, the editor, a second
     await a.shows("ArrowRight on an open group", (x) => x.focus === "row commit message");
     await page.keyboard.press("Enter");
     s = await a.shows("Enter on a prompt's row", (x) => x.form?.name === "commit message");
-    if (s.form.head !== "Prompt" || s.form.where !== "In git" || s.form.text !== "Write a commit message." || s.form.fields !== "input,textarea") fail(`the editor of "commit message" shows ${JSON.stringify(s.form)}`);
+    if (s.form.head !== "Prompt" || s.form.where !== "In git" || s.form.text !== "Write a commit message." || s.form.fields !== "input,box") fail(`the editor of "commit message" shows ${JSON.stringify(s.form)}`);
     if (s.form.off.join() !== "Save" || s.form.buttons.join() !== "Delete,Save") fail(`with nothing typed the editor's buttons are ${JSON.stringify(s.form.buttons)}, disabled ${JSON.stringify(s.form.off)}`);
     await page.keyboard.press("ArrowUp"); await page.keyboard.press("ArrowUp");
     await a.shows("ArrowUp on the first row", (x) => x.focus === "search");
@@ -623,7 +623,7 @@ await check("PL4.1 the library popup: the tree, the search, the editor, a second
     if (s.form.text !== null || s.form.where !== TOP || s.form.fields !== "input") fail(`the editor of the group "misc" shows ${JSON.stringify(s.form)}`);
     await press(page, a.button("New prompt"));
     s = await a.shows("New prompt in the chosen group", (x) => x.form?.head === "New prompt" && x.focus === "name");
-    if (s.form.where !== "In misc" || s.form.name !== "" || s.form.text !== "" || !s.form.off.includes("Save") || s.form.fields !== "input,textarea") fail(`a new prompt starts as ${JSON.stringify(s.form)}`);
+    if (s.form.where !== "In misc" || s.form.name !== "" || s.form.text !== "" || !s.form.off.includes("Save") || s.form.fields !== "input,box") fail(`a new prompt starts as ${JSON.stringify(s.form)}`);
     // (the tree shows its row where it goes, before the prompt of that group, and no other row is the chosen one)
     if (s.fresh !== "  New prompt" || s.on.length || s.rows.join("|") !== TREE.join("|")) fail(`with a new prompt begun in "misc" the tree shows ${JSON.stringify({ fresh: s.fresh, on: s.on, rows: s.rows })}`);
     await page.keyboard.type("a/b");
@@ -725,7 +725,7 @@ await check("PL4.1 the library popup: the tree, the search, the editor, a second
     s = await a.shows("a server's entry chosen", (x) => /^Studio1 prompt in 1 group\.$/.test(x.about) && !x.form);
     await press(page, a.button("New prompt"));
     s = await a.shows("New prompt at a server's entry", (x) => x.form?.head === "New prompt");
-    if (s.form.where !== "In Studio" || s.fresh !== "  New prompt" || s.form.fields !== "input,textarea") fail(`a new prompt at Studio's entry goes to ${JSON.stringify(s.form.where)}, and its row is ${JSON.stringify(s.fresh)}`);
+    if (s.form.where !== "In Studio" || s.fresh !== "  New prompt" || s.form.fields !== "input,box") fail(`a new prompt at Studio's entry goes to ${JSON.stringify(s.form.where)}, and its row is ${JSON.stringify(s.fresh)}`);
     await a.field.name.fill("retro");
     await a.field.text.fill("What went well?");
     await a.save();
@@ -741,7 +741,7 @@ await check("PL4.1 the library popup: the tree, the search, the editor, a second
     s = await a.shows("a server that dropped", (x) => x.off.join("|") === "Studio" && x.form?.fixed === true);
     if (s.rows.join("|") !== [...BOTH, "  retro"].join("|")) fail(`with the server dropped the tree is ${JSON.stringify(s.rows)}`);
     if (!["Save", "Delete"].every((l) => s.form.off.includes(l)) || !/^Studio is not connected/.test(s.form.notice) || s.form.text !== "Typed before the server dropped.") fail(`a prompt of a server that dropped shows ${JSON.stringify(s.form)}`);
-    if (await a.row("standup").getAttribute("data-fixed") !== "true" || !await a.field.text.evaluate((e) => e.readOnly)) fail("a prompt of a server that dropped can be dragged or its text typed over");
+    if (await a.row("standup").getAttribute("data-fixed") !== "true" || !await a.field.text.evaluate((e) => e.getAttribute("aria-readonly") === "true")) fail("a prompt of a server that dropped can be dragged or its text typed over");
     await press(page, a.button("Revert"));
     await a.field.search.fill("stand");
     await a.shows("its prompt in a search", (x) => x.rows.join("|") === "Studio/team/standup" && x.off.join("|") === "Studio/team/standup");

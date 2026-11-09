@@ -19,10 +19,10 @@ export function editingLine(s: EditingSettings): string {
   return s.tabInserts === "spaces" ? `${s.tabWidth} spaces` : `Tab character · width ${s.tabWidth}`;
 }
 
-/** Under the choices: what the keys do in a composer. `platform` is keyplatform.ts' answer: ⌘ on a Mac and an iPad, Ctrl elsewhere. `web`:
+/** Under the choices: what the keys do in a composer, and that a prompt's text in the library edits the same way (library/PromptText.tsx). `platform` is keyplatform.ts' answer: ⌘ on a Mac and an iPad, Ctrl elsewhere. `web`:
  *  the web box's way out by the keyboard (Esc, then Tab: ChipInput.web.tsx) is said too. */
 export function editingFooter(platform: string, web = false): string {
   const mod = /Mac|iPhone|iPad/.test(platform) ? "⌘" : "Ctrl+";
   const out = web ? " Esc, then Tab, moves the focus out of the box." : "";
-  return `Tab indents and Shift+Tab outdents.${out} Enter adds a line and keeps its indent. ${mod}Enter sends. The width is also how wide a tab character is shown.`;
+  return `Tab indents; delete the indent to take it away.${out} Enter adds a line and keeps its indent. ${mod}Enter sends. The width is also how wide a tab character is shown. A prompt's text in the library edits the same way.`;
 }

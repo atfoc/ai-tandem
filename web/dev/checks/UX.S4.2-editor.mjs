@@ -17,7 +17,7 @@
 // No text under 13 px and no target under 44 pt in these sheets. OUT=/tmp/x (default web/out/s4-shots) keeps screenshots of each sheet, light and dark.
 import fs from "node:fs";
 import { check, mockEval, until } from "../shot.mjs";
-import { byTid, press, tidSel } from "./sel.mjs";
+import { byTid, fieldReadOnly, fieldText, press, tidSel } from "./sel.mjs";
 import { atRest } from "./settings.mjs";
 
 export const viewports = ["phone"];
@@ -130,14 +130,15 @@ await check("UX.S4.2 the prompt editor, the move picker and the group form on th
 
   // ---- the text: Return adds a line and saves nothing; the bar; Done
   await field("editor-text").click();
-  await field("editor-text").evaluate((e) => e.setSelectionRange(e.value.length, e.value.length));
+  // (the text is the composer's box, a contenteditable: the caret goes to its end through the selection)
+  await field("editor-text").evaluate((e) => { const s = getSelection(); s.selectAllChildren(e); s.collapseToEnd(); });
   if (!(await until(async () => (await byTid(page, "editor-kbar").count()) === 1, WAIT))) fail("no bar over the keyboard while the text has the focus");
   if (await tx("editor-kbar-state")) fail(`the bar says ${J(await tx("editor-kbar-state"))} before a change`);
   await page.keyboard.type("Keep it short.");
   await page.keyboard.press("Enter");
   await page.keyboard.type("Second line.");
   {
-    const v = await field("editor-text").inputValue();
+    const v = await fieldText(field("editor-text"));
     if (!v.endsWith("Keep it short.\nSecond line.")) fail(`Return did not add a line: the text ends ${J(v.slice(-40))}`);
     if (!(await byTid(page, "prompt-editor").count())) fail("Return closed the editor");
     if ((await promptOf("p_title")).text !== LIBRARY.prompts[0].text) fail("Return saved the text");
@@ -223,7 +224,7 @@ await check("UX.S4.2 the prompt editor, the move picker and the group form on th
   }
   await press(page, byTid(page, "confirm-cancel").last());
   if (!(await until(async () => (await byTid(page, "confirm-sheet").count()) === 0, WAIT))) fail("Keep editing leaves the guard open");
-  if ((await field("editor-text").inputValue()) !== "Changed text.") fail("Keep editing lost the text");
+  if ((await fieldText(field("editor-text"))) !== "Changed text.") fail("Keep editing lost the text");
   if ((await promptOf("p_title")).text === "Changed text.") fail("Keep editing saved");
   // a press on the dimmed page asks too
   await page.mouse.click(10, 6);
@@ -260,7 +261,7 @@ await check("UX.S4.2 the prompt editor, the move picker and the group form on th
   else {
     const e = await tx("form-error");
     if (e !== `There is already a prompt called "Pull request description" in the group "pull requests".`) fail(`the refusal reads ${J(e)}`);
-    if ((await field("editor-text").inputValue()) !== "Typed text that must stay." || (await field("editor-name").inputValue()) !== "Pull request description") fail("a refused save lost what was typed");
+    if ((await fieldText(field("editor-text"))) !== "Typed text that must stay." || (await field("editor-name").inputValue()) !== "Pull request description") fail("a refused save lost what was typed");
     if (!(await byTid(page, "prompt-editor").count())) fail("a refused save closed the form");
   }
   await press(page, byTid(page, "sheet-left").last());
@@ -318,7 +319,7 @@ await check("UX.S4.2 the prompt editor, the move picker and the group form on th
     if (says !== 1) fail(`${says} lines say "not connected" in the offline editor, not one`);
     if ((await css(tidSel("editor-off-notice"), "fontSize")) !== "15px") fail("the offline notice is not 15px");
     for (const id of ["editor-name", "editor-text"]) {
-      const ro = await field(id).evaluate((e) => e.readOnly || e.disabled);
+      const ro = await fieldReadOnly(field(id));
       if (!ro) fail(`${id} is editable while offline`);
     }
     if (!(await saveOff())) fail("Save is on offline");

@@ -21,4 +21,5 @@ test("the footer names ⌘Enter on a Mac and an iPad, Ctrl+Enter elsewhere", () 
   assert.match(editingFooter("Android"), /Ctrl\+Enter/);
   assert.doesNotMatch(editingFooter("MacIntel"), /Esc/); // (native: the box has no such way out)
   assert.match(editingFooter("MacIntel", true), /Esc, then Tab, moves the focus out of the box\./);
+  assert.match(editingFooter("Win32"), /A prompt's text in the library edits the same way\./);
 });

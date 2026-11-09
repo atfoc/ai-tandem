@@ -49,8 +49,9 @@ let keysShortcuts: [KeysShortcut] = [
 ]
 
 /// Tab and Shift+Tab, taken while `setTabKeys(true)` (src/AiwbKeys.ts `TAB_KEYS`). Their commands' `propertyList` is "tab0" / "tab1",
-/// never a number, so a shortcut's index and a Tab are told apart.
-let tabKeys: [(shift: Bool, label: String)] = [(false, "Indent"), (true, "Outdent")]
+/// never a number, so a shortcut's index and a Tab are told apart. Shift+Tab has no title (the box takes it only to keep the focus,
+/// and edits nothing), so the list of keys a held ⌘ shows leaves it out.
+let tabKeys: [(shift: Bool, label: String)] = [(false, "Indent"), (true, "")]
 
 extension UIViewController {
   /// The action of every command (the system sends it along the responder chain to the first responder that has it).

@@ -1,4 +1,4 @@
-// The phone composer's own icons (ux-improvements package C1): the "+" of the toolbar, the rows of the "+" sheet and the key row's Indent and Outdent. Drawn as ui/icons.tsx draws its
+// The phone composer's own icons (ux-improvements package C1): the "+" of the toolbar, the rows of the "+" sheet and the key row's Indent. Drawn as ui/icons.tsx draws its
 // own (react-native-svg, a 16-point box, the colour given); kept here so the package adds nothing to the shared icon file.
 import Svg, { Circle, Path, Rect } from "react-native-svg";
 
@@ -69,9 +69,3 @@ export const IndentIcon = ({ size = 18, color }: IconProps) => (
   </Svg>
 );
 
-/** ⇤: an arrow pointing left into a bar (the key row's Outdent). */
-export const OutdentIcon = ({ size = 18, color }: IconProps) => (
-  <Svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke={color} strokeWidth={1.4} strokeLinecap="round" strokeLinejoin="round">
-    <Path d="M13.5 8H5M8 5L5 8l3 3M2.5 3.5v9" />
-  </Svg>
-);

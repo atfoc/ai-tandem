@@ -8,8 +8,10 @@ import { REF_SRC, parseRef, parseRefs, serializeRef, type Ref } from "@aiwb/core
 export type Piece = { text: string } | { ref: Ref; tag: string };
 
 /** What a box is made of for `value`: the text between the tags, and a chip for each tag. A chip's tag is the reference's own
- *  serialization, so reading a value and writing it again is the same value. */
-export const piecesOf = (value: string): Piece[] =>
+ *  serialization, so reading a value and writing it again is the same value. `chips` false (a box with `noChips`): the whole
+ *  value is one text piece (none for ""), tags stay text. */
+export const piecesOf = (value: string, chips = true): Piece[] =>
+  !chips ? (value ? [{ text: value }] : []) :
   parseRefs(value).map((s) => (typeof s === "string" ? { text: s } : { ref: s, tag: serializeRef(s) }));
 
 /** The value of a box made of `pieces`. */

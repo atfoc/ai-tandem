@@ -24,6 +24,9 @@
 //                                items named, each in the menu the one before opened; answers the menu left open, if any
 //   pointerDragger(page)         a drag by the pointer of the viewport, step by step: start(from), move(to), end(), cancel()
 //   mouseDrag, touchDrag, dragTo(page, from, to)   the same in one call (from and to: a locator or a point)
+//   fieldText(locator)           what a text field holds: an input's or a textarea's value, else the text of a contenteditable box (the
+//                                composer's, the prompt library's Text: platform/chipinput), its last line break taken off
+//   fieldReadOnly(locator)       whether that field takes no typing: readOnly or disabled, or aria-readonly="true" (the box)
 //   act(page, what)              what a seeded state asks the page to do first (the `act` of dev/mock-ui.js): "drop:<entry id>",
 //                                and the ones the packages add to `acts`
 //
@@ -67,6 +70,13 @@ export function tidSel(id, data = {}) {
 
 /** The locator of the elements with `testID` id under `root`, a page or a locator. */
 export const byTid = (root, id, data) => root.locator(tidSel(id, data));
+
+/** What a text field holds: an input's or a textarea's value; a contenteditable box's text (its innerText, which ends in a line break of
+ *  its own). inputValue() and toHaveValue do not read the box. */
+export const fieldText = (locator) => locator.evaluate((e) => (e.tagName === "INPUT" || e.tagName === "TEXTAREA" ? e.value : e.innerText.replace(/\n$/, "")));
+
+/** Whether a text field takes no typing: an input's readOnly or disabled, a contenteditable box's aria-readonly. */
+export const fieldReadOnly = (locator) => locator.evaluate((e) => !!(e.readOnly || e.disabled || e.getAttribute("aria-readonly") === "true"));
 
 // ---- the viewport, as the page itself says
 

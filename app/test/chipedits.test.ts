@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { applyEdit, newlineEdit, outdentEdit, tabEdit, type Edit } from "@aiwb/core/logic/indent.ts";
+import { applyEdit, backspaceEdit, newlineEdit, tabEdit, type Edit } from "@aiwb/core/logic/indent.ts";
 import { pointRef, serializeRef } from "@aiwb/core/logic/refs.ts";
 import { boxText, boxValue, hunksOf, type Hunk } from "../src/platform/chipinput/edits.ts";
 
@@ -16,7 +16,7 @@ const cases: [string, string, Edit][] = [
   ["tab at a caret", "ab", tabEdit("ab", { start: 1, end: 1 }, "\t")],
   ["tab over lines", "a\nb\nc", tabEdit("a\nb\nc", { start: 0, end: 5 }, "  ")],
   ["tab over lines with chips", `a ${TAG}\n${TAG} b\nc`, tabEdit(`a ${TAG}\n${TAG} b\nc`, { start: 0, end: 30 + 2 * TAG.length }, "\t")],
-  ["outdent with a chip", `\t${TAG}\n\tx`, outdentEdit(`\t${TAG}\n\tx`, { start: 0, end: TAG.length + 4 }, 4)!],
+  ["backspace in an indent of spaces before a chip", `      ${TAG}`, backspaceEdit(`      ${TAG}`, { start: 6, end: 6 }, { tabInserts: "spaces", tabWidth: 4 })!],
   ["tab over a chip", `a${TAG}b`, tabEdit(`a${TAG}b`, { start: 1, end: 1 + TAG.length }, "\t")],
   ["newline after a chip", `x ${TAG}`, newlineEdit(`x ${TAG}`, { start: 2 + TAG.length, end: 2 + TAG.length })],
   ["list continued", "- a", newlineEdit("- a", { start: 3, end: 3 })],

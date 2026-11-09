@@ -7,7 +7,7 @@
 //   Both popups are readable in each theme and each Catppuccin flavour (C-PL-33, the library's part of the old A6.3): every text and icon has 3:1 against what is behind it, or no less than the same
 //   element has in the theme the flavour is laid over (a faint hint, a "not connected" mark are as they are today), as A6.3-markdown holds the chat to.
 import { atRest, check, contrastAudit, mockEval, seed, until } from "../shot.mjs";
-import { back, byTid, press, tidSel } from "./sel.mjs";
+import { back, byTid, fieldText, press, tidSel } from "./sel.mjs";
 import { seen, insertSeen } from "./library.mjs";
 import { barOf, openGroup, openLibrary, rowsOf, sectionsOf, texts } from "./libphone.mjs";
 import { atRest as atRestId } from "./settings.mjs";
@@ -69,7 +69,7 @@ await check("L20 the prompt library's popups: the head's key, what a library say
     // the editor: the values of its fields
     await press(page, byTid(page, "lib-prompt-row").last());
     await atRestId(page, "prompt-editor");
-    const field = (id) => byTid(page, id).last().inputValue();
+    const field = (id) => fieldText(byTid(page, id).last()); // (the text is the composer's box, a contenteditable: no inputValue)
     if (await field("editor-name") !== "<img src=x onerror=alert(1)>") fail(`the editor's Name field holds ${J(await field("editor-name"))}`);
     if (await field("editor-text") !== "<script>alert(1)</script> & <i>text</i>") fail(`the editor's text field holds ${J(await field("editor-text"))}`);
     if (await made(page)) fail(`the editor has ${await made(page)} elements made of what the library says`);

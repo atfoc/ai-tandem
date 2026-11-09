@@ -1,0 +1,9 @@
+{
+  "platforms": ["apple", "android"],
+  "apple": {
+    "modules": ["AiwbIndentModule"]
+  },
+  "android": {
+    "modules": ["expo.modules.aiwbindent.AiwbIndentModule"]
+  }
+}

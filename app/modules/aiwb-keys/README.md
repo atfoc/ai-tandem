@@ -67,14 +67,14 @@ the two sources and fails when they differ from the TypeScript.
 
 Tab and Shift+Tab (`TAB_KEYS`, not part of `SHORTCUTS`) are the system's (the focus moves on Android; on iPadOS the text view types a tab
 or the focus moves), except **while the composer's box asks for them**: it has the focus and code editing is on (Settings > Composer).
-Then the box indents and outdents, as on the desktop page. `takeTab()` (`platform/keys.native.ts`, over `tabOver` of `nativekeys.ts`)
+Then Tab indents and Shift+Tab is swallowed (no edit, the focus stays in the box), as on the desktop page. `takeTab()` (`platform/keys.native.ts`, over `tabOver` of `nativekeys.ts`)
 takes them and answers the function that gives them back; takers are counted, the first calls `setTabKeys(true)`, the last give-back
 `setTabKeys(false)`. The keys come through the keys port's handlers (`onKey`) as `{ key: "Tab", code: "Tab", shiftKey, metaKey: false,
 ctrlKey: false, altKey: false, repeat }`, so they are taken only while a handler is registered too; a build made before `setTabKeys` has
 no such function and `takeTab` does nothing there.
 
 - **iOS.** Two more `UIKeyCommand`s, input `"\t"` without and with Shift, `wantsPriorityOverSystemBehavior = true` (over the text view's
-  own tab and the focus system), discoverability titles "Indent" and "Outdent", on every root view controller while the flag is on and
+  own tab and the focus system), discoverability titles "Indent" and none for Shift+Tab (left out of the list a held ⌘ shows), on every root view controller while the flag is on and
   somebody listens (a root view controller that comes later gets them as the others do); kept apart from the shortcuts' commands and
   removed when the flag goes off or the last listener leaves. Their `propertyList` is `"tab0"` / `"tab1"`; repeat as for the others.
 - **Android.** `dispatchKeyEvent` of the same window callback: `KEYCODE_TAB` with no Ctrl, Alt or Meta (Shift allowed) is emitted and

@@ -1,11 +1,12 @@
-// The native box's code-editor editing (chipdoc.ts enterChange, indentChange): an Enter the field has already put in, read from
-// the change and answered with core logic/indent.ts newlineEdit; Tab and Shift+Tab from the key row and the hardware keys.
+// The native box's code-editor editing (chipdoc.ts enterChange, backspaceChange, indentChange): an Enter or a Backspace the field
+// has already made, read from the change and answered with core logic/indent.ts newlineEdit or backspaceEdit; Tab from the key row and
+// the hardware keys.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { FmtElement } from "@aiwb/core/format.ts";
 import type { EditingSettings } from "@aiwb/core/logic/editing.ts";
 import { selectionRef, serializeRef } from "@aiwb/core/logic/refs.ts";
-import { chipText, enterChange, indentChange, layout, valueOf, type Doc } from "../src/platform/chipinput/chipdoc.ts";
+import { backspaceChange, chipText, enterChange, indentChange, layout, valueOf, type Doc } from "../src/platform/chipinput/chipdoc.ts";
 
 const el = (id: string, type: string, label?: string): FmtElement => ({ id, type, x: 0, y: 0, width: 160, height: 70, label });
 const api = selectionRef([el("a1", "rectangle", "API")])!;
@@ -102,36 +103,70 @@ test("a paste, an autocorrect or a plain line is not touched", () => {
 });
 
 test("indentChange: Tab at a caret, a tab or spaces to the next stop", () => {
-  let r = indentChange(["ab"], at(1), TAB, false)!;
+  let r = indentChange(["ab"], at(1), TAB);
   assert.deepEqual(r.doc, ["a\tb"]);
   assert.deepEqual(r.selection, at(2));
-  r = indentChange(["abc"], at(1), SPACES, false)!;
+  r = indentChange(["abc"], at(1), SPACES);
   assert.deepEqual(r.doc, ["a bc"]);
   assert.deepEqual(r.selection, at(2));
-  r = indentChange(["ab"], at(0), SPACES, false)!;
+  r = indentChange(["ab"], at(0), SPACES);
   assert.deepEqual(r.doc, ["  ab"]);
   assert.deepEqual(r.selection, at(2));
 });
 
 test("indentChange: a selection over several lines indents each and covers the same text", () => {
   const doc: Doc = ["one\ntwo\nthree"];
-  let r = indentChange(doc, { start: 1, end: 6 }, TAB, false)!;
+  let r = indentChange(doc, { start: 1, end: 6 }, TAB);
   assert.deepEqual(r.doc, ["\tone\n\ttwo\nthree"]);
   assert.equal(layout(r.doc).text.slice(r.selection.start, r.selection.end), "ne\n\ttw");
-  r = indentChange(r.doc, r.selection, TAB, true)!;
-  assert.deepEqual(r.doc, doc);
-  assert.equal(layout(r.doc).text.slice(r.selection.start, r.selection.end), "ne\ntw");
   // a chip on a line: the tag stays whole, the selection keeps it
   const withChip: Doc = ["a ", api, "\nb"];
   const t = layout(withChip).text;
-  r = indentChange(withChip, { start: 0, end: t.length }, SPACES, false)!;
+  r = indentChange(withChip, { start: 0, end: t.length }, SPACES);
   assert.deepEqual(r.doc, ["  a ", api, "\n  b"]);
   assert.deepEqual(r.selection, { start: 0, end: layout(r.doc).text.length });
 });
 
-test("indentChange: Shift+Tab with no indent is null", () => {
-  assert.equal(indentChange(["one\ntwo"], { start: 0, end: 5 }, TAB, true), null);
-  const r = indentChange(["   x"], at(4), SPACES, true)!;
-  assert.deepEqual(r.doc, [" x"]);
-  assert.deepEqual(r.selection, at(2));
+/** The field's text after one character deleted before `caret` of the doc's shown string. */
+const deleted = (doc: Doc, caret: number) => { const t = layout(doc).text; return t.slice(0, caret - 1) + t.slice(caret); };
+const SPACES4: EditingSettings = { tabInserts: "spaces", tabWidth: 4 };
+const back = (doc: Doc, caret: number, s = SPACES4, hint = true) => backspaceChange(doc, deleted(doc, caret), hint ? at(caret) : undefined, s);
+
+test("backspaceChange: one space deleted in an indent of spaces takes the indent back to the previous tab stop", () => {
+  let r = back(["        foo"], 8)!;
+  assert.deepEqual(r.doc, ["    foo"]);
+  assert.equal(r.caret, 4);
+  r = back(["a\n      b"], 8)!; // column 6: back to 4
+  assert.deepEqual(r.doc, ["a\n    b"]);
+  assert.equal(r.caret, 6);
+  r = back(["\t   x"], 4)!; // a tab then spaces: column 7, back to 4, the tab stays
+  assert.deepEqual(r.doc, ["\tx"]);
+  assert.equal(r.caret, 1);
+  r = back(["    x"], 4, SPACES)!; // width 2
+  assert.deepEqual(r.doc, ["  x"]);
+  assert.equal(r.caret, 2);
+});
+
+test("backspaceChange: a chip before the line, the caret in the new shown string", () => {
+  const doc: Doc = ["see ", api, "\n    x"];
+  const c = 4 + CH.length + 5;
+  const r = back(doc, c)!;
+  assert.deepEqual(r.doc, ["see ", api, "\nx"]);
+  assert.equal(r.caret, 4 + CH.length + 1);
+});
+
+test("backspaceChange: without a fitting hint, only a lone space is placed by the prefix", () => {
+  assert.equal(back(["        foo"], 8, SPACES4, false), null, "in a run of spaces the caret is unknown");
+  assert.equal(backspaceChange(["        foo"], deleted(["        foo"], 8), at(10), SPACES4), null, "a hint that does not fit");
+  // "\t x" -> "\tx": the lone space, but backspaceEdit takes only that one: left to applyChange
+  assert.equal(back(["\t x"], 2, SPACES4, false), null);
+});
+
+test("backspaceChange: null for tab mode, text before the caret, a selection's change, anything but one space", () => {
+  assert.equal(back(["        foo"], 8, TAB), null);
+  assert.equal(back(["ab    x"], 6), null, "text before the caret on its line");
+  assert.equal(back([" x"], 1), null, "only one space to take: the field's own delete");
+  assert.equal(back(["    abc"], 7), null, "a letter deleted");
+  assert.equal(backspaceChange(["        foo"], "    foo", at(8), SPACES4), null, "more than one character gone");
+  assert.equal(backspaceChange(["        foo"], "        foo!", at(8), SPACES4), null, "an insertion");
 });
