@@ -47,12 +47,31 @@ var errForkGone = errors.New("this fork was made at a point Claude has no id for
 //
 // The new chat is in the manager's map from the start, unlisted: its agent finds its MCP token
 // while it starts, but no client sees the chat, and nothing is saved or emitted for it, until the
-// provider has confirmed the fork. When anything fails nothing is left of it.
+// provider has confirmed the fork. When anything fails nothing is left of it. A fork that starts
+// a process (req.At > 0) on a Claude account is refused before anything is made while the
+// account cannot be used or does not have the chat's folder (accountGate's refusal, as it came),
+// or when its container cannot be made ready (prepare, before any lock is taken); one made at the
+// start of the chat starts nothing, and its first message is looked at instead.
 func (m *Manager) Fork(id string, req ForkReq) (model.ChatView, error) {
 	var loaded outbox // what loading the source's transcript sends
+	if req.At > 0 {
+		// On a Claude account the container is made ready first, with no lock held (see
+		// prepare); a refusal there makes nothing.
+		if err := m.prepareOf(func() (*Chat, error) { return m.branchChat(id, req.Branch) }, always); err != nil {
+			return model.ChatView{}, err
+		}
+	}
 	src, err := m.branchChat(id, req.Branch)
 	if err != nil {
 		return model.ChatView{}, err
+	}
+	if req.At > 0 {
+		// The fork's process runs on src's agent in src's folder: a Claude account must be able
+		// to start it (accountGate), else nothing is made.
+		if err := m.accountGate(src.meta.Agent, src.meta.Cwd); err != nil {
+			src.mu.Unlock()
+			return model.ChatView{}, err
+		}
 	}
 	c, from, err := m.forkEntry(src, id, req, &loaded)
 	// A fork that goes through src's own fork source (see forkSourceOf) at a place no id names is
@@ -276,7 +295,7 @@ func prefixMeta(src model.ChatMeta, items []model.Item, at int, mc model.ModelCh
 		sub := *src.Subagents
 		meta.Subagents = &sub
 	}
-	if src.Agent == model.Claude || src.Agent == model.Pi {
+	if model.IsClaude(src.Agent) || src.Agent == model.Pi {
 		meta.SessionID = uuid() // Cursor's comes from the fork start, or from session/new
 	}
 	for _, it := range items[:at] {
@@ -427,7 +446,10 @@ func (m *Manager) startFork(c *Chat, src agent.ForkSource, at int) error {
 	opts := m.spawnOptions(c)
 	kind := c.meta.Agent
 	c.mu.Unlock()
-	fk, ok := m.Spawners[kind].(agent.Forker)
+	if err := m.accountGate(kind, opts.Cwd); err != nil {
+		return err // its callers looked before they made c; this is a change since
+	}
+	fk, ok := m.spawner(kind).(agent.Forker)
 	if !ok {
 		return errNoForker(kind)
 	}
@@ -447,7 +469,7 @@ func (m *Manager) startFork(c *Chat, src agent.ForkSource, at int) error {
 		return ErrShutdown
 	}
 	c.meta.SessionID = sid
-	if kind == model.Claude {
+	if model.IsClaude(kind) {
 		// Claude's fork is only durable once it has had a message: until then every launch makes
 		// it again from the source. pi's and Cursor's exist from now on.
 		c.meta.ForkSource = &model.ForkSource{Chat: src.ChatID, Session: src.SessionID, Point: src.Point,
@@ -516,7 +538,7 @@ func (m *Manager) dropUnlisted(c *Chat, forked bool) {
 	if err := os.RemoveAll(m.chatDir(id)); err != nil {
 		log.Printf("chats: remove %s: %v", id, err)
 	}
-	fk, _ := m.Spawners[kind].(agent.Forker)
+	fk, _ := m.spawner(kind).(agent.Forker)
 	if !forked || fk == nil {
 		closeAgents([]agent.Agent{ag})
 		return

@@ -54,6 +54,7 @@ const source = (): Stream => streams.filter((x) => !x.closed).at(-1)!;
 const stubs: Record<string, string> = {
   "./api.ts": `
     const { fake, ask, askTree } = globalThis.__conn;
+    export const call = async () => { throw new Error("no account call in this test"); }; // (the Claude accounts' calls, aliasesapi.ts, which conn.ts reaches through state/aliases.ts)
     export const api = {
       items: (chat, branch) => ask(chat, branch),
       subItems: (chat, branch, sid) => ask(chat, branch, sid),

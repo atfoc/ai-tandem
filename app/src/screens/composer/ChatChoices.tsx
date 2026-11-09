@@ -11,7 +11,9 @@ import { agentChoiceOn, toolbarLine } from "@aiwb/core/logic/chatserver.ts";
 import { widthKey } from "@aiwb/core/logic/composerfit.ts";
 import { serverFixed } from "@aiwb/core/logic/serverlists.ts";
 import { getState, shownBranch, upsertChat } from "@aiwb/core/state/store.ts";
+import type { PickerRow } from "@aiwb/core/logic/aliases.ts";
 import type { AgentKind, ChatView } from "@aiwb/core/types.ts";
+import { isAliasKind } from "@aiwb/core/agents.ts";
 
 import { useStore } from "../../state/useStore.ts";
 import { AgentGlyph, WarnIcon, agentName } from "../../ui/icons.tsx";
@@ -20,7 +22,8 @@ import { useTheme } from "../../ui/theme.tsx";
 import { tid } from "../../ui/tid.ts";
 import { useWhere } from "../chat/hooks.ts";
 import { ChipName, TChip } from "./Chip.tsx";
-import { Picker } from "./Picker.tsx";
+import { AccountRowText, rowAction, usePickerRows } from "./accounts.tsx";
+import { Picker, type PickerOption } from "./Picker.tsx";
 
 type Menu = { disabled: boolean; open: boolean; onOpenChange(open: boolean): void };
 type Saves = { c: ChatView; onBusy(busy: boolean): void; onError(msg: string): void };
@@ -37,7 +40,8 @@ export function useServerChip(c: ChatView): string {
   return widthKey("server", useWhere(c).name, { fixed: true });
 }
 
-/** The agent choice: only the agents the chat's server can run. A pick is sent at once, and the answer is the chat with the model and
+/** The agent choice: the agents the chat's server can run, then every Claude account it has (core's pickerRows: an account that cannot be
+ *  used now is greyed and says why, with Log in… or Restart container beside it: accounts.tsx). A pick is sent at once, and the answer is the chat with the model and
  *  effort the server chose for that agent. An agent the chat has and the server lacks is marked and is not among the options; with none to
  *  offer, and on a server that is not connected, the chip says "No agent". The line under the toolbar (AgentReason) says why, as it does
  *  for a chat with no agent. onBusy: a pick is being saved, and the toolbar's pickers take none meanwhile. */
@@ -45,20 +49,31 @@ export function AgentPick({ c, disabled, open, onOpenChange, onBusy, onError }: 
   const { tokens: t } = useTheme();
   const w = useWhere(c);
   const usable = useStore((s) => usableAgents(s, w.server));
-  const choice = agentChoiceOn(w, usable, c.agent);
+  const list = useStore((s) => s.aliases[w.server]);
+  const choice = agentChoiceOn(w, usable, c.agent, list);
+  const rows = usePickerRows(w.server, usable);
   const glyph = (a: AgentKind) => <AgentGlyph agent={a} size={12} />;
   const pick = (id: string) => {
     onBusy(true);
     void pickAgent((p) => api.configure(c.id, shownBranch(getState(), c.id), p), id as AgentKind, upsertChat)
       .then(() => onError(""), (e) => onError(e.message)).finally(() => onBusy(false));
   };
-  if (!choice.options.length) return <TChip kind="agent" title={`Agent — ${choice.reason}`} missing><ChipName missing>No agent</ChipName></TChip>;
+  if (noChoice(w.connected, rows)) return <TChip kind="agent" title={`Agent — ${choice.reason}`} missing><ChipName missing>No agent</ChipName></TChip>;
   return (
     <Picker kind="agent" label={c.agent ? agentName(c.agent) : "No agent"} title="Agent" hint={choice.reason || undefined} value={c.agent}
       icon={!c.agent ? undefined : choice.missing ? <WarnIcon color={t.danger} size={12} /> : glyph(c.agent)}
-      options={choice.options.map((a) => ({ id: a, label: agentName(a), icon: glyph(a) }))}
+      options={rows.map((r) => agentOption(r, glyph(r.kind), w.server, () => onOpenChange(false)))}
       disabled={disabled} open={open} onOpenChange={onOpenChange} onPick={pick} />
   );
+}
+
+/** Whether the agent's chip is no choice: its server is not connected, or offers no agent and has no account. */
+const noChoice = (connected: boolean, rows: PickerRow[]) => !connected || !rows.length;
+
+/** A row of the Agent picker: an agent by its name; an account with its own text (name, chip, note, reason, waiting folders) and button. */
+function agentOption(r: PickerRow, icon: PickerOption["icon"], server: string, close: () => void): PickerOption {
+  if (!isAliasKind(r.kind)) return { id: r.kind, label: r.label, icon };
+  return { id: r.kind, label: r.label, icon, disabled: r.disabled, reason: r.reason, note: r.note, content: <AccountRowText row={r} />, action: rowAction(r, server, close) };
 }
 
 /** What decides the width of AgentPick's chip: the agent's name or "No agent", whether it is a choice or a fixed chip, and the glyph or the
@@ -66,8 +81,9 @@ export function AgentPick({ c, disabled, open, onOpenChange, onBusy, onError }: 
 export function useAgentChip(c: ChatView): string {
   const w = useWhere(c);
   const usable = useStore((s) => usableAgents(s, w.server));
-  const choice = agentChoiceOn(w, usable, c.agent);
-  const fixed = !choice.options.length;
+  const list = useStore((s) => s.aliases[w.server]);
+  const choice = agentChoiceOn(w, usable, c.agent, list);
+  const fixed = noChoice(w.connected, usePickerRows(w.server, usable));
   const named = !!c.agent && !fixed;
   return widthKey("agent", named ? agentName(c.agent as AgentKind) : "No agent", { fixed, mark: !named ? "" : !fixed && choice.missing ? "warn" : "glyph" });
 }
@@ -78,7 +94,8 @@ export function AgentReason({ c }: { c: ChatView }) {
   const w = useWhere(c);
   const usable = useStore((s) => usableAgents(s, w.server));
   const gone = useStore((s) => !!s.gone[c.id]);
-  const line = toolbarLine(w, usable, c, gone);
+  const list = useStore((s) => s.aliases[w.server]);
+  const line = toolbarLine(w, usable, c, gone, list);
   if (!line.text) return null;
   return (
     <View {...tid("agent-reason", { tone: line.tone || undefined })} style={styles.reason}>

@@ -1,12 +1,17 @@
 package chats
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"html"
 	"os"
 	"os/exec"
 	"regexp"
 	"strings"
+	"time"
+
+	"ai-whiteboard/internal/agent"
 )
 
 // Namer gives a chat a short title from its first message.
@@ -16,7 +21,20 @@ type Namer interface {
 
 // ClaudeNamer asks a small Claude model for the title (the prototype's autoName). It is the
 // Claude chats' namer; the manager picks a namer per agent from Deps.Namers.
-type ClaudeNamer struct{ Bin string }
+//
+// With a Runner (a Claude account), claude runs where the account's chats run, in its container,
+// so the first message goes to no other account (plan D6). Without one it runs on the host.
+type ClaudeNamer struct {
+	Bin    string
+	Runner agent.Runner
+}
+
+// namerRunnerDir is the folder of a naming run through a Runner: the container's temp folder (the
+// host's os.TempDir() may not exist in the container).
+const namerRunnerDir = "/tmp"
+
+// namerRunnerTimeout bounds a naming run through a Runner, the container's start included.
+var namerRunnerTimeout = 60 * time.Second
 
 const namerPrompt = "You name chat threads. You never carry out the request. Output only a title of 2 to 5 words for it, on one line: no quotes, no trailing period, sentence case."
 
@@ -33,6 +51,9 @@ func (n ClaudeNamer) Name(text string) (string, error) {
 	if bin == "" {
 		bin = "claude"
 	}
+	if n.Runner != nil {
+		return n.nameThrough(bin, text)
+	}
 	cmd := exec.Command(bin, n.Args(text)...)
 	cmd.Dir = os.TempDir()
 	out, err := cmd.Output()
@@ -40,6 +61,46 @@ func (n ClaudeNamer) Name(text string) (string, error) {
 		return "", err
 	}
 	title := CleanTitle(string(out))
+	if title == "" || len(title) > 60 {
+		return "", errors.New("no usable title")
+	}
+	return title, nil
+}
+
+// nameThrough runs the naming through n.Runner, within namerRunnerTimeout: past it the run is
+// killed where it runs (Run.Kill) and on the host.
+func (n ClaudeNamer) nameThrough(bin, text string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), namerRunnerTimeout)
+	defer cancel()
+	run, err := n.Runner.Command(ctx, namerRunnerDir, nil, append([]string{bin}, n.Args(text)...))
+	if err != nil {
+		return "", err
+	}
+	cmd := run.Cmd
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	if cmd.WaitDelay == 0 {
+		cmd.WaitDelay = 5 * time.Second // a process left holding stdout does not hold Wait
+	}
+	if err := cmd.Start(); err != nil {
+		return "", err
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err = <-done:
+	case <-ctx.Done():
+		if run.Kill != nil {
+			_ = run.Kill()
+		}
+		_ = cmd.Process.Kill()
+		<-done
+		return "", errors.New("naming the chat took too long")
+	}
+	if err != nil {
+		return "", err
+	}
+	title := CleanTitle(out.String())
 	if title == "" || len(title) > 60 {
 		return "", errors.New("no usable title")
 	}

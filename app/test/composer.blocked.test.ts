@@ -100,3 +100,27 @@ describe("blocked states of the phone's composer (3.7.1)", () => {
     }
   });
 });
+
+describe("the account banner above the phone's box (multiple-claude goal §1.5, §4.2)", () => {
+  const NOT_MOUNTED = "This folder isn't mounted in Claude · Work — Add it in Settings";
+  it("a folder not mounted: an amber notice above, first, with Add it in Settings, and its sentence holds Send", () => {
+    const b = of({ agent: "claude:a_work0001", account: { state: "not_mounted", text: NOT_MOUNTED }, tooSmall: "Too small.", refused: "Refused." });
+    assert.equal(b.main, null);
+    assert.deepEqual(b.above.map((x) => [x.kind, x.action ?? ""]), [["account", "settings"], ["toosmall", "pickmodel"], ["refused", "dismiss"]]);
+    assert.deepEqual(b.above[0], { kind: "account", place: "above", title: NOT_MOUNTED, sub: "", state: "not_mounted", action: "settings" });
+    assert.equal(b.sendOff, NOT_MOUNTED, "the banner's sentence is Send's reason, before the model's");
+  });
+  it("pending offers Restart container; a removed account offers nothing; both hold Send", () => {
+    const p = of({ account: { state: "pending", text: "Restart Claude · Client to use this folder" } });
+    assert.deepEqual([p.above[0].action, p.sendOff], ["restart", "Restart Claude · Client to use this folder"]);
+    const r = of({ account: { state: "removed", text: "This account was removed" } });
+    assert.deepEqual([r.above[0].action, r.sendOff], [undefined, "This account was removed"]);
+  });
+  it("no banner while the box is replaced (an archived chat on an account)", () => {
+    const b = of({ archived: true, account: { state: "removed", text: "This account was removed" } });
+    assert.deepEqual([b.above, b.sendOff], [[], ""]);
+  });
+  it("no banner: as before", () => {
+    assert.deepEqual(of({ account: null }), { main: null, above: [], sendOff: "" });
+  });
+});

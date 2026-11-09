@@ -58,6 +58,14 @@ board. Either way you pick the agent, its model, the effort, and the folder it w
   <img src="docs/screenshots/permission-card.png" width="49%" alt="A chat in which the agent asks to run git push: a card with the command and the buttons Allow and Don't">
 </p>
 
+### Use several Claude accounts
+
+Besides the computer's own Claude Code login, you can add Claude accounts in **Settings › Claude
+accounts**, log each into a different Claude subscription, and pick one per chat like any other
+agent. Each account runs in a Docker container of its own and sees only the folders you give it,
+so a chat on an account works in one of those folders; the computer's own `~/.claude` is never
+mounted.
+
 ### Talk to your chats
 
 With your own [ElevenLabs](https://elevenlabs.io) key, you can speak to the app and have it speak back. The key is yours, is
@@ -168,6 +176,8 @@ There is no download: you build AI Whiteboard from source.
 - At least one agent CLI, installed and logged in:
   [Claude Code](https://claude.com/claude-code) (`claude`), the
   [Cursor CLI](https://cursor.com/cli) (`agent`), or pi (`pi`), on your `PATH`
+- For Claude accounts only: [Docker](https://docs.docker.com/get-docker/) (Docker Desktop on a Mac),
+  running. Without it everything else works, and the accounts are listed greyed with the reason.
 
 **Build and install the app.** From the repo root:
 
@@ -270,5 +280,16 @@ flowchart LR
 - **A server's secret is all or nothing.** Whoever has a server's secret reads and changes every
   chat, whiteboard and group on it. Every server that runs listens on its network, so keep its
   port inside a network you trust.
+- **Claude accounts need Docker.** Each account is a container, `aiwb-alias-<id>`, made from the
+  image `aiwb/claude:<version>`, which the server builds on first use (about 1 GB, a minute or so;
+  the account shows "Preparing" meanwhile) and builds again after an app update, when the
+  container is next made. The server finds `docker` on its `PATH`; `-docker /path/to/docker`
+  names another program. An account's container keeps running when the server stops, and an
+  account can be given its own image (Advanced): it must have `claude` on its `PATH` and
+  `/bin/sh`, and `setsid` and `script` are recommended. On Docker Desktop, a folder you give an
+  account must be in the folders Docker shares (Settings › Resources › File sharing). Claude
+  Code in an account is the image's version: it does not update itself. A development build's
+  image is `aiwb/claude:dev`, which is never built again by itself: `docker rmi aiwb/claude:dev`
+  gets a newer Claude Code at the next start. Accounts need a macOS or Linux server.
 - **pi runs its tools without asking.** pi chats show no permission cards; only access to the
   app's own data folder is refused, and that guard is not a sandbox.

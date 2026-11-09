@@ -2,7 +2,10 @@
 // the prompts and the board API. It imports nothing from this project.
 package boardtools
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // Tool is one board tool an agent can call.
 type Tool struct {
@@ -213,17 +216,31 @@ var SpawnFamily = []Tool{
 	},
 }
 
+// An Agent is one agent the spawn family names: its kind, and the name the agent parameter's
+// description gives it ("Claude · Work" for a Claude account); "" shows no name, as for Claude
+// Code, Cursor and pi, which are named by their kinds alone.
+type Agent struct {
+	Kind string
+	Name string
+}
+
 // SpawnFamilyFor is SpawnFamily as it is listed on a server that can start only agents: the agent
-// parameter's enum, its description and the summary name these alone. With none the parameter is
+// parameter's enum, its description and the summary name these alone, in their order. The
+// description gives an agent that has a name its name after its kind. With none the parameter is
 // left out. SpawnFamily is not changed.
-func SpawnFamilyFor(agents []string) []Tool {
+func SpawnFamilyFor(agents []Agent) []Tool {
 	enum := make([]any, len(agents))
+	kinds := make([]string, len(agents))
+	words := make([]string, len(agents))
 	for i, a := range agents {
-		enum[i] = a
+		enum[i], kinds[i], words[i] = a.Kind, a.Kind, a.Kind
+		if a.Name != "" {
+			words[i] = fmt.Sprintf("%s (%q)", a.Kind, a.Name)
+		}
 	}
-	desc := strings.Join(agents, ", ")
-	if n := len(agents); n > 1 {
-		desc = strings.Join(agents[:n-1], ", ") + ", or " + agents[n-1]
+	desc := strings.Join(words, ", ")
+	if n := len(words); n > 1 {
+		desc = strings.Join(words[:n-1], ", ") + ", or " + words[n-1]
 	}
 	out := make([]Tool, len(SpawnFamily))
 	for i, t := range SpawnFamily {
@@ -245,7 +262,7 @@ func SpawnFamilyFor(agents []string) []Tool {
 				"description": desc + "; omit for this chat's agent",
 				"enum":        enum,
 			}
-			t.Summary = strings.Replace(t.Summary, "claude|cursor|pi", strings.Join(agents, "|"), 1)
+			t.Summary = strings.Replace(t.Summary, "claude|cursor|pi", strings.Join(kinds, "|"), 1)
 		}
 		schema := make(map[string]any, len(t.Schema))
 		for k, v := range t.Schema {
@@ -276,7 +293,7 @@ const subNote = " You are a subagent yourself: while subagents you spawned are s
 
 // SpawnFamilyForSub is SpawnFamilyFor as a subagent that may spawn is listed it: the same tools
 // and parameters, with the texts that speak of "this chat" speaking of the subagent itself.
-func SpawnFamilyForSub(agents []string) []Tool {
+func SpawnFamilyForSub(agents []Agent) []Tool {
 	out := SpawnFamilyFor(agents)
 	for i, t := range out {
 		t.Description = subWords.Replace(t.Description)

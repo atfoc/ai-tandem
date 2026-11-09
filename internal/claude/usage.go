@@ -7,17 +7,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
+	"ai-whiteboard/internal/agent"
 	"ai-whiteboard/internal/model"
 )
 
-const usageTimeout = 30 * time.Second
+// usageTimeout bounds a usage run. A variable so that a test can wait a shorter one out.
+var usageTimeout = 30 * time.Second
 
 // UsageArgs are the arguments for `claude -p /usage`. /usage is a local command: it is answered
 // without a model call and costs nothing. There is no --disable-slash-commands, which would send
@@ -27,29 +28,47 @@ func UsageArgs() []string {
 		"--no-session-persistence", "--strict-mcp-config"}
 }
 
-// Usage runs `claude -p /usage` and returns the plan's limits.
+// Usage runs `claude -p /usage` and returns the plan's limits. It runs through s.Runner when the
+// spawner has one, which may first make its place ready within runnerWaitNanos; the run itself
+// has usageTimeout, after which it is killed: where it runs (the run's Kill) and on the host. A
+// run that ends by itself, or is never started, is released (agent.Run.Release).
 func (s *Spawner) Usage() (model.PlanUsage, error) {
-	bin := s.Bin
-	if bin == "" {
-		bin = "claude"
+	prep, cancel := context.WithTimeout(context.Background(), time.Duration(runnerWaitNanos.Load()))
+	cmd, run, err := s.command(prep, s.scratchDir(), []string{"CLAUDE_CODE_DISABLE_AUTO_MEMORY=1"}, UsageArgs()...)
+	cancel()
+	if err != nil {
+		return model.PlanUsage{}, err // the Runner's reason (Docker not running), as it is
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), usageTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, bin, UsageArgs()...)
-	cmd.Dir = os.TempDir()
-	cmd.Env = append(os.Environ(), "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1")
-	out, err := cmd.Output()
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &cappedWriter{buf: &stderr, max: stderrCap}
+	ctx, stop := context.WithTimeout(context.Background(), usageTimeout)
+	defer stop()
+	if err := cmd.Start(); err != nil {
+		agent.ReleaseRun(run) // never started
+		return model.PlanUsage{}, fmt.Errorf("claude /usage: %w", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err = <-done:
+		agent.ReleaseRun(run) // waited for, ended by itself
+	case <-ctx.Done():
+		killRun(run)
+		cmd.Process.Kill()
+		err = <-done
+	}
 	if err != nil {
 		var ee *exec.ExitError
-		if errors.As(err, &ee) && len(bytes.TrimSpace(ee.Stderr)) > 0 {
-			return model.PlanUsage{}, fmt.Errorf("claude /usage: %s", firstLine(string(ee.Stderr)))
+		if errors.As(err, &ee) && len(bytes.TrimSpace(stderr.Bytes())) > 0 {
+			return model.PlanUsage{}, fmt.Errorf("claude /usage: %s", firstLine(stderr.String()))
 		}
 		if ctx.Err() != nil {
 			return model.PlanUsage{}, fmt.Errorf("claude /usage: no answer within %s", usageTimeout)
 		}
 		return model.PlanUsage{}, fmt.Errorf("claude /usage: %w", err)
 	}
-	return ParseUsage(out, time.Now())
+	return ParseUsage(stdout.Bytes(), time.Now())
 }
 
 // ParseUsage reads the stream-json output of `claude -p /usage`: the assistant line's

@@ -126,6 +126,19 @@
 //       too small for the conversation); on s_uxv1_bare "Bare box" (no agent installed) c_UXV1_bare (started) and c_UXV1_bare_new (a new chat). The states: draft (the draft chat),
 //       draft-off (the draft chat with Design Mac dropped), arch, arch-off (the remote archived chat, dropped), legacy, legacy-board, noagent,
 //       toosmall, gone, plain, board. The refused card has no state: the check turns `flags.send` on and sends (a refusal comes from a send)
+//   MC  several Claude accounts (multiple-claude goal §1.1–§1.7; mock.mjs "Claude accounts"). This computer's accounts, in this order:
+//       a_work0001 "Claude · Work" (logged in as work@example.com, running, mounts and applied [shop], busy 0; its own catalog: Sonnet 5.5
+//       and Haiku 4.5, no Opus, default sonnet/medium), a_pers0001 "Claude · Personal" (not logged in, stopped, [notes]), a_clnt0001 "Claude ·
+//       Client" (logged in as client@example.com, running, mounts [scratch, empty-repo], applied [scratch]: restart needed, empty-repo
+//       pending, busy 2; Claude Code's catalog); the host logged in as demo@example.com. The lab box (s_lab, as `servers()` makes it) has
+//       accounts whose Docker is not running and one account, a_lab00001 "Claude · Lab" (not logged in): Settings shows one ACCOUNTS
+//       section per server, with all four states (D28). Usable here: claude, cursor, pi, claude:a_work0001, claude:a_clnt0001. The chats,
+//       in the group "MC accounts" (g_MC): c_MC_new (new, Claude Code: the Agent picker), c_MC_work "On the Work account" (started on Work in
+//       shop: the header's badge, the toolbar's chip), c_MC_worknew "New on the Work account" (unstarted on Work, sonnet/medium: ⌘E lists
+//       its models), c_MC_unmounted "Notes on the Work account" (unstarted on Work in /Users/demo/notes: "not mounted", Send held),
+//       c_MC_pending "Empty repo on the Client account" (unstarted on Client in empty-repo: "Restart Claude · Client to use this folder"),
+//       c_MC_removed "On a removed account" (started on claude:a_gone0001, which no list has: "This account was removed"). The states:
+//       new, work, worknew, unmounted, pending, removed
 (only) => {
   const states = [];
   const state = (section, id, sel, see, more = {}) => { states.push({ id, section, sel, see, ...more }); };
@@ -916,7 +929,44 @@
     state("UXV1", "board", { board: "b_ui", chat: "c_UXV1_b1" }, ".composer");
   }
 
-  const SECTIONS = { A1, A2, A3, A4, A5, A6, SEC, UXS2, UXH1, UXH2, UXT1, UXT2, UXC1, UXB2, UXT3, UXC2, UXV1 };
+  // ---- MC: several Claude accounts
+
+  function MC() {
+    servers();
+    group("g_MC", "MC accounts", { collapsed: true });
+    const g = { group: "g_MC" }, NOTES = HOME + "/notes", SCRATCH = HOME + "/projects/scratch", EMPTY = HOME + "/projects/empty-repo";
+    const WORK = "claude:a_work0001", CLIENT = "claude:a_clnt0001", IMAGE = "aiwb/claude:dev";
+    const OWN = { default: { model: "sonnet", effort: "medium" }, models: [ // the Work account's own Claude reports another list than Claude Code's
+      { id: "sonnet", label: "Sonnet 5.5", efforts: ["low", "medium", "high"], defaultEffort: "medium", contextWindow: 200000 },
+      { id: "haiku", label: "Haiku 4.5", contextWindow: 200000 } ] };
+    setAccounts("local", { host: { known: true, loggedIn: true, email: "demo@example.com" }, catalogs: { [WORK]: OWN, [CLIENT]: clone(claude) }, aliases: [
+      { id: "a_work0001", name: "Claude · Work", login: { known: true, loggedIn: true, email: "work@example.com" }, container: { state: "running" },
+        mounts: [SHOP], applied: { image: IMAGE, default: true, mounts: [SHOP] }, busy: 0, created: iso(T0 - 3000 * MIN) },
+      { id: "a_pers0001", name: "Claude · Personal", login: { known: true, loggedIn: false }, container: { state: "stopped" },
+        mounts: [NOTES], applied: { image: IMAGE, default: true, mounts: [NOTES] }, busy: 0, created: iso(T0 - 2000 * MIN) },
+      { id: "a_clnt0001", name: "Claude · Client", login: { known: true, loggedIn: true, email: "client@example.com" }, container: { state: "running" },
+        mounts: [SCRATCH, EMPTY], applied: { image: IMAGE, default: true, mounts: [SCRATCH] }, busy: 2, created: iso(T0 - 1000 * MIN) },
+    ] });
+    setAccounts(LAB, { docker: { ok: false, kind: "not_running", reason: "Docker is not running" }, host: { known: true, loggedIn: false }, aliases: [
+      { id: "a_lab00001", name: "Claude · Lab", login: { known: true, loggedIn: false }, container: { state: "stopped" }, mounts: [], created: iso(T0 - 500 * MIN) },
+    ] });
+    const work = [{ kind: "user", text: "Tidy the product page's CSS." }, tool("mc1", "Read", { file_path: "web/product.css" }, "…"), say("Done: the duplicated rules are gone."), { kind: "end" }];
+    add("c_MC_new", { ...g, ...fresh });
+    add("c_MC_work", { name: "On the Work account", ...g, agent: WORK, cwd: SHOP, model: "sonnet", effort: "medium" }, work);
+    add("c_MC_worknew", { name: "New on the Work account", ...g, ...fresh, agent: WORK, cwd: SHOP, model: "sonnet", effort: "medium" });
+    add("c_MC_unmounted", { name: "Notes on the Work account", ...g, ...fresh, agent: WORK, cwd: NOTES, model: "sonnet", effort: "medium" });
+    add("c_MC_pending", { name: "Empty repo on the Client account", ...g, ...fresh, agent: CLIENT, cwd: EMPTY, model: "opus", effort: "high" });
+    add("c_MC_removed", { name: "On a removed account", ...g, agent: "claude:a_gone0001", cwd: SHOP, model: "opus", effort: "high" }, clone(THREAD));
+    const page = (name, chatId, see, more) => state("MC", name, { chat: chatId }, see, more);
+    page("new", "c_MC_new", '.composer button.tchip[title^="Agent"]');
+    page("work", "c_MC_work", ".chat-head", { text: "On the Work account" });
+    page("worknew", "c_MC_worknew", ".chat-head", { text: "New on the Work account" });
+    page("unmounted", "c_MC_unmounted", ".chat-head", { text: "Notes on the Work account" });
+    page("pending", "c_MC_pending", ".chat-head", { text: "Empty repo on the Client account" });
+    page("removed", "c_MC_removed", ".chat-head", { text: "On a removed account" });
+  }
+
+  const SECTIONS = { A1, A2, A3, A4, A5, A6, SEC, UXS2, UXH1, UXH2, UXT1, UXT2, UXC1, UXB2, UXT3, UXC2, UXV1, MC };
   for (const name of only.length ? only : Object.keys(SECTIONS)) { if (!SECTIONS[name]) throw new Error(`the seed has no section ${name}`); SECTIONS[name](); }
   resync();
   return states;

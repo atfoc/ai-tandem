@@ -828,9 +828,9 @@ func TestTableRoutesServeAnAPIClient(t *testing.T) {
 	// The board routes of the table are called in apiboards_test.go
 	// (TestBoardRoutesOfAnAPIClient), the library routes in libraryremote_test.go
 	// (TestLibraryRoutesOfAnAPIClient) and the two image routes in remoteimages_test.go
-	// (TestImageRoutesOfAnAPIClient).
+	// (TestImageRoutesOfAnAPIClient), the account routes in aliases_test.go.
 	for _, route := range ClientRoutes {
-		if !called[route] && !isBoardRoute(route) && !isLibraryRoute(route) && !slices.Contains(imagePatterns, route) {
+		if !called[route] && !isBoardRoute(route) && !isLibraryRoute(route) && !isAliasRoute(route) && !slices.Contains(imagePatterns, route) {
 			t.Errorf("the route %s of the table was not called", route)
 		}
 	}

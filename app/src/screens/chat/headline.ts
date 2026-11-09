@@ -1,6 +1,7 @@
 // What the chat's header says under the title on the phone (ux-improvements goal 3.5): one line from the one list of state words. Pure,
 // so a test reads it without a screen. The first that applies: the server is not connected, the chat is archived, a state word of the chat,
-// else where it is (the agent, and the folder or the board).
+// else where it is (the agent, and the folder or the board). A chat on a Claude account has the account's badge beside the line (`badge`),
+// which names the agent: the line leaves it out.
 import { agentLabel } from "@aiwb/core/logic/agentlist.ts";
 import { retryLine } from "@aiwb/core/logic/retry.ts";
 import { chatWord, type WordTone } from "@aiwb/core/logic/statewords.ts";
@@ -21,6 +22,8 @@ export type HeadlineIn = {
   legacy: boolean;
   /** Unix ms, for the wait of a chat that is retried ("Retrying in 40 s · 2 of 4" counts down); now by default. */
   now?: number;
+  /** The header draws the account's badge beside the line (AccountBadge.tsx): the line does not name the agent again. */
+  badge?: boolean;
 };
 
 /** The last segment of a path, for either kind of separator; "" for none. */
@@ -29,7 +32,7 @@ export function folderOf(cwd: string): string {
   return parts[parts.length - 1] ?? "";
 }
 
-export function headline({ chat: c, off, gone, server, boardName, legacy, now = Date.now() }: HeadlineIn): Headline {
+export function headline({ chat: c, off, gone, server, boardName, legacy, now = Date.now(), badge = false }: HeadlineIn): Headline {
   const folder = folderOf(c.cwd);
   if (off) return { text: `● ${server} · offline`, tone: "bad" };
   if (c.archived) return { text: folder ? `Archived · ${folder}` : "Archived" };
@@ -42,7 +45,7 @@ export function headline({ chat: c, off, gone, server, boardName, legacy, now = 
   if (word?.key === "writing" && c.status === "waiting") return { text: "Waiting for background work", tone: "wait" };
   if (word) return { text: word.text, tone: word.tone };
   const where = c.board ? `on ${boardName ?? "board"}` : folder;
-  return { text: [agentLabel(c.agent), where, legacy ? "Disabled" : ""].filter(Boolean).join(" · ") };
+  return { text: [badge ? "" : agentLabel(c.agent), where, legacy ? "Disabled" : ""].filter(Boolean).join(" · ") };
 }
 
 /** The words of the Tree button: the branches the chat has, and whether another branch needs the person (it waits for approval, or failed). */

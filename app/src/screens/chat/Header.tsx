@@ -31,6 +31,7 @@ import { agentColours } from "./colour.ts";
 import { useNow } from "../subagents/hooks.ts";
 import { tildify, useWhere } from "./hooks.ts";
 import { PhoneHeader } from "./PhoneHeader.tsx";
+import { AccountBadge, hasBadge } from "./AccountBadge.tsx";
 import { useChatParts } from "./parts.tsx";
 
 /** Renames a chat on its server; the same name, or none, asks nothing. The name shows when the chat's server tells it (a `chat`
@@ -92,6 +93,7 @@ function WideHeader({ chatId }: { chatId: string }) {
   const status = headStatus(c, isLegacy(c), statusText(c, boardNames(chatId), now), frozen);
   const named = !c.archived && !isLegacy(c) && !frozen;
   const a = agentColours(t, c.agent);
+  const badge = hasBadge(c.agent); // a chat on a Claude account: the account's badge names the agent, before the line
   return (
     <View {...tid("chat-head", { chat: chatId, status: status || undefined, frozen })} style={[styles.head, { borderBottomColor: t.line }]}>
       <View style={[styles.glyph, { backgroundColor: a.soft }]}><AgentGlyph agent={c.agent} size={14} /></View>
@@ -107,14 +109,17 @@ function WideHeader({ chatId }: { chatId: string }) {
             )}
           </Pressable>
         )}
-        <Text {...tid("chat-head-sub")} numberOfLines={1} size={11.5} tone="muted">
-          {c.board ? <><BoardIcon size={12} color={t.accent} /> {board?.name ?? "board"} · </> : null}
-          {agentLabel(c.agent)}
-          {c.cwd ? <> · <Text mono size={11} tone="muted">{tildify(c.cwd, server)}</Text></> : null}
+        <View style={styles.subRow}>
+        {badge ? <AccountBadge kind={c.agent} /> : null}
+        <Text {...tid("chat-head-sub")} numberOfLines={1} size={11.5} tone="muted" style={styles.sub}>
+          {c.board ? <><BoardIcon size={12} color={t.accent} /> {board?.name ?? "board"}{badge && !c.cwd ? "" : " · "}</> : null}
+          {badge ? null : agentLabel(c.agent)}
+          {c.cwd ? <>{badge && !c.board ? "" : " · "}<Text mono size={11} tone="muted">{tildify(c.cwd, server)}</Text></> : null}
           {on ? <> · <Text {...tid("chat-head-server")} size={11.5} tone="muted">{on}</Text></> : null}
           {status ? <>{" · "}{status}</> : null}
           <parts.HeaderCrumb chat={chatId} />
         </Text>
+        </View>
       </View>
       <parts.HeaderTail chat={chatId} />
       {c.board && <IconButton {...tid("chat-hide")} title="Hide chat (⌘J)" onPress={() => setState({ panel: false })}>{(color) => <Text size={16} style={{ color }}>×</Text>}</IconButton>}
@@ -128,6 +133,8 @@ const styles = StyleSheet.create({
   main: { flex: 1, minWidth: 0 },
   nameRow: { flexDirection: "row", alignItems: "center", gap: 6, maxWidth: "100%", alignSelf: "flex-start" },
   name: { flexShrink: 1, minWidth: 0 },
+  subRow: { flexDirection: "row", alignItems: "center", gap: 6, minWidth: 0 },
+  sub: { flexShrink: 1, minWidth: 0 },
   nameInput: { width: "100%", fontSize: 13, fontWeight: "500", borderWidth: 1, borderRadius: 5, paddingVertical: 1, paddingHorizontal: 5 },
   nameInputPhone: { fontSize: TYPE.control, minHeight: PHONE.target, borderRadius: 8, paddingHorizontal: 10 },
 });

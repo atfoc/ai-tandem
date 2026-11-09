@@ -10,7 +10,7 @@ import (
 // keepsContextSplit reports whether an agent's between-turns split is persisted in chat.json
 // (Claude and pi); Cursor's is read live on every call and never stored.
 func keepsContextSplit(a model.AgentKind) bool {
-	return a == model.Claude || a == model.Pi
+	return model.IsClaude(a) || a == model.Pi
 }
 
 // errForkSplit refuses the context split of a Claude fork that has neither a process nor a
@@ -80,7 +80,7 @@ func (m *Manager) ContextSplitOf(id, branch string, fresh bool) (model.ContextSp
 	// A Claude fork has no session of its own until its first message was accepted: without a
 	// process it is read from its source's session up to the fork point, as the fork is started.
 	// With no id to stop at, the source may hold turns the fork lacks, and nothing is read.
-	if fs := c.meta.ForkSource; fs != nil && ag == nil && kind == model.Claude {
+	if fs := c.meta.ForkSource; fs != nil && ag == nil && model.IsClaude(kind) {
 		if _, items := tr.Snapshot(); !sentPast(items, fs.Items) {
 			if fs.Point == "" {
 				c.mu.Unlock()
@@ -99,10 +99,8 @@ func (m *Manager) ContextSplitOf(id, branch string, fresh bool) (model.ContextSp
 	var split model.ContextSplit
 	if live, ok := ag.(agent.ContextSplitter); ok {
 		split, err = live.ContextSplit()
-	} else if rd, ok := m.Spawners[kind].(agent.SplitReader); ok {
-		split, err = rd.ReadContextSplit(opts)
 	} else {
-		err = errors.New("this agent does not report its context split")
+		split, err = m.readContextSplit(kind, opts)
 	}
 
 	c.mu.Lock()
@@ -120,4 +118,23 @@ func (m *Manager) ContextSplitOf(id, branch string, fresh bool) (model.ContextSp
 	c.mu.Unlock()
 	close(r.done)
 	return split, err
+}
+
+// readContextSplit reads the context split of a chat of agent kind a that has no process, with
+// the spawner's SplitReader (opts are the chat's spawn options). Claude's starts a one-off process
+// in the chat's folder for it: on a Claude account it runs in the account's container, so it is
+// refused as a start is while accountGate refuses it (a removed account included, whose spawner
+// is gone), and its container is made ready first (prepare, whose error is returned as it came).
+// No chat's mu may be held: the process connects to the board's MCP, and prepare may wait.
+func (m *Manager) readContextSplit(a model.AgentKind, opts agent.SpawnOptions) (model.ContextSplit, error) {
+	if err := m.accountGate(a, opts.Cwd); err != nil {
+		return model.ContextSplit{}, err
+	}
+	if err := m.prepare(a); err != nil {
+		return model.ContextSplit{}, err
+	}
+	if rd, ok := m.spawner(a).(agent.SplitReader); ok {
+		return rd.ReadContextSplit(opts)
+	}
+	return model.ContextSplit{}, errors.New("this agent does not report its context split")
 }

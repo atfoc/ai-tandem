@@ -6,6 +6,7 @@ import { APPEARANCE_SPEC } from "./Appearance.tsx";
 import { EDITING_SPEC } from "./Editing.tsx";
 import { registerPlaceholders } from "./placeholders.tsx";
 import { Settings } from "./Settings.tsx";
+import "./accounts/index.ts";
 
 registerScreen("settings", { kind: "place", title: () => "Settings", component: Settings });
 registerScreen("appearance", APPEARANCE_SPEC);

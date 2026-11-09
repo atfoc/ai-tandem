@@ -568,3 +568,92 @@ func TestFakeClaudeAPIError(t *testing.T) {
 		t.Errorf("process 3: texts %q, turn end %+v; want the answer", texts, end)
 	}
 }
+
+// fakeAuth runs `fake-claude auth <args>` with CLAUDE_CONFIG_DIR=dir ("" = unset) and stdin, and
+// returns its stdout and exit status.
+func fakeAuth(t *testing.T, bin, dir, stdin string, args ...string) (string, int) {
+	t.Helper()
+	cmd := exec.Command(bin, append([]string{"auth"}, args...)...)
+	cmd.Env = append(os.Environ(), "CLAUDE_CONFIG_DIR="+dir, "FAKE_CLAUDE_LOGIN_EMAIL=", "FAKE_CLAUDE_LOGIN_CODE=", "FAKE_CLAUDE_AUTH=")
+	cmd.Stdin = strings.NewReader(stdin)
+	out, err := cmd.Output()
+	var ee *exec.ExitError
+	if err != nil && !errors.As(err, &ee) {
+		t.Fatal(err)
+	}
+	return string(out), cmd.ProcessState.ExitCode()
+}
+
+// auth status, login and logout keep a login in $CLAUDE_CONFIG_DIR/fake-login.json, as Claude Code
+// answers: logged out is JSON with exit 1; a code without "#" is refused and another read.
+func TestFakeClaudeAuth(t *testing.T) {
+	t.Parallel()
+	if !agenttest.HasNode() {
+		t.Skip("node is not on PATH")
+	}
+	bin, dir := agenttest.FakeClaude(t), t.TempDir()
+	status := func() (map[string]any, int) {
+		out, code := fakeAuth(t, bin, dir, "", "status")
+		var m map[string]any
+		if err := json.Unmarshal([]byte(out), &m); err != nil {
+			t.Fatalf("auth status printed %q: %v", out, err)
+		}
+		return m, code
+	}
+	if m, code := status(); code != 1 || m["loggedIn"] != false {
+		t.Fatalf("logged out: %v, exit %d", m, code)
+	}
+	if out, code := fakeAuth(t, bin, "", "", "status"); code != 0 || !strings.Contains(out, `"fake@example.com"`) {
+		t.Fatalf("with no CLAUDE_CONFIG_DIR: %q, exit %d", out, code)
+	}
+	out, code := fakeAuth(t, bin, dir, "abc\ngood#code\n", "login")
+	if code != 0 || !strings.Contains(out, "visit: https://claude.example/oauth/authorize?code=true&state=") ||
+		!strings.Contains(out, "Paste code here if prompted > Invalid code. Please make sure the full code was copied.\nLogin successful.\n") {
+		t.Fatalf("login: %q, exit %d", out, code)
+	}
+	if m, code := status(); code != 0 || m["loggedIn"] != true || m["email"] != "account@example.com" {
+		t.Fatalf("logged in: %v, exit %d", m, code)
+	}
+	if out, code := fakeAuth(t, bin, dir, "", "logout"); code != 0 || out != "Successfully logged out from your Anthropic account.\n" {
+		t.Fatalf("logout: %q, exit %d", out, code)
+	}
+	if _, code := status(); code != 1 {
+		t.Fatal("still logged in after logout")
+	}
+	if out, code := fakeAuth(t, bin, dir, "abc#def\n", "login"); code != 1 || !strings.HasSuffix(out, "Login failed: That code wasn't accepted.\n") {
+		t.Fatalf("wrong code: %q, exit %d", out, code)
+	}
+	if _, code := fakeAuth(t, bin, dir, "", "login"); code != 1 {
+		t.Fatalf("stdin closed: exit %d", code)
+	}
+}
+
+// FAKE_CLAUDE_MCP_HOST_MAP rewrites the host of the --mcp-config URL before the fake calls it.
+func TestFakeClaudeMCPHostMap(t *testing.T) {
+	if !agenttest.HasNode() {
+		t.Skip("node is not on PATH")
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"mapped endpoint"}]}}`)
+	}))
+	defer srv.Close()
+	t.Setenv("FAKE_CLAUDE_MCP_HOST_MAP", "other.invalid=10.0.0.1, mcp-host.invalid=127.0.0.1")
+	// a name that resolves nowhere (host.docker.internal may resolve here), so only the map reaches srv
+	sp := &claude.Spawner{Bin: agenttest.FakeClaude(t), AppRoot: t.TempDir(), Home: t.TempDir()}
+	url := strings.Replace(srv.URL, "127.0.0.1", "mcp-host.invalid", 1)
+	ag, err := sp.Spawn(agent.SpawnOptions{ChatID: "c1", SessionID: "11111111-1111-4111-8111-111111111111",
+		Cwd: t.TempDir(), Model: "sonnet", MCP: &agent.BoardAccess{MCPURL: url, Token: "tok"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ag.Close()
+		for range ag.Events() {
+		}
+	})
+	texts, end := claudeTurn(t, ag, `[[mcp read_board {}]]`)
+	if end.Error != "" || len(texts) == 0 || !strings.Contains(texts[len(texts)-1], "mapped endpoint") {
+		t.Fatalf("turn end: %+v, texts %q", end, texts)
+	}
+}

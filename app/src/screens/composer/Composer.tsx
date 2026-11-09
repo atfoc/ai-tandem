@@ -13,7 +13,7 @@ import { boxOff, notConnectedLine, offPlaceholder, offWhy, sendOff, sendTitleOn 
 import { IMAGES_PER_MESSAGE, imagesHold, imagesOff, withImages, withoutImages } from "@aiwb/core/logic/chatimage.ts";
 import { DraftSaver, boxText, hasDraft } from "@aiwb/core/logic/drafts.ts";
 import { draftBacks } from "@aiwb/core/logic/draftsback.ts";
-import { LIVE_FORK } from "@aiwb/core/logic/forkpoints.ts";
+import { liveFork } from "@aiwb/core/logic/forkpoints.ts";
 import { goneText } from "@aiwb/core/logic/remoteview.ts";
 import type { Ref } from "@aiwb/core/logic/refs.ts";
 import { selectedOn } from "@aiwb/core/logic/roles.ts";
@@ -55,6 +55,7 @@ import { DictationBoxContext, type DictationBox } from "./dictation.ts";
 import { registerBox } from "./focus.ts";
 import { boxAction, keyNames, refKey, sendByKey, sendTitleFor } from "./keys.ts";
 import { ArchivedBar, LegacyBar } from "./Blocked.tsx";
+import { AccountBanner, useAccountBanner } from "./accounts.tsx";
 import { ContextRow, ModelNotice } from "./Notices.tsx";
 import { composerParts, useComposerParts } from "./parts.tsx";
 import { Toolbar } from "./Toolbar.tsx";
@@ -92,6 +93,7 @@ function ComposerOf({ chatId, branch }: { chatId: string; branch: string }) {
   const move = useStore((s) => !!s.moves[chatId]); // the next message starts a new branch
   const where = useWhere(c);
   const usable = useStore((s) => usableAgents(s, where.server)); // what a chat with no agent says depends on whether one can be chosen
+  const banner = useAccountBanner(c, where.server); // a chat on a Claude account whose folder its container cannot reach, or whose account was removed: Send is held
   const boards = useStore((s) => boardsOn(s, where.server)); // the boards of its own server (its board is one)
   const left = useStore((s) => !!s.gone[chatId]); // its server no longer has the chat
   const selection = useStore((s) => s.selection);
@@ -334,13 +336,16 @@ function ComposerOf({ chatId, branch }: { chatId: string; branch: string }) {
   if (legacy && !phone) return root(<>{parts.VoiceNotice ? <parts.VoiceNotice chatId={chatId} /> : null}<LegacyBar /></>);
 
   // esc: the agent is busy on the branch shown; a message that starts a new branch may go out all the same
-  const { stop, blocked, esc } = composerControls(c, { newBranch: move, liveFork: !!c.agent && LIVE_FORK[c.agent] });
+  const { stop, blocked, esc } = composerControls(c, { newBranch: move, liveFork: liveFork(c.agent) });
   const own = c.board ? boards[c.board] : undefined;
   const selected = canRef ? selectedOn(selection.count, board, onScreen, role) : 0;
   const off = sendOff(where); // its server is not connected: the chat is shown as it was, and nothing is sent, stopped or changed
   const frozen = off || left;
   // A wait that concerns this composer's Send (logic/waits.ts): it takes no press, says why, and shows a spinner while a message is on its way.
   const hold = sendWait(waits, branch);
+  // The account banner holds Send (multiple-claude goal §1.5.1, §4.2): its sentence is the held Send's title; the draft stays editable, and a
+  // folder picked with the folder chip that the account mounts lets it go at once. (A chat that takes nothing anyway says that instead.)
+  const accountHeld = banner && !off && !left ? banner.text : "";
   // Why the images hold the Send (logic/chatimage.ts imagesHold): an upload runs, the message is over what one takes (two drafts were joined),
   // or its model takes no images. The strip says the last two under the thumbnails, until images are removed or another model is chosen.
   const imagesHeld = imagesHold(images, up.uploads.length > 0, noImages);
@@ -364,6 +369,7 @@ function ComposerOf({ chatId, branch }: { chatId: string; branch: string }) {
     if ((!t && !quotes.length && !images.length) || blocked || off || left || sending || isSending(chatId)) return; // no send while busy, or while the composer of the branch left sends the move
     if (imagesHold(images, slotOf(chatId, branch).uploads.length > 0, noImages)) return; // nor while an image is on its way, or with images the message cannot carry
     if (sendWait(getState().waits[chatId], branch)) return; // nor while a fork's first message is on its way, or its agent starts on another model
+    if (accountHeld) return; // nor while the account banner stands (⌘/Ctrl+Enter included)
     setSending(true); setErr(""); setImageError(chatId, branch, "");
     // The saver is told that this composer's Send runs, until it is answered: the removal of the sent draft is then not taken as another
     // window's. A sent move goes to another branch, and removes no draft of this one. The saver is told inside the try: whatever is thrown
@@ -434,6 +440,7 @@ function ComposerOf({ chatId, branch }: { chatId: string; branch: string }) {
     attach: parts.AttachButton ? <parts.AttachButton off={noAdd?.title ?? ""} onPress={() => attach()} /> : null,
     stop: showStop ? <StopButton title={esc ? "Stop (Esc)" : "Stop the subagents"} onPress={stopNow} /> : null,
     send: hold && !off && !left ? <SendButton title={hold.title} disabled spin={hold.spin} />
+      : accountHeld ? <SendButton title={accountHeld} disabled />
       : imagesHeld && !blocked && !off && !left ? <SendButton title={imagesHeld} disabled /> // the images hold it: an upload runs, or the message cannot carry them
       : <SendButton title={sendTitleFor(sendTitleOn(where, usable, c, blocked, left), names.send)} disabled={blocked || off || left || sending || (!text.trim() && !quotes.length && !images.length)}
         onPress={() => void submit()} />,
@@ -481,6 +488,7 @@ function ComposerOf({ chatId, branch }: { chatId: string; branch: string }) {
           empty, voiceOff: why, plusOff: readOnly ? why : "",
           stop: showStop ? <StopButton size="touch" title={esc ? "Stop" : "Stop the subagents"} onPress={stopNow} /> : null,
           send: (why) => hold && !off && !left ? <SendButton size="touch" title={hold.title} disabled spin={hold.spin} />
+            : accountHeld ? <SendButton size="touch" title={accountHeld} disabled />
             : imagesHeld && !blocked && !off && !left ? <SendButton size="touch" title={imagesHeld} disabled soft={up.uploads.length > 0} />
             : why ? <SendButton size="touch" title={why} disabled />
             : <SendButton size="touch" title={sendTitleFor(sendTitleOn(where, usable, c, blocked, left), "")} disabled={blocked || off || left || sending || empty}
@@ -511,6 +519,7 @@ function ComposerOf({ chatId, branch }: { chatId: string; branch: string }) {
     ) : null}
     {Banner ? <Banner chat={chatId} /> : null}
     <ModelNotice chatId={chatId} />
+    {accountHeld && banner ? <AccountBanner banner={banner} server={where.server} c={c} /> : null}
     {parts.VoiceNotice ? <parts.VoiceNotice chatId={chatId} /> : null}
     {/* (the wrapper is always there, so that the box is the same element while speech mode comes and goes; hidden it keeps its width, which the toolbar's fit reads) */}
     <View {...tid("composer-away", { away: speech })} aria-hidden={speech} style={speech ? styles.away : undefined}>

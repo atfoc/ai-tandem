@@ -296,7 +296,7 @@ test("nothing of the page outside src/transport reaches the network, the app's f
   /** The code of a file without its comments and the text of its strings that are not paths. */
   const code = (f: string) => sourceOf(f).replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:"'`])\/\/.*$/gm, "$1");
   // the files that write the paths of the client API for the transport (a path is not a URL to load)
-  const paths = new Set(["api.ts", "libraryapi.ts", "logic/keys.ts"]);
+  const paths = new Set(["api.ts", "libraryapi.ts", "aliasesapi.ts", "logic/keys.ts"]);
   for (const f of files) {
     const c = code(f), rel = f;
     for (const bad of [/\bfetch\(/, /\bEventSource\b/, /\baiwbTransport\b/, /\baiwbDesktop\b/, /\/host\//, /\/api\/on\b/, /\bXMLHttpRequest\b/, /\bsendBeacon\b/, /\bWebSocket\b/])

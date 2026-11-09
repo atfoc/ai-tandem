@@ -69,9 +69,20 @@ func (m *Manager) chatRetryFire(c *Chat, w *retryWait) {
 }
 
 // chatRetryStart is w's slot: the attempt starts c's agent on its session through spawn, with the
-// retry's message (chatRetryBlocks), and hands it over on a goroutine. No lock held.
+// retry's message (chatRetryBlocks), and hands it over on a goroutine. On a Claude account the
+// container is made ready first, before c.mu is taken (prepare): when it cannot be, the attempt
+// could not start, as when spawn fails, and the chat shows the reason. No lock held.
 func (m *Manager) chatRetryStart(c *Chat, w *retryWait) {
 	var out outbox
+	var perr error
+	if m.Accounts != nil {
+		c.mu.Lock()
+		kind, live := c.meta.Agent, c.retry == w && c.ag == nil
+		c.mu.Unlock()
+		if live {
+			perr = m.prepare(kind)
+		}
+	}
 	c.mu.Lock()
 	if c.retry != w || c.deleted || c.tr == nil || c.ag != nil || m.down.Load() {
 		m.retryGate.leave(w.ticket)
@@ -90,7 +101,13 @@ func (m *Manager) chatRetryStart(c *Chat, w *retryWait) {
 	}
 	w.started = true
 	m.logRetry(c.meta.ID, "", fmt.Sprintf("attempt %d/%d starts", w.attempt, retryAttempts))
-	if err := m.spawn(c, &out); err != nil {
+	err := perr
+	if err != nil {
+		m.spawnFailed(c, c.tr, err, &out)
+	} else {
+		err = m.spawn(c, &out)
+	}
+	if err != nil {
 		// spawnFailed has shown the error. The turn is over: the next message of the person starts it.
 		m.logRetry(c.meta.ID, "", fmt.Sprintf("attempt %d/%d could not start: %v", w.attempt, retryAttempts, err))
 		m.cancelChatRetry(c, "the process ended")

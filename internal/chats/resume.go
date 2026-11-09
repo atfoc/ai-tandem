@@ -23,9 +23,25 @@ func (m *Manager) ResumeSubagent(chatID, sid string) (model.Subagent, error) {
 // receipt without waiting for it. by is the caller: the sid of a subagent, "" for the chat's agent;
 // a caller resumes only what it started itself. It is held to the limits of SpawnSubagent: the
 // chat archived or shutting down, and the cap on running subagents (the depth needs no check: a
-// subagent's level is fixed, and its parent has the spawn family). A start that fails leaves the
-// subagent as it was.
+// subagent's level is fixed, and its parent has the spawn family), and to the account gate of a
+// subagent on a Claude account (accountGate, whose refusal is returned as it came), and to its
+// container, made ready before any lock is taken (prepare, whose error is returned as it came). A
+// start that fails leaves the subagent as it was.
 func (m *Manager) ResumeSubagentBy(chatID, by, sid string) (model.Subagent, error) {
+	// On a Claude account the subagent's container is made ready first, with no lock held (see
+	// prepare); a refusal there leaves it as it was.
+	if m.Accounts != nil && !m.down.Load() {
+		var kind model.AgentKind
+		if c, err := m.lock(chatID); err == nil {
+			if s := c.subs[sid]; s != nil {
+				kind = s.meta.Kind
+			}
+			c.mu.Unlock()
+		}
+		if err := m.prepare(kind); err != nil {
+			return model.Subagent{}, err
+		}
+	}
 	var out outbox
 	c, err := m.lock(chatID)
 	if err != nil {
@@ -70,6 +86,13 @@ func (m *Manager) ResumeSubagentBy(chatID, by, sid string) (model.Subagent, erro
 	if n := runningAppSubs(c); limit > 0 && n >= limit {
 		unlock()
 		return model.Subagent{}, &SubCapError{Cap: limit, Running: n, Resume: true}
+	}
+	// A subagent on a Claude account is resumed only while the account can be used and has the
+	// chat's folder: refused here, as it came, it stays as it was (startSub would look too, but
+	// its error is wrapped below).
+	if err := m.accountGate(s.meta.Kind, c.meta.Cwd); err != nil {
+		unlock()
+		return model.Subagent{}, err
 	}
 
 	prev, wasApp := s.meta, s.app

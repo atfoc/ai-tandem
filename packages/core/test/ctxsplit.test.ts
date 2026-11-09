@@ -73,3 +73,8 @@ test("share and width", () => {
   assert.equal(width(5, 0), 0);
   assert.equal(tokensText(967000), "967,000");
 });
+
+test("segments: a Claude account's bar has Claude Code's order and slots", () => {
+  const cats = [cat("system_prompt", 1), cat("system_tools", 1), cat("skills", 1), cat("messages", 1)];
+  assert.deepEqual(segments("claude:a_work0001", cats).map((s) => s.slot), segments("claude", cats).map((s) => s.slot));
+});

@@ -2,19 +2,22 @@
 // (test/composer.blocked.test.ts). Blocked.tsx draws what this decides.
 //
 // One state stands in the box's own place or the toolbar's, by priority: archived (with its server offline, the bar says that instead of
-// its button) › the old board connection › no agent › the chat gone from its server › its server offline. The two "above" notices, a model too
-// small for the conversation and a refused send, can stand with any state that leaves the box in view (offline, gone) or with none.
+// its button) › the old board connection › no agent › the chat gone from its server › its server offline. The "above" notices, in this order:
+// the banner of a chat on a Claude account whose folder its container cannot reach, or whose account was removed (multiple-claude goal §1.5,
+// §4.2: it holds Send), a model too small for the conversation, a refused send; they can stand with any state that leaves the box in view
+// (offline, gone) or with none.
 import { NO_AGENT } from "@aiwb/core/logic/agentlist.ts";
 import type { Where } from "@aiwb/core/logic/chatserver.ts";
 import { goneText } from "@aiwb/core/logic/remoteview.ts";
 import { formatSince } from "@aiwb/core/logic/statewords.ts";
 import { LOCAL_SERVER, type AgentKind } from "@aiwb/core/types.ts";
 
-export type BlockKind = "offline" | "gone" | "archived" | "legacy" | "noagent" | "toosmall" | "refused";
+export type BlockKind = "offline" | "gone" | "archived" | "legacy" | "noagent" | "account" | "toosmall" | "refused";
 /** `box`: drawn instead of the box; `toolbar`: in the toolbar's place inside the read-only box; `above`: right above the box. */
 export type BlockPlace = "box" | "toolbar" | "above";
-/** The control a state offers: Servers (the server's detail), Unarchive, New chat on this board, Pick a model, the refused card's ×. */
-export type BlockAction = "servers" | "unarchive" | "newchat" | "pickmodel" | "dismiss";
+/** The control a state offers: Servers (the server's detail), Unarchive, New chat on this board, Pick a model, the refused card's ×, the
+ *  account banner's Add it in Settings (the account's sheet with the folder) and Restart container. */
+export type BlockAction = "servers" | "unarchive" | "newchat" | "pickmodel" | "dismiss" | "settings" | "restart";
 
 export type BlockWords = {
   kind: BlockKind;
@@ -24,7 +27,12 @@ export type BlockWords = {
   /** The 13 pt second line ("" none). */
   sub: string;
   action?: BlockAction;
+  /** The account banner's state (logic/aliases.ts MountBanner). */
+  state?: AccountState;
 };
+
+/** What the account banner says (logic/aliases.ts MountBanner): its state and its sentence, without the "⚠ " the card puts before it. */
+export type AccountState = "not_mounted" | "pending" | "removed";
 
 export type BlockInputs = {
   archived: boolean;
@@ -45,6 +53,8 @@ export type BlockInputs = {
   tooSmall: string;
   /** The last refused send's sentence ("" none). */
   refused: string;
+  /** The banner of a chat on a Claude account (logic/aliases.ts mountBanner), null or absent for none. */
+  account?: { state: AccountState; text: string } | null;
 };
 
 export type Blocks = {
@@ -52,7 +62,7 @@ export type Blocks = {
   main: BlockWords | null;
   /** The notices above the box (the amber one, then the red one); none while the box is replaced. */
   above: BlockWords[];
-  /** Why Send is greyed ("" while the notices do not grey it): the model is too small. */
+  /** Why Send is greyed ("" while the notices do not grey it): the account banner's sentence, else the model is too small. */
   sendOff: string;
 };
 
@@ -92,8 +102,11 @@ export function blockOf(i: BlockInputs): Blocks {
   }
   const above: BlockWords[] = [];
   if (main?.place !== "box") {
+    if (i.account) above.push({ kind: "account", place: "above", title: i.account.text, sub: "", state: i.account.state,
+      action: i.account.state === "not_mounted" ? "settings" : i.account.state === "pending" ? "restart" : undefined });
     if (i.tooSmall) above.push({ kind: "toosmall", place: "above", title: i.tooSmall, sub: "", action: "pickmodel" });
     if (i.refused) above.push({ kind: "refused", place: "above", title: i.refused, sub: "", action: "dismiss" });
   }
-  return { main, above, sendOff: above.some((b) => b.kind === "toosmall") ? i.tooSmall : "" };
+  const held = above.find((b) => b.kind === "account") ?? above.find((b) => b.kind === "toosmall");
+  return { main, above, sendOff: held?.title ?? "" };
 }

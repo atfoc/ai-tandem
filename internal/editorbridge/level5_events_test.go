@@ -16,7 +16,7 @@ import (
 func TestEventsOfAClient(t *testing.T) {
 	t.Parallel()
 	list := []string{"groups", "defaults", "board", "board_removed", "chat", "chat_removed", "branch_state",
-		"catalog", "agents", "own_library"}
+		"catalog", "agents", "own_library", "aliases"}
 	content := []string{"tree", "chat_items", "sub", "sub_items", "scene", "writer"}
 	never := []string{"servers", "server_state", "server_lists", "library", "library_removed", "section", "server_back", "chat_reload",
 		"hello", "snapshot", "held", "release_request", "superseded", "rpc", "server_stopping"}

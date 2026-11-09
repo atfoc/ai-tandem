@@ -57,6 +57,9 @@ func serverTest(t *testing.T, cover ...string) {
 //	TestSecretNewReachesAClient              the signal that makes a real server read its secret again, and `secret -new`
 //	TestReloadKeepsSecretWhenUnreadable      the same signal, with a secret file that cannot be read
 //	TestSetupRemoteScriptRefusesEmptyValues  a script of the server folder, run through sh
+//	TestAccountChatsThroughTheStandInDocker  a Claude account added, logged in and chatting in its container (stand-in docker)
+//	TestAccountChatAfterARestart             a Claude account's run killed at SIGTERM, its container kept and found again
+//	TestAccountsWithoutDocker                a server whose Docker is missing or does not answer: accounts refused, nothing waits
 func smokeTest(t *testing.T) {
 	t.Helper()
 	t.Parallel()
@@ -80,6 +83,7 @@ type instance struct {
 	claude   string // the -claude flag: a program that does not exist, unless a test swaps in a fake
 	cursor   string // the -cursor flag, likewise; "" leaves the flag out (`agent` on PATH)
 	pi       string // the -pi flag, likewise
+	docker   string // the -docker flag, likewise: a stand-in docker (containertest) when a test swaps one in
 	port     int    // the client listener's
 	mcpPort  int
 	vars     []string // what environ adds to this process's environment: the MCP port, the bind, a Cursor config folder and what setenv added
@@ -95,7 +99,8 @@ type instance struct {
 func newBareInstance(t *testing.T) *instance {
 	t.Helper()
 	bin := buildBinary(t)
-	in := &instance{bin: bin, dir: t.TempDir(), claude: noClaude(t), cursor: filepath.Join(t.TempDir(), "no-agent"), pi: filepath.Join(t.TempDir(), "no-pi"), port: freePort(t), mcpPort: freePort(t)}
+	in := &instance{bin: bin, dir: t.TempDir(), claude: noClaude(t), cursor: filepath.Join(t.TempDir(), "no-agent"), pi: filepath.Join(t.TempDir(), "no-pi"),
+		docker: filepath.Join(t.TempDir(), "no-docker"), port: freePort(t), mcpPort: freePort(t)}
 	in.vars = []string{"AIWB_MCP_PORT=" + strconv.Itoa(in.mcpPort), "CURSOR_CONFIG_DIR=" + t.TempDir(), loopbackBind}
 	in.mcpURL = fmt.Sprintf("http://localhost:%d/mcp", in.mcpPort)
 	t.Cleanup(func() {
@@ -157,7 +162,7 @@ func (in *instance) flagsFor(command string) []string {
 
 // flags are the flags that select the instance's data folder and agent programs.
 func (in *instance) flags() []string {
-	flags := []string{"-home", in.dir, "-claude", in.claude, "-pi", in.pi}
+	flags := []string{"-home", in.dir, "-claude", in.claude, "-pi", in.pi, "-docker", in.docker}
 	if in.cursor != "" {
 		flags = append(flags, "-cursor", in.cursor)
 	}
@@ -165,9 +170,10 @@ func (in *instance) flags() []string {
 }
 
 // noClaude returns the path of a Claude binary that does not exist, for the -claude flag of every
-// server a test starts: no test may run the owner's installed `claude`. The -cursor and -pi flags
-// get such a path too, so that a server neither starts the installed Cursor agent or pi nor
-// behaves differently on a machine that has them.
+// server a test starts: no test may run the owner's installed `claude`. The -cursor, -pi and
+// -docker flags get such a path too, so that a server neither starts the installed Cursor agent or
+// pi nor asks the machine's Docker anything (real Docker is for the full set alone), and does not
+// behave differently on a machine that has them.
 func noClaude(t *testing.T) string {
 	t.Helper()
 	return filepath.Join(t.TempDir(), "no-claude")

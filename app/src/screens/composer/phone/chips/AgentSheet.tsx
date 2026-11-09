@@ -2,12 +2,16 @@
 // titled "Agent" with the chat's name as its sub-line; each row a 34-point glyph, the agent's name and a one-line description; a tap picks
 // and closes (no Done, no Cancel); the chat's own agent, when its server lacks it, listed dimmed with the reason; under the list the line
 // "A new agent starts with its own default model and effort." A pick is sent at once (pickAgent), as the wide toolbar's AgentPick does.
+// Every Claude account of the chat's server follows the agents (core's pickerRows): its name with the container's chip, "<email> · in its own
+// container", and when it cannot be used now, dimmed with why and Log in… (Settings › Claude accounts, the sheet closes) beside it; one that
+// waits for a restart says which folders and offers Restart container.
 import { StyleSheet, View } from "react-native";
 
 import { api } from "@aiwb/core/api.ts";
 import { pickAgent, usableAgents } from "@aiwb/core/logic/agentlist.ts";
 import { agentChoiceOn } from "@aiwb/core/logic/chatserver.ts";
 import { getState, shownBranch, upsertChat } from "@aiwb/core/state/store.ts";
+import { isAliasKind } from "@aiwb/core/agents.ts";
 import type { AgentKind, ChatView } from "@aiwb/core/types.ts";
 
 import { useStore } from "../../../../state/useStore.ts";
@@ -16,7 +20,10 @@ import { useWhere } from "../../../chat/hooks.ts";
 import { AgentGlyph, agentName } from "../../../../ui/icons.tsx";
 import { TYPE } from "../../../../ui/metrics.ts";
 import { PickerSheet, type PickerOption } from "../../../../ui/PickerSheet.tsx";
+import { Button } from "../../../../ui/Button.tsx";
+import { tid } from "../../../../ui/tid.ts";
 import { Text } from "../../../../ui/Text.tsx";
+import { AccountRowText, rowAction, usePickerRows } from "../../accounts.tsx";
 import { useTokens } from "../../../../ui/theme.tsx";
 import { C2_IDS } from "./ids.ts";
 
@@ -42,13 +49,21 @@ export function AgentSheet(p: AgentSheetProps) {
   const t = useTokens();
   const where = useWhere(p.c);
   const usable = useStore((s) => usableAgents(s, where.server));
-  const choice = agentChoiceOn(where, usable, p.c.agent);
+  const list = useStore((s) => s.aliases[where.server]);
+  const choice = agentChoiceOn(where, usable, p.c.agent, list);
+  const rows = usePickerRows(where.server, usable);
+  const icon = (a: AgentKind) => <View style={[styles.tile, { backgroundColor: agentColours(t, a).soft }]}><AgentGlyph agent={a} size={18} /></View>;
   const row = (a: AgentKind, disabledReason?: string): PickerOption<string> => ({
-    value: a, label: agentName(a), note: NOTES[a] ?? undefined, disabledReason: disabledReason || undefined,
-    icon: <View style={[styles.tile, { backgroundColor: agentColours(t, a).soft }]}><AgentGlyph agent={a} size={18} /></View>,
+    value: a, label: agentName(a), note: NOTES[a] ?? undefined, disabledReason: disabledReason || undefined, icon: icon(a),
   });
-  // the chat's own agent, when its server lacks it: first, dimmed, with the reason
-  const options = [...(choice.missing && p.c.agent ? [row(p.c.agent as AgentKind, choice.reason)] : []), ...choice.options.map((a) => row(a))];
+  const listed = new Set(rows.map((r) => r.kind as string));
+  // the chat's own agent, when its server lacks it and lists it nowhere: first, dimmed, with the reason
+  const options = [...(choice.missing && p.c.agent && !listed.has(p.c.agent) ? [row(p.c.agent as AgentKind, choice.reason)] : []), ...rows.map((r): PickerOption<string> => {
+    if (!isAliasKind(r.kind)) return row(r.kind);
+    const act = rowAction(r, where.server, p.onClose);
+    return { value: r.kind, label: r.label, icon: icon(r.kind), disabledReason: r.disabled ? r.reason || "Not available now" : undefined, content: <AccountRowText row={r} tall />,
+      action: act ? <Button {...tid("pick-action")} size="touch" label={act.label} onPress={act.onPress} /> : undefined };
+  })];
   const pick = (id: string) => {
     if (id === p.c.agent) return;
     p.onBusy(true);

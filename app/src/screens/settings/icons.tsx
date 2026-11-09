@@ -42,6 +42,12 @@ export const ArchiveGlyph = ({ size = 17, color }: Glyph) => draw(size, color, <
 /** Lines, the middle two pushed in: Composer's editing. */
 export const IndentGlyph = ({ size = 17, color }: Glyph) => draw(size, color, <Path d="M2.5 3.5h11M6 6.5h7.5M6 9.5h7.5M2.5 12.5h11M2.5 6.5l2 1.5-2 1.5" />);
 
+/** Two people, one before the other: Claude accounts. */
+export const AccountsGlyph = ({ size = 17, color }: Glyph) => draw(size, color, <>
+  <Path d="M6.2 7.6a2.3 2.3 0 1 0 0-4.6 2.3 2.3 0 0 0 0 4.6zM1.8 13.2c.4-2.3 2.2-3.8 4.4-3.8s4 1.5 4.4 3.8" />
+  <Path d="M10.6 3.2a2.2 2.2 0 0 1 0 4.3M12 9.6c1.2.5 2 1.8 2.2 3.4" />
+</>);
+
 /** A circled i: About. */
 export const InfoGlyph = ({ size = 17, color }: Glyph) => draw(size, color, <>
   <Path d="M8 14A6 6 0 1 0 8 2a6 6 0 0 0 0 12z" /><Path d="M8 7.2V11" /><Path d="M8 4.9h.01" strokeWidth={1.8} />

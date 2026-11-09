@@ -26,6 +26,10 @@ export type PickerOption<T extends string> = {
   disabledReason?: string;
   /** A heading the option falls under (the model picker's providers). Options of one section are consecutive. */
   section?: string;
+  /** Drawn in place of the label and the second line (a Claude account's name, chip, note and reason). */
+  content?: ReactNode;
+  /** One control beside the row, not dimmed with it (a Claude account's Log in…). */
+  action?: ReactNode;
 };
 
 export type PickerSheetProps<T extends string> = {
@@ -71,12 +75,16 @@ export function PickerSheet<T extends string>(p: PickerSheetProps<T>) {
         <Menu label={p.title}>
           {groupBySection(shown).map((g, i) => [
             g.section ? <MenuHead key={"h" + i}>{g.section}</MenuHead> : null,
-            ...g.options.map((o) => (
-              <MenuItem key={o.value} {...tid(TID.pickerRow, { value: o.value })} choice selected={o.value === p.value} label={o.label}
-                icon={o.icon} note={o.disabledReason ?? o.note} disabled={!!o.disabledReason}
-                trailing={o.value === p.value ? <Text {...tid(TID.pickerCheck)} size={TYPE.control} tone="accent" weight="600" accessibilityElementsHidden>✓</Text> : undefined}
-                onPress={() => { p.onPick(o.value); if (!p.extra) p.onClose(); }} />
-            )),
+            ...g.options.map((o) => {
+              const item = (
+                <MenuItem key={o.value} {...tid(TID.pickerRow, { value: o.value })} choice selected={o.value === p.value} label={o.label}
+                  accessibilityLabel={o.content && o.disabledReason ? `${o.label}, ${o.disabledReason}` : undefined}
+                  icon={o.icon} note={o.content ? undefined : o.disabledReason ?? o.note} disabled={!!o.disabledReason}
+                  trailing={o.value === p.value ? <Text {...tid(TID.pickerCheck)} size={TYPE.control} tone="accent" weight="600" accessibilityElementsHidden>✓</Text> : undefined}
+                  onPress={() => { p.onPick(o.value); if (!p.extra) p.onClose(); }}>{o.content}</MenuItem>
+              );
+              return o.action ? <View key={o.value} style={styles.withAction}><View style={styles.grow}>{item}</View>{o.action}</View> : item;
+            }),
           ])}
         </Menu>
       )}
@@ -88,6 +96,8 @@ export function PickerSheet<T extends string>(p: PickerSheetProps<T>) {
 
 const styles = StyleSheet.create({
   search: { paddingTop: 8, paddingBottom: 8 },
+  withAction: { flexDirection: "row", alignItems: "center", gap: 8 },
+  grow: { flex: 1, minWidth: 0 },
   empty: { paddingVertical: 24, paddingHorizontal: PHONE.margin - 8, alignItems: "center" },
   extra: { paddingHorizontal: PHONE.margin - 8, paddingTop: 12, paddingBottom: 4, marginTop: 4, borderTopWidth: StyleSheet.hairlineWidth },
 });

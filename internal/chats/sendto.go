@@ -67,6 +67,13 @@ func (m *Manager) sendToBranch(id string, t Target, text, context string, refs [
 	if err != nil {
 		return "", err
 	}
+	// A new branch starts a process, and so does a message that carries on a branch with none: on
+	// a Claude account the container is made ready first, with no lock held (see prepare). A
+	// refusal there leaves nothing.
+	lock := func() (*Chat, error) { return m.branchChat(id, t.Branch) }
+	if err := m.prepareOf(lock, func(c *Chat) bool { return c.ag == nil || !t.End }); err != nil {
+		return "", err
+	}
 	c, from, made, err := m.sendTarget(id, t, refs, imgs != nil)
 	if err != nil {
 		return "", err
@@ -195,7 +202,9 @@ func (m *Manager) sendToBranch(id string, t Target, text, context string, refs [
 // before ErrBusy). Nothing is created when an error is returned. The branch
 // named is resolved before anything else is checked: an unknown one is ErrNoBranch whatever the
 // state of the chat. images says that the message has images: a new branch whose model takes
-// none is not made (ErrImageModel); for a branch that is carried on sendOn says so.
+// none is not made (ErrImageModel); for a branch that is carried on sendOn says so. A new branch
+// on a Claude account is not made while the account cannot be used or does not have the folder
+// (accountGate's refusal, as it came); for a branch that is carried on sendOn says so too.
 func (m *Manager) sendTarget(id string, t Target, refs []model.Reference, images bool) (c *Chat, from agent.ForkSource, made bool, err error) {
 	none := agent.ForkSource{}
 	var loaded outbox // what loading the branch's transcript sends
@@ -268,6 +277,11 @@ func (m *Manager) sendTarget(id string, t Target, refs []model.Reference, images
 	// At the cap the message would be refused once the branch's process is there (sendOn): no
 	// branch is made and no fork started for it.
 	if err := m.capCheck(src); err != nil {
+		return nil, none, false, err
+	}
+	// The new branch's process (a fork start, or the message's own start at the start of the
+	// chat) runs on src's agent in src's folder: a Claude account must be able to start it.
+	if err := m.accountGate(src.meta.Agent, src.meta.Cwd); err != nil {
 		return nil, none, false, err
 	}
 	tree, err := m.readTree(id)

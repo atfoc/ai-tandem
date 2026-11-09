@@ -111,6 +111,7 @@ const src = coreSrc;
 const stubs: Record<string, { contents: string; loader: "js" | "ts" }> = {
   "api.ts": { loader: "js", contents: `
     const { fake, save, upload } = globalThis.__kept;
+    export const call = async () => { throw new Error("no account call in this test"); }; // (the Claude accounts' calls, aliasesapi.ts, which conn.ts reaches through state/aliases.ts)
     export const clientId = "test";
     export class ApiError extends Error {}
     const not = async () => { throw new Error("not in this test"); };

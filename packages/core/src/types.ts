@@ -5,7 +5,9 @@
 // server) is the page's key of it (logic/keys.ts): the record's own `id`, and every id it holds
 // of another thing of that server (`group`, `board`, `chat`, `parent`, …).
 
-export type AgentKind = "claude" | "cursor" | "pi";
+/** An agent kind: Claude Code (the computer's own), Cursor, Pi, or a Claude account of the server: "claude:" + its id
+ *  (model.AliasKind). Code that asks how an agent behaves asks it of the family (agentFamily in agents.ts). */
+export type AgentKind = "claude" | "cursor" | "pi" | `claude:${string}`;
 
 /** The group id of the ungrouped area (model.Ungrouped). */
 export const UNGROUPED = "__ungrouped__";

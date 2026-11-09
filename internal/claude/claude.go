@@ -5,6 +5,7 @@ package claude
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
@@ -30,6 +31,29 @@ type Spawner struct {
 	AppRoot string // data folder
 	Home    string
 	Prompt  string // prompts.Claude()
+
+	// The fields below make the spawner a Claude account's (internal/aliases); all zero for the
+	// computer's own Claude Code, which runs as before. An account's spawner also has Home "":
+	// the container's home is not the host's, so AppDirRules and TouchesAppDir use the absolute
+	// form of the app's folder.
+	//
+	// Runner, when set, starts every process of this spawner (agent.Runner): a chat's, a fork's,
+	// the context-split reader's, the catalog probe's, auth status and usage (s.command). Bin is
+	// then the program as the Runner's place finds it ("claude"), and Close and the read loop's
+	// end also call the run's Kill; a run that is never started, or that a short-lived command
+	// (auth, probe, usage, login) waited for and saw end by itself, is released instead
+	// (agent.Run.Release). nil = exec.Command(Bin, ...) on the host.
+	Runner agent.Runner
+	// MCPURL, when set, is the URL written in the --mcp-config file in place of o.MCP.MCPURL:
+	// a container reaches the host's MCP listener at http://host.docker.internal:<port>/mcp.
+	MCPURL string
+	// MCPDir, when set, is the folder of the --mcp-config files, one per chat object, named from
+	// its ChatID (<data>/aliases/<id>/mcp): a folder the container sees. It is the account's to
+	// make; the spawner never makes it, and a start fails when it is missing (the account was
+	// removed). "" = the chat object's own folder (made when missing), as before.
+	//
+	// The file's name is the ChatID with each "/" made "-" (mcpFileName).
+	MCPDir string
 
 	forkTimeout time.Duration // tests: SpawnFork's time box; 0 = agent.ForkTimeout
 }
@@ -95,6 +119,8 @@ func steering(o agent.SpawnOptions) string {
 
 type proc struct {
 	cmd      *exec.Cmd
+	run      *agent.Run // what s.command made cmd with; its Kill is nil on the host
+	killing  sync.Once  // the run's Kill is called once: by closeNow or at the read loop's end
 	stdin    io.WriteCloser
 	writeMu  sync.Mutex
 	events   chan agent.Event // buffered 1024
@@ -220,7 +246,14 @@ const mcpConfigFile = "mcp.json"
 // mcpConfigPath is where the --mcp-config file of o's process is: in the folder of the chat object
 // (o.Dir, else <AppRoot>/chats/<ChatID>), which is under the app's folder, so no agent may read it
 // (AppDirRules). An app-spawned subagent's folder is its own, so its token has its own file.
+//
+// With MCPDir (a Claude account's: its container does not see the chat folders) it is
+// MCPDir/mcpFileName(ChatID), one file per chat object there, and nothing is written in the chat
+// object's folder.
 func (s *Spawner) mcpConfigPath(o agent.SpawnOptions) string {
+	if s.MCPDir != "" {
+		return filepath.Join(s.MCPDir, mcpFileName(o.ChatID))
+	}
 	dir := o.Dir
 	if dir == "" {
 		dir = filepath.Join(s.AppRoot, "chats", filepath.FromSlash(o.ChatID))
@@ -228,21 +261,43 @@ func (s *Spawner) mcpConfigPath(o agent.SpawnOptions) string {
 	return filepath.Join(dir, mcpConfigFile)
 }
 
+// mcpFileName is the name of a chat object's --mcp-config file in MCPDir: its ChatID with each "/"
+// made "-", then ".json" ("c_ab12cd34/subagents/s_ef56gh78" → "c_ab12cd34-subagents-s_ef56gh78.json").
+// A ChatID is ids (model.NewID: a prefix with "_" and base36, so [0-9a-z_]) and fixed words
+// joined by "/", none of which holds a "-": two chat objects cannot get the same name.
+func mcpFileName(chatID string) string {
+	return strings.ReplaceAll(chatID, "/", "-") + ".json"
+}
+
 // writeMCPConfig writes the --mcp-config file of o's process, readable by the user only. It is
 // written at every start, since the token may differ from the last process's, and put in place by
 // a rename: a process of the same chat that is reading it (ReadContextSplit runs beside the chat's
 // own) sees the old file or the new one, never half of one. Nothing removes it but the removal of
-// the chat's folder.
+// the chat's folder (or, in MCPDir, of the account's). The URL in it is MCPURL when the spawner
+// has one (a container reaches the host's listener by another name), else o.MCP's; the token is
+// o.MCP's either way.
+//
+// The chat object's folder is made when missing. MCPDir is not: it is the account's, made with
+// the account (internal/aliases), and it is missing only once the account was removed and its
+// folder deleted, which must not be undone here (with a token file in it); that is an error.
 func (s *Spawner) writeMCPConfig(o agent.SpawnOptions) error {
+	board := *o.MCP
+	if s.MCPURL != "" {
+		board.MCPURL = s.MCPURL
+	}
 	path := s.mcpConfigPath(o)
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if s.MCPDir != "" {
+		if fi, err := os.Stat(s.MCPDir); err != nil || !fi.IsDir() {
+			return errors.New("the Claude account's folder is gone (the account was removed)")
+		}
+	} else if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(path), "mcp-*.tmp") // made with mode 0600
 	if err != nil {
 		return err
 	}
-	_, err = tmp.WriteString(boardMCPConfig(o.MCP))
+	_, err = tmp.WriteString(boardMCPConfig(&board))
 	if err2 := tmp.Close(); err == nil {
 		err = err2
 	}
@@ -287,19 +342,15 @@ func (s *Spawner) Spawn(o agent.SpawnOptions) (agent.Agent, error) {
 	return p, nil
 }
 
-// start starts a chat process with Args(o) and then extra.
+// start starts a chat process with Args(o) and then extra, through s.Runner when the spawner has
+// one. o.Cwd is the same path inside the Runner's place and out (its folders are mounted at their
+// own paths), so it is looked for here. The Runner may first have to make its place ready (start a
+// container, build its image), within runnerWaitNanos; what it fails with is the start's error,
+// whose text the person reads. The --mcp-config file (o.MCP) is written after the Runner's
+// Command, before the process starts.
 func (s *Spawner) start(o agent.SpawnOptions, extra ...string) (*proc, error) {
 	if _, err := os.Stat(o.Cwd); err != nil {
 		return nil, agent.ErrFolderMissing
-	}
-	bin := s.Bin
-	if bin == "" {
-		bin = "claude"
-	}
-	if o.MCP != nil {
-		if err := s.writeMCPConfig(o); err != nil {
-			return nil, err
-		}
 	}
 	p := &proc{
 		events:   make(chan agent.Event, 1024),
@@ -316,19 +367,39 @@ func (s *Spawner) start(o agent.SpawnOptions, extra ...string) (*proc, error) {
 		bgLive:   map[string]bool{},
 		bgKnown:  map[string]bool{},
 	}
-	cmd := exec.Command(bin, append(s.Args(o), extra...)...)
-	cmd.Dir = o.Cwd
-	cmd.Env = append(os.Environ(), "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1") // chats neither read nor write auto-memory
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(runnerWaitNanos.Load()))
+	// Chats neither read nor write auto-memory. On the host: cmd.Dir = o.Cwd and the environment
+	// this one's plus that; with a Runner both are the Runner's.
+	cmd, run, err := s.command(ctx, o.Cwd, []string{"CLAUDE_CODE_DISABLE_AUTO_MEMORY=1"}, append(s.Args(o), extra...)...)
+	cancel() // it bounds the Runner's preparation only, not the process
+	if err != nil {
+		return nil, err
+	}
+	// The --mcp-config file is written only once the Runner has its place: an account that was
+	// removed (its folder deleted) fails Command, and must not have its MCP folder made again.
+	if o.MCP != nil {
+		if err := s.writeMCPConfig(o); err != nil {
+			agent.ReleaseRun(run) // never started
+			return nil, err
+		}
+	}
 	cmd.Stderr = &cappedWriter{buf: p.stderr, max: stderrCap}
 	stdin, err1 := cmd.StdinPipe()
 	stdout, err2 := cmd.StdoutPipe()
 	if err := errors.Join(err1, err2); err != nil {
+		agent.ReleaseRun(run)
 		return nil, err
 	}
+	// In a registered group of its own on the host, so stopping the server ends it. With a Runner
+	// this is the client that runs the process in the Runner's place (`docker exec`); the process
+	// itself is ended there by the run's Kill. Once started, the run is always ended by its Kill
+	// (p.kill, at the read loop's end whatever ended the process); a run never started is released.
 	if err := agent.StartGroup(cmd); err != nil {
+		agent.ReleaseRun(run)
 		return nil, err
 	}
 	p.cmd = cmd
+	p.run = run
 	p.stdin = stdin
 	// The SDK's initialize request: a model-written progress line per subagent
 	// (task_progress.summary) and forwarded subagent text. It is written before the read loop
@@ -436,7 +507,12 @@ func (p *proc) readLoop(stdout io.Reader) {
 	io.Copy(io.Discard, stdout)
 	err := p.cmd.Wait()
 	// Whatever ended the process (Close, a kill, its own exit), what it started does not outlive
-	// it. The groups are forgotten only after that, when they are empty.
+	// it. The groups are forgotten only after that, when they are empty. A Runner's process and
+	// its detached shells are in the Runner's place, not in this machine's process table, so
+	// Adopt never finds them and EndTree does not reach them: the run's Kill, which ends
+	// everything tagged with the run's id there, stands in for EndTree for them. It is called
+	// first, and here also when the process ended by itself (its shells may still run).
+	p.kill()
 	agent.EndTree(p.cmd, time.Duration(endGraceNanos.Load()))
 	agent.Exited(p.cmd)
 	close(p.done)
@@ -540,6 +616,13 @@ func (p *proc) Interrupt() error {
 // killed if the process has not exited after 3 s. Once the process has exited, the read loop
 // ends what is left of its tree (EndTree). A second Close does nothing.
 //
+// A Runner's process: the shells it detaches are in the Runner's place, where the walk of this
+// machine's process table does not see them, so the adopting above finds nothing for it. When the
+// process has not exited within the grace, the run's Kill ends it and all of its run there first,
+// and then the host's client process is killed as above. The read loop's end calls the run's
+// Kill too (whatever ended the process); it is called once (p.kill), and an error of it is not
+// looked at: the host process is ended regardless.
+//
 // A write the process does not read (a Send larger than the pipe takes, to a process that is
 // stuck) is not waited for beyond writeGrace: stdin is then closed under it, which fails that
 // write and so returns its Send.
@@ -571,11 +654,30 @@ func (p *proc) closeNow() {
 	select {
 	case <-p.done:
 	case <-time.After(time.Duration(closeGraceNanos.Load())):
+		// In the Runner's place first: ending the client does not end the process there. Once it
+		// has, the client usually exits by itself; it is killed only if it has not.
+		p.kill()
+		select {
+		case <-p.done:
+			return
+		default:
+		}
 		if !agent.SignalGroup(p.cmd, syscall.SIGKILL) {
 			p.cmd.Process.Kill()
 		}
 	}
 }
+
+// kill calls the run's Kill (where the Runner runs the process: it and everything of its run),
+// once for the process whoever asks first; a second caller waits for the first call to return.
+// Best effort: its error is ignored. Nothing on the host, where Kill is nil.
+func (p *proc) kill() {
+	p.killing.Do(func() { killRun(p.run) })
+}
+
+// runnerWaitNanos bounds a Runner's preparation of its place before a chat process can start
+// (a container's start, its image's build the first time). Atomic so tests can shorten it.
+var runnerWaitNanos atomic.Int64
 
 // closeGraceNanos is how long Close waits for the process to exit by itself before it kills it.
 // Atomic so tests can shorten it without racing the goroutines of earlier closes.
@@ -590,6 +692,7 @@ var writeGraceNanos atomic.Int64
 var endGraceNanos atomic.Int64
 
 func init() {
+	runnerWaitNanos.Store(int64(5 * time.Minute))
 	closeGraceNanos.Store(int64(3 * time.Second))
 	writeGraceNanos.Store(int64(time.Second))
 	endGraceNanos.Store(int64(2 * time.Second))

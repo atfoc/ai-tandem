@@ -1,7 +1,8 @@
 // Package defaults keeps the sticky per-group defaults for new chats: the agent, the folder (for
-// all agents), the model and effort (per agent) and the subagent settings (for all agents). A
-// group that has no value of its own takes the ungrouped group's. They are this server's own:
-// nothing is kept for another server.
+// all agents), the model and effort (per agent kind: each Claude account has its own, apart from
+// the computer's Claude Code) and the subagent settings (for all agents). A group that has no
+// value of its own takes the ungrouped group's. They are this server's own: nothing is kept for
+// another server.
 package defaults
 
 import (
@@ -13,12 +14,13 @@ import (
 )
 
 // AgentOrder is the fixed order agents are offered in, everywhere: Claude, Cursor, then pi.
-// It never depends on what was used last.
+// It never depends on what was used last. The Claude accounts come after it (usable.Set.List).
 var AgentOrder = []model.AgentKind{model.Claude, model.Cursor, model.Pi}
 
 // Agent returns the agent a new chat in group g starts with: the group's, then the ungrouped
-// group's, then the first of AgentOrder. A kind not in usable is skipped at every step. usable
-// nil = all of AgentOrder. "" when none fits.
+// group's, then the first of AgentOrder. A kind not in usable is skipped at every step, so a
+// stored Claude account that was removed or cannot be used now falls back. usable nil = all of
+// AgentOrder (and no account). "" when none fits.
 func Agent(d model.Defaults, g string, usable []model.AgentKind) model.AgentKind {
 	if usable == nil {
 		usable = AgentOrder
@@ -32,7 +34,8 @@ func Agent(d model.Defaults, g string, usable []model.AgentKind) model.AgentKind
 	return ""
 }
 
-// Resolve returns the folder, model and effort for a new chat of agent a in group g.
+// Resolve returns the folder, model and effort for a new chat of agent a in group g. The model and
+// effort are a's own: a Claude account's kind is a key apart from model.Claude's.
 // fallbackCwd is the server's default folder, which also stands in for a stored folder that is
 // no longer there; cat is the agent's catalog (its Default is the last resort). a == "" gives
 // the folder only.

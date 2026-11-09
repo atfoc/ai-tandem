@@ -128,7 +128,8 @@ function Tools({ c, chatId, ...p }: ToolbarProps & { c: ChatView }) {
   const gone = useStore((s) => !!s.gone[chatId]);
   const frozen = sendOff(where) || gone;
   const usable = useStore((s) => usableAgents(s, where.server));
-  const reason = (agentOpen(c) || frozen) && !!toolbarLine(where, usable, c, gone).text; // the line under the controls lets the row wrap
+  const aliases = useStore((s) => s.aliases[where.server]);
+  const reason = (agentOpen(c) || frozen) && !!toolbarLine(where, usable, c, gone, aliases).text; // the line under the controls lets the row wrap
   const frozenWhy = gone ? goneText(where.name) : notConnectedLine(where.name);
   const serverKey = useServerChip(c), agentKey = useAgentChip(c);
   const [room, setRoom] = useState<{ w: number; gap: number } | null>(null);

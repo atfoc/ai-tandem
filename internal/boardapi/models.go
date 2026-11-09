@@ -18,7 +18,8 @@ import (
 //
 // What a spawn uses for what it omits is the caller's own: the chat's for the chat's agent, and
 // for a subagent its own agent, model and effort (caller.Kind, Model and Effort), which the
-// answer then calls "your" where it calls the chat's "this chat's".
+// answer then calls "your" where it calls the chat's "this chat's". The answer names the agent as
+// agentLabel does; that label is the a of the functions that build its lines.
 func (r *Relay) listSubagentModels(caller chats.Caller, args json.RawMessage) (text string, isErr bool) {
 	var p struct {
 		Agent  string `json:"agent"`
@@ -31,12 +32,13 @@ func (r *Relay) listSubagentModels(caller chats.Caller, args json.RawMessage) (t
 	}
 	kind := caller.Kind
 	if p.Agent != "" {
-		switch model.AgentKind(p.Agent) {
-		case model.Claude, model.Cursor, model.Pi:
-			kind = model.AgentKind(p.Agent)
-		default:
+		if !model.ValidKind(model.AgentKind(p.Agent)) {
 			return fmt.Sprintf("unknown agent %q", p.Agent), true
 		}
+		kind = model.AgentKind(p.Agent)
+	}
+	if why := r.accountRefusal(kind); why != "" {
+		return why, true
 	}
 	cat := r.Chats.SpawnCatalog(kind)
 	_, dModel, dEffort, err := r.Chats.SpawnDefaultsFor(caller.Meta.ID, caller.SID, kind)
@@ -44,8 +46,9 @@ func (r *Relay) listSubagentModels(caller chats.Caller, args json.RawMessage) (t
 		return err.Error(), true
 	}
 	w := ownWords(caller.Subagent)
+	a := r.agentLabel(kind)
 	if cat == nil {
-		return strings.Join(unknownListLines(kind, kind == caller.Kind, dModel, dEffort, w), "\n"), false
+		return strings.Join(unknownListLines(a, kind == caller.Kind, dModel, dEffort, w), "\n"), false
 	}
 
 	matches := matchModels(cat.Models, p.Filter)
@@ -55,22 +58,32 @@ func (r *Relay) listSubagentModels(caller chats.Caller, args json.RawMessage) (t
 	var body []string
 	switch listForm(n, k, matches, filter != "") {
 	case formRows:
-		header, body = rowsAnswer(kind, n, k, filter, matches)
+		header, body = rowsAnswer(a, n, k, filter, matches)
 	case formWholeList:
-		header, body = rowsAnswer(kind, n, k, filter, cat.Models)
+		header, body = rowsAnswer(a, n, k, filter, cat.Models)
 	case formNoneMatch:
-		header = noneMatchAnswer(kind, n, filter)
+		header = noneMatchAnswer(a, n, filter)
 	case formOverview:
-		header, body = overviewAnswer(kind, n, filter, matches, cat.Models)
+		header, body = overviewAnswer(a, n, filter, matches, cat.Models)
 	case formIDsOnly:
-		header, body = idsOnlyAnswer(kind, n, filter, matches)
+		header, body = idsOnlyAnswer(a, n, filter, matches)
 	}
 	lines := append([]string{
 		header,
-		defaultsLine(kind, cat, dModel, dEffort),
+		defaultsLine(a, cat, dModel, dEffort),
 		effortRuleLine(caller.Effort, w),
 	}, body...)
 	return strings.Join(lines, "\n"), false
+}
+
+// agentLabel is how a list_subagent_models answer names the agent kind a: by its kind, and a
+// Claude account by its kind and its name, as tools/list names it (claude:a_k3j2m9x0 ("Claude ·
+// Work")).
+func (r *Relay) agentLabel(a model.AgentKind) string {
+	if name := r.Chats.AgentName(a); model.IsAlias(a) && name != string(a) {
+		return fmt.Sprintf("%s (%q)", a, name)
+	}
+	return string(a)
 }
 
 // modelListCap is the most models list_subagent_models lists as rows; tunable after real use.
@@ -127,7 +140,7 @@ func severalPrefixes(models []model.CatalogModel) bool {
 
 // rowsAnswer is the header and the body of an answer that lists rows as model rows: the k matches
 // of the filter, or the whole list when k is 0.
-func rowsAnswer(a model.AgentKind, n, k int, filter string, rows []model.CatalogModel) (header string, body []string) {
+func rowsAnswer(a string, n, k int, filter string, rows []model.CatalogModel) (header string, body []string) {
 	for _, m := range rows {
 		body = append(body, modelRow(m))
 	}
@@ -136,13 +149,13 @@ func rowsAnswer(a model.AgentKind, n, k int, filter string, rows []model.Catalog
 
 // noneMatchAnswer is the header of the answer for a filter that matches none of the n models of a
 // list over the cap. It has no body.
-func noneMatchAnswer(a model.AgentKind, n int, filter string) string {
+func noneMatchAnswer(a string, n int, filter string) string {
 	return fmt.Sprintf("%s: none of the %s match filter %q. Call again without filter for an overview of the list.", a, countModels(n), filter)
 }
 
 // overCapLead begins the header of an answer whose matches, among the n models of agent a, are
 // more than the cap. An empty filter is no filter.
-func overCapLead(a model.AgentKind, n, k int, filter string) string {
+func overCapLead(a string, n, k int, filter string) string {
 	if filter == "" {
 		return fmt.Sprintf("%s: %s, more than %d, so ", a, countModels(n), modelListCap)
 	}
@@ -155,7 +168,7 @@ func overCapLead(a model.AgentKind, n, k int, filter string) string {
 // cannot isolate its models: "openai" matches the ids under "openrouter/openai", a label
 // "OpenAI GPT" under another prefix, and the ids under "OpenAI". The group without a prefix
 // always lists its ids: a filter cannot name it.
-func overviewAnswer(a model.AgentKind, n int, filter string, matches, all []model.CatalogModel) (header string, body []string) {
+func overviewAnswer(a string, n int, filter string, matches, all []model.CatalogModel) (header string, body []string) {
 	what := "Models"
 	if filter != "" {
 		what = "Matches"
@@ -184,7 +197,7 @@ func overviewAnswer(a model.AgentKind, n int, filter string, matches, all []mode
 
 // idsOnlyAnswer is the header and the body of an answer that lists matches by id alone, in
 // catalog order.
-func idsOnlyAnswer(a model.AgentKind, n int, filter string, matches []model.CatalogModel) (header string, body []string) {
+func idsOnlyAnswer(a string, n int, filter string, matches []model.CatalogModel) (header string, body []string) {
 	for _, m := range matches {
 		body = append(body, m.ID)
 	}
@@ -226,7 +239,7 @@ func countModels(n int) string {
 
 // modelsHeader is the first line of a known list: how many models agent a has, and with a filter
 // how many of them (k of n) match it.
-func modelsHeader(a model.AgentKind, n, k int, filter string) string {
+func modelsHeader(a string, n, k int, filter string) string {
 	words := strings.Fields(filter)
 	switch f := strings.Join(words, " "); {
 	case len(words) == 0:
@@ -240,7 +253,7 @@ func modelsHeader(a model.AgentKind, n, k int, filter string) string {
 
 // defaultsLine says what spawn_subagent uses for agent a when model and effort are omitted:
 // dModel and dEffort as chats.Manager.SpawnDefaults resolved them against the known list cat.
-func defaultsLine(a model.AgentKind, cat *model.Catalog, dModel, dEffort string) string {
+func defaultsLine(a string, cat *model.Catalog, dModel, dEffort string) string {
 	if dModel == "" {
 		return fmt.Sprintf("Model omitted -> no model is named, so %s uses its own default.", a)
 	}
@@ -301,7 +314,7 @@ func modelRow(m model.CatalogModel) string {
 // caller's own agent, the caller's model and effort (w says whose that is); for another agent
 // never those, but the model and effort last picked for a chat of that agent (never an effort
 // without a model), or none.
-func unknownListLines(a model.AgentKind, same bool, dModel, dEffort string, w whose) []string {
+func unknownListLines(a string, same bool, dModel, dEffort string, w whose) []string {
 	var d string
 	switch {
 	case dModel == "" && dEffort == "":

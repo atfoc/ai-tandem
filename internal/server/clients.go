@@ -113,6 +113,16 @@ var ClientRoutes = []string{
 	"POST /api/library/{server}/prompts",
 	"PATCH /api/library/{server}/prompts/{id}",
 	"DELETE /api/library/{server}/prompts/{id}",
+	"GET /api/aliases",
+	"POST /api/aliases",
+	"PATCH /api/aliases/{id}",
+	"DELETE /api/aliases/{id}",
+	"POST /api/aliases/{id}/restart",
+	"POST /api/aliases/{id}/stop",
+	"POST /api/aliases/{id}/login",
+	"POST /api/aliases/{id}/login/code",
+	"DELETE /api/aliases/{id}/login",
+	"POST /api/aliases/{id}/logout",
 }
 
 // helloRoute is the one route that is answered without the secret, and the one a client may call

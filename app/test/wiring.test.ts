@@ -50,7 +50,7 @@ test("the server picker is gone from the toolbar: the server is a chip that open
   assert.ok(chip.includes("const fixed = serverFixed(c);"));
   // a list that stays for the others: a disabled option takes no pick, by the press or by Enter
   assert.ok(composer.includes("if (!o || o.disabled) return;"));
-  assert.ok(composer.includes("disabled={o.disabled}") && composer.includes("useControlRef(o.disabled ? o.note : undefined)"), "a disabled option says why");
+  assert.ok(composer.includes("disabled={o.disabled}") && composer.includes("const why = o.disabled ? o.reason ?? o.note : undefined;") && composer.includes("useControlRef(why)"), "a disabled option says why (its reason, else its note)");
 });
 
 test("an agent pick sends the agent alone and takes the chat the server answers with", async () => {
@@ -78,13 +78,13 @@ test("each choice is drawn once, in the toolbar's row or in its popup, and the r
   const pick = choices.slice(choices.indexOf("export function AgentPick("), choices.indexOf("export function useAgentChip("));
   assert.ok(pick.length > 0 && !pick.includes("agent-reason"));
   // (shown while the agent can be chosen, and whenever the chat takes no change: the line then says that its server is not connected, or no longer has it)
-  assert.ok(toolbar.includes("const reason = (agentOpen(c) || frozen) && !!toolbarLine(where, usable, c, gone).text;") && toolbar.includes("{reason ? <AgentReason c={c} /> : null}"));
+  assert.ok(toolbar.includes("const reason = (agentOpen(c) || frozen) && !!toolbarLine(where, usable, c, gone, aliases).text;") && toolbar.includes("{reason ? <AgentReason c={c} /> : null}"));
   assert.ok(toolbar.indexOf("<AgentReason ") > toolbar.indexOf("<ContextMeter "), "after the row's controls");
 });
 
 test("the agent choice offers the usable agents alone; one the server lacks is marked and its line says why", () => {
   // the component takes options, mark and line from these
-  assert.ok(/agentChoiceOn\(w, usable, c\.agent\)/.test(choices) && /toolbarLine\(w, usable, c, gone\)/.test(choices) && /usableAgents\(s, w\.server\)/.test(choices));
+  assert.ok(/agentChoiceOn\(w, usable, c\.agent, list\)/.test(choices) && /toolbarLine\(w, usable, c, gone, list\)/.test(choices) && /usableAgents\(s, w\.server\)/.test(choices));
   assert.ok(!choices.includes("AGENT_ORDER"), "ChatChoices.tsx lists no fixed agents");
 });
 
@@ -108,8 +108,8 @@ test("a Send refused for the agent keeps the typed text: the chat is not read ag
 
 test("a chat with no agent: its header and its empty thread name no agent, say why, and offer nothing to send", () => {
   const empty = file("screens/chat/Empty.tsx");
-  // the header: a name where the agent's would be, so the line starts with no separator
-  assert.ok(/\{agentLabel\(c\.agent\)\}[\s\S]{0,200}\{c\.cwd \? <> · /.test(file("screens/chat/Header.tsx")));
+  // the header: a name where the agent's would be, so the line starts with no separator; an account's badge stands for that name (AccountBadge.tsx)
+  assert.ok(/\{badge \? null : agentLabel\(c\.agent\)\}[\s\S]{0,200}\{c\.cwd \? <>\{badge && !c\.board \? "" : " · "\}/.test(file("screens/chat/Header.tsx")));
   // the empty thread: the title, the reason in place of what an agent's chat says, the hint, and no suggestions
   assert.ok(empty.includes('tid("empty-title")') && empty.includes("{agentLabel(agent)}</Text>"));
   assert.ok(/\{reason\s+\? <Text \{\.\.\.tid\("empty-reason"\)\}[^>]*>\{reason\}<\/Text>\s+: c\.board/.test(empty));
@@ -229,7 +229,7 @@ test("a chat its server no longer has takes no Send and no change, and the Send,
   // the page knows it by the chat's key (store.gone), not by a field of the chat
   assert.ok(composerTsx.includes("const left = useStore((s) => !!s.gone[chatId]); // its server no longer has the chat"));
   assert.ok(composerTsx.includes("sendTitleFor(sendTitleOn(where, usable, c, blocked, left), names.send)} disabled={blocked || off || left || sending ||"));
-  assert.ok(choices.includes("const gone = useStore((s) => !!s.gone[c.id]);") && choices.includes("const line = toolbarLine(w, usable, c, gone);"));
+  assert.ok(choices.includes("const gone = useStore((s) => !!s.gone[c.id]);") && choices.includes("const line = toolbarLine(w, usable, c, gone, list);"));
   assert.ok(!composer.includes("sendGone") && !core("logic/chatserver.ts").includes("sendGone"));
 });
 

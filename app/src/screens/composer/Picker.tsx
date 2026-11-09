@@ -1,8 +1,10 @@
 // The Model, Effort and Agent pickers (the old page's Composer.tsx Picker): a chip that opens a list. `searchable` (Model) adds the search field and
 // the provider grouping; both modes share the keyboard highlight, the listbox / option roles and the single open list (the toolbar keeps
 // which is open). The list is a popover over the chip on the wide layouts and a sheet on the phone (Overlay). `disabled` (a change is being
-// saved): the chip opens nothing and keeps the focus a pick gave it. An option that is disabled is listed with its note as the reason and
-// takes no pick.
+// saved): the chip opens nothing and keeps the focus a pick gave it. An option that is disabled is listed with its note (or its `reason`) as
+// the reason and takes no pick. An option may draw its own text (`content`: a Claude account's name, chip, note and reason) and have one
+// button beside it (`action`: Log in…, Restart container), reached by Tab or a press; ↑ ↓ move over every row, and Enter on a disabled one
+// does nothing.
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { Pressable, ScrollView, StyleSheet, TextInput, View, useWindowDimensions, type TextStyle, type ViewProps } from "react-native";
 
@@ -22,7 +24,15 @@ import { Caret, ChipName, TChip, UNTIL_FIRST_MESSAGE } from "./Chip.tsx";
 // (react-native's Role list has no listbox; react-native-web draws any role it is given)
 const LISTBOX = "listbox" as unknown as NonNullable<ViewProps["role"]>;
 
-export type PickerOption = { id: string; label: string; note?: string; provider?: string; icon?: ReactNode; disabled?: boolean };
+export type PickerOption = {
+  id: string; label: string; note?: string; provider?: string; icon?: ReactNode; disabled?: boolean;
+  /** Why a disabled option takes no pick (its title; else its note). */
+  reason?: string;
+  /** Drawn in place of the label and the note. */
+  content?: ReactNode;
+  /** One button beside the row, not greyed with it. */
+  action?: { label: string; onPress(): void };
+};
 
 export type PickerProps = {
   kind: string;
@@ -149,7 +159,7 @@ export function Picker({ kind, label, title, prefix, icon, hint = UNTIL_FIRST_ME
         <Caret />
       </TChip>
       <Overlay open={open} onClose={() => onOpenChange(false)} label={title} kind="popover" anchor={chip} up testID="picker">
-        <View style={styles.list} role={LISTBOX} aria-label={title}>
+        <View style={[styles.list, options.some((o) => o.action) && styles.wide]} role={LISTBOX} aria-label={title}>
           <MenuHead>{title}</MenuHead>
           {searchable && (
             <View style={styles.search}>
@@ -192,32 +202,61 @@ function PickRow({ id, o, on, active, searchable, onPress, onFocus, onLayout }: 
   id: string; o: PickerOption; on: boolean; active: boolean; searchable: boolean; onPress(): void; onFocus(focused: boolean): void; onLayout(y: number, h: number): void;
 }) {
   const { tokens: t } = useTheme();
-  const ref = useControlRef(o.disabled ? o.note : undefined);
-  return (
-    <Pressable ref={ref} nativeID={id} {...tid("pick-row", { optionId: o.id, model: searchable ? o.id : undefined })} role="option" aria-selected={on} disabled={o.disabled}
-      accessibilityLabel={o.label} onPress={onPress} onFocus={() => onFocus(true)} onBlur={() => onFocus(false)}
-      onLayout={(e) => onLayout(e.nativeEvent.layout.y, e.nativeEvent.layout.height)}
+  const why = o.disabled ? o.reason ?? o.note : undefined;
+  const ref = useControlRef(why);
+  const row = (
+    <Pressable ref={ref} nativeID={id} {...tid("pick-row", { optionId: o.id, model: searchable ? o.id : undefined, disabled: o.disabled || undefined })} role="option" aria-selected={on} aria-disabled={o.disabled || undefined} disabled={o.disabled}
+      accessibilityLabel={why ? `${o.label}, ${why}` : o.label} onPress={onPress} onFocus={() => onFocus(true)} onBlur={() => onFocus(false)}
+      onLayout={o.action ? undefined : (e) => onLayout(e.nativeEvent.layout.y, e.nativeEvent.layout.height)}
       style={({ hovered, pressed }: { hovered?: boolean; pressed: boolean }) => [
-        styles.row, { backgroundColor: on || hovered || pressed ? t.accentSoft : active ? t.hover2 : "transparent" },
-        active && { boxShadow: `inset 0 0 0 2px ${t.accent}` }, o.disabled && styles.disabled, webStyle({ cursor: o.disabled ? "default" : "pointer" }),
+        styles.row, o.action && styles.rowWithAction, { backgroundColor: on || ((hovered || pressed) && !o.disabled) ? t.accentSoft : active ? t.hover2 : "transparent" },
+        active && { boxShadow: `inset 0 0 0 2px ${t.accent}` }, webStyle({ cursor: o.disabled ? "default" : "pointer" }),
       ]}>
-      {o.icon}
-      <View style={styles.text}>
-        <Text numberOfLines={undefined} style={styles.label}>{o.label}</Text>
-        {o.note ? <Text size={11} tone="faint">{o.note}</Text> : null}
+      <View style={[styles.rowInner, o.disabled && styles.disabled]}>
+        {o.icon}
+        <View style={styles.text}>
+          {o.content ?? <>
+            <Text numberOfLines={undefined} style={styles.label}>{o.label}</Text>
+            {o.note ? <Text size={11} tone="faint">{o.note}</Text> : null}
+          </>}
+        </View>
+        {on ? <Text style={styles.tick}>✓</Text> : null}
       </View>
-      {on ? <Text style={styles.tick}>✓</Text> : null}
+    </Pressable>
+  );
+  if (!o.action) return row;
+  return (
+    <View style={styles.rowWrap} onLayout={(e) => onLayout(e.nativeEvent.layout.y, e.nativeEvent.layout.height)}>
+      {row}
+      <RowAction label={o.action.label} onPress={o.action.onPress} onFocus={onFocus} />
+    </View>
+  );
+}
+
+/** The one button beside a row (Log in…, Restart container): a small bordered button, never greyed with the row. Its focus is a row's for
+ *  the list's keys: Enter is its own press, not a pick. */
+function RowAction({ label, onPress, onFocus }: { label: string; onPress(): void; onFocus(focused: boolean): void }) {
+  const { tokens: t } = useTheme();
+  return (
+    <Pressable {...tid("pick-action")} role="button" accessibilityLabel={label} onPress={onPress} onFocus={() => onFocus(true)} onBlur={() => onFocus(false)}
+      style={({ hovered, pressed }: { hovered?: boolean; pressed: boolean }) => [styles.action, { borderColor: t.line2, backgroundColor: hovered || pressed ? t.panel : t.bg }, webStyle({ cursor: "pointer" })]}>
+      <Text size={11.5} weight="600" numberOfLines={1}>{label}</Text>
     </Pressable>
   );
 }
 
 const styles = StyleSheet.create({
   list: { alignSelf: "stretch", minWidth: 220, maxWidth: 320 },
+  wide: { minWidth: 300, maxWidth: 400 }, // (a row with a button beside it: a Claude account's Log in…)
   prefix: { marginRight: 2 },
   search: { flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 4, paddingTop: 2, paddingBottom: 4 },
   field: { flex: 1, minWidth: 0, fontSize: 12, borderWidth: 1, borderRadius: 6, paddingVertical: 5, paddingHorizontal: 8, lineHeight: BASE_SIZE },
   clear: { width: 20, height: 20, alignItems: "center", justifyContent: "center", borderRadius: 5 },
-  row: { flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: 6, paddingLeft: 10, paddingRight: 8, borderRadius: 5, alignSelf: "stretch", minHeight: 30 },
+  row: { paddingVertical: 6, paddingLeft: 10, paddingRight: 8, borderRadius: 5, alignSelf: "stretch", minHeight: 30, justifyContent: "center" },
+  rowInner: { flexDirection: "row", alignItems: "center", gap: 6 },
+  rowWrap: { flexDirection: "row", alignItems: "center", gap: 6, alignSelf: "stretch" },
+  rowWithAction: { flex: 1, minWidth: 0 },
+  action: { flexShrink: 0, borderWidth: 1, borderRadius: 6, paddingVertical: 3, paddingHorizontal: 8, marginRight: 4 },
   text: { flex: 1, minWidth: 0 },
   label: { flexShrink: 1 },
   tick: { flexShrink: 0 },

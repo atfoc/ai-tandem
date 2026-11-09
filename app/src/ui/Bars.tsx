@@ -48,6 +48,8 @@ export type ContentBarProps = {
   /** The place or the state, at 13 pt. */
   sub?: string;
   subTone?: WordTone;
+  /** A mark drawn on the sub's line before the sub text (a chat's account badge). */
+  subLead?: ReactNode;
   /** A state word (a `StateWord`) drawn on the sub's line after the sub text; it wraps to the next line rather than being cut, and
    *  stands alone when there is no sub. */
   state?: ReactNode;
@@ -61,7 +63,7 @@ export type ContentBarProps = {
   subTestID?: string;
 };
 
-export function ContentBar({ back, leading, title, titleMuted, sub, subTone, state, onTitlePress, actions, testID = TID.contentBar, titleTestID = TID.barTitle, subTestID = TID.barSub }: ContentBarProps) {
+export function ContentBar({ back, leading, title, titleMuted, sub, subTone, subLead, state, onTitlePress, actions, testID = TID.contentBar, titleTestID = TID.barTitle, subTestID = TID.barSub }: ContentBarProps) {
   const t = useTokens();
   const subText = sub ? <Text {...tid(subTestID)} size={TYPE.secondary} numberOfLines={2} style={{ color: subTone ? wordColour(t, subTone) : t.muted }}>{sub}</Text> : null;
   return (
@@ -71,7 +73,7 @@ export function ContentBar({ back, leading, title, titleMuted, sub, subTone, sta
       <Pressable disabled={!onTitlePress} onPress={onTitlePress} accessibilityRole={onTitlePress ? "button" : "header"}
         accessibilityLabel={sub ? `${title}, ${sub}` : title} style={[styles.titles, !back && styles.titlesAlone]}>
         <BarTitle title={title} muted={titleMuted} testID={titleTestID} />
-        {state ? <View style={styles.subLine}>{subText}{state}</View> : subText}
+        {state || subLead ? <View style={styles.subLine}>{subLead}{subText}{state}</View> : subText}
       </Pressable>
       {actions ? <View style={styles.actions}>{actions}</View> : null}
     </View>

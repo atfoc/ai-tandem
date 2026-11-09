@@ -32,11 +32,13 @@ import (
 )
 
 type Deps struct {
-	Store      *store.Store
-	Bridge     *editorbridge.Bridge
-	Boards     *boards.Service
-	Spawners   map[model.AgentKind]agent.Spawner
-	Namers     map[model.AgentKind]Namer // per-agent auto namers; a missing entry means chats of that agent are not named
+	Store    *store.Store
+	Bridge   *editorbridge.Bridge
+	Boards   *boards.Service
+	Spawners map[model.AgentKind]agent.Spawner
+	Namers   map[model.AgentKind]Namer // per-agent auto namers; a missing entry means chats of that agent are not named
+	// Accounts are the Claude accounts, each an agent kind of its own (accounts.go); nil = none.
+	Accounts   Accounts
 	DefaultCwd string
 	MCPURL     string // the fixed MCP endpoint handed to every chat, http://localhost:6006/mcp
 	// Agents is the list of the agents this server can use: a chat is made, given an agent or
@@ -818,7 +820,7 @@ func (m *Manager) catalog(a model.AgentKind) *model.Catalog {
 			cat = &cp
 		}
 	})
-	if cat == nil && a == model.Claude {
+	if cat == nil && model.IsClaude(a) {
 		cp := claude.Catalog
 		cat = &cp
 	}
@@ -829,7 +831,7 @@ func (m *Manager) catalog(a model.AgentKind) *model.Catalog {
 // catalog lists the model without efforts; else the stored effort (also for a model the catalog
 // does not know, and always for Cursor and pi).
 func (m *Manager) effortFor(a model.AgentKind, modelID, effort string) string {
-	if a != model.Claude {
+	if !model.IsClaude(a) {
 		return effort
 	}
 	if cm, _ := findModel(m.catalog(a), modelID); cm != nil && len(cm.Efforts) == 0 {
@@ -884,7 +886,7 @@ func (m *Manager) CreateChat(n NewChat) (model.ChatView, error) {
 	}
 	none := model.ChatView{}
 	a := n.Agent
-	if a != "" && a != model.Claude && a != model.Cursor && a != model.Pi {
+	if a != "" && !model.ValidKind(a) {
 		return none, fmt.Errorf("unknown agent %q", a)
 	}
 	if n.ID != "" && !chatID.MatchString(n.ID) {
@@ -983,7 +985,7 @@ func (m *Manager) addChat(meta model.ChatMeta) (*Chat, error) {
 	m.extrasMu.Lock()
 	meta.Token = m.uniqueTokenLocked()
 	m.extrasMu.Unlock()
-	if meta.Agent == model.Claude || meta.Agent == model.Pi {
+	if model.IsClaude(meta.Agent) || meta.Agent == model.Pi {
 		meta.SessionID = uuid() // the app assigns it; pi starts/resumes with it
 	}
 	fail := func(err error) (*Chat, error) {
@@ -1064,7 +1066,7 @@ func (m *Manager) workDir(path string) (string, error) {
 // sessionFor is the session id a chat object gets with the agent a: one of its own for Claude
 // and pi, none for Cursor, which makes its own, and none without an agent.
 func sessionFor(a model.AgentKind) string {
-	if a == model.Claude || a == model.Pi {
+	if model.IsClaude(a) || a == model.Pi {
 		return uuid()
 	}
 	return ""
@@ -1108,7 +1110,10 @@ func folderMissingText(cwd string) string {
 
 // spawn starts the chat's agent if it has none: a resume when the chat is locked, else a new
 // session. c.mu held; only Send calls it, and not for a chat that still has its fork source and
-// no process (see spawnFork).
+// no process (see spawnFork). A Claude account's start is refused while accountGate refuses it,
+// and the refusal shows as a failed start does. The account's spawner is called with c.mu held:
+// its callers made the container ready before they took it (prepare), so its own wait for the
+// container is short.
 func (m *Manager) spawn(c *Chat, out *outbox) error {
 	tr, err := m.trOf(c, out)
 	if err != nil {
@@ -1122,8 +1127,13 @@ func (m *Manager) spawn(c *Chat, out *outbox) error {
 	if c.ag != nil {
 		return nil
 	}
+	if err := m.accountGate(c.meta.Agent, c.meta.Cwd); err != nil {
+		// Send refused it before; a retry's start (retrychat.go) shows it on the chat here.
+		m.spawnFailed(c, tr, err, out)
+		return err
+	}
 	opts := m.spawnOptions(c)
-	sp := m.Spawners[c.meta.Agent]
+	sp := m.spawner(c.meta.Agent)
 	if sp == nil {
 		err = fmt.Errorf("no spawner for agent %q", c.meta.Agent)
 	} else {
@@ -1216,13 +1226,18 @@ func (m *Manager) spawnFailed(c *Chat, tr *transcript.Transcript, err error, out
 // chat, or the start: the starting process looks its token up, which locks every chat. Meanwhile
 // the chat is busy (thinking), so a second Send gets ErrBusy; a fork is made only at a finished
 // boundary, through this chat's fork source (see forkEntry). A failed or refused start
-// is shown as a failed spawn is. Only Send calls it, after its own checks.
+// (accountGate's refusal included) is shown as a failed spawn is. Only Send calls it, after its
+// own checks.
 func (m *Manager) spawnFork(c *Chat, out *outbox) error {
 	tr, err := m.trOf(c, out)
 	if err != nil {
 		return err
 	}
-	fk, ok := m.Spawners[c.meta.Agent].(agent.Forker)
+	if err := m.accountGate(c.meta.Agent, c.meta.Cwd); err != nil {
+		m.spawnFailed(c, tr, err, out)
+		return err
+	}
+	fk, ok := m.spawner(c.meta.Agent).(agent.Forker)
 	if !ok {
 		err = errNoForker(c.meta.Agent)
 		m.spawnFailed(c, tr, err, out)
@@ -1526,6 +1541,11 @@ func (m *Manager) SendMessage(id string, t *Target, msg Message) (branch string,
 	if t != nil {
 		return m.sendToBranch(id, *t, msg.Text, msg.Context, msg.References, imgs)
 	}
+	// A message that starts the process on a Claude account waits for the account's container
+	// first, with no lock held (see prepare); a refusal there leaves nothing.
+	if err := m.prepareOf(func() (*Chat, error) { return m.lockCur(id) }, noProcess); err != nil {
+		return "", err
+	}
 	c, err := m.lockCur(id)
 	if err != nil {
 		return "", err
@@ -1542,7 +1562,10 @@ func (m *Manager) SendMessage(id string, t *Target, msg Message) (branch string,
 // chat's other branches do, and ErrChatCap or ErrAppCap that too many chat objects work already
 // (see cap.go). The first message of a chat is refused too while the server cannot use the chat's
 // agent (a *usable.MissingError), or the chat has none (usable.ErrNone, or usable.ErrUnchosen
-// when one can be chosen). A message
+// when one can be chosen); and any message that would start a process on a Claude account, while
+// the account cannot be used or does not have the chat's folder (accountGate's refusal, as it
+// came). Its callers have made the account's container ready before they took c.mu (prepare),
+// and refused the message with the reason it could not be. A message
 // refused so leaves nothing: no item, the draft and what c owes its agent as they were. On a
 // branch and on a fork the first-send effects on the group's defaults never run, and on a branch
 // the auto-naming does not either. The draft cleared is c's own alone, and only the one the
@@ -1593,6 +1616,16 @@ func (m *Manager) sendOn(c *Chat, text, context string, refs []model.Reference, 
 	// may have gone since the chat was made, and a chat made when none was there has no agent.
 	if !c.meta.Locked {
 		if err := m.canStart(c.meta.Agent); err != nil {
+			c.mu.Unlock()
+			m.send(out)
+			return false, err
+		}
+	}
+	// A message that starts a process (c has none: a new chat, a resume, a fork's first start)
+	// on a Claude account starts it only while the account can be used and has c's folder, locked
+	// or not (accountGate). A fixed kind is never refused here.
+	if c.ag == nil {
+		if err := m.accountGate(c.meta.Agent, c.meta.Cwd); err != nil {
 			c.mu.Unlock()
 			m.send(out)
 			return false, err
@@ -1721,7 +1754,7 @@ func (m *Manager) sendOn(c *Chat, text, context string, refs []model.Reference, 
 	m.send(out)
 	// No name is asked for from empty text: a message of images alone has no words to name.
 	if first && name == "" && !userNamed && strings.TrimSpace(text) != "" {
-		if namer := m.Namers[kind]; namer != nil {
+		if namer := m.namer(kind); namer != nil {
 			m.naming.Add(1)
 			go func() {
 				defer m.naming.Done()
@@ -1764,6 +1797,14 @@ func (m *Manager) Configure(id string, req ConfigReq) error { return m.Configure
 // the branch's: the chat's name and group are not in it (see Rename and Move).
 func (m *Manager) ConfigureOf(id, branch string, req ConfigReq) error {
 	var out outbox
+	// A fresh fork's change of model starts its process again (configureFresh): on a Claude
+	// account the container is made ready first, with no lock held (see prepare).
+	if req.Model != "" || req.Effort != "" {
+		lock := func() (*Chat, error) { c, _, err := m.lockBranch(id, branch); return c, err }
+		if err := m.prepareOf(lock, func(c *Chat) bool { return c.meta.Fresh }); err != nil {
+			return err
+		}
+	}
 	c, _, err := m.lockBranch(id, branch)
 	if err != nil {
 		return err
@@ -1777,7 +1818,7 @@ func (m *Manager) ConfigureOf(id, branch string, req ConfigReq) error {
 	if p.InstructionsSent {
 		return fail(ErrLegacy)
 	}
-	if a := req.Agent; a != "" && a != model.Claude && a != model.Cursor && a != model.Pi {
+	if a := req.Agent; a != "" && !model.ValidKind(a) {
 		return fail(fmt.Errorf("unknown agent %q", a))
 	}
 	if req.Agent != "" && (c.meta.Locked || c.top != nil || c.meta.ForkedFrom != "") {

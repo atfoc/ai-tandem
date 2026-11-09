@@ -36,12 +36,15 @@ export type FormSheetProps = {
   guard?: { title?: string; body?: string; saveAndClose?: boolean };
   testID?: string;
   dataSet?: DataSet;
+  /** Save's and the error line's testIDs where a screen's checks know them by other names than `sheet-right` and `form-error`. */
+  saveTestID?: string;
+  errorTestID?: string;
 };
 
 /** How long a sheet over this one takes to be dismissed on iOS (the system's modal dismissal is about 0.3 s). */
 const DISMISS_MS = 400;
 
-export function FormSheet({ open, onClose, title, sub, saveLabel = "Save", canSave, dirty, onSave, error, children, guard, testID = TID.formSheet, dataSet }: FormSheetProps) {
+export function FormSheet({ open, onClose, title, sub, saveLabel = "Save", canSave, dirty, onSave, error, children, guard, testID = TID.formSheet, dataSet, saveTestID, errorTestID = TID.formError }: FormSheetProps) {
   const [asking, setAsking] = useState(false);
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState("");
@@ -64,8 +67,8 @@ export function FormSheet({ open, onClose, title, sub, saveLabel = "Save", canSa
   const head = (
     <>
       <SheetHead title={title} sub={sub} left={{ label: "Cancel", onPress: leave, disabled: busy }}
-        right={{ label: busy ? "Saving…" : saveLabel, strong: true, disabled: !canSave || busy, onPress: () => void save() }} />
-      {shown ? <Text {...tid(TID.formError)} size={TYPE.secondary + 2} tone="danger" accessibilityRole="alert" style={styles.error}>{shown}</Text> : null}
+        right={{ label: busy ? "Saving…" : saveLabel, strong: true, disabled: !canSave || busy, onPress: () => void save(), ...(saveTestID ? { testID: saveTestID } : {}) }} />
+      {shown ? <Text {...tid(errorTestID)} size={TYPE.secondary + 2} tone="danger" accessibilityRole="alert" style={styles.error}>{shown}</Text> : null}
     </>
   );
   return (

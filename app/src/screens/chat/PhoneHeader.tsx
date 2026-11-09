@@ -26,6 +26,7 @@ import { agentColours } from "./colour.ts";
 import { NameInput } from "./Header.tsx";
 import { useNow } from "../subagents/hooks.ts";
 import { headline, treeLabel } from "./headline.ts";
+import { AccountBadge, hasBadge } from "./AccountBadge.tsx";
 import { openChatInfo, takeRename, useRenameRequest } from "./chatinfo.ts";
 import { T1_TID } from "./ids.ts";
 
@@ -50,7 +51,8 @@ export function PhoneHeader({ chatId }: { chatId: string }) {
   const status = headStatus(c, isLegacy(c), statusText(c, boardNames(chatId), now), frozen);
   const named = !c.archived && !isLegacy(c) && !frozen;
   const a = agentColours(t, c.agent);
-  const sub = headline({ chat: c, off, gone, server: serverLabel, boardName, legacy: isLegacy(c), now });
+  const badge = hasBadge(c.agent);
+  const sub = headline({ chat: c, off, gone, server: serverLabel, boardName, legacy: isLegacy(c), now, badge });
   // Chat info when it is there; else the title renames the chat, where it can be renamed
   const info = () => { if (!openChatInfo(chatId) && named) setEditing(true); };
   const wrap = tid("chat-head", { chat: chatId, status: status || undefined, frozen });
@@ -65,6 +67,7 @@ export function PhoneHeader({ chatId }: { chatId: string }) {
   return (
     <View {...wrap}>
       <ContentBar back={<BackButton />} title={chatTitle(c, items)} titleMuted={!c.name} sub={sub.text} subTone={sub.tone} onTitlePress={info}
+        subLead={badge ? <AccountBadge kind={c.agent} size={12} /> : undefined}
         titleTestID="chat-head-name" subTestID="chat-head-sub"
         leading={<View style={[styles.glyph, { backgroundColor: a.soft }]}><AgentGlyph agent={c.agent} size={14} /></View>}
         actions={(

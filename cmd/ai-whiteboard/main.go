@@ -1,6 +1,7 @@
 // ai-whiteboard: a server that keeps Excalidraw boards and chats with coding agents (Claude
-// Code, Cursor, pi) that read and edit them. It serves no page: the desktop app is its client,
-// over HTTPS with a secret, on this machine as on any other.
+// Code, Cursor, pi, and further Claude accounts, each in a Docker container of its own) that read
+// and edit them. It serves no page: the desktop app is its client, over HTTPS with a secret, on
+// this machine as on any other.
 //
 // Commands:
 //
@@ -41,11 +42,13 @@ import (
 	"time"
 
 	"ai-whiteboard/internal/agent"
+	"ai-whiteboard/internal/aliases/aliaschats"
 	"ai-whiteboard/internal/app"
 	"ai-whiteboard/internal/boardapi"
 	"ai-whiteboard/internal/boards"
 	"ai-whiteboard/internal/chats"
 	"ai-whiteboard/internal/claude"
+	"ai-whiteboard/internal/container"
 	"ai-whiteboard/internal/cursor"
 	"ai-whiteboard/internal/editorbridge"
 	"ai-whiteboard/internal/headless"
@@ -62,6 +65,7 @@ import (
 type options struct {
 	home, cwd            string
 	claudeBin, cursorBin string
+	dockerBin            string // the docker program the Claude accounts' containers are run with
 	cursorCostBin        string
 	piBin, piNamerModel  string
 	// headlessNode, headlessDir and headlessQuiet are the headless writer's: the program that runs
@@ -113,6 +117,7 @@ func parseFlags(cmd string, args []string) options {
 	fs.StringVar(&o.home, "home", "~/.ai-whiteboard", "data folder")
 	fs.StringVar(&o.cwd, "cwd", here, "default working folder for new chats")
 	fs.StringVar(&o.claudeBin, "claude", "claude", "Claude Code binary")
+	fs.StringVar(&o.dockerBin, "docker", "docker", "Docker CLI binary, for the Claude accounts (each runs in its own container)")
 	fs.StringVar(&o.cursorBin, "cursor", "agent", "Cursor agent binary")
 	fs.StringVar(&o.cursorCostBin, "cursor-cost", "cursor-cost", "cursor-cost binary, for the Cursor plan's usage (~/bin is tried too)")
 	fs.StringVar(&o.piBin, "pi", "pi", "pi binary")
@@ -198,8 +203,19 @@ func serve(o options) {
 	probePiVersion(o.piBin)
 	piSpawner := &pi.Spawner{Bin: o.piBin, AppRoot: p.Root, Home: home, Prompt: prompts.Pi()}
 	turnCaps()
+	// The Claude accounts, before the chats and the agent list are used: their kinds are agents of
+	// their own. Nothing here waits on Docker; svc is nil when they could not be set up.
+	dm := &container.Manager{Bin: o.dockerBin}
+	svc := openAccounts(accountsSetup{root: p.Root, home: home, docker: dm, mcpPort: mcpBoundPort,
+		host: claudeSpawner, st: st, br: br, agents: agents})
+	var accounts chats.Accounts // a nil interface without svc, never a typed nil
+	if svc != nil {
+		agents.SetExtra(svc)
+		accounts = aliaschats.Accounts(svc)
+	}
 	cm = chats.New(chats.Deps{Store: st, Bridge: br, Boards: bs, DefaultCwd: o.cwd, Agents: agents,
-		MCPURL: boardapi.Endpoint(mcpBoundPort), ImageWait: waits.images, RetryFirst: waits.retry,
+		Accounts: accounts,
+		MCPURL:   boardapi.Endpoint(mcpBoundPort), ImageWait: waits.images, RetryFirst: waits.retry,
 		Namers: map[model.AgentKind]chats.Namer{
 			model.Claude: chats.ClaudeNamer{Bin: o.claudeBin},
 			model.Cursor: chats.ClaudeNamer{Bin: o.claudeBin},
@@ -210,6 +226,9 @@ func serve(o options) {
 			model.Cursor: cursorSpawner,
 			model.Pi:     piSpawner,
 		}})
+	if svc != nil {
+		svc.SetWork(cm.AccountWork())
+	}
 	if err := bs.Load(); err != nil { // before chats: board chats look up their board
 		log.Fatalf("loading boards: %v", err)
 	}
@@ -233,10 +252,18 @@ func serve(o options) {
 	piSpawner.Bridge = pb
 	go refreshCursorCatalog(cursorSpawner, st, br)
 	go refreshPiCatalog(piSpawner, st, br)
-	go refreshClaudeCatalog(claudeSpawner, st, br)
+	go refreshClaudeCatalog(model.Claude, claudeSpawner, 20*time.Second, st, br)
 	// Never stopped: the server ends by exiting.
 	go agents.Watch(waits.agentsEvery(), nil, func(l []model.AgentKind) { br.Broadcast(map[string]any{"type": "agents", "agents": l}) })
+	if svc != nil {
+		// Docker and every account are looked at, then Docker is followed: each change goes out as
+		// an "aliases" event, and the agent list is looked at again. Never stopped either.
+		go svc.Watch(waits.agentsEvery(), nil)
+	}
 	a = &app.App{St: st, Boards: bs, Chats: cm, Bridge: br, Agents: agents, Home: home, DefaultCwd: o.cwd, DataDir: p.Root}
+	if svc != nil {
+		a.Aliases = svc
+	}
 	// The change-overs of a server from before: nothing of another server is kept, and the group
 	// "Remote" of before level 5 goes, before any request.
 	localOnly(p, cm, a)
@@ -258,6 +285,10 @@ func serve(o options) {
 			model.Cursor: (&agent.UsageCache{Fetch: (&cursor.CostReader{Bin: o.cursorCostBin, Home: home}).Usage, TTL: time.Minute}).Get,
 		},
 		MCPPort: mcpBoundPort, MCPURL: boardapi.Endpoint(mcpBoundPort), MCPUp: mcpUp.Load}
+	if svc != nil {
+		srv.Aliases = svc
+		srv.UsageFor = newAccountsUsage(svc, dm).For
+	}
 	// POST /stop of the control socket asks for the same shutdown as SIGINT and SIGTERM.
 	stopAsked := make(chan struct{})
 	var stopOnce sync.Once
@@ -277,6 +308,8 @@ func serve(o options) {
 			mcpUp.Store(false)
 		}
 	}()
+	// On Linux the Claude accounts' containers reach it on the Docker bridge gateway (plan D18).
+	startMCPBridge(o.dockerBin, mcpBoundPort, mcpHandler)
 	ctl, controlPath, err := bindControl(p.Root)
 	if errors.Is(err, errControlAnswers) {
 		fmt.Printf("AI Whiteboard is already running (its control socket %s answers)\n", controlPath)
@@ -295,9 +328,12 @@ func serve(o options) {
 	go onSignal(stopAsked, func() {
 		br.StopAndFlush(2 * time.Second) // the clients write pending board changes, the headless writer's too
 		hm.Close()                       // then it ends
-		cm.Shutdown()                    // history written; agents end
-		agent.EndAll(2 * time.Second)    // agents still running, and whatever they started
-		pb.Close()                       // the extension bridge: no more connections, socket removed
+		cm.Shutdown()                    // history written; agents end; no process starts any more
+		if svc != nil {
+			svc.Shutdown() // the accounts' logins end, and their runs still live are killed in their containers
+		}
+		agent.EndAll(2 * time.Second) // agents still running, and whatever they started
+		pb.Close()                    // the extension bridge: no more connections, socket removed
 		store.RemoveServerFile(p)
 		ctl.Close() // removes the socket file; the control socket answers until here
 		store.RemoveControlSocket(controlPath)
@@ -459,18 +495,19 @@ func refreshPiCatalog(sp *pi.Spawner, st *store.Store, br *editorbridge.Bridge) 
 	br.Broadcast(map[string]any{"type": "catalog", "agent": string(model.Pi), "catalog": cat})
 }
 
-// refreshClaudeCatalog fetches Claude's model list for the pickers, like refreshCursorCatalog. On
-// failure the stored catalog stays.
-func refreshClaudeCatalog(sp *claude.Spawner, st *store.Store, br *editorbridge.Bridge) {
-	cat, err := sp.Catalog(20 * time.Second)
+// refreshClaudeCatalog fetches the model list of the Claude kind (the computer's own Claude Code,
+// or a Claude account in its container) for the pickers, like refreshCursorCatalog, within limit.
+// On failure the stored catalog stays.
+func refreshClaudeCatalog(kind model.AgentKind, sp *claude.Spawner, limit time.Duration, st *store.Store, br *editorbridge.Bridge) {
+	cat, err := sp.Catalog(limit)
 	if err != nil {
-		log.Printf("claude model list: %v", err)
+		log.Printf("%s model list: %v", kind, err)
 		return
 	}
-	if err := st.Update(func(s *model.State) error { s.SetCatalog(model.Claude, cat); return nil }); err != nil {
-		log.Printf("claude model list: saving: %v", err)
+	if err := st.Update(func(s *model.State) error { s.SetCatalog(kind, cat); return nil }); err != nil {
+		log.Printf("%s model list: saving: %v", kind, err)
 	}
-	br.Broadcast(map[string]any{"type": "catalog", "agent": string(model.Claude), "catalog": cat})
+	br.Broadcast(map[string]any{"type": "catalog", "agent": string(kind), "catalog": cat})
 }
 
 // localOnly makes the data folder hold nothing of another server, as it is after the first start of

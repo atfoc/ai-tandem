@@ -1,7 +1,8 @@
 // What blocks sending, on the phone (ux-improvements goal 3.7.1, mockups "07 Notices" and "10 Another server"; the V1 design §1). `useBlock` is the
 // composer part PhoneComposer calls on every render: it reads the chat, its server and the model notice, asks blocked.ts which states hold and
 // draws them, each said once, in one place: the box's own (archived, the old board connection, no agent: a bar in the box's shape), the toolbar's
-// (offline, gone: inside the read-only box, the draft visible) or right above the box (a model too small, a refused send).
+// (offline, gone: inside the read-only box, the draft visible) or right above the box (the banner of a chat on a Claude account whose folder
+// is not mounted in its container, waits for a restart, or whose account was removed, which holds Send; a model too small; a refused send).
 // The wide layouts keep their bars: ArchivedBar and LegacyBar (the old page's) live here, unchanged, for Composer.tsx's early returns.
 import { useState, type ReactNode } from "react";
 import { StyleSheet, View } from "react-native";
@@ -9,6 +10,7 @@ import Svg, { Path } from "react-native-svg";
 
 import { api } from "@aiwb/core/api.ts";
 import { catalogFor } from "@aiwb/core/logic/agentlist.ts";
+import type { MountBanner } from "@aiwb/core/logic/aliases.ts";
 import { moveChoice, pickerMode, type Choice } from "@aiwb/core/logic/models.ts";
 import { serverOf } from "@aiwb/core/logic/serverlists.ts";
 import { heldReason, pickOn } from "@aiwb/core/logic/waits.ts";
@@ -25,6 +27,7 @@ import { useTheme } from "../../ui/theme.tsx";
 import { tid } from "../../ui/tid.ts";
 import { openServer } from "../servers/open.ts";
 import { newChat } from "../shell/nav.ts";
+import { bannerAction, bannerWords, useAccountBanner } from "./accounts.tsx";
 import { blockOf, type BlockWords } from "./blocked.ts";
 import { subline } from "./model.ts";
 import { useModelNotice } from "./Notices.tsx";
@@ -37,10 +40,12 @@ export function useBlock(o: BlockInput): BlockOut | null {
   const c = useStore((s) => shownView(s, o.chatId));
   const since = useStore((s) => s.serverSince[o.where.server]);
   const notice = useModelNotice(o.chatId);
+  const banner = useAccountBanner(c, o.where.server);
   if (!c) return null;
   const b = blockOf({
     archived: !!c.archived, legacy: isLegacy(c), board: !!c.board, where: o.where, gone: o.gone, usable: o.usable, agent: c.agent || "",
     since, now: Date.now(), tooSmall: notice?.warn ? notice.text : "", refused: o.refused,
+    account: banner && o.where.connected && !o.gone ? { state: banner.state, text: banner.text } : null, // (a chat that takes nothing says why in the toolbar's place)
   });
   if (!b.main && !b.above.length) return null;
   const out: BlockOut = {};
@@ -49,7 +54,9 @@ export function useBlock(o: BlockInput): BlockOut | null {
     if (b.main.place === "box") out.box = part; else out.toolbar = part;
   }
   if (b.above.length) {
-    out.above = <View style={styles.above}>{b.above.map((w) => <AboveCard key={w.kind} words={w} chatId={o.chatId} onDismiss={o.onDismissRefused} />)}</View>;
+    out.above = <View style={styles.above}>{b.above.map((w) => w.kind === "account" && banner
+      ? <AccountCard key={w.kind} banner={banner} server={o.where.server} cwd={c.cwd} agent={c.agent} />
+      : <AboveCard key={w.kind} words={w} chatId={o.chatId} onDismiss={o.onDismissRefused} />)}</View>;
     if (b.sendOff) out.sendOff = b.sendOff;
   }
   return out;
@@ -121,6 +128,21 @@ function AboveCard({ words, chatId, onDismiss }: { words: BlockWords; chatId: st
       {small ? <PickModel chatId={chatId} /> : (
         <IconButton {...tid("block-dismiss")} size="touch" title="Dismiss" onPress={onDismiss}>{(colour) => <CloseIcon size={14} color={colour} />}</IconButton>
       )}
+    </View>
+  );
+}
+
+/** The account banner on the phone: an amber card with the sentence ("⚠ This folder isn't mounted in Claude · Work —"), and its action as a
+ *  button under it (Add it in Settings, Restart container); a removed account has none. */
+function AccountCard({ banner, server, cwd, agent }: { banner: MountBanner; server: string; cwd: string; agent: string }) {
+  const { tokens: t } = useTheme();
+  const act = bannerAction(banner, server, cwd, agent);
+  return (
+    <View {...tid("composer-block", { kind: "account", place: "above" })} style={[styles.card, styles.accountCard, { backgroundColor: t.warnSoft, borderColor: t.warn }]}>
+      <View {...tid("account-banner", { state: banner.state })} accessibilityRole="alert" style={styles.accountInner}>
+        <Text {...tid("account-banner-text")} size={TYPE.secondary} style={[styles.words, { color: t.warnText }]}>{bannerWords(banner, !!act && banner.state === "not_mounted")}</Text>
+        {act ? <Button {...tid("account-banner-action")} size="touch" label={act.label} onPress={act.onPress} style={styles.accountBtn} /> : null}
+      </View>
     </View>
   );
 }
@@ -207,6 +229,9 @@ const styles = StyleSheet.create({
   full: { alignSelf: "stretch", alignItems: "center", minHeight: PHONE.target },
   above: { gap: 6, marginBottom: 6 },
   card: { flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 6, paddingLeft: 12, paddingRight: 6, borderWidth: 1, borderRadius: 14 },
+  accountCard: { paddingVertical: 8, paddingRight: 8 },
+  accountInner: { flex: 1, minWidth: 0, gap: 6 },
+  accountBtn: { alignSelf: "flex-start" },
   cardGlyph: { alignSelf: "flex-start", paddingTop: 11 },
   wideBar: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10, paddingVertical: 9, paddingHorizontal: 12, borderWidth: 1, borderRadius: 10 },
   barText: { flexShrink: 1 },

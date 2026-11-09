@@ -70,6 +70,7 @@ function Row({ c, chatId, sending, onError }: ChipRowProps & { c: ChatView }) {
   const items = useStore((s) => threadOf(s, chatId)?.items);
   const where = useWhere(c);
   const usable = useStore((s) => usableAgents(s, where.server));
+  const aliases = useStore((s) => s.aliases[where.server]);
   const [open, setOpen] = useState<ChipKind | null>(null);
   const [patching, setPatching] = useState(false);
   const [byKey, setByKey] = useState(false); // the model sheet was opened by ⌘E: its search takes the focus
@@ -105,8 +106,8 @@ function Row({ c, chatId, sending, onError }: ChipRowProps & { c: ChatView }) {
   const mode = pick ? "fixed" : pickerMode(c, !!move);
   const shown: Choice = mode === "move" ? moveChoice(move, c) : pick ? { model: pick.model, effort: pick.effort } : c;
   const name = chatTitle(c, items);
-  const choice = agentChoiceOn(where, usable, c.agent);
-  const reason = kinds.includes("agent") ? toolbarLine(where, usable, c, gone) : { text: "", tone: "" };
+  const choice = agentChoiceOn(where, usable, c.agent, aliases);
+  const reason = kinds.includes("agent") ? toolbarLine(where, usable, c, gone, aliases) : { text: "", tone: "" };
 
   // a session's PATCH (a fork's starts its agent again), or a pending move's choice
   const configure = (body: { model?: string; effort?: string }, ch: Choice) => {
@@ -124,7 +125,7 @@ function Row({ c, chatId, sending, onError }: ChipRowProps & { c: ChatView }) {
   const modelText = !cat ? "Loading models…" : m?.efforts?.length && shown.effort ? `${modelLabel(shown, cat)} · ${effortLabel(shown.effort, m)}` : modelLabel(shown, cat);
   const chips: Record<ChipKind, () => ReactElement> = {
     agent: () => {
-      const none = !choice.options.length;
+      const none = !where.connected || (!choice.options.length && !aliases?.aliases.length); // (accounts that cannot be used are still listed, with Log in…)
       return (
         <PhoneChip key="agent" kind="agent" label={none ? "No agent" : c.agent ? `Agent: ${agentName(c.agent)}` : "Choose an agent"} missing={choice.missing || none}
           disabled={busy || none} onPress={opens("agent")}

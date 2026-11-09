@@ -61,6 +61,16 @@ test('window.open of a file: URL → no openExternal, deny', () => {
   assert.deepEqual(shell.opened, []);
 });
 
+// The web app's openLater opens a placeholder window (window.open("")) during a press; Electron hands it to the handler as about:blank.
+// It is denied and opens nothing, so window.open answers null and the app opens the URL later with openLink (→ openExternal).
+test('window.open of the empty placeholder (about:blank) → no openExternal, deny', () => {
+  const { webContents, shell } = fakeWindow();
+  assert.equal(linkAction('about:blank', pageURL), 'drop');
+  const res = webContents.openHandlers[0]({ url: 'about:blank' });
+  assert.deepEqual(res, { action: 'deny' });
+  assert.deepEqual(shell.opened, []);
+});
+
 test('will-navigate to another origin → prevented and opened outside', () => {
   const { webContents, shell } = fakeWindow();
   const event = navigate(webContents, 'https://example.com/page');

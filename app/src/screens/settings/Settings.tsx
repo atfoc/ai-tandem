@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import { ScrollView, StyleSheet } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { SCREEN_WORDS, accountSections } from "@aiwb/core/logic/aliases.ts";
 import { pageVersion } from "@aiwb/core/state/version.ts";
 
 import { useEditingSettings } from "../../state/editing.ts";
@@ -15,8 +16,10 @@ import { MicIcon, SunIcon } from "../../ui/icons.tsx";
 import { PHONE } from "../../ui/metrics.ts";
 import { useTheme, useTokens } from "../../ui/theme.tsx";
 import { pushScreen, subscribePushed } from "../shell/screens.ts";
-import { ArchiveGlyph, InfoGlyph, IndentGlyph, LibraryGlyph, ServersGlyph, Tile } from "./icons.tsx";
+import { AccountsGlyph, ArchiveGlyph, InfoGlyph, IndentGlyph, LibraryGlyph, ServersGlyph, Tile } from "./icons.tsx";
 import { S1_TID } from "./ids.ts";
+import { ACCOUNTS_SCREEN } from "./accounts/ids.ts";
+import { accountsRowLine } from "./accounts/model.ts";
 import { editingLine } from "./editing.ts";
 import { appearanceLine, archivedValue, libraryValue, serversLine, voiceLine } from "./rows.ts";
 
@@ -42,12 +45,18 @@ export function Settings() {
   const voiceName = useVoiceSettings((s) => s.voiceName), autoSend = useVoiceSettings((s) => s.autoSend);
   const editing = useEditingSettings();
   const line = useMemo(() => serversLine(servers, { localNetworkDenied }), [servers, localNetworkDenied]);
+  const aliases = useStore((s) => s.aliases);
+  const accounts = useMemo(() => accountsRowLine(accountSections(servers, aliases).map((x) => x.list)), [servers, aliases]);
   const row = (name: string) => ({ testID: S1_TID.row, data: { row: name }, onPress: () => { pushScreen(name === "voice" ? "voice-settings" : name, {}); } });
   return (
     <ScrollView {...{ testID: S1_TID.screen }} style={{ backgroundColor: t.panel }} contentContainerStyle={[styles.content, { paddingBottom: bottom + PHONE.margin }]}>
       <CellGroup title="Servers">
         <Cell {...row("servers")} label="Servers" sub={line.text} subTone={line.attention ? "warn" : undefined}
           leading={<Tile colour="viz1">{(c) => <ServersGlyph color={c} />}</Tile>} />
+      </CellGroup>
+      <CellGroup title="Agents">
+        <Cell {...row(ACCOUNTS_SCREEN)} label={SCREEN_WORDS.settingsRow} sub={accounts.text}
+          leading={<Tile colour="claude">{(c) => <AccountsGlyph color={c} />}</Tile>} />
       </CellGroup>
       <CellGroup title="Library">
         <Cell {...row("library")} label="Prompt library" value={libraryValue(libraries)} leading={<Tile colour="accentFill">{(c) => <LibraryGlyph color={c} />}</Tile>} />

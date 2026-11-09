@@ -392,6 +392,15 @@ export const DRAWN = {
   "UXV1.gone": { viewports: ["phone"], see: [{ tid: "chat-head", text: "Gone soon" }, { tid: "composer-block", data: { kind: "gone", place: "toolbar" }, text: "no longer on Design Mac" }] },
   "UXV1.plain": { viewports: ["phone"], see: [{ tid: "chat-head", text: "Plain" }, { tid: "msg" }, { tid: "composer-phone-tools" }, { tid: "composer-dictate" }, { tid: "composer-talk" }] },
   "UXV1.board": { viewports: ["phone"], see: [{ tid: "board-canvas", data: { board: "b_ui", state: "ready" } }, { tid: "board-orb-slot" }, { tid: "voice-orb", label: "Talk" }], phone: "board", edit: true },
+  // MC (several Claude accounts; multiple-claude goal §1.4, §1.5, §4.2): the chats of the seed's section MC, each with its own sign: the agent chip of a
+  // new chat (its picker's rows are MC1.4's), the account's badge in the header and its name on the agent chip, the banner of a folder not mounted, of
+  // one that waits for a restart and of a removed account (its sentence; the held Send and the actions are MC1.5's)
+  "MC.new": { see: [{ tid: "chat-head" }, { tid: "empty-thread" }, { tid: "tchip", data: { kind: "agent" }, text: "Claude Code" }] },
+  "MC.work": { see: [{ tid: "chat-head", text: "On the Work account" }, { tid: "chat-account-badge", data: { kind: "claude:a_work0001" }, text: "Claude · Work" }, { tid: "msg", data: { role: "user" } }, { tid: "msg", data: { role: "assistant" } }] },
+  "MC.worknew": { see: [{ tid: "chat-head", text: "New on the Work account" }, { tid: "chat-account-badge", text: "Claude · Work" }, { tid: "tchip", data: { kind: "agent" }, text: "Claude · Work" }, { tid: "empty-thread" }] },
+  "MC.unmounted": { see: [{ tid: "chat-head", text: "Notes on the Work account" }, { tid: "account-banner", data: { state: "not_mounted" }, text: "This folder isn't mounted in Claude · Work" }, { tid: "account-banner-action", text: "Add it in Settings" }] },
+  "MC.pending": { see: [{ tid: "chat-head", text: "Empty repo on the Client account" }, { tid: "account-banner", data: { state: "pending" }, text: "Restart Claude · Client to use this folder" }] },
+  "MC.removed": { see: [{ tid: "chat-head", text: "On a removed account" }, { tid: "chat-account-badge", text: "Claude account" }, { tid: "account-banner", data: { state: "removed" }, text: "This account was removed" }, { tid: "msg", data: { role: "user" } }] },
   // H1, the phone's Home (seed UXH1; the wide layouts draw the sidebar, so the phone only). A state's `pre` (the servers listed) and `ls` (this
   // computer hidden by the build's knob, Home's saved place) are the seed's, as P0.3 opens it; the entries hold each part of the seed's `see` and `also`
   "UXH1.one": { viewports: ["phone"], see: [{ tid: "home", data: { state: "list" } }, { tid: "home-sub", text: "Studio Mac" }] },

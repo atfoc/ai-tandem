@@ -86,6 +86,7 @@ const stream = fakeStream();
 const stubs: Record<string, string> = {
   "api.ts": `
     const { fake, ask, save, upload } = globalThis.__act;
+    export const call = async () => { throw new Error("no account call in this test"); }; // (the Claude accounts' calls, aliasesapi.ts, which conn.ts reaches through state/aliases.ts)
     export const clientId = "test";
     export class ApiError extends Error { constructor(status, msg, said = true, code) { super(msg); this.status = status; this.code = code; } }
     export const api = {

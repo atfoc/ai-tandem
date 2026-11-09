@@ -506,7 +506,7 @@ func (t *Turn) end(ev agent.Event) {
 	if c := t.tokens; c != nil && t.p.f.Kind != model.Cursor {
 		ev.CumTokens, ev.HasTokens = *c, true
 	}
-	if t.p.f.Kind == model.Claude {
+	if model.IsClaude(t.p.f.Kind) {
 		ev.NumTurns, ev.Final = 1, t.final
 	}
 	t.mu.Unlock()

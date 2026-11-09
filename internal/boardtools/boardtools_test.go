@@ -280,7 +280,7 @@ func TestSpawnFamilyHasResume(t *testing.T) {
 	if !IsSpawnFamily("resume_subagent") || IsTool("resume_subagent") {
 		t.Error("resume_subagent is not a spawn-family tool alone")
 	}
-	if sub := SpawnFamilyForSub([]string{"claude"})[3]; sub.Name != "resume_subagent" || sub.Description != tool.Description {
+	if sub := SpawnFamilyForSub([]Agent{{Kind: "claude"}})[3]; sub.Name != "resume_subagent" || sub.Description != tool.Description {
 		t.Errorf("resume_subagent for a subagent: %q", sub.Description)
 	}
 }

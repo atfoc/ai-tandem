@@ -51,6 +51,26 @@ func (e *MissingError) Error() string {
 
 func (e *MissingError) Is(target error) bool { return target == ErrMissing }
 
+// UnusableError says that the Claude account of kind Agent cannot be used now. Its text is Err's,
+// the reason the person reads (Extra.Check: "Not logged in", Docker's reason, "This account was
+// removed"); errors.Is and errors.As see through it to Err. It is ErrMissing to errors.Is too, so
+// a caller that treats a missing agent's program as "this agent cannot start now" (status 409,
+// the message stays in the box) treats an unusable account the same; a caller that tells the
+// reasons apart (the account's refusals, their codes) asks of Err first.
+type UnusableError struct {
+	Agent model.AgentKind
+	Err   error
+}
+
+func (e *UnusableError) Error() string { return e.Err.Error() }
+
+func (e *UnusableError) Unwrap() error { return e.Err }
+
+func (e *UnusableError) Is(target error) bool { return target == ErrMissing }
+
+// errNoAccounts is the reason of an account kind on a Set that has no Extra: no account is known.
+var errNoAccounts = errors.New("This account was removed")
+
 func name(a model.AgentKind) string {
 	switch a {
 	case model.Claude:
@@ -71,8 +91,10 @@ type Set struct {
 
 	lookMu sync.Mutex // serialises look-ups, so that the stored list is always the newest one
 
+	extra Extra // the Claude accounts; nil = none. Set by SetExtra, read under lookMu or mu
+
 	mu   sync.Mutex
-	list []model.AgentKind // in defaults.AgentOrder, never nil
+	list []model.AgentKind // defaults.AgentOrder's usable kinds, then the usable account kinds; never nil
 	gen  int               // counts the changes of list
 	wake chan struct{}     // tells Watch that list changed
 }
@@ -91,6 +113,34 @@ func NewWith(bins map[model.AgentKind]string, look func(string) (string, error))
 	return s
 }
 
+// SetExtra makes x the source of the Set's account kinds (nil: none) and looks again at once. It
+// always counts as a change Watch reports, even when the list stays the same: the accounts and
+// their names (Accounts, Name) are x's from now on. x's methods are called by List's look-ups
+// (Refresh, Check, Watch, SetExtra) with the Set's look-up lock held: they must never call back
+// into the Set, and whoever calls Refresh or Check must not hold a lock x's methods take.
+func (s *Set) SetExtra(x Extra) {
+	if s == nil {
+		return
+	}
+	s.lookMu.Lock()
+	defer s.lookMu.Unlock()
+	s.mu.Lock()
+	s.extra = x
+	s.mu.Unlock()
+	list := s.find()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.list = list
+	s.gen++
+	select {
+	case s.wake <- struct{}{}:
+	default:
+	}
+}
+
+// find looks the fixed kinds' programs up, then asks the Extra which account kinds can be used.
+// lookMu held.
 func (s *Set) find() []model.AgentKind {
 	list := []model.AgentKind{}
 	for _, a := range defaults.AgentOrder {
@@ -102,10 +152,39 @@ func (s *Set) find() []model.AgentKind {
 			list = append(list, a)
 		}
 	}
+	if s.extra != nil {
+		for _, a := range s.extra.Kinds() {
+			if model.IsAlias(a) && !slices.Contains(list, a) && s.extra.Check(a) == nil {
+				list = append(list, a)
+			}
+		}
+	}
 	return list
 }
 
-// List returns the usable agents as last looked up, in defaults.AgentOrder. It is never nil.
+// Accounts is every Claude account's kind, usable or not, in the order the accounts were added
+// (Extra.Kinds); none without an Extra. It is never nil.
+func (s *Set) Accounts() []model.AgentKind {
+	if s == nil {
+		return []model.AgentKind{}
+	}
+	s.mu.Lock()
+	x := s.extra
+	s.mu.Unlock()
+	if x == nil {
+		return []model.AgentKind{}
+	}
+	out := []model.AgentKind{}
+	for _, a := range x.Kinds() {
+		if model.IsAlias(a) {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// List returns the usable agents as last looked up: the fixed kinds in defaults.AgentOrder, then
+// the usable Claude accounts in the order they were added. It is never nil.
 func (s *Set) List() []model.AgentKind {
 	if s == nil {
 		return slices.Clone(defaults.AgentOrder)
@@ -156,9 +235,10 @@ func (s *Set) Refresh() []model.AgentKind {
 	return slices.Clone(s.list)
 }
 
-// Check looks now and says whether a can be used: nil, a *MissingError, or for a == "" (a chat
-// that has no agent, because none was usable when it was made) ErrNone while none is usable
-// and ErrUnchosen once one is.
+// Check looks now and says whether a can be used: nil, a *MissingError (a fixed kind whose
+// program is not found), an *UnusableError (a Claude account that cannot be used now, with
+// Extra.Check's reason), or for a == "" (a chat that has no agent, because none was usable when
+// it was made) ErrNone while none is usable and ErrUnchosen once one is.
 func (s *Set) Check(a model.AgentKind) error {
 	if s == nil {
 		return nil
@@ -170,10 +250,22 @@ func (s *Set) Check(a model.AgentKind) error {
 		}
 		return ErrUnchosen
 	}
-	if !slices.Contains(list, a) {
-		return &MissingError{Agent: a, Bin: s.bins[a]}
+	if slices.Contains(list, a) {
+		return nil
 	}
-	return nil
+	if model.IsAlias(a) {
+		s.mu.Lock()
+		x := s.extra
+		s.mu.Unlock()
+		why := errNoAccounts
+		if x != nil {
+			if why = x.Check(a); why == nil {
+				return nil // usable since the look-up just made
+			}
+		}
+		return &UnusableError{Agent: a, Err: why}
+	}
+	return &MissingError{Agent: a, Bin: s.bins[a]}
 }
 
 // Watch blocks until stop is closed. It looks every `every` and calls changed with the newest list
@@ -204,4 +296,21 @@ func (s *Set) Watch(every time.Duration, stop <-chan struct{}, changed func([]mo
 		case <-s.wake:
 		}
 	}
+}
+
+// Name is the name the person reads for the agent kind a: "Claude Code", "Cursor", "pi", or a
+// Claude account's own name ("Claude · Work", Extra.Name). An account kind no Extra names (a
+// removed account, or a nil *Set) is named by its kind.
+func (s *Set) Name(a model.AgentKind) string {
+	if s != nil && model.IsAlias(a) {
+		s.mu.Lock()
+		x := s.extra
+		s.mu.Unlock()
+		if x != nil {
+			if n := x.Name(a); n != "" {
+				return n
+			}
+		}
+	}
+	return name(a)
 }

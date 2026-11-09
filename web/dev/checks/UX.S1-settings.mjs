@@ -28,8 +28,8 @@ export const viewports = ["desktop", "tablet", "phone"];
 const WAIT = 15000;
 const J = JSON.stringify;
 const OUT = process.env.OUT ?? new URL("../../out/s1-shots/", import.meta.url).pathname;
-const ROWS = ["servers", "library", "archived", "voice", "appearance", "about"];
-const SCREEN_OF = { servers: "servers", library: "library", archived: "archived", voice: "voice-settings", appearance: "appearance", about: "about" };
+const ROWS = ["servers", "claude-accounts", "library", "archived", "voice", "editing", "appearance", "about"];
+const SCREEN_OF = { servers: "servers", "claude-accounts": "claude-accounts", editing: "editing", library: "library", archived: "archived", voice: "voice-settings", appearance: "appearance", about: "about" };
 const FLAVOURS = [["latte", "Latte", "Light"], ["frappe", "Frappé", "Dark"], ["macchiato", "Macchiato", "Dark"], ["mocha", "Mocha", "Dark"]];
 const BG = { light: "rgb(255, 255, 255)", dark: "rgb(28, 28, 33)", mocha: "rgb(30, 30, 46)" };
 
@@ -95,7 +95,7 @@ await check("UX.S1 Settings, Appearance and About on the phone; the wide layouts
     return m;
   };
   const labels = (await settingsText(page));
-  const names = { servers: "Servers", library: "Prompt library", archived: "Archived", voice: "Voice", appearance: "Appearance", about: "About" };
+  const names = { servers: "Servers", "claude-accounts": "Claude accounts", editing: "Editing", library: "Prompt library", archived: "Archived", voice: "Voice", appearance: "Appearance", about: "About" };
   for (const r of ROWS) if (labels[r]?.label !== names[r]) fail(`the ${r} row is labelled ${J(labels[r]?.label)}, not ${J(names[r])}`);
   await sizes("light");
 

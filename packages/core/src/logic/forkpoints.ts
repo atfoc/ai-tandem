@@ -3,6 +3,7 @@
 // same rules in internal/chats/points.go. items is one branch's item list; an index may hold
 // nothing (a hole). DOM-free.
 
+import { agentFamily } from "../agents.ts";
 import type { AgentKind, Item, TreeItem } from "../types.ts";
 import { nameText } from "./quotes.ts";
 
@@ -51,7 +52,10 @@ function markFrom(items: Items, count: number): number {
 
 /** May a new branch or a fork start at a finished boundary of a source whose turn is running?
  *  The mirror of liveFork in internal/chats/points.go. */
-export const LIVE_FORK: Record<AgentKind, boolean> = { claude: true, cursor: true, pi: true };
+export const LIVE_FORK: Record<string, boolean> = { claude: true, cursor: true, pi: true };
+
+/** Whether the kind may branch from a running source: its family's LIVE_FORK (a Claude account behaves as Claude Code). */
+export const liveFork = (agent: AgentKind | ""): boolean => !!agent && !!LIVE_FORK[agentFamily(agent)];
 
 /** Whether a new branch or a fork may start at count by the id rules alone; archived and legacy
  *  are the caller's to check. running says the source's turn is still running: then the agent
@@ -60,7 +64,7 @@ export const LIVE_FORK: Record<AgentKind, boolean> = { claude: true, cursor: tru
  *  before it. */
 export function pointOK(agent: AgentKind, items: Items, count: number, running = false): boolean {
   if (!Number.isInteger(count) || count < 0 || count > items.length) return false;
-  if (running && !LIVE_FORK[agent]) return false;
+  if (running && !liveFork(agent)) return false;
   if (count === 0) {
     const first = markFrom(items, 0);
     return first >= 0 && !!items[first]!.point;

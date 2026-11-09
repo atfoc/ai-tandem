@@ -43,6 +43,10 @@ var l5Table = []string{
 	"POST /api/rpc-reply",
 	"GET /api/library", "POST /api/library/{server}/groups", "PATCH /api/library/{server}/groups/{id}", "DELETE /api/library/{server}/groups/{id}",
 	"POST /api/library/{server}/prompts", "PATCH /api/library/{server}/prompts/{id}", "DELETE /api/library/{server}/prompts/{id}",
+	"GET /api/aliases", "POST /api/aliases", "PATCH /api/aliases/{id}", "DELETE /api/aliases/{id}",
+	"POST /api/aliases/{id}/restart", "POST /api/aliases/{id}/stop",
+	"POST /api/aliases/{id}/login", "POST /api/aliases/{id}/login/code", "DELETE /api/aliases/{id}/login",
+	"POST /api/aliases/{id}/logout",
 }
 
 // l5Outside is what the contract's 2.3 names as not in the table, each as a request, and the
@@ -251,6 +255,20 @@ func TestLevel5TableRoutesServeAClient(t *testing.T) {
 	ask("PATCH /api/library/{server}/prompts/{id}", lp, "", `{"text":"Say goodbye."}`, 200, `"text":"Say goodbye."`)
 	ask("DELETE /api/library/{server}/prompts/{id}", lp, "", nil, 200, done)
 	ask("DELETE /api/library/{server}/groups/{id}", lg, "", nil, 200, done)
+
+	// The Claude accounts' routes, on a server that has none (Server.Aliases nil): each answers 501.
+	noAliases := `{"error":"Claude accounts are not available on this server"}`
+	const al = "a_k3j2m9x0"
+	ask("GET /api/aliases", "", "", nil, 501, noAliases)
+	ask("POST /api/aliases", "", "", `{"name":"Work"}`, 501, noAliases)
+	ask("PATCH /api/aliases/{id}", al, "", `{"name":"Home"}`, 501, noAliases)
+	ask("DELETE /api/aliases/{id}", al, "", nil, 501, noAliases)
+	ask("POST /api/aliases/{id}/restart", al, "", `{"force":true}`, 501, noAliases)
+	ask("POST /api/aliases/{id}/stop", al, "", nil, 501, noAliases)
+	ask("POST /api/aliases/{id}/login", al, "", nil, 501, noAliases)
+	ask("POST /api/aliases/{id}/login/code", al, "", `{"code":"x"}`, 501, noAliases)
+	ask("DELETE /api/aliases/{id}/login", al, "", nil, 501, noAliases)
+	ask("POST /api/aliases/{id}/logout", al, "", nil, 501, noAliases)
 
 	for _, route := range ClientRoutes {
 		if !rows.called[route] {

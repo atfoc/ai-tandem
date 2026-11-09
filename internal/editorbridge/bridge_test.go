@@ -1000,8 +1000,8 @@ func TestEventsRows(t *testing.T) {
 		"board": {List, PerBoard}, "board_removed": {List, PerBoard},
 		"scene": {Content, PerBoard}, "writer": {Content, PerBoard},
 		"catalog": {List, PerNone}, "agents": {List, PerNone},
-		"own_library": {List, PerNone},
-		"chat":        {List, PerChat}, "chat_removed": {List, PerChat}, "branch_state": {List, PerChat},
+		"own_library": {List, PerNone}, "aliases": {List, PerNone},
+		"chat": {List, PerChat}, "chat_removed": {List, PerChat}, "branch_state": {List, PerChat},
 		"tree": {Content, PerChat}, "chat_items": {Content, PerChat},
 		"sub": {Content, PerChat}, "sub_items": {Content, PerChat},
 	}

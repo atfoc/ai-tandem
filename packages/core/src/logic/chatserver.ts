@@ -2,7 +2,8 @@
 // texts that name the server, the line under the toolbar, the Send that is off, the folder
 // browser's home and titles, the recent folders and the plan usage's cache key. The texts for
 // this computer are the ones of logic/agentlist.ts (no DOM, no React).
-import { agentName } from "../agents.ts";
+import { agentName, isAliasKind } from "../agents.ts";
+import type { AliasList } from "../aliasesapi.ts";
 import { LOCAL_SERVER, type AgentKind, type ChatView } from "../types.ts";
 import { CHOOSE_AGENT, NO_AGENT, agentChoice, noAgentPlaceholder, type AgentChoice } from "./agentlist.ts";
 import { goneText } from "./remoteview.ts";
@@ -24,12 +25,12 @@ export const noAgentOn = (w: Where): string =>
 const notInstalledOn = (w: Where, a: AgentKind) => `${agentName(a)} is not installed on ${w.name}: install it there, or choose another agent.`;
 
 /** agentChoice by the chat's server: a server that is not connected offers none and marks none;
- *  another server's reasons name it. */
-export function agentChoiceOn(w: Where, usable: AgentKind[], current: AgentKind | ""): AgentChoice {
+ *  another server's reasons name it. list: the server's Claude accounts (store `aliases`), for why a chat on one cannot use it. */
+export function agentChoiceOn(w: Where, usable: AgentKind[], current: AgentKind | "", list?: AliasList): AgentChoice {
   if (!w.connected) return { options: [], current, missing: false, reason: notConnectedLine(w.name) };
-  const ch = agentChoice(usable, current);
+  const ch = agentChoice(usable, current, list);
   if (!remote(w)) return ch;
-  return { ...ch, reason: !usable.length ? noAgentOn(w) : ch.missing ? notInstalledOn(w, current as AgentKind) : "" };
+  return { ...ch, reason: !usable.length ? noAgentOn(w) : ch.missing && !isAliasKind(current) ? notInstalledOn(w, current as AgentKind) : ch.reason };
 }
 
 /** Why a chat with no agent takes no message, by its server. */
@@ -39,10 +40,10 @@ export const noAgentReasonOn = (w: Where, usable: AgentKind[]): string =>
 /** The line under the toolbar: why the chat takes no message and no change (its server no longer has it: gone; its
  *  server is not connected), else what is said of its agent while that can be chosen; and whether it is about
  *  something that stops a Send ("missing"); text "" for none. */
-export function toolbarLine(w: Where, usable: AgentKind[], c: Pick<ChatView, "agent">, gone = false): { text: string; tone: "" | "missing" } {
+export function toolbarLine(w: Where, usable: AgentKind[], c: Pick<ChatView, "agent">, gone = false, list?: AliasList): { text: string; tone: "" | "missing" } {
   if (gone) return { text: goneText(w.name), tone: "missing" };
   if (!w.connected) return { text: notConnectedLine(w.name), tone: "missing" };
-  const text = c.agent ? agentChoiceOn(w, usable, c.agent).reason : noAgentReasonOn(w, usable);
+  const text = c.agent ? agentChoiceOn(w, usable, c.agent, list).reason : noAgentReasonOn(w, usable);
   return { text, tone: text && (c.agent || !usable.length) ? "missing" : "" };
 }
 

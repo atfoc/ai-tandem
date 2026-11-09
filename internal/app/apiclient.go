@@ -1,6 +1,7 @@
 package app
 
 import (
+	"ai-whiteboard/internal/aliases"
 	"ai-whiteboard/internal/claude"
 	"ai-whiteboard/internal/defaults"
 	"ai-whiteboard/internal/library"
@@ -11,7 +12,7 @@ import (
 // defaults, archived ones included) and the server's lists. No data folder.
 type APISnapshot struct {
 	Agents     []model.AgentKind                  `json:"agents"`   // the agents this server can start, never nil
-	Catalogs   map[model.AgentKind]*model.Catalog `json:"catalogs"` // claude, cursor, pi; null while not known
+	Catalogs   map[model.AgentKind]*model.Catalog `json:"catalogs"` // claude, cursor, pi and every Claude account; null while not known
 	Home       string                             `json:"home"`
 	DefaultCwd string                             `json:"defaultCwd"`
 	Groups     []model.Group                      `json:"groups"`   // every group, in the server's order; never nil
@@ -26,6 +27,9 @@ type APISnapshot struct {
 	// LibraryNotice says why the library's file was set aside at the server's start; left out
 	// when it was not.
 	LibraryNotice string `json:"libraryNotice,omitempty"`
+	// Aliases are the server's Claude accounts, as GET /api/aliases answers them; after every
+	// change the client gets them whole in an "aliases" event. Left out by a server without them.
+	Aliases *aliases.List `json:"aliases,omitempty"`
 }
 
 // APISnapshot builds the snapshot of a client: the same for every one of them. It changes
@@ -48,6 +52,10 @@ func (a *App) APISnapshot() APISnapshot {
 		snap.Groups = append([]model.Group{}, s.Groups...)
 		snap.Defaults = defaults.Copy(s.Defaults)
 	})
+	if a.Aliases != nil {
+		l := a.Aliases.List()
+		snap.Aliases = &l
+	}
 	if a.Library != nil {
 		t := a.Library.Tree()
 		snap.Library = &t
@@ -57,10 +65,14 @@ func (a *App) APISnapshot() APISnapshot {
 }
 
 // catalogs returns each agent's model list as the snapshot gives it: Claude's built-in list until
-// it reported one, nil for Cursor and pi until they did.
+// it reported one, nil for Cursor and pi until they did. Every Claude account (a.Agents.Accounts,
+// usable or not) has its own entry, under its kind: the list it reported, else Claude's built-in
+// list, as the computer's own Claude Code.
 func (a *App) catalogs() map[model.AgentKind]*model.Catalog {
-	cl := claude.Catalog
-	out := map[model.AgentKind]*model.Catalog{model.Claude: &cl, model.Cursor: nil, model.Pi: nil}
+	out := map[model.AgentKind]*model.Catalog{model.Claude: builtinClaude(), model.Cursor: nil, model.Pi: nil}
+	for _, kind := range a.Agents.Accounts() {
+		out[kind] = builtinClaude()
+	}
 	a.St.Read(func(s *model.State) {
 		for kind := range out {
 			if c := s.Catalog(kind); c != nil {
@@ -70,4 +82,10 @@ func (a *App) catalogs() map[model.AgentKind]*model.Catalog {
 		}
 	})
 	return out
+}
+
+// builtinClaude is a copy of Claude Code's built-in model list.
+func builtinClaude() *model.Catalog {
+	cl := claude.Catalog
+	return &cl
 }

@@ -2,7 +2,9 @@
 // offers (a chat's, the empty state's) reads the store through here, so none
 // names an agent the server lacks. An item with no agent has agent "" (no DOM, no React). The
 // lists are by server (logic/serverlists.ts): a chat's are those of the server it is on.
-import { agentName } from "../agents.ts";
+import { agentName, isAliasKind } from "../agents.ts";
+import type { AliasList } from "../aliasesapi.ts";
+import { NOT_AVAILABLE, REMOVED_ACCOUNT, accountReason } from "./aliases.ts";
 import { LOCAL_SERVER, type AgentKind, type Catalog, type ChatView } from "../types.ts";
 import { listsOf, offered, type ListsState } from "./serverlists.ts";
 
@@ -29,9 +31,18 @@ const notInstalled = (a: AgentKind) => `${agentName(a)} is not installed on this
  *  and why nothing can be sent or started ("" when it can). */
 export type AgentChoice = { options: AgentKind[]; current: AgentKind | ""; missing: boolean; reason: string };
 
-export function agentChoice(usable: AgentKind[], current: AgentKind | ""): AgentChoice {
+export function agentChoice(usable: AgentKind[], current: AgentKind | "", list?: AliasList): AgentChoice {
   const missing = current !== "" && !usable.includes(current);
-  return { options: usable, current, missing, reason: !usable.length ? NO_AGENT : missing ? notInstalled(current as AgentKind) : "" };
+  const why = !missing ? "" : isAliasKind(current) ? accountMissing(current, list) : notInstalled(current as AgentKind);
+  return { options: usable, current, missing, reason: !usable.length ? NO_AGENT : why };
+}
+
+/** Why a chat on a Claude account cannot use it, the server not listing it as usable (D3): "This account was removed", else the
+ *  account's name and the picker's reason ("Claude · Personal: Not logged in", "Claude · Work: Docker not running"). list: the
+ *  accounts of the chat's server (store `aliases`); without one the account is "Not available now". Never "not installed". */
+export function accountMissing(kind: AgentKind, list: AliasList | undefined): string {
+  const why = accountReason(kind, list) || NOT_AVAILABLE;
+  return why === REMOVED_ACCOUNT ? why : `${agentName(kind)}: ${why}`;
 }
 
 export const CHOOSE_AGENT = "Choose an agent to send a message.";
@@ -55,8 +66,8 @@ export const noAgentPlaceholder = (usable: AgentKind[]): string => (usable.lengt
 /** The line under a chat's toolbar on its agent: why a chat with none takes no message, or why
  *  the one it has cannot be used; "" for a usable one. A chat with an agent the server lacks can
  *  still be sent: the server looks again, and refuses with the reason (409 agent_missing). */
-export const agentLine = (usable: AgentKind[], agent: AgentKind | ""): string =>
-  agent ? agentChoice(usable, agent).reason : noAgentReason(usable);
+export const agentLine = (usable: AgentKind[], agent: AgentKind | "", list?: AliasList): string =>
+  agent ? agentChoice(usable, agent, list).reason : noAgentReason(usable);
 
 /** An agent picked for a chat: configure sends the change, which names the agent alone (the
  *  server sets model and effort), and the chat it answers with goes to take (the store). */

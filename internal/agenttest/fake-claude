@@ -67,6 +67,29 @@
 // FAKE_CLAUDE_LOG=<file> appends one JSON line per invocation and per stdin line, and {"turn":"self"}
 // each time a turn begins after stdin has closed: a turn nobody asked for, such as the one the
 // notice of a command that ended starts. A process that was stopped must write none.
+// FAKE_CLAUDE_MCP_HOST_MAP=host.docker.internal=127.0.0.1 (comma-separated FROM=TO pairs) rewrites the
+// host name of the MCP URL read from --mcp-config before it is fetched, so a test whose stand-in
+// docker runs the fake on the host reaches the server's MCP listener at the URL a container would use.
+//
+// `claude auth ...`, as Claude Code 2.1 answers them (a Claude account's login lives in $CLAUDE_CONFIG_DIR):
+//   auth status   -> $CLAUDE_CONFIG_DIR unset: {"loggedIn":true,"email":"fake@example.com"}, exit 0 (the
+//                    computer's own claude, signed in). Set: the JSON of $CLAUDE_CONFIG_DIR/fake-login.json,
+//                    pretty-printed, exit 0; no such file: {"loggedIn": false, "authMethod": "none"}, exit 1.
+//                    FAKE_CLAUDE_AUTH=garbled prints something that is not JSON; =slow waits 30 s first
+//   auth logout   -> removes $CLAUDE_CONFIG_DIR/fake-login.json, prints claude's line, exit 0 (also when
+//                    not logged in)
+//   auth login    -> prints "Opening browser to sign in…", "If the browser didn't open, visit: <URL>" (URL
+//                    https://claude.example/oauth/authorize?code=true&state=<random, or $FAKE_CLAUDE_LOGIN_STATE>) and the prompt
+//                    "Paste code here if prompted > " without a newline, then reads codes, one per line:
+//                    the good one ($FAKE_CLAUDE_LOGIN_CODE, default "good#code") writes
+//                    $CLAUDE_CONFIG_DIR/fake-login.json {"loggedIn":true,"email":$FAKE_CLAUDE_LOGIN_EMAIL or
+//                    "account@example.com"} (0600; nothing when $CLAUDE_CONFIG_DIR is unset), prints
+//                    "Login successful." and exits 0; one without "#" prints "Invalid code. Please make sure
+//                    the full code was copied." and reads again; any other prints "Login failed: That code
+//                    wasn't accepted." and exits 1; stdin closed: exit 1.
+//                    FAKE_CLAUDE_LOGIN_ANSI=1 writes as in a terminal: \r\n line ends, CSI sequences, and the
+//                    URL in an OSC 8 hyperlink (opened with BEL, closed with ESC \).
+//                    FAKE_CLAUDE_LOGIN_WRAP=<n> breaks the URL's line in two at column n (from the line's start)
 const fs = require("node:fs");
 const readline = require("node:readline");
 const args = process.argv.slice(2);
@@ -74,7 +97,73 @@ const log = (o) => { if (process.env.FAKE_CLAUDE_LOG) fs.appendFileSync(process.
 const arg = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
 log({ start: args, cwd: process.cwd() });
 
-if (args[0] === "auth") process.exit(0);                       // `claude auth status`: signed in
+// say writes text and exits with code once it is out (a pipe is written asynchronously on macOS).
+const say = (text, code) => process.stdout.write(text, () => process.exit(code));
+const configDir = process.env.CLAUDE_CONFIG_DIR || "";
+const loginFile = () => require("node:path").join(configDir, "fake-login.json");
+
+function authStatus() {
+  const answer = () => {
+    if (process.env.FAKE_CLAUDE_AUTH === "garbled") return say("Error: something odd\n", 1);
+    if (!configDir) return say(JSON.stringify({ loggedIn: true, email: "fake@example.com" }) + "\n", 0);
+    let login;
+    try { login = JSON.parse(fs.readFileSync(loginFile(), "utf8")); } catch { login = null; }
+    if (!login) return say(JSON.stringify({ loggedIn: false, authMethod: "none" }, null, 2) + "\n", 1);
+    say(JSON.stringify({ authMethod: "claude.ai", apiProvider: "firstParty", ...login }, null, 2) + "\n", 0);
+  };
+  if (process.env.FAKE_CLAUDE_AUTH === "slow") setTimeout(answer, 30000);
+  else answer();
+}
+
+function authLogout() {
+  if (configDir) fs.rmSync(loginFile(), { force: true });
+  say("Successfully logged out from your Anthropic account.\n", 0);
+}
+
+function authLogin() {
+  const ansi = process.env.FAKE_CLAUDE_LOGIN_ANSI === "1";
+  const nl = ansi ? "\r\n" : "\n";
+  const good = process.env.FAKE_CLAUDE_LOGIN_CODE || "good#code";
+  const url = "https://claude.example/oauth/authorize?code=true&state=" +
+    (process.env.FAKE_CLAUDE_LOGIN_STATE || require("node:crypto").randomBytes(8).toString("hex"));
+  const lead = "If the browser didn't open, visit: ";
+  let shown = url;
+  const wrap = parseInt(process.env.FAKE_CLAUDE_LOGIN_WRAP || "0", 10);
+  if (wrap > lead.length && wrap < lead.length + url.length) {
+    shown = url.slice(0, wrap - lead.length) + nl + url.slice(wrap - lead.length);
+  }
+  if (ansi) shown = `\x1b]8;;${url}\x07${shown}\x1b]8;;\x1b\\`;
+  process.stdout.write((ansi ? "\x1b[?25l\x1b[2K" : "") + "Opening browser to sign in…" + nl +
+    lead + shown + nl + (ansi ? "\x1b[?25h" : "") + "Paste code here if prompted > ");
+  let finished = false;
+  const rl = readline.createInterface({ input: process.stdin });
+  rl.on("line", (line) => {
+    if (finished) return;
+    const code = line.replace(/\r$/, "").trim();
+    if (code === good) {
+      finished = true;
+      if (configDir) {
+        fs.mkdirSync(configDir, { recursive: true });
+        fs.writeFileSync(loginFile(), JSON.stringify({ loggedIn: true,
+          email: process.env.FAKE_CLAUDE_LOGIN_EMAIL || "account@example.com" }) + "\n", { mode: 0o600 });
+      }
+      say("Login successful." + nl, 0);
+    } else if (!code.includes("#")) {
+      process.stdout.write("Invalid code. Please make sure the full code was copied." + nl);
+    } else {
+      finished = true;
+      say("Login failed: That code wasn't accepted." + nl, 1);
+    }
+  });
+  rl.on("close", () => { if (!finished) process.exit(1); });
+}
+
+if (args[0] === "auth") {
+  if (args[1] === "login") authLogin();
+  else if (args[1] === "logout") authLogout();
+  else authStatus();
+  return; // the rest is the stream-JSON claude (a CommonJS module may return at its top level)
+}
 if (!args.includes("--input-format")) {                        // one-shot runs: /usage, the chat namer
   if (args.includes("/usage")) process.exit(1);
   console.log("Fake title");
@@ -90,6 +179,16 @@ try {
   if (!cfg.trimStart().startsWith("{")) cfg = fs.readFileSync(cfg, "utf8");
   mcp = Object.values(JSON.parse(cfg).mcpServers || {})[0] || null;
 } catch { /* none */ }
+if (mcp && mcp.url && process.env.FAKE_CLAUDE_MCP_HOST_MAP) {   // host.docker.internal=127.0.0.1,…
+  try {
+    const u = new URL(mcp.url);
+    for (const pair of process.env.FAKE_CLAUDE_MCP_HOST_MAP.split(",")) {
+      const [from, to] = pair.split("=").map((s) => (s || "").trim());
+      if (from && to && u.hostname === from) { u.hostname = to; break; }
+    }
+    mcp = { ...mcp, url: u.toString() };
+  } catch { /* not a URL: fetched as it is */ }
+}
 const out = (o) => process.stdout.write(JSON.stringify(o) + "\n");
 const uuid = () => require("node:crypto").randomUUID();
 let rpcId = 0;

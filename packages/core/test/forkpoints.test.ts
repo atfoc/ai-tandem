@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { cutBefore, LIVE_FORK, messageActions, pointOK, sessionEnd, toTreeItems, turnEnd, type MessageActions } from "../src/logic/forkpoints.ts";
+import { cutBefore, LIVE_FORK, liveFork, messageActions, pointOK, sessionEnd, toTreeItems, turnEnd, type MessageActions } from "../src/logic/forkpoints.ts";
 import type { AgentKind, Item } from "../src/types.ts";
 
 type Items = (Item | undefined)[];
@@ -526,4 +526,13 @@ test("messageActions for pi: the replies before and in a delivery turn offer Bra
     assert.deepEqual(acts(agent, items, 6), { ...LABEL, branchEdit: 6, forkEdit: 6 }, agent);
   }
   assert.deepEqual(toTreeItems("pi", items).map((x) => [x.i, x.ok]), [[0, true], [1, true], [4, true], [6, true], [7, true]]);
+});
+
+test("liveFork: a Claude account branches from a running source as Claude Code does; no agent never", () => {
+  assert.equal(liveFork("claude:a_work0001"), LIVE_FORK.claude);
+  assert.equal(liveFork("claude"), true);
+  assert.equal(liveFork(""), false);
+  const was = LIVE_FORK.claude;
+  LIVE_FORK.claude = false;
+  try { assert.equal(liveFork("claude:a_work0001"), false); } finally { LIVE_FORK.claude = was; }
 });

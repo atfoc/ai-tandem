@@ -6,6 +6,15 @@ import (
 	"testing"
 )
 
+// kindsOf are the given kinds as agents without names.
+func kindsOf(kinds ...string) []Agent {
+	var out []Agent
+	for _, k := range kinds {
+		out = append(out, Agent{Kind: k})
+	}
+	return out
+}
+
 func agentProp(t Tool) (map[string]any, bool) {
 	p, ok := t.Schema["properties"].(map[string]any)["agent"].(map[string]any)
 	return p, ok
@@ -28,7 +37,7 @@ func TestSpawnFamilyFor(t *testing.T) {
 			`{"prompt": "...", "description"?: "...", "agent"?: "cursor", "model"?: "...", "effort"?: "..."}`, `{"agent"?: "cursor", "filter"?: "..."}`},
 		{nil, "", `{"prompt": "...", "description"?: "...", "model"?: "...", "effort"?: "..."}`, `{"filter"?: "..."}`},
 	} {
-		got := SpawnFamilyFor(tc.agents)
+		got := SpawnFamilyFor(kindsOf(tc.agents...))
 		if len(got) != len(SpawnFamily) {
 			t.Fatalf("%v: %d tools", tc.agents, len(got))
 		}
@@ -80,7 +89,7 @@ func TestSpawnFamilyFor(t *testing.T) {
 // What a subagent that may spawn is listed: the same tools and parameters, in words that are
 // true of it. Nothing of it says "this chat", and what the chat's agent is listed is unchanged.
 func TestSpawnFamilyForSub(t *testing.T) {
-	agents := []string{"claude", "pi"}
+	agents := kindsOf("claude", "pi")
 	chat, sub := SpawnFamilyFor(agents), SpawnFamilyForSub(agents)
 	if len(sub) != len(chat) {
 		t.Fatalf("%d tools for a subagent, %d for the chat's agent", len(sub), len(chat))
@@ -125,5 +134,41 @@ func TestSpawnFamilyForSub(t *testing.T) {
 	// The lists it was made from are as they were.
 	if !reflect.DeepEqual(chat, SpawnFamilyFor(agents)) || strings.Contains(SpawnFamily[0].Description, "You are a subagent") {
 		t.Error("making a subagent's list changed the chat's")
+	}
+}
+
+// A Claude account is named by its kind in the enum and the summary, and by its kind and its name
+// in the description; the fixed kinds read as they do without accounts.
+func TestSpawnFamilyForAccounts(t *testing.T) {
+	work := Agent{Kind: "claude:a_k3j2m9x0", Name: "Claude · Work"}
+	home := Agent{Kind: "claude:a_h0m3h0m3", Name: "Claude · Home"}
+	for _, tc := range []struct {
+		agents []Agent
+		enum   []any
+		desc   string
+		kinds  string
+	}{
+		{append(kindsOf("claude", "cursor", "pi"), work), []any{"claude", "cursor", "pi", "claude:a_k3j2m9x0"},
+			`claude, cursor, pi, or claude:a_k3j2m9x0 ("Claude · Work"); omit for this chat's agent`, "claude|cursor|pi|claude:a_k3j2m9x0"},
+		{append(kindsOf("claude"), work, home), []any{"claude", "claude:a_k3j2m9x0", "claude:a_h0m3h0m3"},
+			`claude, claude:a_k3j2m9x0 ("Claude · Work"), or claude:a_h0m3h0m3 ("Claude · Home"); omit for this chat's agent`,
+			"claude|claude:a_k3j2m9x0|claude:a_h0m3h0m3"},
+		{[]Agent{work}, []any{"claude:a_k3j2m9x0"}, `claude:a_k3j2m9x0 ("Claude · Work"); omit for this chat's agent`, "claude:a_k3j2m9x0"},
+	} {
+		got := SpawnFamilyFor(tc.agents)
+		for _, i := range []int{0, 2} {
+			p, ok := agentProp(got[i])
+			if !ok || !reflect.DeepEqual(p["enum"], tc.enum) || p["description"] != tc.desc {
+				t.Errorf("%s: agent parameter = %v", got[i].Name, p)
+			}
+		}
+		if want := `"agent"?: "` + tc.kinds + `"`; !strings.Contains(got[0].Summary, want) || !strings.Contains(got[2].Summary, want) {
+			t.Errorf("summaries %q, %q, want %s", got[0].Summary, got[2].Summary, want)
+		}
+		sub := SpawnFamilyForSub(tc.agents)
+		p, _ := agentProp(sub[0])
+		if want := strings.Replace(tc.desc, "this chat's", "your own", 1); p["description"] != want {
+			t.Errorf("for a subagent: %q, want %q", p["description"], want)
+		}
 	}
 }

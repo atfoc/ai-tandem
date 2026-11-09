@@ -90,9 +90,14 @@ export const sendTitle = (c: Pick<ChatView, "status" | "fresh"> & Partial<Pick<C
 /** A Send was refused: whether the chat is read again. 409: the branch the message goes to is busy
  *  by now. 429 `cap` (too many turns run), 409 `window` (the model chosen cannot take the
  *  conversation), 409 `agent_missing` and `no_agent` (the server lacks the chat's agent, or the
- *  chat has none) and 409 `image_missing` (the chat no longer holds an image the message named)
- *  are no stale state: the message stays in the box. */
-const NOT_STALE = ["cap", "window", "agent_missing", "no_agent", "image_missing"];
+ *  chat has none), 409 `image_missing` (the chat no longer holds an image the message named), and
+ *  the refusals of a chat on a Claude account (aliasesapi.ts AliasCode): 409 `not_mounted` and
+ *  `mount_pending` (its folder is not in the account's container, or waits for a restart),
+ *  `alias_removed` (the account is gone), `docker_unavailable` and `alias_preparing` (the account's
+ *  container is still being made ready: send again in a moment) are no stale state: the message
+ *  stays in the box. 409 `alias_restarting` (the account's container is being recreated) is not
+ *  among them: the chat is read again. */
+const NOT_STALE = ["cap", "window", "agent_missing", "no_agent", "image_missing", "not_mounted", "mount_pending", "alias_removed", "docker_unavailable", "alias_preparing"];
 export const refreshAfterRefusal = (status: number, code?: string): boolean => status === 409 && !NOT_STALE.includes(code ?? "");
 
 /** "<Name> is not connected": what the page says of a thing of a section (a remote server of the server list)

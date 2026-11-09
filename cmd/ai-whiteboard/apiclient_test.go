@@ -89,7 +89,7 @@ func typesOf(evs []string) (types []string) {
 // snapshot: the list events, which go to every client, and the content events of what the client
 // follows. No event of the server's own pages is among them.
 var (
-	apiListEvents   = []string{"groups", "defaults", "board", "board_removed", "chat", "chat_removed", "branch_state", "catalog", "agents", "own_library"}
+	apiListEvents   = []string{"groups", "defaults", "board", "board_removed", "chat", "chat_removed", "branch_state", "catalog", "agents", "own_library", "aliases"}
 	apiFollowEvents = []string{"tree", "chat_items", "sub", "sub_items"}
 )
 
@@ -267,9 +267,10 @@ func TestTwoClientsBesideEachOther(t *testing.T) {
 	if _, has := snap["defaults"]; !has {
 		t.Fatalf("the API client's snapshot has no defaults: %v", snap)
 	}
-	// (A catalog that finishes loading just now goes to every client, whoever connects.)
+	// (A catalog that finishes loading just now goes to every client, whoever connects, and so does
+	// the accounts' list once the server has first looked at Docker and at the computer's Claude.)
 	for _, typ := range typesOf(p.Drain(300 * time.Millisecond)) {
-		if typ != "catalog" && typ != "agents" {
+		if typ != "catalog" && typ != "agents" && typ != "aliases" {
 			t.Fatalf("at the API client's connect the page was sent %s", typ)
 		}
 	}

@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
 	"syscall"
 	"time"
@@ -37,30 +36,36 @@ func ProbeArgs() []string {
 // `claude auth status` and gives up if the CLI is signed out (non-zero exit), then starts a
 // process in the temp folder whose only stdin line is the `initialize` request, maps the answer
 // with CatalogFromInitialize, closes stdin and waits for the exit, killing it after a short
-// grace. It sends no prompt. timeout covers the whole call.
+// grace. It sends no prompt. timeout covers the whole call, a Runner's preparation of its place
+// included. Both runs go through s.Runner when the spawner has one; a run that is cut short (the
+// timeout, or no exit within the grace) is also ended there by the run's Kill, while one that
+// ended by itself (or was never started) needs none and is released (agent.Run.Release).
 func (s *Spawner) Catalog(timeout time.Duration) (*model.Catalog, error) {
-	bin := s.Bin
-	if bin == "" {
-		bin = "claude"
-	}
+	bin := s.bin()
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	if err := signedIn(ctx, bin, timeout); err != nil {
+	if err := s.signedIn(ctx, timeout); err != nil {
 		return nil, err
 	}
 
-	cmd := exec.Command(bin, ProbeArgs()...)
-	cmd.Dir = os.TempDir()
-	cmd.Env = append(os.Environ(), "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1")
+	cmd, run, err := s.command(ctx, s.scratchDir(), []string{"CLAUDE_CODE_DISABLE_AUTO_MEMORY=1"}, ProbeArgs()...)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("Claude did not report its models within %s", timeout)
+		}
+		return nil, err // the Runner's reason (Docker not running), as it is
+	}
 	stderr := &bytes.Buffer{}
 	cmd.Stderr = &cappedWriter{buf: stderr, max: stderrCap}
 	cmd.WaitDelay = probeReapGrace
 	stdin, err1 := cmd.StdinPipe()
 	stdout, err2 := cmd.StdoutPipe()
 	if err := errors.Join(err1, err2); err != nil {
+		agent.ReleaseRun(run) // never started
 		return nil, err
 	}
 	if err := agent.StartGroup(cmd); err != nil {
+		agent.ReleaseRun(run)
 		return nil, fmt.Errorf("cannot start Claude (%s): %w", bin, err)
 	}
 
@@ -94,7 +99,6 @@ func (s *Spawner) Catalog(timeout time.Duration) (*model.Catalog, error) {
 	stdin.Write(append(b, '\n'))
 
 	var line []byte
-	var err error
 	select {
 	case line = <-answer:
 	case <-waited:
@@ -110,12 +114,20 @@ func (s *Spawner) Catalog(timeout time.Duration) (*model.Catalog, error) {
 		stdin.Close()
 		select {
 		case <-waited:
+			agent.ReleaseRun(run) // it ended by itself
 		case <-time.After(probeKillGrace):
+			killRun(run)
 			reap(cmd, stdout, waited)
 		}
 		return CatalogFromInitialize(line)
 	}
 	stdin.Close()
+	select {
+	case <-waited: // it ended by itself
+		agent.ReleaseRun(run)
+	default:
+		killRun(run)
+	}
 	reap(cmd, stdout, waited)
 	return nil, err
 }
@@ -163,15 +175,22 @@ func killGroup(cmd *exec.Cmd) {
 }
 
 // signedIn runs the CLI's sign-in status command, which exits non-zero when signed out. It runs in
-// a registered group, so stopping the server ends it, and ctx ends it with its descendants.
-func signedIn(ctx context.Context, bin string, timeout time.Duration) error {
-	cmd := exec.Command(bin, "auth", "status")
-	cmd.Dir = os.TempDir()
-	cmd.Env = os.Environ()
+// a registered group, so stopping the server ends it, and ctx ends it with its descendants (with
+// a Runner: also the run's Kill, where it runs); a run that ends by itself is released.
+func (s *Spawner) signedIn(ctx context.Context, timeout time.Duration) error {
+	bin := s.bin()
+	cmd, run, err := s.command(ctx, s.scratchDir(), nil, "auth", "status")
+	if err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("claude auth status: no answer within %s", timeout)
+		}
+		return err // the Runner's reason, as it is
+	}
 	var stderr bytes.Buffer
 	cmd.Stderr = &cappedWriter{buf: &stderr, max: stderrCap}
 	cmd.WaitDelay = probeReapGrace
 	if err := agent.StartGroup(cmd); err != nil {
+		agent.ReleaseRun(run) // never started
 		return fmt.Errorf("cannot start Claude (%s): %w", bin, err)
 	}
 	done := make(chan error, 1)
@@ -181,10 +200,11 @@ func signedIn(ctx context.Context, bin string, timeout time.Duration) error {
 		forgetGroup(cmd)
 		done <- err
 	}()
-	var err error
 	select {
 	case err = <-done:
+		agent.ReleaseRun(run) // waited for, ended by itself
 	case <-ctx.Done():
+		killRun(run)
 		killGroup(cmd)
 		select {
 		case <-done:

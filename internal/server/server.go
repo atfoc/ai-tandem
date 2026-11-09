@@ -18,10 +18,12 @@ import (
 	"strings"
 
 	"ai-whiteboard/internal/agent"
+	"ai-whiteboard/internal/aliases"
 	"ai-whiteboard/internal/app"
 	"ai-whiteboard/internal/boardapi"
 	"ai-whiteboard/internal/boards"
 	"ai-whiteboard/internal/chats"
+	"ai-whiteboard/internal/container"
 	"ai-whiteboard/internal/editorbridge"
 	"ai-whiteboard/internal/model"
 	"ai-whiteboard/internal/usable"
@@ -46,6 +48,13 @@ type Server struct {
 	Clients    *ClientListener
 	// Usage returns an agent's plan usage limits (agent.UsageCache.Get); a missing agent = not available.
 	Usage map[model.AgentKind]func(fresh bool) (model.PlanUsage, error)
+	// UsageFor is consulted for a kind Usage has no entry for: the Claude accounts, whose kinds
+	// come and go while the server runs. It returns the kind's usage call, or nil when the kind
+	// has none. nil = no kind beyond Usage's has usage.
+	UsageFor func(model.AgentKind) func(fresh bool) (model.PlanUsage, error)
+	// Aliases are the Claude accounts' calls (aliases.go); nil = this server has none, and their
+	// routes answer 501.
+	Aliases AliasAPI
 
 	// beforeTake is a test's hook: the take route calls it with the board's id between its check
 	// of the board and the grant. nil outside tests.
@@ -158,7 +167,7 @@ func statusOf(err error, fallback int) int {
 	switch {
 	case errors.Is(err, boards.ErrNotFound), errors.Is(err, chats.ErrNotFound),
 		errors.Is(err, chats.ErrNoSubagent), errors.Is(err, chats.ErrNoBranch), errors.Is(err, app.ErrGroupNotFound),
-		errors.Is(err, chats.ErrNoImage):
+		errors.Is(err, chats.ErrNoImage), errors.Is(err, aliases.ErrNotFound):
 		return http.StatusNotFound
 	case errors.Is(err, chats.ErrImageTooLarge):
 		return http.StatusRequestEntityTooLarge
@@ -167,7 +176,8 @@ func statusOf(err error, fallback int) int {
 	case errors.Is(err, chats.ErrBadReference), errors.Is(err, chats.ErrBadLabel), errors.Is(err, chats.ErrBadPoint),
 		errors.Is(err, chats.ErrBadChoice), errors.Is(err, chats.ErrBadID),
 		errors.Is(err, chats.ErrSubRange),
-		errors.Is(err, chats.ErrImageID), errors.Is(err, chats.ErrImageLimit), errors.Is(err, chats.ErrImageModel):
+		errors.Is(err, chats.ErrImageID), errors.Is(err, chats.ErrImageLimit), errors.Is(err, chats.ErrImageModel),
+		errors.Is(err, aliases.ErrNoName), errors.As(err, new(*aliases.FolderError)), errors.As(err, new(*aliases.ImageError)):
 		return http.StatusBadRequest
 	case errors.Is(err, boards.ErrArchived), errors.Is(err, chats.ErrArchived),
 		errors.Is(err, chats.ErrLegacy), errors.Is(err, chats.ErrLocked), errors.Is(err, agent.ErrFolderMissing),
@@ -175,7 +185,9 @@ func statusOf(err error, fallback int) int {
 		errors.Is(err, chats.ErrWindow),
 		errors.Is(err, usable.ErrMissing), errors.Is(err, usable.ErrNone), errors.Is(err, chats.ErrAgentFixed), errors.Is(err, chats.ErrIDTaken),
 		errors.Is(err, chats.ErrSubFixed),
-		errors.Is(err, chats.ErrImageCap), errors.Is(err, chats.ErrImageMissing):
+		errors.Is(err, chats.ErrImageCap), errors.Is(err, chats.ErrImageMissing),
+		errors.Is(err, aliases.ErrRemoved), errors.As(err, new(*aliases.MountError)), errors.As(err, new(*container.Unavailable)),
+		errors.Is(err, aliases.ErrRestarting), errors.Is(err, aliases.ErrStopped), errors.Is(err, aliases.ErrPreparing):
 		return http.StatusConflict
 	case errors.Is(err, chats.ErrChatCap), errors.Is(err, chats.ErrAppCap):
 		// Not 409: a client takes a 409 on a message as "stale, wait for the turn's end".
@@ -197,8 +209,11 @@ func statusOf(err error, fallback int) int {
 // (images.go): "image_too_large", "image_type", "image_cap", "image_id", "image_missing",
 // "image_limit" and "image_model"; and "not_found" for a chat, a board or a group that is not
 // there, which tells "the thing the call names is gone" from a part of it that is missing (a
-// branch, a subagent, an image: other codes, or none). Every other error has none.
+// branch, a subagent, an image: other codes, or none); the Claude accounts' refusals have the
+// codes aliases names (aliases.CodeRemoved, CodeDocker, CodeNotMounted, ...). Every other error
+// has none.
 func codeOf(err error) string {
+	var me *aliases.MountError
 	switch {
 	case errors.Is(err, chats.ErrImageTooLarge):
 		return "image_too_large"
@@ -222,12 +237,36 @@ func codeOf(err error) string {
 		return "bad_point"
 	case errors.Is(err, chats.ErrWindow):
 		return "window"
+	// A Claude account's refusal keeps its own code even when it comes as a
+	// *usable.UnusableError, which is usable.ErrMissing to errors.Is: these come before it.
+	case errors.Is(err, aliases.ErrRemoved):
+		return aliases.CodeRemoved
+	case errors.Is(err, aliases.ErrRestarting):
+		return aliases.CodeRestarting
+	case errors.Is(err, aliases.ErrStopped):
+		return aliases.CodeStopped
+	case errors.Is(err, aliases.ErrPreparing):
+		return aliases.CodePreparing
+	case errors.As(err, new(*container.Unavailable)):
+		return aliases.CodeDocker
+	case errors.As(err, &me):
+		if me.Pending {
+			return aliases.CodeMountPending
+		}
+		return aliases.CodeNotMounted
 	case errors.Is(err, usable.ErrMissing):
 		return "agent_missing"
 	case errors.Is(err, usable.ErrNone):
 		return "no_agent"
-	case errors.Is(err, chats.ErrNotFound), errors.Is(err, boards.ErrNotFound), errors.Is(err, app.ErrGroupNotFound):
+	case errors.Is(err, chats.ErrNotFound), errors.Is(err, boards.ErrNotFound), errors.Is(err, app.ErrGroupNotFound),
+		errors.Is(err, aliases.ErrNotFound):
 		return "not_found"
+	case errors.Is(err, aliases.ErrNoName):
+		return aliases.CodeBadName
+	case errors.As(err, new(*aliases.FolderError)):
+		return aliases.CodeBadFolder
+	case errors.As(err, new(*aliases.ImageError)):
+		return aliases.CodeBadImage
 	}
 	return ""
 }
@@ -316,7 +355,7 @@ func expandDir(p string) (string, error) {
 // ---- routes ---------------------------------------------------------------
 
 // MCPHandler is the handler of the second, MCP-only listener: it serves exactly POST /mcp,
-// guarded by the loopback Host check for mcpPort. The credential travels in the Authorization
+// guarded by the Host check for mcpPort (loopback, host.docker.internal, a private IP). The credential travels in the Authorization
 // header and no CORS headers are added. This listener serves no /api/* routes.
 func (s *Server) MCPHandler(mcpPort int) http.Handler {
 	mux := http.NewServeMux()
@@ -1012,7 +1051,11 @@ func (s *Server) routes() *routeMux {
 
 	// An agent's plan usage limits, run on request and not stored. ?fresh=1 skips the cache.
 	mux.HandleFunc("GET /api/usage/{agent}", func(w http.ResponseWriter, r *http.Request) {
-		get := s.Usage[model.AgentKind(r.PathValue("agent"))]
+		kind := model.AgentKind(r.PathValue("agent"))
+		get := s.Usage[kind]
+		if get == nil && s.UsageFor != nil {
+			get = s.UsageFor(kind)
+		}
 		if get == nil {
 			writeError(w, http.StatusNotFound, "usage not available")
 			return
@@ -1025,5 +1068,6 @@ func (s *Server) routes() *routeMux {
 		writeJSON(w, u)
 	})
 
+	s.aliasRoutes(mux)
 	return mux
 }

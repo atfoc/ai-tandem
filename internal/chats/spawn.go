@@ -72,6 +72,21 @@ func (e *folderMissingError) Unwrap() error { return ErrFolderMissing }
 // own chat object (a branch's for a branch), here and in StopSubagent: they are never re-routed
 // to the current branch.
 func (m *Manager) SpawnSubagent(chatID string, req SpawnSubRequest) (model.Subagent, error) {
+	// The kind the subagent runs as (req.Kind, else its caller's): on a Claude account its
+	// container is made ready first, with no lock held (see prepare). A refusal there records
+	// nothing. The kind is resolved again below, with the checks.
+	if m.Accounts != nil && !m.down.Load() {
+		kind := req.Kind
+		if c, err := m.lock(chatID); err == nil {
+			if kind == "" {
+				kind = spawnBaseOf(c, c.subs[req.From]).kind
+			}
+			c.mu.Unlock()
+		}
+		if err := m.prepare(kind); err != nil {
+			return model.Subagent{}, err
+		}
+	}
 	var out outbox
 	c, err := m.lock(chatID)
 	if err != nil {
@@ -131,7 +146,7 @@ func (m *Manager) SpawnSubagent(chatID string, req SpawnSubRequest) (model.Subag
 	// The session is made here, before the record is first written, so that the record and the
 	// process hold the same one (design D4). Cursor's is reported by the process (EvSession).
 	session := ""
-	if kind == model.Claude || kind == model.Pi {
+	if model.IsClaude(kind) || kind == model.Pi {
 		session = uuid()
 	}
 	s := &sub{
@@ -203,10 +218,17 @@ func (m *Manager) SpawnSubagent(chatID string, req SpawnSubRequest) (model.Subag
 // with opts, unlocked; then, with the chat locked, prepare says whether s still wants it and
 // returns the first message (prepare may set s.carry and emit). The process is attached and runSub
 // hands it the message. It returns the error of the start (no process then); a start that is no
-// longer wanted closes the process and returns nil.
+// longer wanted closes the process and returns nil. A Claude account's start is refused, before
+// anything is started, while accountGate refuses it (in opts.Cwd, the chat's folder): its callers
+// look first where a refusal must leave nothing, and a retry fails the subagent with the reason.
+// The account's container is made ready by the callers (prepare) before they call it; the start
+// itself holds no lock either.
 func (m *Manager) startSub(chatID, sid string, kind model.AgentKind, opts agent.SpawnOptions,
 	prepare func(c *Chat, s *sub, out *outbox) ([]agent.ContentBlock, bool)) error {
-	sp := m.Spawners[kind]
+	if err := m.accountGate(kind, opts.Cwd); err != nil {
+		return err
+	}
+	sp := m.spawner(kind)
 	if sp == nil {
 		return fmt.Errorf("no spawner for agent %q", kind)
 	}
@@ -330,16 +352,23 @@ func spawnBaseOf(c *Chat, from *sub) spawnBase {
 // is inherited only by a subagent of the caller's own kind, even if the other kind lists the same id;
 // a named effort there is validated against the model the rebase yields. That holds while the
 // other kind's catalog is unknown too: the defaults are then the model the user last picked for
-// that kind, or none, so the agent uses its own. c.mu held.
+// that kind, or none, so the agent uses its own. A kind the server cannot use is refused, a
+// Claude account also when it does not have the chat's folder (accountGate). c.mu held.
 func (m *Manager) resolveSubSpawn(c *Chat, base spawnBase, req SpawnSubRequest) (kind model.AgentKind, modelID, effort string, err error) {
 	kind = req.Kind
 	if kind == "" {
 		kind = base.kind
 	}
-	if kind != model.Claude && kind != model.Cursor && kind != model.Pi {
+	if !model.ValidKind(kind) {
 		return "", "", "", fmt.Errorf("unknown agent %q", kind)
 	}
-	if m.Agents.Check(kind) != nil {
+	if model.IsAlias(kind) {
+		// A Claude account: the reason it cannot be used, or the chat's folder it does not have,
+		// as it came (accountGate), where a fixed kind's missing program is notUsableError.
+		if err := m.accountGate(kind, c.meta.Cwd); err != nil {
+			return "", "", "", err
+		}
+	} else if m.Agents.Check(kind) != nil {
 		return "", "", "", notUsableError(kind, m.Agents.List())
 	}
 	cat := m.catalog(kind)

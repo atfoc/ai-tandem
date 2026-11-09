@@ -201,10 +201,15 @@ test("refreshAfterRefusal: the chat is read again after a 409 that tells of stal
   assert.equal(refreshAfterRefusal(400, "busy"), false);
   // what is no stale state: the message stays in the box, and nothing is read again
   for (const code of ["cap", "window", "agent_missing", "no_agent", "image_missing"]) assert.equal(refreshAfterRefusal(409, code), false, code);
+  // a chat on a Claude account: a folder not mounted (or waiting for a restart), the account removed, Docker unusable, its container
+  // still being prepared (send again in a moment) are no stale state
+  for (const code of ["not_mounted", "mount_pending", "alias_removed", "docker_unavailable", "alias_preparing"]) assert.equal(refreshAfterRefusal(409, code), false, code);
+  // its container being recreated is: the chat is read again
+  assert.equal(refreshAfterRefusal(409, "alias_restarting"), true);
   // the refusals of the move that carried a chat over to its server are no longer sent: a 409 with such a code is a 409 like another
   for (const code of ["not_moved", "move_refused"]) assert.equal(refreshAfterRefusal(409, code), true, code);
   const src = sourceOf("logic/status.ts");
-  assert.ok(src.includes('const NOT_STALE = ["cap", "window", "agent_missing", "no_agent", "image_missing"];'));
+  assert.ok(src.includes('const NOT_STALE = ["cap", "window", "agent_missing", "no_agent", "image_missing", "not_mounted", "mount_pending", "alias_removed", "docker_unavailable", "alias_preparing"];'));
   for (const gone of ["not_moved", "move_refused", "remoteRow"]) assert.ok(!src.includes(gone), gone);
 });
 

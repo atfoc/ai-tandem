@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"ai-whiteboard/internal/aliases"
 	"ai-whiteboard/internal/boards"
 	"ai-whiteboard/internal/chats"
 	"ai-whiteboard/internal/defaults"
@@ -30,6 +31,9 @@ type App struct {
 	Library *library.Store
 
 	Agents *usable.Set // nil: every kind of agent is usable
+
+	// Aliases lists the Claude accounts for the snapshot (*aliases.Service has it); nil: none.
+	Aliases interface{ List() aliases.List }
 
 	// Set by main; reported in the snapshot.
 	Home       string // the user's home folder

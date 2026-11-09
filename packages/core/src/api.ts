@@ -6,6 +6,7 @@
 import { LOCAL_SERVER, type Writer } from "./types.ts";
 import type { AgentKind, Board, BranchState, Catalog, ChatImage, ChatView, ContextSplit, Defaults, Draft, Group, Item, PlanUsage, Reference,
   Subagent, Target, TreeLabel, TreeView } from "./types.ts";
+import type { AliasList } from "./aliasesapi.ts";
 import type { PermAnswer } from "./logic/perms.ts";
 import type { LibraryTree } from "./logic/library.ts";
 import { isBytesFile, type UploadFile } from "./logic/chatimage.ts";
@@ -27,6 +28,7 @@ export type Snapshot = {
   home: string;
   defaultCwd: string;
   states?: BranchState[]; // one per branch of every chat
+  aliases?: AliasList; // the server's Claude accounts; absent for a server without them (aliasesapi.ts)
 };
 
 export type Dirs = { path: string; parent: string; dirs: string[] };

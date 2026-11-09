@@ -20,7 +20,9 @@ var errOriginGone = errors.New("the chat this fork was made from is gone, or can
 // process is started again on them (see restartFresh). A folder is not: the fork's session was
 // made in the one it has. While c is busy, which a fresh fork is only during a start (this one's
 // or a Send's), it is ErrBusy: the choice the record shows then is not settled. A choice that
-// resolves to the one c has changes nothing and starts nothing. c.mu is held on entry and on
+// resolves to the one c has changes nothing and starts nothing. On a Claude account that cannot
+// start the process now (accountGate) the change is refused with that refusal, and c keeps its
+// choice and its process. c.mu is held on entry and on
 // return; it may be released in between (see restartFresh).
 func (m *Manager) configureFresh(c *Chat, req ConfigReq, out *outbox) error {
 	if req.Cwd != "" {
@@ -38,6 +40,10 @@ func (m *Manager) configureFresh(c *Chat, req ConfigReq, out *outbox) error {
 		return nil
 	}
 	if err := windowGuard(c.meta.Agent, ctxOf(c.meta), cur.Model, next.Model, cm); err != nil {
+		return err
+	}
+	// The start again on a Claude account: refused before the old process is closed.
+	if err := m.accountGate(c.meta.Agent, c.meta.Cwd); err != nil {
 		return err
 	}
 	return m.restartFresh(c, next, windowOf(cm), out)
@@ -92,7 +98,7 @@ func (m *Manager) restartFresh(c *Chat, next model.ModelChoice, window int, out 
 	switch {
 	case c.meta.Agent == model.Cursor:
 		err = m.restartCursor(c, out)
-	case c.meta.Agent == model.Claude && c.meta.ForkSource != nil:
+	case model.IsClaude(c.meta.Agent) && c.meta.ForkSource != nil:
 		if err = m.remakeable(c, out); err == nil {
 			detach(c)
 			err = m.spawnFork(c, out)
@@ -197,7 +203,7 @@ func (m *Manager) restartCursor(c *Chat, out *outbox) error {
 	if err != nil {
 		return err
 	}
-	fk, ok := m.Spawners[c.meta.Agent].(agent.Forker)
+	fk, ok := m.spawner(c.meta.Agent).(agent.Forker)
 	if !ok {
 		return errNoForker(c.meta.Agent)
 	}

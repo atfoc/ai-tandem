@@ -3,6 +3,8 @@
 // canvas renders from them.
 import { AGENT_ORDER, LOCAL_SERVER, type AgentKind, type Board, type BranchState, type Catalog, type ChatView, type Defaults, type Draft, type Group, type PendingMove, type SectionTree, type ServerLists, type Subagent, type TreeView, type Writer } from "../types.ts";
 import type { Snapshot } from "../api.ts";
+import type { AliasList } from "../aliasesapi.ts";
+import type { AccountsNav, LoginFlow } from "../logic/aliases.ts";
 import { boardSide, theKv } from "./ports.ts";
 import { parseSideHidden, parseWidths, type Widths } from "../logic/layout.ts";
 import { parseThemePref, resolveTheme, type Theme, type ThemePref } from "../logic/theme.ts";
@@ -44,6 +46,8 @@ export type ConfirmRequest = {
   title: string; body?: string;
   /** The go button's label on the phone's sheet (the verb and the noun: "Delete chat"); absent = the action's own `label`. */
   confirmLabel?: string;
+  /** The label of the button that closes it without an action ("Later" for a restart that can wait); absent = "Cancel". */
+  cancelLabel?: string;
   /** An action that fails leaves the dialog open, with the error's sentence in it. */
   actions: { label: string; tone?: "danger" | "primary"; run: () => Promise<void> | void }[]; // plus Cancel
 };
@@ -95,6 +99,9 @@ export type State = {
   picking: string | null;         // chat id waiting for a point clicked on its board (⌘⇧L), or (pickFor "select") for shapes selected there
   pickFor: "point" | "select";    // what `picking` waits for: a point, or the phone's Add selection (ux-improvements B2); "point" when nothing waits
   restart: Restart;               // a restart of this computer's server, which its section says (version.ts)
+  aliases: Record<string, AliasList>; // by entry id (LOCAL_SERVER for this computer): each server's Claude accounts, from its snapshot and its `aliases` events (state/aliases.ts applyAliases); no key: a server without accounts, or not heard from
+  aliasLogins: Record<string, LoginFlow>; // by loginKey(server, id) (logic/aliases.ts): the logins under way, with their URL; in memory only, and never logged
+  accountsNav: AccountsNav | null; // the request to show Settings › Claude accounts (state/aliases.ts openAccounts); the Settings screen draws it and closes it
 
   // The role per board: several windows work on one server, and each board is held by one of them (board.ts).
   roles: Record<string, BoardRole>;   // by board id; absent = not asked for
@@ -134,6 +141,7 @@ function initialState(): State {
     servers: [LOCAL_ENTRY], serverSince: {}, localNetworkDenied: false, serversNotice: "", serversDialog: null,
     libraries: [], libraryDialog: null, insertPopup: null,
     restart: NO_RESTART,
+    aliases: {}, aliasLogins: {}, accountsNav: null,
     roles: {}, writers: {}, dropped: {}, sceneGen: {}, outage: {}, saveSaid: {},
     dropAt: NO_MARK,
   };

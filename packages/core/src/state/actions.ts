@@ -6,7 +6,7 @@ import { keepBranch, showBranch } from "./conn.ts";
 import { ui } from "./ports.ts";
 import { putDraft } from "./chatdraft.ts";
 import { composerOpened } from "./uploads.ts";
-import { LIVE_FORK, sessionEnd } from "../logic/forkpoints.ts";
+import { liveFork, sessionEnd } from "../logic/forkpoints.ts";
 import { afterBack, afterSent, moveDropped, moveValid, quoteLimit, quotesBefore } from "../logic/branchview.ts";
 import { draftsAfterSent, hasDraft, heldOf, ofHeld } from "../logic/drafts.ts";
 import { mergeQuotes } from "../logic/quotes.ts";
@@ -254,7 +254,7 @@ function opening(chat: string, branch: string, needed: boolean): () => void {
  *  the place of what the composer holds, and the image belongs to what it was added to. */
 export async function startMove(chat: string, target: Target, edit?: number): Promise<void> {
   const ok = () => { const c = getState().chats[chat]; return !!c && !c.archived && !isLegacy(c) && takesCalls(chat) && !isSending(chat) && !(edit !== undefined && composerUploads(chat)); };
-  const live = () => { const a = getState().chats[chat]!.agent; return (!!a && LIVE_FORK[a]) || !sourceBusy(chat, target.branch); };
+  const live = () => { const a = getState().chats[chat]!.agent; return liveFork(a ?? "") || !sourceBusy(chat, target.branch); };
   if (!ok()) return;
   const n = ++startSeq;
   starts.set(chat, n);
@@ -374,7 +374,7 @@ export function checkMove(chat: string): void {
   const s = getState(), move = s.moves[chat], c = s.chats[chat];
   if (!move || !c || !c.agent) return; // a chat with no agent has no point to move to
   const items = threadOf(s, chat)?.items;
-  const running = sourceBusy(chat, move.branch) && LIVE_FORK[c.agent];
+  const running = sourceBusy(chat, move.branch) && liveFork(c.agent);
   const valid = !items || moveValid(c.agent, items, move, running); // not loaded yet: judged when it is
   if (moveDropped({ archived: !!c.archived, valid, sending: isSending(chat) })) goBack(chat);
 }

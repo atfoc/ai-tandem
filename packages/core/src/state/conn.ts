@@ -7,6 +7,8 @@ import { setState, getState, applySnapshot, applySection, dropLeftBehind, dropSe
   upsertState, setDrawer, setShown, setThreadError, setLoading, dropLoading, threadAt, shownBranch, shownKey, currentBranch, branchState, isBusy,
   type ThreadKey } from "./store.ts";
 import { boardSide } from "./ports.ts";
+import { applyAliases } from "./aliases.ts";
+import { ALIASES_EVENT } from "../aliasesapi.ts";
 import { subKey } from "../logic/subagents.ts";
 import { branchKey, keyOfChat, type BranchKey } from "../logic/branches.ts";
 import { Loads } from "../logic/branchview.ts";
@@ -122,6 +124,7 @@ async function onEvent(server: string, m: any) {
     case "defaults": if (on) setSectionDefaults(on, m.defaults ?? { groups: {} }); else setState({ defaults: m.defaults }); return;
     case "catalog": if (on) offers(on, (l) => ({ ...l, catalogs: { ...l.catalogs, [m.agent]: m.catalog } })); else setState((s) => ({ catalogs: { ...s.catalogs, [m.agent]: m.catalog } })); return;
     case "agents": if (on) offers(on, (l) => ({ ...l, agents: m.agents ?? [] })); else setState({ usable: m.agents ?? [] }); return; // that server's usable agents changed
+    case ALIASES_EVENT: if (m.aliases) applyAliases(server, m.aliases); return; // that server's Claude accounts, whole, after every change of them (state/aliases.ts)
   }
 }
 
@@ -150,6 +153,7 @@ function libraryFrom(server: string, m: any) {
 function onSectionSnapshot(server: string, m: any) {
   setServerLists(server, { agents: m.agents ?? [], catalogs: m.catalogs ?? {}, home: m.home ?? "", defaultCwd: m.defaultCwd ?? "" });
   libraryFrom(server, m);
+  applyAliases(server, m.aliases ?? null); // (a server without accounts has none in its snapshot)
   onSection(server, { groups: m.groups, boards: m.boards, chats: m.chats, states: m.states, defaults: m.defaults });
 }
 
@@ -173,6 +177,7 @@ function onSnapshot(m: any) {
   applySnapshot(m, dropMoves());
   afterSnapshot();
   libraryFrom(LOCAL_SERVER, m);
+  applyAliases(LOCAL_SERVER, m.aliases ?? null);
   draftBacks.snapshot();
 }
 
@@ -242,6 +247,7 @@ function dropRemoved(before: ServerView[]) {
   for (const server of entriesGone(before, getState().servers)) {
     givenUp(server);
     for (const id of dropServer(server)) forgetThing(id);
+    applyAliases(server, null); // (its accounts, and the logins under way of them)
     for (const id of [...removed]) if (serverOfKey(id) === server) removed.delete(id);
     for (const fn of goneHandlers) fn(server);
   }

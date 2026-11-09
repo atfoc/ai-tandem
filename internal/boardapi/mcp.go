@@ -457,13 +457,16 @@ func (r *Relay) listedTools(token string) []map[string]any {
 }
 
 // spawnListed is the spawn family as tools/list shows it to caller: its agent parameter names
-// only the agents this server can start, and a subagent reads of itself where the chat's agent
-// reads of its chat.
+// only the agents this server can start, a Claude account with its name, and a subagent reads of
+// itself where the chat's agent reads of its chat.
 func (r *Relay) spawnListed(caller chats.Caller) []boardtools.Tool {
 	usable := r.Chats.UsableAgents()
-	names := make([]string, len(usable))
+	names := make([]boardtools.Agent, len(usable))
 	for i, a := range usable {
-		names[i] = string(a)
+		names[i] = boardtools.Agent{Kind: string(a)}
+		if model.IsAlias(a) {
+			names[i].Name = r.Chats.AgentName(a)
+		}
 	}
 	if caller.Subagent {
 		return boardtools.SpawnFamilyForSub(names)
@@ -600,6 +603,13 @@ func (r *Relay) callSpawnFamily(caller chats.Caller, name string, args json.RawM
 			return err.Error(), true
 		}
 		req.From = caller.SID
+		kind := req.Kind
+		if kind == "" {
+			kind = caller.Kind
+		}
+		if why := r.accountRefusal(kind); why != "" {
+			return why, true
+		}
 		sa, err := r.Chats.SpawnSubagent(caller.Meta.ID, req)
 		if err != nil {
 			return spawnErrorText(err), true
@@ -631,6 +641,19 @@ func (r *Relay) callSpawnFamily(caller chats.Caller, name string, args json.RawM
 	}
 }
 
+// accountRefusal is why a subagent of the agent kind a cannot start now when a is a Claude account
+// the server cannot use (not logged in, Docker's reason, removed): the reason as the person reads
+// it. "" when a is no account or the account can be used; the spawn then checks the rest.
+func (r *Relay) accountRefusal(a model.AgentKind) string {
+	if !model.IsAlias(a) {
+		return ""
+	}
+	if err := r.Chats.Agents.Check(a); err != nil {
+		return err.Error()
+	}
+	return ""
+}
+
 // spawnErrorText is a spawn error as the agent reads it. A model or effort the manager rejected
 // against a known list also says how to find the valid values.
 func spawnErrorText(err error) string {
@@ -659,12 +682,10 @@ func parseSpawnArgs(args json.RawMessage) (chats.SpawnSubRequest, error) {
 	}
 	var kind model.AgentKind
 	if p.Agent != "" {
-		switch model.AgentKind(p.Agent) {
-		case model.Claude, model.Cursor, model.Pi:
-			kind = model.AgentKind(p.Agent)
-		default:
+		if !model.ValidKind(model.AgentKind(p.Agent)) {
 			return chats.SpawnSubRequest{}, fmt.Errorf("unknown agent %q", p.Agent)
 		}
+		kind = model.AgentKind(p.Agent)
 	}
 	return chats.SpawnSubRequest{
 		Prompt: p.Prompt, Description: p.Description, Kind: kind, Model: p.Model, Effort: p.Effort,

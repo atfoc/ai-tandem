@@ -72,3 +72,10 @@ test("the Tree button's words", () => {
   assert.equal(treeLabel(3, { asks: "b2", failed: null }), "Chat tree, 3 branches, a branch needs your approval");
   assert.equal(treeLabel(2, { asks: null, failed: "b2" }), "Chat tree, 2 branches, a branch failed");
 });
+
+test("a chat on a Claude account: the badge names the account, so the line says the folder alone (multiple-claude goal §1.4.4)", () => {
+  const acct = with_({ chat: { agent: "claude:a_work0001" }, badge: true });
+  assert.deepEqual(headline(acct), { text: "checkout-service" });
+  assert.deepEqual(headline(with_({ chat: { agent: "claude:a_work0001", board: "b1" }, boardName: "Plan", badge: true })), { text: "on Plan" });
+  assert.deepEqual(headline(with_({ chat: { agent: "claude:a_work0001", status: "waiting" }, badge: true })), { text: "Waiting for background work", tone: "wait" }, "a state word as before");
+});

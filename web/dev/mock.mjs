@@ -44,10 +44,12 @@
 //   - remote servers: see "Remote servers" below for what is not as on the server
 //   - a subagent's record and thread stay as they were written: nothing moves by itself, and no `sub` event goes out
 //   - a call under /api/ that has no route here answers {ok: true}
+//   - Claude accounts: see "Claude accounts" below for what is not as on the server
 //   - made up, with no counterpart on the server: T0 (the mock's own "now" at its start), flags.send,
 //     flags.items, flags.fork, flags.configure, flags.spawn, flags.make, flags.hello, flags.restart, flags.start, flags.mcp,
 //     flags.streamDown, flags.reply, dropStreams(), addServer(), setServerState(), removeServer(), resync(), onServer(), elsewhere(),
-//     onCalls, seedUI(), voice (the stand-in voice service) and what it adds to the snapshot
+//     onCalls, seedUI(), voice (the stand-in voice service) and what it adds to the snapshot, setAccounts(), aliasDocker(), aliasSet(),
+//     flags.aliasLogin
 //
 //   node dev/mock.mjs                                      then open http://127.0.0.1:4791 (serves app/dist-web; the page can reach the mock
 //                                                          only if built with --connect-self: DIST=/some/folder as below)
@@ -171,6 +173,59 @@
 // is `voice`: voice.script([{ after: 3, partial: "hel" }, { after: 6, committed: "hello" }]), voice.fail("no_credits"),
 // voice.pace({ chunkMs: 40, chunks: 4 }), voice.log(), voice.reset(). It is as new as the mock process: a restart is a reset.
 //
+// Claude accounts (multiple-claude goal §1.1–§1.7; the client API of plan §1, internal/aliases and internal/server/aliases.go; the
+// block "Claude accounts" below). A machine has an accounts state or none: this computer always has one (Docker running, no account,
+// the host logged in as demo@example.com) and its snapshot carries `aliases`; another server has one only when a seed gives it one
+// (setAccounts), else its snapshot has no `aliases` and its /api/aliases routes answer 501 "Claude accounts are not available on this
+// server" (D28). The ten routes answer as the server does: GET the list; POST an add (400 bad_name "An account needs a name", 400
+// bad_folder "<folder as given> <why>", the first refusal in the order of aliases.CleanMounts, with no `~` expansion: "is not an
+// absolute path" (empty too), "does not exist", "is not a folder" (a file of the tree: /Users/demo/notes/todo.md,
+// /Users/demo/projects/shop/README.md), "has a “:” in its path, which Docker cannot mount" (/Users/demo/projects/a:b, a folder the
+// picker does not list), "is listed twice" (compared cleaned: "/x/" is "/x"), "holds this computer's Claude login (~/.claude)" (the
+// home folder, ~/.claude), "holds the app's data folder" (/Users/demo/.aiwb-demo), "is inside the app's data folder"
+// (…/.aiwb-demo/accounts); a folder inside another listed one is taken; the folders saved cleaned, without trailing slashes; an
+// image equal to the default image saved as "" (CleanImage), on an edit too; 400 bad_image "“<image>” is not an image name (like
+// ubuntu:24.04 or registry.example.com/team/claude:1)" for one that does not start with a letter or a digit or holds anything but
+// letters, digits and . _ - / : @ (a leading "-", a space), checked after the folders), the new account with no container ("none"); PATCH an
+// edit (the same checks; restart "unchanged" when neither image nor folders changed or the running container has them already,
+// "deferred" when the container is not running (its next start makes it with the saved ones), "done" when it runs idle (recreated:
+// applied = saved), "busy" with the count when agents work in it: saved, nothing else); DELETE (the account goes, its chats stay;
+// while Docker cannot be used it goes only when Docker is "not_installed" or "unsupported", else 409 docker_unavailable); POST
+// …/restart and …/stop {force}, in the server's order: Docker unusable 409 docker_unavailable (before anything else); a container
+// that is not running: restart "deferred", stop "done", nothing changed; running with agents at work and no force: "busy" with the
+// count, nothing changed; else restart recreates it (running, applied = saved), stop stops it (and ends an open login), busy 0;
+// POST …/login (Docker unusable 409; logged in or not, a login is started or the open one joined: the container runs, "waiting"
+// with the URL https://claude.ai/oauth/authorize?mock=<id>); POST …/login/code {code} (no login open, or it ended: 200 "failed"
+// "No login is open for this account; start it again"; a malformed code, "wrong" or empty: "waiting" with "Invalid code. Please make
+// sure the full code was copied.", Claude waits on; a well-formed wrong one, "bad#code": "failed" with "Login failed: That code
+// wasn't accepted. Please try again." and the login ends, the container as it is; any other → logged in as <the last part of the
+// name>@example.com: personal@example.com); DELETE …/login (the login ends, the container stays as it is now: the login started it;
+// none open: 200 {}); POST …/logout (Docker unusable 409; the container started if it is not running, the account not logged in,
+// its view). The view is computed as the server's: kind "claude:<id>", container "aiwb-alias-<id>", restartNeeded = running and the
+// saved image or folders differ from the applied ones (order and trailing slashes do not count), pending = the saved folders the
+// applied ones lack, every container "docker_unavailable" with Docker's reason while Docker is down. After every change the whole
+// list goes as an `aliases` event, `agents` when the usable list changed (claude, cursor, pi, then the accounts logged in while
+// Docker runs, in the order added) and `catalog` for an account that just logged in (Claude Code's list, D2).
+// A message to a chat on an account is refused first as the server refuses it (accountGate): the account gone 409 alias_removed "This
+// account was removed", Docker down 409 docker_unavailable with its reason, not logged in 409 agent_missing "Not logged in", the
+// folder not mounted 409 not_mounted / mount_pending with the MountError's sentences (D8: a running container that waits for a
+// restart has its applied folders); an account whose container is not running has it started. GET /api/usage/claude:<id> of an
+// account: Docker down 409 docker_unavailable, its container not running 409 alias_stopped "Start the account to see its usage",
+// else what any agent's usage answers here (an id no account has: that too). Not as on the server: no login state is ever asked of
+// Claude (the record says it), a removed account's catalog stays, an image is checked only by its characters, a busy count moves only by the
+// knob, a message makes nobody busy, the login URL is never checked, no symbolic link is resolved, a chat's folder that does not
+// exist is checked as any other (the server lets it through to the start), no "alias_restarting" while a container is recreated.
+// Through /mock/eval:
+//   setAccounts(id, { docker, defaultImage, host, aliases: [{ id, name, image, mounts, applied, login, container: { state, reason },
+//               busy, created }], catalogs: { "claude:<id>": catalog } })   gives a machine accounts (null: none); fields left out are
+//               as this computer's start (Docker running, no account) or a new account's (not logged in, no container, busy 0)
+//   aliasDocker(id, { ok, kind, reason })    Docker of that machine goes down ({ ok: false, kind: "not_running" | "not_installed" |
+//               "unsupported" | "failed", reason }) or comes back ({ ok: true }): every container says so, the events go
+//   aliasSet(id, aliasId, patch)            changes a record (busy, login, container, mounts, applied, …) and tells the page; answers its view
+//   flags.aliasLogin = { preparing: true }  a login answers "preparing" (the container "preparing", as while its image is built) and
+//               the container runs 1.5 s later (`delay: ms`), or at release("aliasLogin") with `hold: true`; the next login joins it,
+//               with the URL. A cancel meanwhile ends the login, not the build: the container still runs then, with no login open
+//
 // Knobs for the waits of the fork flows, set through /mock/eval and kept until deleted (`delete flags.send`). send,
 // items, fork, configure and spawn may name a `chat` (and `items` a `branch`) to hold for that one alone, and the
 // fields of one knob go together:
@@ -257,18 +312,23 @@ const claude = { default: { model: "opus", effort: "high" }, models: [
 const cursor = { default: { model: "gpt-5.4", effort: "medium" }, models: [
   { id: "gpt-5.4", label: "GPT-5.4", efforts: ["low", "medium", "high"], defaultEffort: "medium" }, { id: "gpt-5.4-nano", label: "GPT-5.4 nano" } ] };
 const catalogs = { claude, cursor, pi: null }; // pi has reported no models yet: a chat on it has no model to start with
-const catalogOf = (agent) => catalogs[agent] ?? null;
+const catalogOf = (agent) => listsHere().catalogs?.[agent] ?? catalogs[agent] ?? null; // (a Claude account's is its machine's: listsHere)
 
 const HOME = "/Users/demo", DATA = HOME + "/.aiwb-demo";
 const TREE = { // the folders that exist
   [HOME]: ["notes", "projects"], [HOME + "/notes"]: [], [HOME + "/projects"]: ["empty-repo", "scratch", "shop"],
   [HOME + "/projects/shop"]: ["docs", "web"], [HOME + "/projects/shop/docs"]: [], [HOME + "/projects/shop/web"]: [],
-  [HOME + "/projects/empty-repo"]: [], [HOME + "/projects/scratch"]: [], [DATA]: [],
+  [HOME + "/projects/empty-repo"]: [], [HOME + "/projects/scratch"]: [], [DATA]: ["accounts"], [DATA + "/accounts"]: [],
+  [HOME + "/.claude"]: [], // (not listed under HOME: the folder picker does not show it; an account's folder check finds it)
+  [HOME + "/projects/a:b"]: [], // (not listed either: a folder with a ":", which an account cannot mount)
 };
+const FILES = new Set([HOME + "/notes/todo.md", HOME + "/projects/shop/README.md"]); // files of the tree, which are no folders (an account's folder check)
 const SHOP = HOME + "/projects/shop";
 const expand = (p) => { p = String(p ?? "").trim().replace(/\/+$/, ""); return p === "~" ? HOME : p.startsWith("~/") ? HOME + p.slice(1) : p || "/"; };
 const exists = (p) => Object.hasOwn(TREE, p);
 const inside = (p, root) => p === root || p.startsWith(root + "/");
+/** A path as Go's filepath.Clean makes it (no "." or "..", no doubled or trailing slash), with no `~` expansion. */
+const cleanPath = (p) => path.posix.normalize(String(p ?? "")).replace(/(.)\/+$/, "$1");
 
 const flags = {}; // switches set through /mock/eval (see the header)
 
@@ -276,8 +336,9 @@ const flags = {}; // switches set through /mock/eval (see the header)
 // of its own: the same id can be a chat here and a chat there.
 
 /** What one machine holds: its groups, boards and chats, and what the mock keeps per chat and per board. */
-const newWorld = (id) => ({ id, groups: [], boards: {}, chats: {}, items: {}, versions: {}, subs: {}, subItems: {}, branches: {}, sessions: {}, scenes: {}, writers: {}, images: {}, lastSubLimits: null });
+const newWorld = (id) => ({ id, groups: [], boards: {}, chats: {}, items: {}, versions: {}, subs: {}, subItems: {}, branches: {}, sessions: {}, scenes: {}, writers: {}, images: {}, lastSubLimits: null, accounts: null });
 const worlds = { local: newWorld("local") }; // by entry id of the server list
+worlds.local.accounts = newAccounts(); // (this computer always has accounts; another machine only when a seed gives it some: setAccounts)
 const here = new AsyncLocalStorage();        // the machine a call works on, with everything the call starts (a timer, a held answer)
 const world = () => here.getStore() ?? worlds.local;
 /** Runs fn on the machine of a server of the list: `chats`, `groups`, … are that machine's in it, and what it sends
@@ -531,6 +592,7 @@ const snapshot = () => {
     groups: groups.map(({ collapsed: _, ...g }) => g), boards: Object.values(boards), chats: Object.values(chats),
     defaults: { last: {}, groups: {} }, states: statesNow(),
     library: lib ? { groups: lib.groups, prompts: lib.prompts } : null,
+    ...(world().accounts ? { aliases: aliasList() } : {}), // (a server without accounts sends none)
     ...(lib?.notice ? { libraryNotice: lib.notice } : {}),
   };
 };
@@ -588,7 +650,7 @@ const entryOf = (id) => (id === "local" ? null : entryById(id));
 const viewOf = (e) => {
   const { secret: _, ...v } = e;
   if (e.id === "local" && flags.hello?.version) v.version = flags.hello.version; // (the version this computer's server reports)
-  const agents = extra.lists?.[e.id]?.agents ?? (e.id === "local" ? extra.agents ?? Object.keys(catalogs) : undefined);
+  const agents = worlds[e.id]?.accounts ? onServer(e.id, () => listsHere().agents) : extra.lists?.[e.id]?.agents ?? (e.id === "local" ? extra.agents ?? Object.keys(catalogs) : undefined);
   return { ...v, ...(agents && !v.agents ? { agents } : {}) };
 };
 /** The entry as the subscription is told of it now: one whose stream is not open for it yet is still connecting. */
@@ -902,7 +964,7 @@ async function forkChat(src, b) {
 
 /** What the machine a call works on offers (its agents, their catalogs, its default folder): this computer's own, or
  *  what the seed gave the entry. */
-const listsHere = () => (world().id !== "local" ? extra.lists?.[world().id] : null) ?? { agents: extra.agents ?? Object.keys(catalogs), catalogs, home: HOME, defaultCwd: SHOP };
+const listsHere = () => withAccounts((world().id !== "local" ? extra.lists?.[world().id] : null) ?? { agents: extra.agents ?? Object.keys(catalogs), catalogs, home: HOME, defaultCwd: SHOP });
 
 /** The agent, model, effort and folder of a PATCH, on one branch. A server is refused (409 `server_fixed`: a chat is
  *  on the server it was made on); an agent gives its default model and effort; a model keeps the effort it offers, else takes
@@ -1001,7 +1063,10 @@ async function chatRoute(req, res, id, rest) {
     send({ type: "chat", chat: own });
     return answer(res);
   }
-  if (rest === "/messages" && M === "POST") return answer(res, await sendMessage(own, b, named)); // a canned reply, so that a chat can be tried
+  if (rest === "/messages" && M === "POST") { // a canned reply, so that a chat can be tried; a chat on a Claude account is refused first as the server refuses it
+    const refused = isAliasKind(own.agent) ? accountRefusal(own.agent, sessionOf(id, named || curOf(own)).cwd ?? own.cwd) : null;
+    return answer(res, refused ?? await sendMessage(own, b, named));
+  }
   return answer(res);
 }
 
@@ -1126,6 +1191,242 @@ async function libraryRoute(req, res, server, kind, id) {
   return answer(res, fail(405, "method not allowed"));
 }
 
+// ---- Claude accounts (internal/aliases, internal/server/aliases.go; the client API of plan §1). A machine's accounts state
+// is world().accounts: { docker, defaultImage, host, aliases: [record], catalogs: { kind: catalog } }, null on a machine
+// without accounts (its snapshot has no `aliases`, its routes answer 501). A record is what the server stores plus what it
+// applied: { image, default? (made for the default image: the record's image was ""), mounts }.
+// learns: { id, name, image, mounts, applied?, created, login, container: { state, reason? }, busy, session? }
+// (session: the login that is open, with its URL once it has one (none while the image is built), never in a view). The
+// view (aliasView) is computed as the server computes it; every change sends the whole list (`aliases`), `agents` when the
+// usable list changed, and `catalog` for an account that just logged in.
+
+const ALIAS_KIND = /^claude:(a_[0-9a-z]{8})$/;
+const isAliasKind = (k) => ALIAS_KIND.test(String(k ?? ""));
+const aliasKindOf = (a) => "claude:" + a.id;
+/** An accounts state: Docker running, nobody added, the host logged in as demo@example.com; o over that. */
+function newAccounts(o = {}) {
+  return { docker: { ok: true }, defaultImage: "aiwb/claude:dev", host: { known: true, loggedIn: true, email: "demo@example.com" }, aliases: [], catalogs: {}, ...o };
+}
+/** A record as a seed or a knob gives one, with what it leaves out filled in. */
+const aliasRecord = (r) => ({ image: "", mounts: [], created: iso(T0 - 600 * MIN), login: { known: true, loggedIn: false }, container: { state: "none" }, busy: 0, ...clone(r) });
+const accounts = () => world().accounts;
+const effImage = (st, a) => a.image || st.defaultImage;
+const folderSet = (xs = []) => [...new Set(xs.map(cleanPath))].sort();
+/** The image as saved (aliases.CleanImage): trimmed, and "" for the default image, so that the account follows it. */
+const cleanImage = (st, s) => { s = String(s ?? "").trim(); return s === st.defaultImage ? "" : s; };
+/** The refusal of an image that is not an image reference (aliases.CleanImage, after the trim and the default), else null. */
+const imageProblem = (st, raw) => {
+  const s = cleanImage(st, raw);
+  return s === "" || (/^[A-Za-z0-9][A-Za-z0-9._\-/:@]*$/.test(s) && s.length <= 512) ? null
+    : fail(400, `“${s}” is not an image name (like ubuntu:24.04 or registry.example.com/team/claude:1)`, "bad_image");
+};
+const specKey = (st, a) => JSON.stringify([effImage(st, a), folderSet(a.mounts)]);
+/** Whether the saved image or folders differ from what the container was made with (aliases.SpecDiffers). */
+const specDiffers = (st, a) => !!a.applied && (imageDiffers(st, a) || JSON.stringify(folderSet(a.mounts)) !== JSON.stringify(folderSet(a.applied.mounts)));
+/** An account on the default image whose container was made for the default image, from any tag of its repository, does not
+ *  differ by image (aliases.imageDiffers): an update of the default tag needs no restart. */
+const imageDiffers = (st, a) => !(a.image === "" && a.applied.default && a.applied.image.startsWith(st.defaultImage.replace(/:[^:/]*$/, "") + ":"))
+  && a.applied.image !== effImage(st, a);
+const aliasLoggedIn = (a) => !!a.login?.known && !!a.login.loggedIn;
+/** The account as the client API gives it (aliases.View): restartNeeded only for a running container (D9), every container
+ *  docker_unavailable with Docker's reason while Docker cannot be used. */
+function aliasView(st, a) {
+  const running = st.docker.ok && a.container.state === "running", restartNeeded = running && specDiffers(st, a);
+  const container = { name: `aiwb-alias-${a.id}`, ...(st.docker.ok ? { state: a.container.state, ...(a.container.reason ? { reason: a.container.reason } : {}) }
+    : { state: "docker_unavailable", reason: st.docker.reason || "Docker cannot be used" }) };
+  const applied = a.applied ? folderSet(a.applied.mounts) : [];
+  return { id: a.id, name: a.name, ...(a.image ? { image: a.image } : {}), mounts: [...a.mounts], ...(a.applied ? { applied: clone(a.applied) } : {}), created: a.created,
+    kind: aliasKindOf(a), login: clone(a.login), container, restartNeeded, pending: restartNeeded ? a.mounts.filter((m) => !applied.includes(cleanPath(m))) : [], busy: a.busy ?? 0 };
+}
+/** The machine's list (aliases.List). */
+const aliasList = () => { const st = accounts(); return { docker: clone(st.docker), defaultImage: st.defaultImage, host: clone(st.host), aliases: st.aliases.map((a) => aliasView(st, a)) }; };
+/** What a machine with accounts offers: the agents with the usable accounts after them (logged in while Docker is, in the order
+ *  added: D3), and the accounts' catalogs beside the others. */
+function withAccounts(l) {
+  const st = world().accounts;
+  if (!st) return l;
+  const usable = st.docker.ok ? st.aliases.filter(aliasLoggedIn).map(aliasKindOf) : [];
+  return { ...l, agents: [...(l.agents ?? []).filter((k) => !isAliasKind(k)), ...usable], catalogs: { ...l.catalogs, ...st.catalogs } };
+}
+const usableKey = () => JSON.stringify(listsHere().agents);
+/** After a change of the machine's accounts: the whole list, and the usable agents when they changed since `before` (usableKey). */
+function tellAccounts(before) {
+  if (!accounts()) return;
+  send({ type: "aliases", aliases: aliasList() });
+  if (usableKey() !== before) send({ type: "agents", agents: listsHere().agents });
+}
+/** The container (re)made with the saved spec, and running. */
+const recreate = (st, a) => { a.container = { state: "running" }; a.applied = { image: effImage(st, a), ...(a.image ? {} : { default: true }), mounts: [...a.mounts] }; };
+const dockerRefusal = (st) => fail(409, st.docker.reason || "Docker cannot be used", "docker_unavailable");
+const notMounted = (a) => fail(409, `This folder isn't mounted in ${a.name} — Add it in Settings`, "not_mounted");
+
+/** The folders of an Input as saved (cleaned, in the given order), or the refusal of the first that cannot be, in the order
+ *  of aliases.CleanMounts, naming the folder as given (no `~` expansion): not absolute, missing, a file, with a ":", listed
+ *  twice, holding ~/.claude or the app's data folder, inside the data folder (D25). A folder inside another listed one is fine. */
+function folderProblem(mounts) {
+  if (!Array.isArray(mounts)) return fail(400, "mounts must be a list of folders", "bad_folder");
+  const seen = new Set(), out = [];
+  for (const raw of mounts) {
+    const given = String(raw ?? ""), bad = (why) => fail(400, `${given} ${why}`, "bad_folder");
+    if (!given.startsWith("/")) return bad("is not an absolute path");
+    const m = cleanPath(given);
+    if (!exists(m)) return bad(FILES.has(m) ? "is not a folder" : "does not exist");
+    if (m.includes(":")) return bad("has a “:” in its path, which Docker cannot mount");
+    if (seen.has(m)) return bad("is listed twice");
+    seen.add(m);
+    if (inside(HOME + "/.claude", m)) return bad("holds this computer's Claude login (~/.claude)");
+    if (inside(DATA, m)) return bad("holds the app's data folder");
+    if (inside(m, DATA)) return bad("is inside the app's data folder");
+    out.push(m);
+  }
+  return out;
+}
+/** The email a code logs an account in as: the last part of its name ("Claude · Personal" → personal@example.com). */
+const aliasEmail = (name) => `${String(name).split("·").pop().trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "account"}@example.com`;
+
+/** The routes /api/aliases… of the machine a call works on. */
+async function aliasRoute(req, res, p) {
+  const M = req.method, st = accounts(), b = M === "GET" ? {} : await body(req);
+  if (!st) return answer(res, fail(501, "Claude accounts are not available on this server"));
+  const before = usableKey();
+  if (p === "/api/aliases" && M === "GET") return json(res, aliasList());
+  if (p === "/api/aliases" && M === "POST") {
+    const name = typeof b.name === "string" ? b.name.trim() : "";
+    if (!name) return answer(res, fail(400, "An account needs a name", "bad_name"));
+    const mounts = folderProblem(b.mounts ?? []);
+    if (mounts.fail) return answer(res, mounts);
+    const badImage = imageProblem(st, b.image);
+    if (badImage) return answer(res, badImage);
+    const a = aliasRecord({ id: newId("a_"), name, image: cleanImage(st, b.image), mounts, created: iso(Date.now()) });
+    st.aliases.push(a);
+    tellAccounts(before);
+    return json(res, aliasView(st, a));
+  }
+  const m = /^\/api\/aliases\/([^/]+)(\/.*)?$/.exec(p), id = decodeURIComponent(m?.[1] ?? ""), rest = m?.[2] ?? "";
+  const a = st.aliases.find((x) => x.id === id);
+  if (!a) return answer(res, fail(404, "No such account", "not_found"));
+  const change = (restart, more = {}) => ({ restart, ...more, alias: aliasView(st, a) });
+  const done = (v) => { tellAccounts(before); return json(res, v); };
+  if (rest === "" && M === "PATCH") {
+    const was = specKey(st, a), next = {};
+    if (b.name !== undefined) { next.name = typeof b.name === "string" ? b.name.trim() : ""; if (!next.name) return answer(res, fail(400, "An account needs a name", "bad_name")); }
+    if (b.mounts !== undefined) { const ms = folderProblem(b.mounts); if (ms.fail) return answer(res, ms); next.mounts = ms; }
+    if (b.image !== undefined) { const bad = imageProblem(st, b.image); if (bad) return answer(res, bad); next.image = cleanImage(st, b.image); }
+    Object.assign(a, next);
+    if (specKey(st, a) === was) return done(change("unchanged"));
+    if (!st.docker.ok || a.container.state !== "running") return done(change("deferred")); // (the next start makes it with the saved spec)
+    if (!specDiffers(st, a)) return done(change("unchanged")); // (the running container has the saved spec already)
+    if (a.busy > 0) return done(change("busy", { busy: a.busy })); // (saved; the person is asked, then restart with force)
+    recreate(st, a);
+    return done(change("done"));
+  }
+  if (rest === "" && M === "DELETE") { // (its chats stay; its catalog is left, as D4 allows). Without Docker the container cannot be
+    // removed: the account goes all the same when Docker is not there at all, else the removal waits for it
+    if (!st.docker.ok && st.docker.kind !== "not_installed" && st.docker.kind !== "unsupported") return answer(res, dockerRefusal(st));
+    st.aliases.splice(st.aliases.indexOf(a), 1);
+    return done({});
+  }
+  if ((rest === "/restart" || rest === "/stop") && M === "POST") { // (each answer broadcasts the list, as the server does)
+    if (!st.docker.ok) return answer(res, dockerRefusal(st));
+    if (a.container.state !== "running") return done(change(rest === "/restart" ? "deferred" : "done")); // (nothing changed)
+    if (a.busy > 0 && !b.force) return done(change("busy", { busy: a.busy }));
+    if (rest === "/restart") recreate(st, a); else { delete a.session; a.container = { state: "stopped" }; } // (a stop ends the login)
+    a.busy = 0;
+    return done(change("done"));
+  }
+  const loginURL = `https://claude.ai/oauth/authorize?mock=${a.id}`;
+  if (rest === "/login" && M === "POST") { // (logged in or not, a login is started, or the open one joined)
+    if (!st.docker.ok) return answer(res, dockerRefusal(st));
+    if (a.session) return json(res, a.session.url ? { state: "waiting", url: a.session.url } : { state: "preparing" }); // (a second start joins)
+    const session = a.session = {};
+    if (a.container.state === "preparing") return done({ state: "preparing" }); // (its image is being built already: the login waits for it)
+    const k = flags.aliasLogin ?? {};
+    if (k.preparing && a.container.state !== "running") { // the image is built first: the client asks again once the list shows it running
+      a.container = { state: "preparing" };
+      (async () => {
+        await (pause(k) ?? wait(1500));
+        if (!st.aliases.includes(a) || a.container.state !== "preparing") return; // (removed meanwhile)
+        const b2 = usableKey();
+        recreate(st, a); // (a cancel meanwhile does not stop the build: the container ends running, with no login open)
+        if (a.session === session) session.url = loginURL;
+        tellAccounts(b2);
+      })();
+      return done({ state: "preparing" });
+    }
+    if (a.container.state !== "running") recreate(st, a);
+    session.url = loginURL;
+    return done({ state: "waiting", url: session.url });
+  }
+  if (rest === "/login/code" && M === "POST") {
+    if (!a.session?.url) return json(res, { state: "failed", error: "No login is open for this account; start it again" }); // (none open, or it ended)
+    const code = String(b.code ?? "").trim();
+    if (code === "" || code === "wrong") return json(res, { state: "waiting", url: a.session.url, error: "Invalid code. Please make sure the full code was copied." }); // (malformed: Claude waits on)
+    if (code === "bad#code") { delete a.session; return done({ state: "failed", error: "Login failed: That code wasn't accepted. Please try again." }); } // (well-formed and wrong: Claude exits)
+    const email = aliasEmail(a.name);
+    a.login = { known: true, loggedIn: true, email };
+    delete a.session;
+    st.catalogs[aliasKindOf(a)] ??= clone(claude); // (its own Claude's list: the built-in one here, D2)
+    send({ type: "catalog", agent: aliasKindOf(a), catalog: st.catalogs[aliasKindOf(a)] });
+    return done({ state: "logged_in", email });
+  }
+  if (rest === "/login" && M === "DELETE") { // the login ends; the container stays as it is now (the login started it)
+    if (!a.session) return json(res, {});
+    delete a.session;
+    return done({});
+  }
+  if (rest === "/logout" && M === "POST") {
+    if (!st.docker.ok) return answer(res, dockerRefusal(st));
+    if (a.container.state !== "running") recreate(st, a); // (Claude logs out inside the container: it is started for that)
+    a.login = { known: true, loggedIn: false };
+    return done(aliasView(st, a));
+  }
+  return answer(res, fail(405, "method not allowed"));
+}
+
+/** What a message to a chat on a Claude account is refused with, as the server refuses it (accountGate: D4, §1.7, D8), or null; an account
+ *  whose container is not running has it started (with its saved spec). */
+function accountRefusal(kind, cwd) {
+  const st = accounts(), a = st?.aliases.find((x) => aliasKindOf(x) === kind);
+  if (!a) return fail(409, "This account was removed", "alias_removed");
+  if (!st.docker.ok) return dockerRefusal(st);
+  if (!aliasLoggedIn(a)) return fail(409, "Not logged in", "agent_missing");
+  const under = (ms) => ms.some((m) => inside(expand(cwd), cleanPath(m)));
+  if (a.container.state === "running" && specDiffers(st, a)) {
+    if (!under(a.applied.mounts)) return under(a.mounts) ? fail(409, `Restart ${a.name} to use this folder`, "mount_pending") : notMounted(a);
+  } else if (!under(a.mounts)) return notMounted(a);
+  if (a.container.state !== "running") { const before = usableKey(); recreate(st, a); tellAccounts(before); }
+  return null;
+}
+
+/** Gives a machine an accounts state, or takes it away (null): { docker, defaultImage, host, aliases: [records], catalogs }, each
+ *  left out as newAccounts has it. Tells the page (the next resync does too). */
+function setAccounts(id, state) {
+  return onServer(id, () => {
+    const before = usableKey();
+    world().accounts = state ? newAccounts({ ...clone(state), aliases: (state.aliases ?? []).map(aliasRecord), catalogs: clone(state.catalogs ?? {}) }) : null;
+    tellAccounts(before);
+  });
+}
+/** Docker of a machine goes down ({ ok: false, kind, reason }) or comes back ({ ok: true }): every container says so. */
+function aliasDocker(id, d) {
+  return onServer(id, () => {
+    const st = accounts(), before = usableKey();
+    if (!st) throw new Error(`the machine ${id} has no accounts`);
+    st.docker = d.ok ? { ok: true } : { ok: false, kind: d.kind ?? "not_running", reason: d.reason ?? "Docker is not running" };
+    tellAccounts(before);
+  });
+}
+/** Changes a record of a machine's account (busy, login, container, mounts, applied, …) and tells the page. Answers its view. */
+function aliasSet(id, aliasId, patch) {
+  return onServer(id, () => {
+    const st = accounts(), a = st?.aliases.find((x) => x.id === aliasId), before = usableKey();
+    if (!a) throw new Error(`the machine ${id} has no account ${aliasId}`);
+    Object.assign(a, clone(patch));
+    tellAccounts(before);
+    return aliasView(st, a);
+  });
+}
+
 /** The calls about the things of one machine's tree (its groups, boards and chats), by their path after /api: this
  *  computer's as they come, another server's inside onServer. Answers false for a path that is none of them. */
 async function treeRoute(req, res, p, u) {
@@ -1210,6 +1511,8 @@ export const CLIENT_ROUTES = [
   "PATCH /api/boards/{id}", "POST /api/boards/{id}/archive", "POST /api/boards/{id}/unarchive", "POST /api/boards/{id}/seen", "DELETE /api/boards/{id}", "POST /api/rpc-reply",
   "GET /api/library", "POST /api/library/{server}/groups", "PATCH /api/library/{server}/groups/{id}", "DELETE /api/library/{server}/groups/{id}",
   "POST /api/library/{server}/prompts", "PATCH /api/library/{server}/prompts/{id}", "DELETE /api/library/{server}/prompts/{id}",
+  "GET /api/aliases", "POST /api/aliases", "PATCH /api/aliases/{id}", "DELETE /api/aliases/{id}", "POST /api/aliases/{id}/restart",
+  "POST /api/aliases/{id}/stop", "POST /api/aliases/{id}/login", "POST /api/aliases/{id}/login/code", "DELETE /api/aliases/{id}/login", "POST /api/aliases/{id}/logout",
 ];
 const CALL_ROWS = CLIENT_ROUTES.filter((r) => r !== "GET /api/events").map((r) => { const [method, pat] = r.split(" "); return [method, new RegExp("^" + pat.replace(/\{[^}]+\}/g, "([^/]+)") + "$")]; });
 /** Whether `method pathname` is a call of the client API: a row of the table, whose segments are none of "." and "..". */
@@ -1256,6 +1559,12 @@ async function apiRoute(req, res, u) {
     const dir = expand(u.searchParams.get("path") || HOME);
     if (!exists(dir)) return json(res, { error: `${dir} is not a directory` }, 400);
     return json(res, { path: dir, parent: path.dirname(dir), dirs: TREE[dir] });
+  }
+  if (p === "/api/aliases" || p.startsWith("/api/aliases/")) return await aliasRoute(req, res, p);
+  if (/^\/api\/usage\/claude(:|%3A)/i.test(p)) { // an account's plan usage is read in its container, which is not started for it (D24)
+    const st = accounts(), a = st?.aliases.find((x) => "/api/usage/" + aliasKindOf(x) === decodeURIComponent(p));
+    if (a && !st.docker.ok) return answer(res, dockerRefusal(st));
+    if (a && a.container.state !== "running") return answer(res, fail(409, "Start the account to see its usage", "alias_stopped"));
   }
   if (/^\/api\/usage\/[^/]+$/.test(p) && ux3.plan) return json(res, { plan: true, fetchedAt: iso(Date.now() - 3 * MIN), limits: ux3.plan.map((l) => ({ ...l, resetsAt: iso(Date.now() + l.inMs) })) }); // ux-t3
   if (/^\/api\/usage\/[^/]+$/.test(p)) return json(res, { plan: false, note: "The mock has no plan limits.", limits: [], fetchedAt: iso(Date.now()) });

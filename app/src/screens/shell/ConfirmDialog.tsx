@@ -34,7 +34,7 @@ export function ConfirmDialog() {
     return (
       <ConfirmSheet key={req.title} open onClose={close} testID={CONFIRM_ID} title={req.title} body={req.body ?? ""}
         confirmLabel={req.confirmLabel ?? a?.label ?? ""} tone={a?.tone === "danger" || !a ? "danger" : "accent"}
-        cancelLabel={a ? "Cancel" : "Close"} noticeOnly={!a} onConfirm={async () => { await a?.run(); }} />
+        cancelLabel={a ? req.cancelLabel ?? "Cancel" : "Close"} noticeOnly={!a} onConfirm={async () => { await a?.run(); }} />
     );
   }
   return (
@@ -43,7 +43,7 @@ export function ConfirmDialog() {
       {req.body ? <DialogBody>{req.body}</DialogBody> : null}
       {err ? <DialogError>{err}</DialogError> : null}
       <DialogActions>
-        <Button size="sm" label={req.actions.length ? "Cancel" : "Close"} onPress={close} autoFocus={!req.actions.length} />
+        <Button size="sm" label={req.actions.length ? req.cancelLabel ?? "Cancel" : "Close"} onPress={close} autoFocus={!req.actions.length} />
         {req.actions.map((a, i) => (
           <Button key={a.label} size="sm" tone={a.tone} label={a.label} disabled={busy} autoFocus={i === req.actions.length - 1} onPress={() => void run(a)} />
         ))}

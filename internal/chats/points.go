@@ -94,7 +94,7 @@ func pointOK(a model.AgentKind, items []model.Item, count int, running bool) boo
 	if count < 0 || count > len(items) {
 		return false
 	}
-	if running && !liveFork[a] {
+	if running && !liveFork[a.Family()] {
 		return false
 	}
 	if count == 0 {

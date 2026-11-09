@@ -138,16 +138,21 @@ func (m *Manager) subRetryStart(c *Chat, sid string, w *retryWait) {
 	c.mu.Unlock()
 	m.send(out)
 
-	err := m.startSub(chatID, sid, sa.Kind, opts, func(c *Chat, s *sub, out *outbox) ([]agent.ContentBlock, bool) {
-		if s.retry != w {
-			return nil, false // stopped, paused or resumed meanwhile: whoever did it has the record
-		}
-		if s.ag != nil {
-			m.cancelSubRetry(c, s, "the process ended")
-			return nil, false
-		}
-		return m.subRetryBlocks(c, s, w, out), true
-	})
+	// On a Claude account the container is made ready first (prepare, no lock held): when it
+	// cannot be, the attempt could not start, as when its start fails.
+	err := m.prepare(sa.Kind)
+	if err == nil {
+		err = m.startSub(chatID, sid, sa.Kind, opts, func(c *Chat, s *sub, out *outbox) ([]agent.ContentBlock, bool) {
+			if s.retry != w {
+				return nil, false // stopped, paused or resumed meanwhile: whoever did it has the record
+			}
+			if s.ag != nil {
+				m.cancelSubRetry(c, s, "the process ended")
+				return nil, false
+			}
+			return m.subRetryBlocks(c, s, w, out), true
+		})
+	}
 	if err == nil {
 		return
 	}

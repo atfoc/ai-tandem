@@ -245,6 +245,8 @@ var wantRoutes = []string{
 	"GET /api/library", "POST /api/library/{server}/groups", "PATCH /api/library/{server}/groups/{id}",
 	"DELETE /api/library/{server}/groups/{id}", "POST /api/library/{server}/prompts",
 	"PATCH /api/library/{server}/prompts/{id}", "DELETE /api/library/{server}/prompts/{id}",
+	"GET /api/aliases", "POST /api/aliases", "PATCH /api/aliases/{id}", "DELETE /api/aliases/{id}", "POST /api/aliases/{id}/restart",
+	"POST /api/aliases/{id}/stop", "POST /api/aliases/{id}/login", "POST /api/aliases/{id}/login/code", "DELETE /api/aliases/{id}/login", "POST /api/aliases/{id}/logout",
 }
 
 // What the local API had and the client API has not: no page file, no list of servers, no relay,
@@ -338,8 +340,8 @@ func TestClientAPIIsTheTable(t *testing.T) {
 			t.Errorf("%s (%s %s): status %d body %q, want 404 not found", p, method, path, w.Code, w.Body)
 		}
 	}
-	if served != len(ClientRoutes) || served != 53 {
-		t.Errorf("%d routes of the table were asked for, the table has %d, want 53", served, len(ClientRoutes))
+	if served != len(ClientRoutes) || served != 63 {
+		t.Errorf("%d routes of the table were asked for, the table has %d, want 63", served, len(ClientRoutes))
 	}
 	if n := len(e.s.Bridge.Followers(editorbridge.Chat("x"))); n != 0 {
 		t.Errorf("%d followers of the chat the reads named: a read with no open stream follows nothing", n)

@@ -54,6 +54,9 @@ var Events = map[string]Rule{
 	// This server's prompt library (package library).
 	"own_library": {Class: List},
 
+	// This server's Claude accounts, whole, after every change (package aliases).
+	"aliases": {Class: List},
+
 	"chat":         {Class: List, Per: PerChat},
 	"chat_removed": {Class: List, Per: PerChat},
 	"branch_state": {Class: List, Per: PerChat},

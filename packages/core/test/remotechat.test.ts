@@ -417,6 +417,10 @@ test("every answer of the servers to a Send with images that was not taken: the 
     { status: 409, body: { error: "the chat is archived" }, refused: true, refresh: true },
     { status: 409, body: { error: "this chat has no agent: choose one first", code: "no_agent" }, refused: true, refresh: false },
     { status: 404, body: { error: "no such chat", code: "not_found" }, refused: true, refresh: false }, // the chat is gone there
+    // a chat on a Claude account whose container is still being prepared: the message stays, to be sent again in a moment
+    { status: 409, body: { error: "The account's container is being prepared; try again in a moment.", code: "alias_preparing" }, refused: true, refresh: false },
+    // …and one whose container is being recreated: the chat is read again
+    { status: 409, body: { error: "The account's container is restarting; try again in a moment", code: "alias_restarting" }, refused: true, refresh: true },
     // the way there, by the entry's state: nothing is sent for an entry that is gone from the list, not connected or too old
     { status: 404, body: { error: "This server is not in the list.", code: "no_server" }, refused: true, refresh: false },
     { status: 503, body: { error: "Studio is not connected.", code: "server_unreachable" }, refused: true, refresh: false },

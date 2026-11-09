@@ -1,6 +1,7 @@
 // The context split in the composer ring's popover: its bar's segments, their order and colour
 // slots, and the numbers beside them. DOM-free.
 
+import { agentFamily } from "../agents.ts";
 import type { AgentKind, ContextCategory, ContextItem } from "../types.ts";
 
 /** Each known category in bar order, with its colour slot (--viz-1…8). The slots are fixed, so a
@@ -9,7 +10,7 @@ import type { AgentKind, ContextCategory, ContextItem } from "../types.ts";
  * validate_palette.js, light and dark) for every pair that can meet that way. For that, Claude's
  * categories that may be missing (memory files, MCP tools, custom agents) each sit between two
  * that are always there, not in Claude's own order. */
-const ORDER: Record<AgentKind, [string, number][]> = {
+const ORDER: Record<string, [string, number][]> = {
   claude: [["system_prompt", 1], ["memory_files", 4], ["system_tools", 5], ["mcp_tools", 6], ["skills", 7],
     ["custom_agents", 2], ["messages", 3]],
   cursor: [["system_prompt", 8], ["tools", 1], ["rules", 4], ["skills", 5], ["mcp", 6], ["subagents", 7],
@@ -41,7 +42,7 @@ function ordered(cats: ContextCategory[], order: [string, number][]): Segment[] 
  * tools are not segments; categories with no tokens are left out. */
 export function segments(agent: AgentKind, cats: ContextCategory[]): Segment[] {
   return [
-    ...ordered(cats.filter((c) => c.kind === "used"), ORDER[agent] ?? []),
+    ...ordered(cats.filter((c) => c.kind === "used"), ORDER[agentFamily(agent)] ?? []),
     ...cats.filter((c) => c.kind === "buffer" && c.tokens > 0).map((cat) => ({ cat, slot: 0 })),
   ];
 }
