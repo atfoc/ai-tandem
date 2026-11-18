@@ -24,7 +24,7 @@ export const catalogFor = (s: ListsState, server: string, agent: AgentKind | "")
 export const agentOpen = (c: Pick<ChatView, "locked" | "forkedFrom" | "branch" | "branches">): boolean =>
   !c.locked && !c.forkedFrom && !c.branch && !((c.branches ?? 0) > 1);
 
-export const NO_AGENT = "No agent is installed on this computer. Install Claude Code, Cursor or pi; a program outside the app's PATH is found after a restart.";
+export const NO_AGENT = "No agent is installed on this computer. Install Claude Code, Cursor, Codex or pi; a program outside the app's PATH is found after a restart.";
 const notInstalled = (a: AgentKind) => `${agentName(a)} is not installed on this computer: install it, or choose another agent.`;
 
 /** What an agent picker shows: the agents offered, the item's own, whether the server lacks it,

@@ -31,7 +31,7 @@ function Icon({ size, color, box = 16, width, fill = false, children, ...line }:
 
 /** The colour each agent's glyph is drawn in, if the caller names none. */
 function glyphColour(glyph: GlyphKind, t: ReturnType<typeof useTokens>): string {
-  return glyph === "claude" ? t.claude : glyph === "cursor" ? t.cursor : glyph === "pi" ? t.pi : t.muted;
+  return glyph === "claude" ? t.claude : glyph === "cursor" ? t.cursor : glyph === "codex" ? t.codex : glyph === "pi" ? t.pi : t.muted;
 }
 
 export function AgentGlyph({ agent, size = 14, color }: { agent: AgentKind | string; size?: number; color?: string }) {
@@ -42,6 +42,12 @@ export function AgentGlyph({ agent, size = 14, color }: { agent: AgentKind | str
     <Svg width={size} height={size} viewBox="0 0 16 16" {...label}>
       <Path d="M8 1 14 4.5v7L8 15 2 11.5v-7z" fill={c} opacity=".9" />
       <Path d="M8 1v7l6 3.5M8 8 2 11.5" stroke={t.bg} strokeWidth="1.1" fill="none" />
+    </Svg>
+  );
+  if (m.glyph === "codex") return (
+    <Svg width={size} height={size} viewBox="0 0 16 16" {...label}>
+      <Rect x="1" y="1" width="14" height="14" rx="4" fill={c} />
+      <Path d="m4.3 5.4 2.5 2.5-2.5 2.5m4.1 0h3.2" stroke={t.bg} strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round" fill="none" />
     </Svg>
   );
   if (m.glyph === "pi") return (

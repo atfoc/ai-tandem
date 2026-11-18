@@ -250,7 +250,7 @@ const runningCases = (): [string, AgentKind[], Items, number, boolean][] => {
 };
 
 test("pointOK, running: the finished boundaries of a source whose turn is running", () => {
-  assert.deepEqual(LIVE_FORK, { claude: true, cursor: true, pi: true });
+  assert.deepEqual(LIVE_FORK, { claude: true, cursor: true, codex: true, pi: true });
   for (const [name, agents, items, count, want] of runningCases())
     for (const agent of agents) assert.equal(pointOK(agent, items, count, true), want, `${agent}: ${name}`);
 });
@@ -288,7 +288,7 @@ test("pointOK, running: a kind whose LIVE_FORK is false has no point while its t
       LIVE_FORK[kind] = was;
     }
   }
-  assert.deepEqual(LIVE_FORK, { claude: true, cursor: true, pi: true });
+  assert.deepEqual(LIVE_FORK, { claude: true, cursor: true, codex: true, pi: true });
 });
 
 test("the worked example's main items give the points the server gives", () => {

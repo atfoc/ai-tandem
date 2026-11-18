@@ -20,7 +20,7 @@ export const notConnectedLine = (name: string): string => `${name} is not connec
 
 /** Why no agent can be chosen on a server that has none. */
 export const noAgentOn = (w: Where): string =>
-  remote(w) ? `No agent is installed on ${w.name}. Install Claude Code, Cursor or pi on that machine.` : NO_AGENT;
+  remote(w) ? `No agent is installed on ${w.name}. Install Claude Code, Cursor, Codex or pi on that machine.` : NO_AGENT;
 
 const notInstalledOn = (w: Where, a: AgentKind) => `${agentName(a)} is not installed on ${w.name}: install it there, or choose another agent.`;
 

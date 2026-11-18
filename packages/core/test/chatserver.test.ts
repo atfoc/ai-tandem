@@ -194,7 +194,7 @@ test("emptyReason: what an empty thread says of a chat that takes no message, by
   // another server, connected: it is named
   assert.equal(emptyReason(THERE, ["pi"], far({ agent: "pi" })), "");
   assert.equal(emptyReason(THERE, ["pi"], far({ agent: "" })), CHOOSE_AGENT);
-  assert.equal(emptyReason(THERE, [], far({ agent: "" })), "No agent is installed on Studio. Install Claude Code, Cursor or pi on that machine.");
+  assert.equal(emptyReason(THERE, [], far({ agent: "" })), "No agent is installed on Studio. Install Claude Code, Cursor, Codex or pi on that machine.");
   // not connected: nothing can be sent, whether the chat has an agent or not, and whether it has started or not
   assert.equal(emptyReason(DOWN, [], far({ agent: "" })), notConnectedLine("Studio"));
   assert.equal(emptyReason(DOWN, [], far({ agent: "claude" })), notConnectedLine("Studio"));

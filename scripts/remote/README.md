@@ -15,7 +15,7 @@ machine's network and firewall. A server that was never set up does not start.
   that are not made to run on Windows, and the agents are not covered there: it has not been run on a Windows
   computer yet.
 - At least one agent CLI, installed and logged in for the user that runs the server: `claude`
-  (Claude Code), `agent` (Cursor CLI) or `pi`, on that user's `PATH`.
+  (Claude Code), `agent` (Cursor CLI), `codex` (Codex CLI), or `pi`, on that user's `PATH`.
 - For editing boards with no window open: **Node 22 or later** on the server user's `PATH` (`node
   --version`). See "Editing boards with no window open" below. Without it the server works as before.
 - Port 6006 free: the server's MCP listener is always there, so one server per machine.

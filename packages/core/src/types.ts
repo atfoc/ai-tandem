@@ -5,9 +5,9 @@
 // server) is the page's key of it (logic/keys.ts): the record's own `id`, and every id it holds
 // of another thing of that server (`group`, `board`, `chat`, `parent`, …).
 
-/** An agent kind: Claude Code (the computer's own), Cursor, Pi, or a Claude account of the server: "claude:" + its id
+/** An agent kind: Claude Code (the computer's own), Cursor, Codex, Pi, or a Claude account of the server: "claude:" + its id
  *  (model.AliasKind). Code that asks how an agent behaves asks it of the family (agentFamily in agents.ts). */
-export type AgentKind = "claude" | "cursor" | "pi" | `claude:${string}`;
+export type AgentKind = "claude" | "cursor" | "codex" | "pi" | `claude:${string}`;
 
 /** The group id of the ungrouped area (model.Ungrouped). */
 export const UNGROUPED = "__ungrouped__";
@@ -16,7 +16,7 @@ export const UNGROUPED = "__ungrouped__";
 export const MAIN = "main";
 
 /** The order agents are offered in, everywhere. */
-export const AGENT_ORDER: AgentKind[] = ["claude", "cursor", "pi"];
+export const AGENT_ORDER: AgentKind[] = ["claude", "cursor", "codex", "pi"];
 
 /** model.Archive, embedded in Group, Board and ChatMeta. */
 export type Archive = {
@@ -353,7 +353,7 @@ export type Subagent = {
   description?: string;
   prompt?: string;
   model?: string;
-  kind?: AgentKind; // json "kind": "claude" | "cursor" | "pi"; absent on unlinked rows
+  kind?: AgentKind; // json "kind": "claude" | "cursor" | "codex" | "pi"; absent on unlinked rows
   effort?: string;  // json "effort"
   background?: boolean;
   status: SubStatus;

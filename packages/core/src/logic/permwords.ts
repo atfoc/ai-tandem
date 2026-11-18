@@ -20,6 +20,7 @@ function permDoes(toolName: string): string {
   if (EDIT.has(n)) return "edit a file";
   if (n === "delete") return "delete a file";
   if (n === "webfetch") return "fetch a page";
+  if (n === "request_permissions") return "use extra permissions";
   if (n === "websearch") return "search the web";
   if (n.startsWith("mcp__board__")) return "use the board";
   return `use ${toolName || "a tool"}`;

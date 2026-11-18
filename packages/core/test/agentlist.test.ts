@@ -63,8 +63,8 @@ test("agentChoice: no agent yet on a server that has some is a choice to make, w
 });
 
 test("homeAgentsText names no agent that is not usable", () => {
-  const names: Record<AgentKind, string> = { claude: "Claude Code", cursor: "Cursor", pi: "pi" };
-  assert.equal(homeAgentsText(AGENT_ORDER), "Chats are Claude Code, Cursor or pi sessions, the same as in a terminal.");
+  const names: Record<AgentKind, string> = { claude: "Claude Code", cursor: "Cursor", codex: "Codex", pi: "pi" };
+  assert.equal(homeAgentsText(AGENT_ORDER), "Chats are Claude Code, Cursor, Codex or pi sessions, the same as in a terminal.");
   assert.equal(homeAgentsText(["claude", "pi"]), "Chats are Claude Code or pi sessions, the same as in a terminal.");
   assert.equal(homeAgentsText(["cursor"]), "Chats are Cursor sessions, the same as in a terminal.");
   const sets: AgentKind[][] = [["claude"], ["cursor"], ["pi"], ["claude", "cursor"], ["claude", "pi"], ["cursor", "pi"]];

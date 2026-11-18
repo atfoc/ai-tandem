@@ -141,7 +141,7 @@ export function SplitView({ agent, s, loading }: { agent: AgentKind; s: ContextS
         </View>
       )}
       <Text {...tid("split-foot")} size={10.5} tone="faint" style={styles.foot}>
-        {loading ? "Updating…" : `As of message ${s.atMessage} · ${tokensText(s.total)} tokens as ${agentName(agent)} counts them`}
+        {loading ? "Updating…" : agent === "codex" ? `${tokensText(s.total)} tokens last reported by Codex` : `As of message ${s.atMessage} · ${tokensText(s.total)} tokens as ${agentName(agent)} counts them`}
       </Text>
     </View>
   );

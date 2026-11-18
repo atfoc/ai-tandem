@@ -3,8 +3,15 @@ import assert from "node:assert/strict";
 import { agentClass, agentMeta, agentName, agentShortName } from "../src/agents.ts";
 import { AGENT_ORDER } from "../src/types.ts";
 
-test("AGENT_ORDER offers Pi after Claude and Cursor", () => {
-  assert.deepEqual(AGENT_ORDER, ["claude", "cursor", "pi"]);
+test("AGENT_ORDER offers Codex between Cursor and Pi", () => {
+  assert.deepEqual(AGENT_ORDER, ["claude", "cursor", "codex", "pi"]);
+});
+
+test("agentMeta: Codex's name, glyph and usage heading", () => {
+  assert.equal(agentName("codex"), "Codex");
+  assert.equal(agentClass("codex"), "codex");
+  assert.equal(agentMeta("codex").glyph, "codex");
+  assert.equal(agentMeta("codex").usageTitle, "Codex usage");
 });
 
 test("agentMeta: pi's name, class and glyph", () => {

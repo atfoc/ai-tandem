@@ -42,6 +42,7 @@ export type AgentSheetProps = {
 const NOTES: Record<string, string> = {
   claude: "The same session you get in a terminal",
   cursor: "Cursor's agent, with your Cursor models",
+  codex: "Uses your Codex CLI login",
   pi: "pi, with the models of the providers you set up",
 };
 

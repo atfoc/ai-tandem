@@ -7,10 +7,10 @@
 **Excalidraw whiteboards that your coding agents can read and draw on.**
 
 AI Whiteboard is an app that puts [Excalidraw](https://excalidraw.com) boards and coding-agent
-chats in one window. Claude Code, Cursor and pi work on the board with you: select a few shapes
+chats in one window. Claude Code, Cursor, Codex and pi work on the board with you. Select a few shapes
 and ask "explain this", or ask for "the request flow between these services", and the agent draws
-it on the board while you watch. The agents run on your own machine, or on another one you
-own, with the agent logins you already have, and all three are kept in one place. The app is one
+it on the board while you watch. The agents run on your own machine, or on another one you own,
+using the agent logins you already have. The app is one
 codebase (React Native) that runs on a Mac as a desktop app, and on an iPhone, an iPad and an
 Android phone or tablet.
 
@@ -35,7 +35,7 @@ Every whiteboard has its own chats, and the agent of such a chat has tools for t
 
 You keep drawing while the agent works, and a pill on the board says which agent is working on it.
 
-### Chat with Claude Code, Cursor and pi
+### Chat with Claude Code, Cursor, Codex and pi
 
 A chat belongs to a whiteboard or stands alone: a plain chat is a coding-agent chat without a
 board. Either way you pick the agent, its model, the effort, and the folder it works in, per chat.
@@ -49,7 +49,8 @@ board. Either way you pick the agent, its model, the effort, and the folder it w
 - **Quote and comment.** Select a passage of an answer, press ⌘L, and write your comment on
   exactly that passage. A message can carry several.
 - **Context and plan usage.** A ring in the composer shows how full the context window is. A
-  click splits it by category and, for Claude Code and Cursor, shows your plan's usage limits.
+  click opens the context breakdown and shows available plan limits for Claude Code, Cursor and
+  Codex. Codex reports input and output token counts.
 - **Several chats at once.** Chats keep working while you look at another one. The sidebar marks
   the ones that are working, and drafts of unsent messages are kept.
 
@@ -101,7 +102,7 @@ bookmarks. Branches of one chat can work at the same time.
 ### Let an agent hand work to subagents
 
 An agent can start subagents and carry on when their results come back. A subagent can be another
-agent or another model than the chat's own, so a Claude Code chat can hand a task to Cursor or pi.
+agent or another model than the chat's own, so a Claude Code chat can hand a task to Cursor, Codex or pi.
 
 ![A chat whose agent started subagents: one row per subagent with its model, tool count, time and context use, two of them done, one waiting on a subagent of its own that is still working](docs/screenshots/subagents.png)
 
@@ -175,7 +176,12 @@ There is no download: you build AI Whiteboard from source.
 - Node.js 22.19+ and npm
 - At least one agent CLI, installed and logged in:
   [Claude Code](https://claude.com/claude-code) (`claude`), the
-  [Cursor CLI](https://cursor.com/cli) (`agent`), or pi (`pi`), on your `PATH`
+  [Cursor CLI](https://cursor.com/cli) (`agent`),
+  [Codex CLI](https://learn.chatgpt.com/docs/codex/cli) 0.170.0 or later (`codex`), or pi (`pi`), on your `PATH`
+- Codex uses the server user’s existing CLI login and configuration. Select **Codex** in the chat
+  composer. To use a binary outside the server’s PATH, pass `-codex /path/to/codex`.
+  Codex protects Tandem’s data folder in its default sandbox. A user-approved escalation can
+  give a command access outside that sandbox.
 - For Claude accounts only: [Docker](https://docs.docker.com/get-docker/) (Docker Desktop on a Mac),
   running. Without it everything else works, and the accounts are listed greyed with the reason.
 
@@ -228,7 +234,7 @@ flowchart LR
   end
   S["Go server of this computer<br/>HTTPS, port 4748"]
   R["Go server of another machine<br/>HTTPS, port 4748"]
-  A["Agent CLIs<br/>claude, agent, pi"]
+  A["Agent CLIs<br/>claude, agent, codex, pi"]
   D[("~/.ai-whiteboard<br/>boards and chats")]
   M <-->|"HTTPS and the secret"| S
   M <-->|"HTTPS and the secret"| R

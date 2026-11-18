@@ -512,7 +512,7 @@ test("the two menus still offer a chat and a whiteboard", () => {
   for (const label of ['label="Chat"', 'label="Whiteboard"', 'label="Group"']) assert.ok(side.includes(label), label);
   const home = dir("screens/shell");
   for (const label of ['label="New chat"', 'label="New whiteboard"', "homeAgentsText("]) assert.ok(home.includes(label), label);
-  assert.ok(!home.includes("Claude Code, Cursor or pi"), "the empty state names fixed agents");
+  assert.ok(!home.includes("Claude Code, Cursor, Codex or pi"), "the empty state names fixed agents");
 });
 
 test("the place asks the store whether the place is reachable, by the place's own key", () => {

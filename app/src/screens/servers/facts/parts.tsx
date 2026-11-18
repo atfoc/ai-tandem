@@ -76,8 +76,8 @@ export function AgentsCell({ agents, testID }: { agents: string[]; testID?: stri
       <View style={styles.chips}>
         {agents.map((a) => {
           const m = agentMeta(a);
-          const ink = m.glyph === "claude" ? t.claude : m.glyph === "cursor" ? t.cursor : m.glyph === "pi" ? t.pi : t.muted;
-          const fill = m.glyph === "claude" ? t.claudeSoft : m.glyph === "cursor" ? t.cursorSoft : m.glyph === "pi" ? t.piSoft : t.panel;
+          const ink = m.glyph === "claude" ? t.claude : m.glyph === "cursor" ? t.cursor : m.glyph === "codex" ? t.codex : m.glyph === "pi" ? t.pi : t.muted;
+          const fill = m.glyph === "claude" ? t.claudeSoft : m.glyph === "cursor" ? t.cursorSoft : m.glyph === "codex" ? t.codexSoft : m.glyph === "pi" ? t.piSoft : t.panel;
           const name = m.short.charAt(0).toUpperCase() + m.short.slice(1);
           return (
             <View key={a} style={[styles.chip, { backgroundColor: fill }]}>

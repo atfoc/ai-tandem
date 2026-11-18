@@ -31,11 +31,12 @@ import { pinText } from "./reflabels.ts";
 import type { Spot } from "./taps.ts";
 import { FILL } from "./fill.ts";
 
-/** An agent's colour on the canvas, and the colour of text on it (.agent-claude, .agent-cursor, .agent-pi, .agent-unknown). */
+/** An agent's colour on the canvas, and the colour of text on it (.agent-claude, .agent-cursor, .agent-codex, .agent-pi, .agent-unknown). */
 export function agentPaint(t: Tokens, agent: string): { main: string; on: string } {
   switch (agentClass(agent)) {
     case "claude": return { main: t.claude, on: "#ffffff" };
     case "cursor": return { main: t.cursor, on: t.bg };
+    case "codex": return { main: t.codex, on: t.bg };
     case "pi": return { main: t.pi, on: t.bg };
     default: return { main: t.muted, on: t.bg };
   }

@@ -9,6 +9,7 @@ export function agentColours(t: Tokens, agent: string): { fg: string; soft: stri
   switch (agentClass(agent)) {
     case "claude": return { fg: t.claude, soft: t.claudeSoft };
     case "cursor": return { fg: t.cursor, soft: t.cursorSoft };
+    case "codex": return { fg: t.codex, soft: t.codexSoft };
     case "pi": return { fg: t.pi, soft: t.piSoft };
     default: return { fg: t.muted, soft: t.hover };
   }

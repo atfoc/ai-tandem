@@ -848,7 +848,7 @@ test("nothing of a removed chat is kept", async () => {
 });
 
 test("usable agents: the snapshot's list and the `agents` event fill the store", async () => {
-  assert.deepEqual(s().usable, ["claude", "cursor", "pi"]); // a snapshot without the list: every kind
+  assert.deepEqual(s().usable, ["claude", "cursor", "pi"]); // a snapshot from before the agent list
   await ev({ ...snapshot([]), agents: ["claude", "pi"] });
   assert.deepEqual(s().usable, ["claude", "pi"]);
   await ev({ type: "agents", agents: ["pi"] });

@@ -29,7 +29,7 @@ test("a chat with no agent: the box says to choose one (or that none is installe
   assert.equal(emptyReason(HERE, [], none), NO_AGENT);
   assert.equal(offPlaceholder(THERE, [], none), "No agent is installed");
   assert.equal(sendTitleOn(THERE, [], none, true), noAgentOn(THERE));
-  assert.equal(emptyReason(THERE, [], none), "No agent is installed on Studio. Install Claude Code, Cursor or pi on that machine.");
+  assert.equal(emptyReason(THERE, [], none), "No agent is installed on Studio. Install Claude Code, Cursor, Codex or pi on that machine.");
   // a chat with an agent says nothing of the kind
   assert.equal(offPlaceholder(HERE, ["claude"], chat()), "");
   assert.equal(emptyReason(HERE, ["claude"], chat()), "");

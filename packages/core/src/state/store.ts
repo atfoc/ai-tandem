@@ -1,7 +1,7 @@
 // App state: one small store, read with getState/subscribe (each UI makes its own useStore over them: the old page's useStore.ts).
 // Scenes (element arrays) live outside it, in the board side, because they change on every stroke and nothing but the
 // canvas renders from them.
-import { AGENT_ORDER, LOCAL_SERVER, type AgentKind, type Board, type BranchState, type Catalog, type ChatView, type Defaults, type Draft, type Group, type PendingMove, type SectionTree, type ServerLists, type Subagent, type TreeView, type Writer } from "../types.ts";
+import { LOCAL_SERVER, type AgentKind, type Board, type BranchState, type Catalog, type ChatView, type Defaults, type Draft, type Group, type PendingMove, type SectionTree, type ServerLists, type Subagent, type TreeView, type Writer } from "../types.ts";
 import type { Snapshot } from "../api.ts";
 import type { AliasList } from "../aliasesapi.ts";
 import type { AccountsNav, LoginFlow } from "../logic/aliases.ts";
@@ -219,7 +219,7 @@ export function applySnapshot(s: Snapshot, sending: string[] = []) {
       groups, boards, chats, catalogs,
       threadErrors: localPart(st.threadErrors, stays(st.threadErrors)), // with the threads
       defaults: s.defaults ?? { groups: {} },
-      usable: s.agents ?? AGENT_ORDER, // a server before the list sends none
+      usable: s.agents ?? ["claude", "cursor", "pi"], // a server from before the agent list
       home: s.home ?? "", defaultCwd: s.defaultCwd ?? "",
       items: localPart(st.items, stays(st.items, true), true), // refetched when a chat is shown; updates missed while away are not replayed
       subs: localPart(st.subs, stays(st.subs, true), true),    // with them

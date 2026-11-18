@@ -15,6 +15,7 @@ const ORDER: Record<string, [string, number][]> = {
     ["custom_agents", 2], ["messages", 3]],
   cursor: [["system_prompt", 8], ["tools", 1], ["rules", 4], ["skills", 5], ["mcp", 6], ["subagents", 7],
     ["summarized_conversation", 2], ["conversation", 3]],
+  codex: [["input", 1], ["output", 2]],
   // Pi reports one used category (messages) and a free category, which the free logic handles.
   pi: [["messages", 3]],
 };

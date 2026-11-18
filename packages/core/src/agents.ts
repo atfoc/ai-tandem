@@ -11,7 +11,7 @@
 import type { AgentKind } from "./types.ts";
 
 /** A glyph key; each has a matching .glyph.<key> rule. "unknown" is the neutral fallback. */
-export type GlyphKind = "claude" | "cursor" | "pi" | "unknown";
+export type GlyphKind = "claude" | "cursor" | "codex" | "pi" | "unknown";
 
 export type AgentMeta = {
   /** The name the user sees. */
@@ -29,6 +29,7 @@ export type AgentMeta = {
 const AGENTS: Record<string, AgentMeta> = {
   claude: { name: "Claude Code", short: "Claude", cls: "claude", glyph: "claude", usageTitle: "Plan usage limits" },
   cursor: { name: "Cursor", short: "Cursor", cls: "cursor", glyph: "cursor", usageTitle: "Cursor usage" },
+  codex: { name: "Codex", short: "Codex", cls: "codex", glyph: "codex", usageTitle: "Codex usage" },
   pi: { name: "Pi", short: "Pi", cls: "pi", glyph: "pi" },
 };
 
@@ -47,6 +48,7 @@ export function agentMeta(kind: AgentKind | string): AgentMeta {
   switch (kind) {
     case "claude": return AGENTS.claude;
     case "cursor": return AGENTS.cursor;
+    case "codex": return AGENTS.codex;
     case "pi": return AGENTS.pi;
     default: {
       if (isAliasKind(kind)) { const name = aliasNames[String(kind)] || UNNAMED_ACCOUNT; return { name, short: name, cls: "claude", glyph: "claude", usageTitle: "Plan usage limits" }; }

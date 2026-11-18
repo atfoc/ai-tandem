@@ -52,7 +52,7 @@ function markFrom(items: Items, count: number): number {
 
 /** May a new branch or a fork start at a finished boundary of a source whose turn is running?
  *  The mirror of liveFork in internal/chats/points.go. */
-export const LIVE_FORK: Record<string, boolean> = { claude: true, cursor: true, pi: true };
+export const LIVE_FORK: Record<string, boolean> = { claude: true, cursor: true, codex: true, pi: true };
 
 /** Whether the kind may branch from a running source: its family's LIVE_FORK (a Claude account behaves as Claude Code). */
 export const liveFork = (agent: AgentKind | ""): boolean => !!agent && !!LIVE_FORK[agentFamily(agent)];

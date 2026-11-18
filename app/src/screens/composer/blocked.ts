@@ -75,7 +75,7 @@ export const ARCHIVED_TITLE = "This chat is archived.";
 export const ARCHIVED_SUB = "Unarchive it to send a message. It goes back to the list with the others.";
 export const LEGACY_TITLE = "This chat used the old board connection.";
 export const LEGACY_SUB = "Start a new chat on this board to go on.";
-export const NO_AGENT_SUB = "Install Claude Code, Cursor or pi on that computer, then come back.";
+export const NO_AGENT_SUB = "Install Claude Code, Cursor, Codex or pi on that computer, then come back.";
 
 /** The words of "no agent": another server names it; this computer says today's sentence (agentlist.ts NO_AGENT), split at its first full stop. */
 export function noAgentWords(w: Where): { title: string; sub: string } {
