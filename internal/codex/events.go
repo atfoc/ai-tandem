@@ -90,8 +90,9 @@ func (p *proc) onNotification(method string, raw json.RawMessage) {
 		Turn struct {
 			ID, Status string
 			Error      *struct {
-				Message        string
-				CodexErrorInfo json.RawMessage
+				Message           string
+				AdditionalDetails string
+				CodexErrorInfo    json.RawMessage
 			}
 		}
 	}
@@ -144,7 +145,7 @@ func (p *proc) onNotification(method string, raw json.RawMessage) {
 		clear(p.items)
 		ev := agent.Event{Kind: agent.EvTurnEnd, Point: msg.Turn.ID, Aborted: msg.Turn.Status == "interrupted"}
 		if msg.Turn.Error != nil && !ev.Aborted {
-			ev.Error = p.redact(msg.Turn.Error.Message)
+			ev.Error = p.redact(turnErrorText(msg.Turn.Error.Message, msg.Turn.Error.AdditionalDetails))
 			ev.Temporary = temporaryError(msg.Turn.Error.CodexErrorInfo)
 		} else if msg.Turn.Status == "failed" {
 			ev.Error = "Codex turn failed."
@@ -160,6 +161,16 @@ func (p *proc) onNotification(method string, raw json.RawMessage) {
 		}
 		p.emit(ev)
 	}
+}
+
+// turnErrorText keeps Codex's `additionalDetails` (the underlying cause, such as an HTTP status
+// and URL behind "stream disconnected") instead of dropping it, unless the message already says it.
+func turnErrorText(message, details string) string {
+	details = strings.TrimSpace(details)
+	if details == "" || strings.Contains(message, details) {
+		return message
+	}
+	return message + ": " + details
 }
 
 func temporaryError(info json.RawMessage) agent.Temporary {

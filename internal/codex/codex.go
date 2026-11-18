@@ -216,6 +216,12 @@ func (s *Spawner) threadParams(o agent.SpawnOptions) map[string]any {
 			},
 		}
 		params["permissions"] = permissionProfile
+		// `permissions` selects the profile for thread/start only. Codex rebuilds its
+		// configuration from the config layers when it sets up each model request (Codex
+		// 0.170.0, workspace routing), and a config that defines profiles but names no
+		// default fails there with "failed to load workspace requirements: invalid input
+		// parameter", after thread/start has already succeeded. Name the default too.
+		config["default_permissions"] = permissionProfile
 	} else {
 		params["sandbox"] = "workspace-write"
 	}

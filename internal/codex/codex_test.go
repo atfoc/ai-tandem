@@ -131,6 +131,59 @@ func TestTaggedProviderFailureEndsTurn(t *testing.T) {
 	}
 }
 
+// Codex rebuilds its config when it sets up a model request; a config that defines the profile but
+// names no default fails there ("failed to load workspace requirements: invalid input parameter"),
+// after thread/start has already succeeded. The profile must be defined, selected and the default.
+func TestThreadParamsDefineSelectAndDefaultTheProfile(t *testing.T) {
+	s := &Spawner{AppRoot: "/data/store"}
+	params := s.threadParams(agent.SpawnOptions{Cwd: "/work"})
+	config := params["config"].(map[string]any)
+	if params["permissions"] != permissionProfile || config["default_permissions"] != permissionProfile {
+		t.Fatalf("selected %v, default %v, want %q for both", params["permissions"], config["default_permissions"], permissionProfile)
+	}
+	profile := config["permissions"].(map[string]any)[permissionProfile].(map[string]any)
+	if profile["extends"] != ":workspace" || profile["filesystem"].(map[string]string)["/data/store"] != "deny" {
+		t.Fatalf("profile = %v, want the workspace denying the app root", profile)
+	}
+	if _, ok := params["sandbox"]; ok {
+		t.Fatal("a named profile cannot be combined with sandbox")
+	}
+
+	plain := (&Spawner{}).threadParams(agent.SpawnOptions{Cwd: "/work"})
+	pc := plain["config"].(map[string]any)
+	if _, ok := pc["default_permissions"]; ok || plain["sandbox"] != "workspace-write" {
+		t.Fatalf("without an app root: config %v, sandbox %v", pc, plain["sandbox"])
+	}
+}
+
+func TestTurnErrorKeepsCodexAdditionalDetails(t *testing.T) {
+	p := &proc{
+		conn: &rpcConn{ctx: context.Background()}, threadID: "thread",
+		events: make(chan agent.Event, 1), active: &activeTurn{id: "turn"},
+	}
+	p.onNotification("turn/completed", json.RawMessage(`{
+		"threadId":"thread",
+		"turn":{"id":"turn","status":"failed","error":{
+			"message":"stream disconnected before completion",
+			"additionalDetails":"unexpected status 403 Forbidden, url: wss://example.test/responses",
+			"codexErrorInfo":"other"
+		}}
+	}`))
+	want := "stream disconnected before completion: unexpected status 403 Forbidden, url: wss://example.test/responses"
+	if ev := nextEvent(t, p, agent.EvTurnEnd); ev.Error != want {
+		t.Fatalf("error = %q, want %q", ev.Error, want)
+	}
+	for _, c := range []struct{ message, details, want string }{
+		{"failed", "", "failed"},
+		{"failed", "  ", "failed"},
+		{"failed: disk full", "disk full", "failed: disk full"},
+	} {
+		if got := turnErrorText(c.message, c.details); got != c.want {
+			t.Fatalf("turnErrorText(%q, %q) = %q, want %q", c.message, c.details, got, c.want)
+		}
+	}
+}
+
 func nextEvent(t *testing.T, a agent.Agent, kind agent.EventKind) agent.Event {
 	t.Helper()
 	timer := time.NewTimer(5 * time.Second)
@@ -178,7 +231,8 @@ func fakeServer() int {
 				opts.Permissions != "tandem" || opts.ApprovalPolicy != "on-request" ||
 				opts.DeveloperInstructions != "Use the board." ||
 				!strings.Contains(string(opts.Config["mcp_servers.board"]), "Bearer test-token") ||
-				string(opts.Config["features.multi_agent"]) != "false" {
+				string(opts.Config["features.multi_agent"]) != "false" ||
+				string(opts.Config["default_permissions"]) != `"tandem"` {
 				return 2
 			}
 			switch m.Method {
