@@ -2,6 +2,7 @@ package codex
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -69,6 +70,12 @@ func TestTurnApprovalAndFork(t *testing.T) {
 	if ev := nextEvent(t, a, agent.EvToolResult); ev.Result != "hello" || ev.IsError {
 		t.Fatalf("tool result = %+v", ev)
 	}
+	if ev := nextEvent(t, a, agent.EvToolStart); ev.ToolName != "mcp__board__read_board" {
+		t.Fatalf("board tool = %+v", ev)
+	}
+	if ev := nextEvent(t, a, agent.EvToolResult); ev.Result != "board contents" || ev.IsError {
+		t.Fatalf("board result = %+v", ev)
+	}
 	if ev := nextEvent(t, a, agent.EvTextDelta); ev.Text != "Done" {
 		t.Fatalf("text = %+v", ev)
 	}
@@ -91,6 +98,9 @@ func TestTurnApprovalAndFork(t *testing.T) {
 	if ev := nextEvent(t, resumed, agent.EvSession); ev.SessionID != o.SessionID {
 		t.Fatalf("resumed session = %q", ev.SessionID)
 	}
+	if ev := nextEvent(t, resumed, agent.EvUsage); ev.CtxIn != 80 || ev.CtxWindow != 1024 {
+		t.Fatalf("resumed usage = %+v", ev)
+	}
 	fork, id, err := s.SpawnFork(o, agent.ForkSource{SessionID: o.SessionID, Point: point.Point})
 	if err != nil {
 		t.Fatal(err)
@@ -98,6 +108,26 @@ func TestTurnApprovalAndFork(t *testing.T) {
 	defer fork.Close()
 	if id != "thread-fork" {
 		t.Fatalf("fork session = %q", id)
+	}
+}
+
+func TestTaggedProviderFailureEndsTurn(t *testing.T) {
+	p := &proc{
+		conn: &rpcConn{ctx: context.Background()}, threadID: "thread",
+		events: make(chan agent.Event, 1), active: &activeTurn{id: "turn"},
+	}
+	p.onNotification("turn/completed", json.RawMessage(`{
+		"threadId":"thread",
+		"turn":{"id":"turn","status":"failed","error":{
+			"message":"stream disconnected",
+			"codexErrorInfo":{"responseStreamDisconnected":{"httpStatusCode":503}}
+		}}
+	}`))
+	if ev := nextEvent(t, p, agent.EvTurnEnd); ev.Point != "turn" || ev.Error != "stream disconnected" || ev.Temporary != agent.TempServer {
+		t.Fatalf("turn end = %+v", ev)
+	}
+	if p.active != nil {
+		t.Fatal("failed turn is still active")
 	}
 }
 
@@ -158,6 +188,7 @@ func fakeServer() int {
 				if opts.ThreadID != "thread-original" {
 					return 3
 				}
+				frame("thread/tokenUsage/updated", `{"threadId":"thread-original","turnId":"turn-1","tokenUsage":{"last":{"inputTokens":80,"outputTokens":20},"modelContextWindow":1024}}`)
 				reply(`{"thread":{"id":"thread-original"},"activePermissionProfile":{"id":"tandem"}}`)
 			case "thread/fork":
 				if opts.ThreadID != "thread-original" || opts.LastTurnID != "turn-1" {
@@ -181,6 +212,8 @@ func fakeServer() int {
 			}
 			send(map[string]any{"id": startID, "result": json.RawMessage(`{"turn":{"id":"turn-1"}}`)})
 			frame("item/completed", `{"threadId":"thread-original","turnId":"turn-1","item":{"id":"cmd","type":"commandExecution","command":"printf hello","status":"completed","aggregatedOutput":"hello"}}`)
+			frame("item/started", `{"threadId":"thread-original","turnId":"turn-1","item":{"id":"mcp","type":"mcpToolCall","server":"board","tool":"read_board","arguments":{},"status":"inProgress"}}`)
+			frame("item/completed", `{"threadId":"thread-original","turnId":"turn-1","item":{"id":"mcp","type":"mcpToolCall","server":"board","tool":"read_board","arguments":{},"status":"completed","result":{"content":[{"type":"text","text":"board contents"}]}}}`)
 			frame("item/agentMessage/delta", `{"threadId":"thread-original","turnId":"turn-1","itemId":"msg","delta":"Done"}`)
 			frame("item/completed", `{"threadId":"thread-original","turnId":"turn-1","item":{"id":"msg","type":"agentMessage","text":"Done"}}`)
 			frame("thread/tokenUsage/updated", `{"threadId":"thread-original","turnId":"turn-1","tokenUsage":{"last":{"inputTokens":80,"outputTokens":20},"total":{"inputTokens":80,"outputTokens":20},"modelContextWindow":1024}}`)

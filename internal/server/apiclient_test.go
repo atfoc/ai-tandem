@@ -578,7 +578,9 @@ func TestAPIClientSnapshot(t *testing.T) {
 	if s := decode[snap](t, string(state)); len(s.Chats) != 2 || len(s.States) != 2 ||
 		len(s.Groups) != 1 || s.Groups[0].ID != g.ID || s.Groups[0].Name != "Mine" || s.Defaults == nil ||
 		len(s.Boards) != 1 || s.Boards[0].ID != bd.ID || s.Boards[0].Group != g.ID ||
-		s.Home != "/home/owner" || s.DefaultCwd != e.a.DefaultCwd || len(s.Agents) != 3 || len(s.Catalogs) != 3 || s.Catalogs["claude"] == nil {
+		s.Home != "/home/owner" || s.DefaultCwd != e.a.DefaultCwd ||
+		!slices.Equal(s.Agents, []model.AgentKind{model.Claude, model.Cursor, model.Codex, model.Pi}) ||
+		len(s.Catalogs) != 4 || s.Catalogs["claude"] == nil {
 		t.Fatalf("the state of a new client: %s", state)
 	}
 

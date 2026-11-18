@@ -14,6 +14,43 @@ type usageTokens struct {
 	InputTokens, OutputTokens, CachedInputTokens, CacheWriteInputTokens int
 }
 
+type usageUpdate struct {
+	ThreadID, TurnID string
+	Usage            *struct {
+		Last, Total        usageTokens
+		ModelContextWindow int
+	} `json:"tokenUsage"`
+}
+
+func (u usageUpdate) event() agent.Event {
+	return agent.Event{Kind: agent.EvUsage, CtxIn: u.Usage.Last.InputTokens,
+		CtxOut: u.Usage.Last.OutputTokens, CtxWindow: u.Usage.ModelContextWindow}
+}
+
+func (p *proc) onUsage(raw json.RawMessage) {
+	var u usageUpdate
+	if json.Unmarshal(raw, &u) != nil || u.Usage == nil {
+		return
+	}
+	p.mu.Lock()
+	if p.threadID == "" {
+		// Resume can report usage before dispatching its response.
+		p.pendingUsage = &u
+		p.mu.Unlock()
+		return
+	}
+	if u.ThreadID != p.threadID {
+		p.mu.Unlock()
+		return
+	}
+	if p.active != nil && p.active.id == u.TurnID && u.TurnID != "" {
+		p.tokens = u.Usage.Total
+		p.hasTokens = true
+	}
+	p.mu.Unlock()
+	p.emit(u.event())
+}
+
 type itemState struct {
 	text  strings.Builder
 	input json.RawMessage
@@ -33,26 +70,28 @@ type toolItem struct {
 	Arguments                       json.RawMessage
 	Result                          struct {
 		Content []struct{ Type, Text string }
+		IsError bool
 	}
 	Error   *struct{ Message string }
 	Success *bool
 }
 
 func (p *proc) onNotification(method string, raw json.RawMessage) {
+	if method == "thread/tokenUsage/updated" {
+		p.onUsage(raw)
+		return
+	}
 	var msg struct {
 		ThreadID, TurnID, ItemID, Delta string
 		RequestID                       json.RawMessage
 		Item                            toolItem
 		Changes                         []fileChange
-		Usage                           *struct {
-			Last, Total        usageTokens
-			ModelContextWindow int
-		} `json:"tokenUsage"`
+
 		Turn struct {
 			ID, Status string
 			Error      *struct {
 				Message        string
-				CodexErrorInfo string
+				CodexErrorInfo json.RawMessage
 			}
 		}
 	}
@@ -101,14 +140,6 @@ func (p *proc) onNotification(method string, raw json.RawMessage) {
 		if len(msg.Changes) != 0 {
 			p.emit(agent.Event{Kind: agent.EvToolInput, ToolID: msg.ItemID, ToolName: "Edit", Input: editInput(msg.Changes)})
 		}
-	case "thread/tokenUsage/updated":
-		if msg.Usage != nil {
-			u := msg.Usage
-			p.tokens = u.Total
-			p.hasTokens = true
-			p.emit(agent.Event{Kind: agent.EvUsage, CtxIn: u.Last.InputTokens,
-				CtxOut: u.Last.OutputTokens, CtxWindow: u.ModelContextWindow})
-		}
 	case "turn/completed":
 		clear(p.items)
 		ev := agent.Event{Kind: agent.EvTurnEnd, Point: msg.Turn.ID, Aborted: msg.Turn.Status == "interrupted"}
@@ -131,8 +162,12 @@ func (p *proc) onNotification(method string, raw json.RawMessage) {
 	}
 }
 
-func temporaryError(info string) agent.Temporary {
-	switch info {
+func temporaryError(info json.RawMessage) agent.Temporary {
+	var kind string
+	if json.Unmarshal(info, &kind) != nil {
+		return connectionError(info)
+	}
+	switch kind {
 	case "unauthorized":
 		return agent.TempLogin
 	case "usageLimitExceeded", "rateLimitExceeded":
@@ -144,6 +179,29 @@ func temporaryError(info string) agent.Temporary {
 	default:
 		return ""
 	}
+}
+
+// Network errors are tagged objects rather than strings on the App Server wire.
+func connectionError(info json.RawMessage) agent.Temporary {
+	var errorKinds map[string]struct{ HTTPStatusCode int }
+	if json.Unmarshal(info, &errorKinds) != nil {
+		return ""
+	}
+	for _, kind := range []string{"httpConnectionFailed", "responseStreamConnectionFailed", "responseStreamDisconnected", "responseTooManyFailedAttempts"} {
+		e, ok := errorKinds[kind]
+		if !ok {
+			continue
+		}
+		switch {
+		case e.HTTPStatusCode == 401:
+			return agent.TempLogin
+		case e.HTTPStatusCode == 429:
+			return agent.TempRate
+		case e.HTTPStatusCode == 0 || e.HTTPStatusCode == 408 || e.HTTPStatusCode >= 500:
+			return agent.TempServer
+		}
+	}
+	return ""
 }
 
 func (p *proc) textDelta(id, delta string) {
@@ -270,7 +328,7 @@ func (item toolItem) toolResult() (string, bool) {
 				parts = append(parts, content.Text)
 			}
 		}
-		return strings.Join(parts, "\n"), failed
+		return strings.Join(parts, "\n"), failed || item.Result.IsError
 	}
 	return item.AggregatedOutput, failed
 }

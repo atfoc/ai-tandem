@@ -39,9 +39,10 @@ type proc struct {
 	readyErr error
 	threadID string // written during handshake
 
-	mu     sync.Mutex
-	active *activeTurn
-	perm   map[string]approval
+	mu           sync.Mutex
+	active       *activeTurn
+	perm         map[string]approval
+	pendingUsage *usageUpdate
 
 	// Item state belongs to the notification reader.
 	items     map[string]*itemState
@@ -178,7 +179,11 @@ func (s *Spawner) openThread(ctx context.Context, p *proc, src *agent.ForkSource
 	if r.Thread.ID == "" {
 		return fmt.Errorf("%s: Codex returned no thread ID", method)
 	}
+	p.mu.Lock()
 	p.threadID = r.Thread.ID
+	usage := p.pendingUsage
+	p.pendingUsage = nil
+	p.mu.Unlock()
 	if s.AppRoot != "" && (r.ActivePermissionProfile == nil || r.ActivePermissionProfile.ID != permissionProfile) {
 		return errors.New("Codex did not apply Tandem's sandbox profile. Use Codex CLI 0.170.0 or later.")
 	}
@@ -192,6 +197,9 @@ func (s *Spawner) openThread(ctx context.Context, p *proc, src *agent.ForkSource
 		}
 	}
 	p.emit(agent.Event{Kind: agent.EvSession, SessionID: p.threadID})
+	if usage != nil && usage.ThreadID == p.threadID {
+		p.emit(usage.event())
+	}
 	return nil
 }
 
