@@ -171,13 +171,13 @@ var SpawnFamily = []Tool{
 			"description": str("short label for the subagent row; give parallel spawns distinct descriptions"),
 			"agent": map[string]any{
 				"type":        "string",
-				"description": "claude, cursor, or pi; omit for this chat's agent",
-				"enum":        []any{"claude", "cursor", "pi"},
+				"description": "claude, cursor, codex, or pi; omit for this chat's agent",
+				"enum":        []any{"claude", "cursor", "codex", "pi"},
 			},
 			"model":  str(`model id for the requested agent, exactly as list_subagent_models lists it; omit for this chat's current model when the agent is this chat's own and that model and this chat's effort still fit its list, else for the default of a new chat of that agent (list_subagent_models shows which after "Model omitted ->")`),
 			"effort": str(`effort/thinking level the model accepts, as list_subagent_models lists it; omit with a model named for this chat's current effort, or the model's default effort when this chat has none or the agent's list shows the model does not offer it; omit with no model named for the effort list_subagent_models shows after "Model omitted ->"`),
 		}, "prompt"),
-		Summary: `{"prompt": "...", "description"?: "...", "agent"?: "claude|cursor|pi", "model"?: "...", "effort"?: "..."}`,
+		Summary: `{"prompt": "...", "description"?: "...", "agent"?: "claude|cursor|codex|pi", "model"?: "...", "effort"?: "..."}`,
 	},
 	{
 		Name: "stop_subagent",
@@ -196,12 +196,12 @@ var SpawnFamily = []Tool{
 		Schema: obj(props{
 			"agent": map[string]any{
 				"type":        "string",
-				"description": "claude, cursor, or pi; omit for this chat's agent",
-				"enum":        []any{"claude", "cursor", "pi"},
+				"description": "claude, cursor, codex, or pi; omit for this chat's agent",
+				"enum":        []any{"claude", "cursor", "codex", "pi"},
 			},
 			"filter": str("words to narrow the list, for example \"opus\" or \"openrouter/openai\": a model is listed when every word occurs in its id or its label, in any letter case and any order; omit to list all"),
 		}),
-		Summary: `{"agent"?: "claude|cursor|pi", "filter"?: "..."}`,
+		Summary: `{"agent"?: "claude|cursor|codex|pi", "filter"?: "..."}`,
 	},
 	{
 		Name: "resume_subagent",
@@ -218,7 +218,7 @@ var SpawnFamily = []Tool{
 
 // An Agent is one agent the spawn family names: its kind, and the name the agent parameter's
 // description gives it ("Claude · Work" for a Claude account); "" shows no name, as for Claude
-// Code, Cursor and pi, which are named by their kinds alone.
+// Code, Cursor, Codex and pi, which are named by their kinds alone.
 type Agent struct {
 	Kind string
 	Name string
@@ -255,14 +255,14 @@ func SpawnFamilyFor(agents []Agent) []Tool {
 		}
 		if len(agents) == 0 {
 			delete(ps, "agent")
-			t.Summary = strings.Replace(t.Summary, `"agent"?: "claude|cursor|pi", `, "", 1)
+			t.Summary = strings.Replace(t.Summary, `"agent"?: "claude|cursor|codex|pi", `, "", 1)
 		} else {
 			ps["agent"] = map[string]any{
 				"type":        "string",
 				"description": desc + "; omit for this chat's agent",
 				"enum":        enum,
 			}
-			t.Summary = strings.Replace(t.Summary, "claude|cursor|pi", strings.Join(kinds, "|"), 1)
+			t.Summary = strings.Replace(t.Summary, "claude|cursor|codex|pi", strings.Join(kinds, "|"), 1)
 		}
 		schema := make(map[string]any, len(t.Schema))
 		for k, v := range t.Schema {

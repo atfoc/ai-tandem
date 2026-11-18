@@ -12,7 +12,7 @@ import (
 // defaults, archived ones included) and the server's lists. No data folder.
 type APISnapshot struct {
 	Agents     []model.AgentKind                  `json:"agents"`   // the agents this server can start, never nil
-	Catalogs   map[model.AgentKind]*model.Catalog `json:"catalogs"` // claude, cursor, pi and every Claude account; null while not known
+	Catalogs   map[model.AgentKind]*model.Catalog `json:"catalogs"` // claude, cursor, codex, pi and every Claude account; null while not known
 	Home       string                             `json:"home"`
 	DefaultCwd string                             `json:"defaultCwd"`
 	Groups     []model.Group                      `json:"groups"`   // every group, in the server's order; never nil
@@ -65,11 +65,11 @@ func (a *App) APISnapshot() APISnapshot {
 }
 
 // catalogs returns each agent's model list as the snapshot gives it: Claude's built-in list until
-// it reported one, nil for Cursor and pi until they did. Every Claude account (a.Agents.Accounts,
+// it reported one, nil for Cursor, Codex and pi until they did. Every Claude account (a.Agents.Accounts,
 // usable or not) has its own entry, under its kind: the list it reported, else Claude's built-in
 // list, as the computer's own Claude Code.
 func (a *App) catalogs() map[model.AgentKind]*model.Catalog {
-	out := map[model.AgentKind]*model.Catalog{model.Claude: builtinClaude(), model.Cursor: nil, model.Pi: nil}
+	out := map[model.AgentKind]*model.Catalog{model.Claude: builtinClaude(), model.Cursor: nil, model.Codex: nil, model.Pi: nil}
 	for _, kind := range a.Agents.Accounts() {
 		out[kind] = builtinClaude()
 	}

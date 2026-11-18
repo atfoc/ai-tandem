@@ -2,6 +2,7 @@ package chats
 
 import (
 	"errors"
+	"slices"
 	"sync"
 	"testing"
 
@@ -28,7 +29,7 @@ func wantCalls(t *testing.T, sp *fakeSpawner, live, reads int) {
 func TestContextSplitNotStarted(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)
-	for _, a := range []model.AgentKind{model.Claude, model.Cursor, model.Pi} {
+	for _, a := range []model.AgentKind{model.Claude, model.Cursor, model.Codex, model.Pi} {
 		v := e.create(a, gOne, "")
 		if _, err := e.m.ContextSplit(v.ID, false); !errors.Is(err, ErrNotStarted) {
 			t.Errorf("%s: err %v, want ErrNotStarted", a, err)
@@ -36,6 +37,34 @@ func TestContextSplitNotStarted(t *testing.T) {
 	}
 	if _, err := e.m.ContextSplit("nope", false); !errors.Is(err, ErrNotFound) {
 		t.Errorf("unknown chat: err %v", err)
+	}
+}
+
+func TestCodexContextSplitUsesStoredCounts(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	sp := &fakeSpawner{}
+	e.m.Spawners[model.Codex] = sp
+	v := e.create(model.Codex, gOne, "")
+	e.send(v.ID, "one", "")
+	a := sp.last(t)
+	a.emit(t, agent.Event{Kind: agent.EvSession, SessionID: "codex-thread"},
+		agent.Event{Kind: agent.EvUsage, CtxIn: 1600, CtxOut: 100, CtxWindow: 4000},
+		agent.Event{Kind: agent.EvTurnEnd})
+	a.exit(t)
+
+	e.boot() // none of the live process state or spawner survives
+	s := e.split(v.ID, true)
+	if s.AtMessage != 1 || s.AtTurn != 1 || s.Total != 1700 || s.Window != 4000 {
+		t.Fatalf("split %+v", s)
+	}
+	want := []int{1600, 100, 2300}
+	tokens := make([]int, 0, len(s.Categories))
+	for _, c := range s.Categories {
+		tokens = append(tokens, c.Tokens)
+	}
+	if !slices.Equal(tokens, want) {
+		t.Fatalf("categories %+v, want token counts %v", s.Categories, want)
 	}
 }
 

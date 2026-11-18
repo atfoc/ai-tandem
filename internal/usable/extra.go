@@ -2,7 +2,7 @@ package usable
 
 import "ai-whiteboard/internal/model"
 
-// Extra is a source of agent kinds beyond Claude Code, Cursor and pi: the Claude accounts
+// Extra is a source of agent kinds beyond Claude Code, Cursor, Codex and pi: the Claude accounts
 // (internal/aliases), each the kind model.AliasKind(id). A Set given one lists, after the fixed
 // kinds in defaults.AgentOrder, the accounts' kinds that Check passes, in Kinds' order; its Check
 // of an account kind is Extra's Check (as an *UnusableError); its Name of one is Extra's Name.

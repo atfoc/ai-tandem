@@ -1,5 +1,5 @@
 // ai-whiteboard: a server that keeps Excalidraw boards and chats with coding agents (Claude
-// Code, Cursor, pi, and further Claude accounts, each in a Docker container of its own) that read
+// Code, Cursor, Codex, pi, and further Claude accounts, each in a Docker container of its own) that read
 // and edit them. It serves no page: the desktop app is its client, over HTTPS with a secret, on
 // this machine as on any other.
 //
@@ -34,6 +34,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -48,6 +49,7 @@ import (
 	"ai-whiteboard/internal/boards"
 	"ai-whiteboard/internal/chats"
 	"ai-whiteboard/internal/claude"
+	"ai-whiteboard/internal/codex"
 	"ai-whiteboard/internal/container"
 	"ai-whiteboard/internal/cursor"
 	"ai-whiteboard/internal/editorbridge"
@@ -65,6 +67,7 @@ import (
 type options struct {
 	home, cwd            string
 	claudeBin, cursorBin string
+	codexBin             string
 	dockerBin            string // the docker program the Claude accounts' containers are run with
 	cursorCostBin        string
 	piBin, piNamerModel  string
@@ -120,6 +123,7 @@ func parseFlags(cmd string, args []string) options {
 	fs.StringVar(&o.dockerBin, "docker", "docker", "Docker CLI binary, for the Claude accounts (each runs in its own container)")
 	fs.StringVar(&o.cursorBin, "cursor", "agent", "Cursor agent binary")
 	fs.StringVar(&o.cursorCostBin, "cursor-cost", "cursor-cost", "cursor-cost binary, for the Cursor plan's usage (~/bin is tried too)")
+	fs.StringVar(&o.codexBin, "codex", "codex", "Codex CLI binary")
 	fs.StringVar(&o.piBin, "pi", "pi", "pi binary")
 	fs.StringVar(&o.piNamerModel, "pi-namer-model", "", "pi model for chat titles (empty = pi's default)")
 	fs.StringVar(&o.headlessNode, "headless-node", "", "program that runs the headless writer, which edits boards while no window is open (empty = the desktop app's Electron, else node 22+ on PATH; or AIWB_HEADLESS_NODE)")
@@ -195,10 +199,11 @@ func serve(o options) {
 	}
 	bs := boards.New(st, br)
 	br.SceneRev = bs.Rev
-	bins := map[model.AgentKind]string{model.Claude: o.claudeBin, model.Cursor: o.cursorBin, model.Pi: o.piBin}
+	bins := map[model.AgentKind]string{model.Claude: o.claudeBin, model.Cursor: o.cursorBin, model.Codex: o.codexBin, model.Pi: o.piBin}
 	agents := usable.New(bins) // the agents whose programs are found; looked up again every usable.Every
 	base := fmt.Sprintf("https://127.0.0.1:%d", port)
 	cursorSpawner := &cursor.Spawner{Bin: o.cursorBin, AppRoot: p.Root, Home: home}
+	codexSpawner := &codex.Spawner{Bin: o.codexBin, AppRoot: p.Root, Prompt: prompts.Claude()}
 	claudeSpawner := &claude.Spawner{Bin: o.claudeBin, AppRoot: p.Root, Home: home, Prompt: prompts.Claude()}
 	probePiVersion(o.piBin)
 	piSpawner := &pi.Spawner{Bin: o.piBin, AppRoot: p.Root, Home: home, Prompt: prompts.Pi()}
@@ -224,6 +229,7 @@ func serve(o options) {
 		Spawners: map[model.AgentKind]agent.Spawner{
 			model.Claude: claudeSpawner,
 			model.Cursor: cursorSpawner,
+			model.Codex:  codexSpawner,
 			model.Pi:     piSpawner,
 		}})
 	if svc != nil {
@@ -252,9 +258,21 @@ func serve(o options) {
 	piSpawner.Bridge = pb
 	go refreshCursorCatalog(cursorSpawner, st, br)
 	go refreshPiCatalog(piSpawner, st, br)
+	hadCodex := agents.Has(model.Codex)
+	if hadCodex {
+		go refreshCodexCatalog(codexSpawner, st, br)
+	}
 	go refreshClaudeCatalog(model.Claude, claudeSpawner, 20*time.Second, st, br)
-	// Never stopped: the server ends by exiting.
-	go agents.Watch(waits.agentsEvery(), nil, func(l []model.AgentKind) { br.Broadcast(map[string]any{"type": "agents", "agents": l}) })
+	// Never stopped: the server ends by exiting. Fetch the catalog again when Codex is installed
+	// while the server is up.
+	go agents.Watch(waits.agentsEvery(), nil, func(l []model.AgentKind) {
+		br.Broadcast(map[string]any{"type": "agents", "agents": l})
+		hasCodex := slices.Contains(l, model.Codex)
+		if hasCodex && !hadCodex {
+			go refreshCodexCatalog(codexSpawner, st, br)
+		}
+		hadCodex = hasCodex
+	})
 	if svc != nil {
 		// Docker and every account are looked at, then Docker is followed: each change goes out as
 		// an "aliases" event, and the agent list is looked at again. Never stopped either.
@@ -282,6 +300,7 @@ func serve(o options) {
 	srv := &server.Server{App: a, Relay: relay, Bridge: br,
 		Usage: map[model.AgentKind]func(bool) (model.PlanUsage, error){
 			model.Claude: (&agent.UsageCache{Fetch: claudeSpawner.Usage, TTL: time.Minute}).Get,
+			model.Codex:  (&agent.UsageCache{Fetch: codexSpawner.Usage, TTL: time.Minute}).Get,
 			model.Cursor: (&agent.UsageCache{Fetch: (&cursor.CostReader{Bin: o.cursorCostBin, Home: home}).Usage, TTL: time.Minute}).Get,
 		},
 		MCPPort: mcpBoundPort, MCPURL: boardapi.Endpoint(mcpBoundPort), MCPUp: mcpUp.Load}
@@ -479,6 +498,19 @@ func refreshCursorCatalog(sp *cursor.Spawner, st *store.Store, br *editorbridge.
 		log.Printf("cursor model list: saving: %v", err)
 	}
 	br.Broadcast(map[string]any{"type": "catalog", "agent": string(model.Cursor), "catalog": cat})
+}
+
+// refreshCodexCatalog keeps the previous catalog if Codex cannot report a model list.
+func refreshCodexCatalog(sp *codex.Spawner, st *store.Store, br *editorbridge.Bridge) {
+	cat, err := sp.ProbeCatalog()
+	if err != nil {
+		log.Printf("codex model list: %v", err)
+		return
+	}
+	if err := st.Update(func(s *model.State) error { s.SetCatalog(model.Codex, cat); return nil }); err != nil {
+		log.Printf("codex model list: saving: %v", err)
+	}
+	br.Broadcast(map[string]any{"type": "catalog", "agent": string(model.Codex), "catalog": cat})
 }
 
 // refreshPiCatalog fetches pi's model list for the pickers, like refreshCursorCatalog. On failure

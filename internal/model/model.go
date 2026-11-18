@@ -14,6 +14,7 @@ type AgentKind string
 const (
 	Claude AgentKind = "claude"
 	Cursor AgentKind = "cursor"
+	Codex  AgentKind = "codex"
 	Pi     AgentKind = "pi"
 )
 
@@ -69,7 +70,7 @@ type State struct {
 	Version  int                    `json:"version"`
 	Groups   []Group                `json:"groups"` // in the user's order; subgroups keep this order among their siblings
 	Defaults Defaults               `json:"defaults"`
-	Catalogs map[AgentKind]*Catalog `json:"catalogs,omitempty"` // last model list each agent reported (Claude, Cursor, pi); Claude falls back to the built-in list when none
+	Catalogs map[AgentKind]*Catalog `json:"catalogs,omitempty"` // last model list each agent reported (Claude, Cursor, Codex, pi); Claude falls back to the built-in list when none
 	// Cursor is the legacy Cursor catalog slot, kept for backward-compatible reads of older
 	// state.json files. It is never written after the generic Catalogs map exists.
 	Cursor *Catalog `json:"cursorCatalog,omitempty"`
@@ -159,15 +160,15 @@ type CatalogModel struct {
 }
 
 type Usage struct {
-	CtxIn     int    `json:"ctxIn"`              // Claude: last model call's input + cache tokens; pi: last message's input tokens; Cursor: the session store's used_tokens
-	CtxOut    int    `json:"ctxOut"`             // Claude and pi: last model call's output tokens
-	CtxWindow int    `json:"ctxWindow"`          // Claude and pi: the model's context window; Cursor: the session store's max_tokens
+	CtxIn     int    `json:"ctxIn"`              // Claude: last model call's input + cache tokens; pi and Codex: last model call's input tokens; Cursor: the session store's used_tokens
+	CtxOut    int    `json:"ctxOut"`             // Claude, pi and Codex: last model call's output tokens
+	CtxWindow int    `json:"ctxWindow"`          // Claude, pi and Codex: the model's context window; Cursor: the session store's max_tokens
 	CtxError  string `json:"ctxError,omitempty"` // Cursor only: why the context usage could not be read; cleared by the next good read
 	Turns     int    `json:"turns"`
 }
 
 // ContextSplit is what fills a chat's context window, by category, as the agent reports it:
-// Claude's get_context_usage, Cursor's session store, pi's get_session_stats. It is the last
+// Claude's get_context_usage, Cursor's session store, pi's get_session_stats, or Codex's token counts. It is the last
 // context split taken between turns; Claude's and live pi's are kept in chat.json.
 type ContextSplit struct {
 	AtMessage  int               `json:"atMessage"` // messages sent when it was taken
@@ -200,7 +201,7 @@ type ContextFact struct {
 }
 
 // PlanUsage is an agent's plan usage limits: Claude's as `claude -p /usage` reports them,
-// Cursor's as `cursor-cost` does. It is fetched when the client asks and never stored.
+// Cursor's via `cursor-cost` and Codex's via its app server. It is fetched when the client asks and never stored.
 type PlanUsage struct {
 	Plan      bool         `json:"plan"`           // false: no limits were reported (API-key login, logged out)
 	Note      string       `json:"note,omitempty"` // Plan false: why (Claude: the first line /usage printed); true: a warning about the limits
@@ -709,7 +710,7 @@ type Subagent struct {
 	Description string    `json:"description,omitempty"` // the name the parent gave it
 	Prompt      string    `json:"prompt,omitempty"`      // what the parent asked it
 	Model       string    `json:"model,omitempty"`       // as reported: "claude-haiku-4-5-20251001", "gpt-5.4-mini-medium"
-	Kind        AgentKind `json:"kind,omitempty"`        // "claude" | "cursor" | "pi"; app-spawned only
+	Kind        AgentKind `json:"kind,omitempty"`        // "claude" | "cursor" | "codex" | "pi"; app-spawned only
 	Effort      string    `json:"effort,omitempty"`
 	Background  bool      `json:"background,omitempty"`
 	Status      SubStatus `json:"status"`

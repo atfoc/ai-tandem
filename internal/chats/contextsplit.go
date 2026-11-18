@@ -37,7 +37,7 @@ type splitRun struct {
 // the split is refused until the fork's first message.
 //
 // Cursor's is read from its session store on every call, as it costs no process; it is never
-// persisted.
+// persisted. Codex's is calculated from its latest token counts.
 //
 // It is the split of the chat's current branch.
 func (m *Manager) ContextSplit(id string, fresh bool) (model.ContextSplit, error) {
@@ -63,6 +63,12 @@ func (m *Manager) ContextSplitOf(id, branch string, fresh bool) (model.ContextSp
 		return model.ContextSplit{}, ErrNotStarted
 	}
 	sent, turns, wasBusy := tr.Sent(), c.meta.Usage.Turns, busy(c)
+	if c.meta.Agent == model.Codex {
+		usage := c.meta.Usage
+		c.mu.Unlock()
+		m.send(out)
+		return codexContextSplit(usage, sent)
+	}
 	if s := c.meta.ContextSplit; s != nil && keepsContextSplit(c.meta.Agent) && !fresh && !wasBusy &&
 		s.AtMessage == sent && s.AtTurn == turns {
 		split := *s
@@ -137,4 +143,23 @@ func (m *Manager) readContextSplit(a model.AgentKind, opts agent.SpawnOptions) (
 		return rd.ReadContextSplit(opts)
 	}
 	return model.ContextSplit{}, errors.New("this agent does not report its context split")
+}
+
+// codexContextSplit uses the most recent token counts reported by the app server.
+func codexContextSplit(usage model.Usage, sent int) (model.ContextSplit, error) {
+	if usage.CtxWindow <= 0 || (usage.CtxIn <= 0 && usage.CtxOut <= 0) {
+		return model.ContextSplit{}, errors.New("Codex has not reported context usage yet")
+	}
+	used := usage.CtxIn + usage.CtxOut
+	return model.ContextSplit{
+		AtMessage: sent,
+		AtTurn:    usage.Turns,
+		Total:     used,
+		Window:    usage.CtxWindow,
+		Categories: []model.ContextCategory{
+			{ID: "input", Label: "Input", Tokens: usage.CtxIn, Kind: "used"},
+			{ID: "output", Label: "Output", Tokens: usage.CtxOut, Kind: "used"},
+			{ID: "free", Label: "Free space", Tokens: max(0, usage.CtxWindow-used), Kind: "free"},
+		},
+	}, nil
 }

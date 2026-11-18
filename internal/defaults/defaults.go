@@ -13,9 +13,9 @@ import (
 	"ai-whiteboard/internal/model"
 )
 
-// AgentOrder is the fixed order agents are offered in, everywhere: Claude, Cursor, then pi.
+// AgentOrder is the fixed order agents are offered in, everywhere: Claude, Cursor, Codex, then pi.
 // It never depends on what was used last. The Claude accounts come after it (usable.Set.List).
-var AgentOrder = []model.AgentKind{model.Claude, model.Cursor, model.Pi}
+var AgentOrder = []model.AgentKind{model.Claude, model.Cursor, model.Codex, model.Pi}
 
 // Agent returns the agent a new chat in group g starts with: the group's, then the ungrouped
 // group's, then the first of AgentOrder. A kind not in usable is skipped at every step, so a

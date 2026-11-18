@@ -810,7 +810,7 @@ func (m *Manager) Items(id string) (int, []model.Item, []model.Subagent, error) 
 // ---- creating and configuring ---------------------------------------------
 
 // catalog is the model list for a: the stored one, else (Claude only) the built-in one. Claude's
-// is never nil; Cursor's and pi's are nil until the agent has reported its list. The result is
+// is never nil; Cursor's, Codex's and pi's are nil until the agent has reported its list. The result is
 // a shallow copy; callers must not modify its slices.
 func (m *Manager) catalog(a model.AgentKind) *model.Catalog {
 	var cat *model.Catalog
@@ -829,7 +829,7 @@ func (m *Manager) catalog(a model.AgentKind) *model.Catalog {
 
 // effortFor is the effort a process of model modelID starts with: for Claude, none when the
 // catalog lists the model without efforts; else the stored effort (also for a model the catalog
-// does not know, and always for Cursor and pi).
+// does not know, and always for Cursor, Codex and pi).
 func (m *Manager) effortFor(a model.AgentKind, modelID, effort string) string {
 	if !model.IsClaude(a) {
 		return effort
@@ -1064,7 +1064,7 @@ func (m *Manager) workDir(path string) (string, error) {
 }
 
 // sessionFor is the session id a chat object gets with the agent a: one of its own for Claude
-// and pi, none for Cursor, which makes its own, and none without an agent.
+// and pi, none for Cursor and Codex, which get theirs from the provider, and none without an agent.
 func sessionFor(a model.AgentKind) string {
 	if model.IsClaude(a) || a == model.Pi {
 		return uuid()
@@ -1390,7 +1390,7 @@ func (m *Manager) pump(c *Chat, ag agent.Agent, gen int) {
 				if ev.CtxIn != 0 {
 					u.CtxIn = ev.CtxIn
 				}
-				if ev.CtxOut != 0 {
+				if ev.CtxOut != 0 || c.meta.Agent == model.Codex && ev.CtxIn > 0 {
 					u.CtxOut = ev.CtxOut
 				}
 				if ev.CtxWindow != 0 {
@@ -1971,7 +1971,7 @@ func (m *Manager) canStart(a model.AgentKind) error {
 	return usable.ErrNone // also with no look-up: nothing starts without an agent
 }
 
-// findModel looks id up in cat. A nil catalog (Cursor's or pi's list not known yet) accepts any
+// findModel looks id up in cat. A nil catalog (Cursor's, Codex's or pi's list not known yet) accepts any
 // model.
 func findModel(cat *model.Catalog, id string) (*model.CatalogModel, error) {
 	if cat == nil {

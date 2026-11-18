@@ -30,7 +30,7 @@ func TestSpawnFamilyFor(t *testing.T) {
 		spawn  string
 		list   string
 	}{
-		{[]string{"claude", "cursor", "pi"}, "claude, cursor, or pi; omit for this chat's agent", SpawnFamily[0].Summary, SpawnFamily[2].Summary},
+		{[]string{"claude", "cursor", "codex", "pi"}, "claude, cursor, codex, or pi; omit for this chat's agent", SpawnFamily[0].Summary, SpawnFamily[2].Summary},
 		{[]string{"claude", "pi"}, "claude, or pi; omit for this chat's agent",
 			`{"prompt": "...", "description"?: "...", "agent"?: "claude|pi", "model"?: "...", "effort"?: "..."}`, `{"agent"?: "claude|pi", "filter"?: "..."}`},
 		{[]string{"cursor"}, "cursor; omit for this chat's agent",
@@ -77,7 +77,7 @@ func TestSpawnFamilyFor(t *testing.T) {
 	// The package's own list is not touched by any of the calls.
 	for _, i := range []int{0, 2} {
 		p, ok := agentProp(SpawnFamily[i])
-		if !ok || !reflect.DeepEqual(p["enum"], []any{"claude", "cursor", "pi"}) {
+		if !ok || !reflect.DeepEqual(p["enum"], []any{"claude", "cursor", "codex", "pi"}) {
 			t.Fatalf("SpawnFamily[%d] agent parameter = %v", i, p)
 		}
 	}

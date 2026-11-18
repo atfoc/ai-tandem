@@ -17,7 +17,7 @@ import (
 func TestSnapshotAgentsFollowTheSet(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)
-	if got := e.a.APISnapshot().Agents; !reflect.DeepEqual(got, []model.AgentKind{model.Claude, model.Cursor, model.Pi}) {
+	if got := e.a.APISnapshot().Agents; !reflect.DeepEqual(got, []model.AgentKind{model.Claude, model.Cursor, model.Codex, model.Pi}) {
 		t.Fatalf("agents with no set = %v", got)
 	}
 
@@ -82,7 +82,7 @@ func TestSnapshotCatalogsOfAccounts(t *testing.T) {
 		t.Fatalf("agents = %v", snap.Agents)
 	}
 	c := snap.Catalogs
-	if len(c) != 5 || c[model.Cursor] != nil || c[model.Pi] != nil {
+	if len(c) != 6 || c[model.Cursor] != nil || c[model.Codex] != nil || c[model.Pi] != nil {
 		t.Fatalf("catalogs = %v", c)
 	}
 	if !reflect.DeepEqual(*c[model.Claude], claude.Catalog) {

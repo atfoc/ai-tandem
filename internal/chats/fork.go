@@ -296,7 +296,7 @@ func prefixMeta(src model.ChatMeta, items []model.Item, at int, mc model.ModelCh
 		meta.Subagents = &sub
 	}
 	if model.IsClaude(src.Agent) || src.Agent == model.Pi {
-		meta.SessionID = uuid() // Cursor's comes from the fork start, or from session/new
+		meta.SessionID = uuid() // Cursor and Codex get theirs from the provider
 	}
 	for _, it := range items[:at] {
 		switch it.Kind {
@@ -471,7 +471,7 @@ func (m *Manager) startFork(c *Chat, src agent.ForkSource, at int) error {
 	c.meta.SessionID = sid
 	if model.IsClaude(kind) {
 		// Claude's fork is only durable once it has had a message: until then every launch makes
-		// it again from the source. pi's and Cursor's exist from now on.
+		// it again from the source. pi, Cursor and Codex have durable forks when the start returns.
 		c.meta.ForkSource = &model.ForkSource{Chat: src.ChatID, Session: src.SessionID, Point: src.Point,
 			Next: src.Next, Items: at}
 	}

@@ -274,7 +274,7 @@ func TestModelNotInCatalogAndEffortCleared(t *testing.T) {
 }
 
 func TestAgentOrder(t *testing.T) {
-	want := []model.AgentKind{model.Claude, model.Cursor, model.Pi}
+	want := []model.AgentKind{model.Claude, model.Cursor, model.Codex, model.Pi}
 	if !reflect.DeepEqual(AgentOrder, want) {
 		t.Fatalf("AgentOrder = %v, want %v", AgentOrder, want)
 	}

@@ -14,7 +14,7 @@ import (
 	"ai-whiteboard/internal/model"
 )
 
-var testBins = map[model.AgentKind]string{model.Claude: "claude", model.Cursor: "agent", model.Pi: "pi"}
+var testBins = map[model.AgentKind]string{model.Claude: "claude", model.Cursor: "agent", model.Codex: "codex", model.Pi: "pi"}
 
 func kinds(a ...model.AgentKind) []model.AgentKind { return append([]model.AgentKind{}, a...) }
 
@@ -90,13 +90,16 @@ func TestListFollowsThePath(t *testing.T) {
 	putProgram(t, dir, "agent")
 	wantList(t, s.Refresh(), kinds(model.Claude, model.Cursor, model.Pi))
 
+	putProgram(t, dir, "codex")
+	wantList(t, s.Refresh(), kinds(model.Claude, model.Cursor, model.Codex, model.Pi))
+
 	// A file that cannot be run is not a program.
 	if err := os.Chmod(filepath.Join(dir, "agent"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	wantList(t, s.Refresh(), kinds(model.Claude, model.Pi))
+	wantList(t, s.Refresh(), kinds(model.Claude, model.Codex, model.Pi))
 
-	for _, name := range []string{"claude", "agent", "pi"} {
+	for _, name := range []string{"claude", "agent", "codex", "pi"} {
 		if err := os.Remove(filepath.Join(dir, name)); err != nil {
 			t.Fatal(err)
 		}
@@ -116,7 +119,7 @@ func TestListIsACopy(t *testing.T) {
 
 	var none *Set
 	none.List()[0] = model.Pi
-	wantList(t, defaults.AgentOrder, kinds(model.Claude, model.Cursor, model.Pi))
+	wantList(t, defaults.AgentOrder, kinds(model.Claude, model.Cursor, model.Codex, model.Pi))
 }
 
 func TestProgramGivenAsAPath(t *testing.T) {
@@ -203,7 +206,7 @@ func TestCheckNoAgent(t *testing.T) {
 	if err != ErrNone || errors.Is(err, ErrUnchosen) || errors.Is(err, ErrMissing) {
 		t.Fatalf(`Check("") with no program = %v, want ErrNone`, err)
 	}
-	if want := "no agent can be used on this server: none of the programs of Claude Code, Cursor and pi was found"; err.Error() != want {
+	if want := "no agent can be used on this server: none of the programs of Claude Code, Cursor, Codex and pi was found"; err.Error() != want {
 		t.Fatalf("text = %q, want %q", err.Error(), want)
 	}
 
@@ -257,7 +260,7 @@ func TestMissingErrorNames(t *testing.T) {
 func TestNilSet(t *testing.T) {
 	t.Parallel()
 	var s *Set
-	all := kinds(model.Claude, model.Cursor, model.Pi)
+	all := kinds(model.Claude, model.Cursor, model.Codex, model.Pi)
 	wantList(t, s.List(), all)
 	wantList(t, s.Refresh(), all)
 	if s.First() != model.Claude {

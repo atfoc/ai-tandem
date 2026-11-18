@@ -46,14 +46,14 @@ func TestAPISnapshot(t *testing.T) {
 			t.Errorf("%s of a server with nothing on it: %s, want []", k, keys[k])
 		}
 	}
-	if string(keys["agents"]) != `["claude","cursor","pi"]` {
+	if string(keys["agents"]) != `["claude","cursor","codex","pi"]` {
 		t.Errorf("agents: %s", keys["agents"])
 	}
 
 	if empty.Home != "/home/owner" || empty.DefaultCwd != "/home/owner/work" {
 		t.Fatalf("lists %+v", empty)
 	}
-	if c := empty.Catalogs; len(c) != 3 || c[model.Claude] == nil || c[model.Cursor] != nil || c[model.Pi] != nil {
+	if c := empty.Catalogs; len(c) != 4 || c[model.Claude] == nil || c[model.Cursor] != nil || c[model.Codex] != nil || c[model.Pi] != nil {
 		t.Fatalf("catalogs before any was reported: %v", c)
 	}
 	// A catalog an agent reported is in the snapshot, as a copy.

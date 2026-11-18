@@ -144,7 +144,7 @@ func (m *Manager) SpawnSubagent(chatID string, req SpawnSubRequest) (model.Subag
 
 	sid := randHex(6)
 	// The session is made here, before the record is first written, so that the record and the
-	// process hold the same one (design D4). Cursor's is reported by the process (EvSession).
+	// process hold the same one (design D4). Cursor and Codex report theirs via EvSession.
 	session := ""
 	if model.IsClaude(kind) || kind == model.Pi {
 		session = uuid()

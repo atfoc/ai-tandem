@@ -32,7 +32,7 @@ func IsAlias(a AgentKind) bool {
 }
 
 // Family is the kind whose adapter runs a: Claude for Claude and for every Claude account, a
-// itself for Cursor, pi and anything else. Code that asks how an agent behaves (its session ids,
+// itself for Cursor, Codex, pi and anything else. Code that asks how an agent behaves (its session ids,
 // its forks, its context split, its catalog) asks it of the family; code that asks which agent
 // it is (its name, its usability, its defaults, its catalog's slot) asks it of the kind.
 func (a AgentKind) Family() AgentKind {
@@ -45,8 +45,8 @@ func (a AgentKind) Family() AgentKind {
 // IsClaude reports whether a is Claude Code: the computer's own (Claude) or a Claude account.
 func IsClaude(a AgentKind) bool { return a == Claude || IsAlias(a) }
 
-// ValidKind reports whether a has the form of an agent kind: Claude, Cursor, pi, or a Claude
+// ValidKind reports whether a has the form of an agent kind: Claude, Cursor, Codex, pi, or a Claude
 // account's kind. It says nothing of whether that account exists or can be used (usable.Set).
 func ValidKind(a AgentKind) bool {
-	return a == Claude || a == Cursor || a == Pi || IsAlias(a)
+	return a == Claude || a == Cursor || a == Codex || a == Pi || IsAlias(a)
 }

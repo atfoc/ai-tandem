@@ -162,7 +162,7 @@ func TestSpawnPointsToModelList(t *testing.T) {
 	if req, _ := spawn.Schema["required"].([]string); len(req) != 1 || req[0] != "prompt" {
 		t.Errorf("spawn_subagent required = %v, want [prompt]", spawn.Schema["required"])
 	}
-	const summary = `{"prompt": "...", "description"?: "...", "agent"?: "claude|cursor|pi", "model"?: "...", "effort"?: "..."}`
+	const summary = `{"prompt": "...", "description"?: "...", "agent"?: "claude|cursor|codex|pi", "model"?: "...", "effort"?: "..."}`
 	if spawn.Summary != summary {
 		t.Errorf("spawn_subagent summary = %q, want %q", spawn.Summary, summary)
 	}

@@ -83,7 +83,7 @@ func markFrom(items []model.Item, count int) int {
 // liveFork: may a new branch or a fork start at a finished boundary of a source whose turn is running?
 // One line per agent kind; the web client has the same table (LIVE_FORK in
 // packages/core/src/logic/forkpoints.ts).
-var liveFork = map[model.AgentKind]bool{model.Claude: true, model.Cursor: true, model.Pi: true}
+var liveFork = map[model.AgentKind]bool{model.Claude: true, model.Cursor: true, model.Codex: true, model.Pi: true}
 
 // pointOK reports whether a new branch or a fork may start at count by the id rules alone; busy,
 // archived and legacy are the caller's to check. running says that the source's turn is running:

@@ -810,7 +810,7 @@ func TestSubagentOfAnUnusableKind(t *testing.T) {
 func TestNoLookUpMeansEveryAgent(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)
-	if got := e.m.UsableAgents(); !reflect.DeepEqual(got, []model.AgentKind{model.Claude, model.Cursor, model.Pi}) {
+	if got := e.m.UsableAgents(); !reflect.DeepEqual(got, []model.AgentKind{model.Claude, model.Cursor, model.Codex, model.Pi}) {
 		t.Fatalf("UsableAgents with no look-up: %v", got)
 	}
 	if v := e.newChat(NewChat{Group: gOne}); v.Agent != model.Claude {
