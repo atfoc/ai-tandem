@@ -1,0 +1,386 @@
+package codex
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+
+	"ai-whiteboard/internal/agent"
+	"ai-whiteboard/internal/model"
+)
+
+type usageTokens struct {
+	InputTokens, OutputTokens, CachedInputTokens, CacheWriteInputTokens int
+}
+
+type itemState struct {
+	text  strings.Builder
+	input json.RawMessage
+}
+
+type fileChange struct {
+	Path, Diff string
+	Kind       struct{ Type string }
+}
+
+type toolItem struct {
+	ID, Type, Status                string
+	Text, Command, AggregatedOutput string
+	Path, Cwd, Server, Tool, Query  string
+	ExitCode                        int
+	Changes                         []fileChange
+	Arguments                       json.RawMessage
+	Result                          struct {
+		Content []struct{ Type, Text string }
+	}
+	Error   *struct{ Message string }
+	Success *bool
+}
+
+func (p *proc) onNotification(method string, raw json.RawMessage) {
+	var msg struct {
+		ThreadID, TurnID, ItemID, Delta string
+		RequestID                       json.RawMessage
+		Item                            toolItem
+		Changes                         []fileChange
+		Usage                           *struct {
+			Last, Total        usageTokens
+			ModelContextWindow int
+		} `json:"tokenUsage"`
+		Turn struct {
+			ID, Status string
+			Error      *struct {
+				Message        string
+				CodexErrorInfo string
+			}
+		}
+	}
+	if json.Unmarshal(raw, &msg) != nil {
+		return
+	}
+	p.mu.Lock()
+	t := p.active
+	if t == nil || msg.ThreadID != p.threadID ||
+		(t.id != "" && msg.TurnID != "" && t.id != msg.TurnID) {
+		p.mu.Unlock()
+		return
+	}
+	switch method {
+	case "turn/started":
+		p.hasTokens = false
+		if t.id == "" && msg.Turn.ID != "" {
+			t.id = msg.Turn.ID
+			close(t.ready)
+		}
+	case "turn/completed":
+		if t.id != "" && t.id != msg.Turn.ID {
+			p.mu.Unlock()
+			return
+		}
+		if t.id == "" {
+			close(t.ready)
+		}
+		p.active = nil
+		clear(p.perm)
+	case "serverRequest/resolved":
+		delete(p.perm, string(msg.RequestID))
+	}
+	p.mu.Unlock()
+
+	switch method {
+	case "turn/started", "item/reasoning/summaryTextDelta":
+		p.emit(agent.Event{Kind: agent.EvThinking})
+	case "item/started":
+		p.startItem(msg.Item)
+	case "item/agentMessage/delta":
+		p.textDelta(msg.ItemID, msg.Delta)
+	case "item/completed":
+		p.finishItem(msg.Item)
+	case "item/fileChange/patchUpdated":
+		if len(msg.Changes) != 0 {
+			p.emit(agent.Event{Kind: agent.EvToolInput, ToolID: msg.ItemID, ToolName: "Edit", Input: editInput(msg.Changes)})
+		}
+	case "thread/tokenUsage/updated":
+		if msg.Usage != nil {
+			u := msg.Usage
+			p.tokens = u.Total
+			p.hasTokens = true
+			p.emit(agent.Event{Kind: agent.EvUsage, CtxIn: u.Last.InputTokens,
+				CtxOut: u.Last.OutputTokens, CtxWindow: u.ModelContextWindow})
+		}
+	case "turn/completed":
+		clear(p.items)
+		ev := agent.Event{Kind: agent.EvTurnEnd, Point: msg.Turn.ID, Aborted: msg.Turn.Status == "interrupted"}
+		if msg.Turn.Error != nil && !ev.Aborted {
+			ev.Error = p.redact(msg.Turn.Error.Message)
+			ev.Temporary = temporaryError(msg.Turn.Error.CodexErrorInfo)
+		} else if msg.Turn.Status == "failed" {
+			ev.Error = "Codex turn failed."
+		}
+		if p.hasTokens {
+			u := p.tokens
+			ev.HasTokens = true
+			ev.CumOutTokens = u.OutputTokens
+			ev.CumTokens = model.TokenCount{
+				In:  int64(max(0, u.InputTokens-u.CachedInputTokens-u.CacheWriteInputTokens)),
+				Out: int64(u.OutputTokens), CacheRead: int64(u.CachedInputTokens), CacheWrite: int64(u.CacheWriteInputTokens),
+			}
+		}
+		p.emit(ev)
+	}
+}
+
+func temporaryError(info string) agent.Temporary {
+	switch info {
+	case "unauthorized":
+		return agent.TempLogin
+	case "usageLimitExceeded", "rateLimitExceeded":
+		return agent.TempRate
+	case "serverOverloaded", "flexUnavailable":
+		return agent.TempOverloaded
+	case "internalServerError":
+		return agent.TempServer
+	default:
+		return ""
+	}
+}
+
+func (p *proc) textDelta(id, delta string) {
+	st := p.items[id]
+	if st == nil {
+		st = &itemState{}
+		p.items[id] = st
+	}
+	if st.text.Len() == 0 && delta != "" {
+		p.emit(agent.Event{Kind: agent.EvTextStart, MsgID: id})
+	}
+	if delta != "" {
+		st.text.WriteString(delta)
+		p.emit(agent.Event{Kind: agent.EvTextDelta, MsgID: id, Text: delta})
+	}
+}
+
+func (p *proc) startItem(item toolItem) {
+	name, input := item.toolInput()
+	if name == "" || item.ID == "" || p.items[item.ID] != nil {
+		return
+	}
+	p.items[item.ID] = &itemState{input: input}
+	p.emit(agent.Event{Kind: agent.EvToolStart, ToolID: item.ID, ToolName: name, Input: input})
+}
+
+func (p *proc) finishItem(item toolItem) {
+	if item.ID == "" {
+		return
+	}
+	if item.Type == "agentMessage" {
+		st := p.items[item.ID]
+		if st == nil && item.Text != "" {
+			p.emit(agent.Event{Kind: agent.EvText, MsgID: item.ID, Text: item.Text})
+		} else if st != nil && st.text.Len() > 0 {
+			if suffix, ok := strings.CutPrefix(item.Text, st.text.String()); ok && suffix != "" {
+				p.emit(agent.Event{Kind: agent.EvTextDelta, MsgID: item.ID, Text: suffix})
+			}
+		}
+		delete(p.items, item.ID)
+		return
+	}
+	name, input := item.toolInput()
+	if name == "" {
+		return
+	}
+	p.startItem(item)
+	p.emit(agent.Event{Kind: agent.EvToolInput, ToolID: item.ID, ToolName: name, Input: input})
+	denied := item.Status == "declined"
+	if denied {
+		p.emit(agent.Event{Kind: agent.EvToolDenied, ToolID: item.ID})
+	}
+	result, failed := item.toolResult()
+	p.emit(agent.Event{Kind: agent.EvToolResult, ToolID: item.ID, Result: p.redact(result), IsError: failed || denied})
+	delete(p.items, item.ID)
+}
+
+func (item toolItem) toolInput() (string, json.RawMessage) {
+	switch item.Type {
+	case "commandExecution":
+		return "Bash", toolJSON(map[string]string{"command": item.Command, "cwd": item.Cwd})
+	case "fileChange":
+		return "Edit", editInput(item.Changes)
+	case "mcpToolCall":
+		return "mcp__" + item.Server + "__" + item.Tool, item.Arguments
+	case "dynamicToolCall":
+		return item.Tool, item.Arguments
+	case "webSearch":
+		return "WebSearch", toolJSON(map[string]string{"query": item.Query})
+	case "imageView":
+		return "Read", toolJSON(map[string]string{"file_path": item.Path})
+	case "contextCompaction":
+		return "Context compaction", nil
+	default:
+		return "", nil
+	}
+}
+
+func toolJSON(v any) json.RawMessage {
+	b, _ := json.Marshal(v)
+	return b
+}
+
+func editInput(changes []fileChange) json.RawMessage {
+	if len(changes) != 1 {
+		fields := make([]map[string]string, 0, len(changes))
+		for _, c := range changes {
+			fields = append(fields, map[string]string{"path": c.Path, "diff": c.Diff})
+		}
+		return toolJSON(map[string]any{"changes": fields})
+	}
+	c := changes[0]
+	var old, new strings.Builder
+	if c.Kind.Type == "add" {
+		new.WriteString(c.Diff)
+	} else if c.Kind.Type == "delete" {
+		old.WriteString(c.Diff)
+	} else {
+		for line := range strings.SplitSeq(c.Diff, "\n") {
+			switch {
+			case strings.HasPrefix(line, "+++ "), strings.HasPrefix(line, "--- "):
+			case strings.HasPrefix(line, "-"):
+				old.WriteString(line[1:] + "\n")
+			case strings.HasPrefix(line, "+"):
+				new.WriteString(line[1:] + "\n")
+			case strings.HasPrefix(line, " "):
+				old.WriteString(line[1:] + "\n")
+				new.WriteString(line[1:] + "\n")
+			}
+		}
+	}
+	return toolJSON(map[string]string{"file_path": c.Path, "old_string": old.String(), "new_string": new.String()})
+}
+
+func (item toolItem) toolResult() (string, bool) {
+	failed := item.Status == "failed" || item.ExitCode != 0 || (item.Success != nil && !*item.Success)
+	if item.Error != nil {
+		return item.Error.Message, true
+	}
+	if item.Type == "mcpToolCall" {
+		var parts []string
+		for _, content := range item.Result.Content {
+			if content.Type == "text" {
+				parts = append(parts, content.Text)
+			}
+		}
+		return strings.Join(parts, "\n"), failed
+	}
+	return item.AggregatedOutput, failed
+}
+
+type approval struct {
+	id          json.RawMessage
+	allow, deny any
+}
+
+func (p *proc) onRequest(id json.RawMessage, method string, raw json.RawMessage) {
+	var req struct {
+		ThreadID, TurnID, ItemID, Command, Reason, Cwd, GrantRoot string
+		NetworkApprovalContext                                    *struct{ Host string }
+		AdditionalPermissions                                     json.RawMessage
+		Permissions                                               json.RawMessage
+		AvailableDecisions                                        []json.RawMessage
+	}
+	if err := json.Unmarshal(raw, &req); err != nil {
+		_ = p.conn.reply(id, nil, &rpcError{Code: -32602, Message: "invalid approval request"})
+		return
+	}
+	a := approval{id: id, allow: map[string]string{"decision": "accept"}, deny: map[string]string{"decision": "decline"}}
+	var name string
+	var input json.RawMessage
+	switch method {
+	case "item/commandExecution/requestApproval":
+		name = "Bash"
+		args := map[string]string{}
+		if st := p.items[req.ItemID]; st != nil {
+			_ = json.Unmarshal(st.input, &args)
+		}
+		if req.Command != "" {
+			args["command"] = req.Command
+		}
+		if req.Cwd != "" {
+			args["cwd"] = req.Cwd
+		}
+		args["description"] = "Codex requests command approval."
+		if req.Reason != "" {
+			args["description"] += " " + req.Reason
+		}
+		if req.NetworkApprovalContext != nil {
+			args["description"] += " Network host: " + req.NetworkApprovalContext.Host
+		}
+		if len(req.AdditionalPermissions) != 0 && string(req.AdditionalPermissions) != "null" {
+			args["description"] += " Additional permissions: " + string(req.AdditionalPermissions)
+		}
+		input = toolJSON(args)
+		if len(req.AvailableDecisions) > 0 {
+			if !hasDecision(req.AvailableDecisions, "accept") {
+				a.allow = nil // the UI only represents a one-time approval
+			}
+			if !hasDecision(req.AvailableDecisions, "decline") {
+				a.deny = map[string]string{"decision": "cancel"}
+			}
+		}
+	case "item/fileChange/requestApproval":
+		name = "Edit"
+		args := struct {
+			FilePath string `json:"file_path"`
+		}{}
+		if st := p.items[req.ItemID]; st != nil {
+			_ = json.Unmarshal(st.input, &args)
+		}
+		if req.GrantRoot != "" {
+			args.FilePath = req.GrantRoot
+		}
+		input = toolJSON(map[string]string{"description": req.Reason, "file_path": args.FilePath})
+	case "item/permissions/requestApproval":
+		name = "request_permissions"
+		input = toolJSON(map[string]string{"description": req.Reason + " Requested permissions: " + string(req.Permissions)})
+		a.allow = map[string]any{"scope": "turn", "permissions": req.Permissions}
+		a.deny = map[string]any{"scope": "turn", "permissions": map[string]any{}}
+	default:
+		_ = p.conn.reply(id, nil, &rpcError{Code: -32601, Message: "unsupported Codex request: " + method})
+		return
+	}
+	p.mu.Lock()
+	if p.active == nil || req.ThreadID != p.threadID || a.allow == nil ||
+		(p.active.id != "" && req.TurnID != "" && req.TurnID != p.active.id) {
+		p.mu.Unlock()
+		_ = p.conn.reply(id, a.deny, nil)
+		return
+	}
+	key := string(id)
+	p.perm[key] = a
+	p.mu.Unlock()
+	p.emit(agent.Event{Kind: agent.EvPermRequest, ToolID: req.ItemID, ToolName: name, PermID: key, Input: json.RawMessage(p.redact(string(input)))})
+}
+
+func hasDecision(choices []json.RawMessage, decision string) bool {
+	for _, choice := range choices {
+		if string(choice) == fmt.Sprintf("%q", decision) {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *proc) Decide(id string, allow bool) error {
+	p.mu.Lock()
+	a, ok := p.perm[id]
+	delete(p.perm, id)
+	p.mu.Unlock()
+	if !ok {
+		return errors.New("Codex approval request is no longer pending")
+	}
+	result := a.deny
+	if allow {
+		result = a.allow
+	}
+	return p.conn.reply(a.id, result, nil)
+}
