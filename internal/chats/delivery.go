@@ -307,6 +307,9 @@ func (m *Manager) deliver(c *Chat, out *outbox) *carry {
 	if !deliverable(c) {
 		return nil
 	}
+	if promptOwnsTurn(c) {
+		return nil // the queued user turn can carry any owed results
+	}
 	if p := m.parentOf(c); p.Archived || p.InstructionsSent { // a branch's flags are its top-level chat's
 		return nil
 	}

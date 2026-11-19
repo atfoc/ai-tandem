@@ -136,6 +136,8 @@ const SECTION: Record<keyof typeof api, [args: unknown[], method: string, path: 
   newChat: [[{ board: "s_1~b_1" }], "POST", "/api/chats", { board: "b_1" }],
   items: [["s_1~c_1", "main"], "GET", "/api/chats/c_1/items?branch=main"],
   subItems: [["s_1~c_1", "main", "5f"], "GET", "/api/chats/c_1/subagents/5f/items?branch=main"],
+  removePrompt: [["s_1~c_1", "ab12cd34", "p1"], "DELETE", "/api/chats/c_1/queue/p1?branch=ab12cd34"],
+  resumePrompts: [["s_1~c_1", "ab12cd34"], "POST", "/api/chats/c_1/queue/resume?branch=ab12cd34"],
   chat: [["s_1~c_1"], "GET", "/api/chats/c_1"],
   openChat: [["s_1~c_1", "main"], "POST", "/api/chats/c_1/open?branch=main"],
   send: [["s_1~c_1", "main", "hi", "ctx"], "POST", "/api/chats/c_1/messages?branch=main", { text: "hi", context: "ctx" }],

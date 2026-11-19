@@ -45,8 +45,9 @@ import (
 // after is what a step taken under c.mu leaves to be done once the lock is released and what it
 // emitted is sent: the processes to close, and the deliveries to hand to their agents.
 type after struct {
-	close []agent.Agent
-	hand  []*carry
+	close       []agent.Agent
+	hand        []*carry
+	wakePrompts bool
 }
 
 // add notes a delivery to hand off; nil is none.
@@ -61,6 +62,9 @@ func (m *Manager) finish(c *Chat, a *after) {
 	closeAgents(a.close)
 	for _, d := range a.hand {
 		m.handOff(c, d)
+	}
+	if a.wakePrompts {
+		m.wakePrompts(c)
 	}
 }
 

@@ -14,6 +14,23 @@ import (
 // new state before it sees the turn end.
 func (p *proc) translate(m map[string]any) []agent.Event {
 	evs := p.translate1(m)
+	// Reply frames and results can name all user messages consumed by a turn.
+	if str(m["parent_tool_use_id"]) == "" {
+		origin := obj(m["origin"])
+		ids := []string{str(m["user_message_uuid"]), str(origin["user_message_uuid"])}
+		for _, value := range append(list(m["user_message_uuids"]), list(origin["user_message_uuids"])...) {
+			ids = append(ids, str(value))
+		}
+		seen := map[string]bool{}
+		var consumed []agent.Event
+		for _, id := range ids {
+			if id != "" && !seen[id] {
+				consumed = append(consumed, agent.Event{Kind: agent.EvSteerConsumed, MsgID: id})
+				seen[id] = true
+			}
+		}
+		evs = append(consumed, evs...)
+	}
 	s := p.bgState()
 	if s == p.bgSent {
 		return evs

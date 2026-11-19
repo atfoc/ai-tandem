@@ -248,7 +248,9 @@ type ChatMeta struct {
 	// same chat.json: a save of a draft names the count it was typed on, so a late one cannot
 	// replace a newer draft. An entry is never removed: a cleared draft keeps its count. Like
 	// Drafts, a map that is in a ChatMeta is never changed.
-	DraftRevs map[string]int64 `json:"draftRevs,omitempty"`
+	DraftRevs      map[string]int64 `json:"draftRevs,omitempty"`
+	PendingPrompts *[]PendingPrompt `json:"pendingPrompts,omitempty"`
+	QueuePaused    bool             `json:"queuePaused,omitempty"`
 	// Draft is the one draft a chat had before its branches had their own. It is read only,
 	// never written again: the chat manager moves it to Drafts when it loads the chat.
 	Draft *Draft `json:"draft,omitempty"`
@@ -423,24 +425,39 @@ const (
 	StatusError    Status = "error"    // cannot start: see ChatView.Error
 )
 
+// PendingPrompt is a user message waiting to be sent or picked up by the agent.
+type PendingPrompt struct {
+	ID         string      `json:"id"`
+	Text       string      `json:"text"`
+	Context    string      `json:"context,omitempty"`
+	References []Reference `json:"references,omitempty"`
+	Images     []Image     `json:"images,omitempty"`
+	Delivery   string      `json:"delivery"`
+	State      string      `json:"state,omitempty"`
+}
+
 // ChatView is what clients see: the metadata without the token, plus live state.
 // It is written out field by field (not embedded) so the token can never leak.
 type ChatView struct {
-	ID               string    `json:"id"`
-	Agent            AgentKind `json:"agent"`
-	Name             string    `json:"name,omitempty"`
-	UserNamed        bool      `json:"userNamed,omitempty"`
-	Group            string    `json:"group,omitempty"`
-	Board            string    `json:"board,omitempty"`
-	Cwd              string    `json:"cwd"`
-	Model            string    `json:"model"`
-	Effort           string    `json:"effort,omitempty"`
-	Locked           bool      `json:"locked"`
-	InstructionsSent bool      `json:"instructionsSent,omitempty"` // curl-era Cursor board chats; those chats are disabled
-	Created          time.Time `json:"created"`
-	Usage            Usage     `json:"usage"`
-	Draft            *Draft    `json:"draft,omitempty"`
-	DraftRev         int64     `json:"draftRev,omitempty"` // the count of that draft's changes (ChatMeta.DraftRevs)
+	ID               string           `json:"id"`
+	Agent            AgentKind        `json:"agent"`
+	Name             string           `json:"name,omitempty"`
+	UserNamed        bool             `json:"userNamed,omitempty"`
+	Group            string           `json:"group,omitempty"`
+	Board            string           `json:"board,omitempty"`
+	Cwd              string           `json:"cwd"`
+	Model            string           `json:"model"`
+	Effort           string           `json:"effort,omitempty"`
+	Locked           bool             `json:"locked"`
+	InstructionsSent bool             `json:"instructionsSent,omitempty"` // curl-era Cursor board chats; those chats are disabled
+	Created          time.Time        `json:"created"`
+	Usage            Usage            `json:"usage"`
+	Draft            *Draft           `json:"draft,omitempty"`
+	DraftRev         int64            `json:"draftRev,omitempty"` // the count of that draft's changes (ChatMeta.DraftRevs)
+	PendingPrompts   *[]PendingPrompt `json:"pendingPrompts,omitempty"`
+	QueuePaused      bool             `json:"queuePaused,omitempty"`
+	CanQueue         bool             `json:"canQueue,omitempty"`
+	CanSteer         bool             `json:"canSteer,omitempty"`
 	Archive
 
 	Status        Status `json:"status"`
@@ -477,44 +494,52 @@ type ChatView struct {
 
 // BranchState is what clients see of one branch of a chat: the session side of its view.
 type BranchState struct {
-	Chat          string `json:"chat"`   // the top-level chat's id
-	Branch        string `json:"branch"` // "main" or a branch id
-	Cwd           string `json:"cwd"`
-	Model         string `json:"model"`
-	Effort        string `json:"effort,omitempty"`
-	Locked        bool   `json:"locked"`
-	Usage         Usage  `json:"usage"`
-	Status        Status `json:"status"`
-	StatusTool    string `json:"statusTool,omitempty"`
-	Error         string `json:"error,omitempty"`
-	FolderMissing bool   `json:"folderMissing,omitempty"`
-	SubsRunning   int    `json:"subsRunning,omitempty"`
-	SubsOwed      int    `json:"subsOwed,omitempty"`
-	Draft         *Draft `json:"draft,omitempty"`
-	DraftRev      int64  `json:"draftRev,omitempty"` // the count of that draft's changes (ChatMeta.DraftRevs)
-	Fresh         bool   `json:"fresh,omitempty"`    // a fork that has had no message of its own (ChatMeta.Fresh)
+	PendingPrompts *[]PendingPrompt `json:"pendingPrompts,omitempty"`
+	QueuePaused    bool             `json:"queuePaused,omitempty"`
+	CanQueue       bool             `json:"canQueue,omitempty"`
+	CanSteer       bool             `json:"canSteer,omitempty"`
+	Chat           string           `json:"chat"`   // the top-level chat's id
+	Branch         string           `json:"branch"` // "main" or a branch id
+	Cwd            string           `json:"cwd"`
+	Model          string           `json:"model"`
+	Effort         string           `json:"effort,omitempty"`
+	Locked         bool             `json:"locked"`
+	Usage          Usage            `json:"usage"`
+	Status         Status           `json:"status"`
+	StatusTool     string           `json:"statusTool,omitempty"`
+	Error          string           `json:"error,omitempty"`
+	FolderMissing  bool             `json:"folderMissing,omitempty"`
+	SubsRunning    int              `json:"subsRunning,omitempty"`
+	SubsOwed       int              `json:"subsOwed,omitempty"`
+	Draft          *Draft           `json:"draft,omitempty"`
+	DraftRev       int64            `json:"draftRev,omitempty"` // the count of that draft's changes (ChatMeta.DraftRevs)
+	Fresh          bool             `json:"fresh,omitempty"`    // a fork that has had no message of its own (ChatMeta.Fresh)
 }
 
 // StateOf is the state record of the branch whose own view is v: the view of that branch's chat
 // object alone, not the composed one of its chat.
 func StateOf(chat, branch string, v ChatView) BranchState {
 	return BranchState{
-		Chat:          chat,
-		Branch:        branch,
-		Cwd:           v.Cwd,
-		Model:         v.Model,
-		Effort:        v.Effort,
-		Locked:        v.Locked,
-		Usage:         v.Usage,
-		Status:        v.Status,
-		StatusTool:    v.StatusTool,
-		Error:         v.Error,
-		FolderMissing: v.FolderMissing,
-		SubsRunning:   v.SubsRunning,
-		SubsOwed:      v.SubsOwed,
-		Draft:         v.Draft,
-		DraftRev:      v.DraftRev,
-		Fresh:         v.Fresh,
+		PendingPrompts: v.PendingPrompts,
+		QueuePaused:    v.QueuePaused,
+		CanQueue:       v.CanQueue,
+		CanSteer:       v.CanSteer,
+		Chat:           chat,
+		Branch:         branch,
+		Cwd:            v.Cwd,
+		Model:          v.Model,
+		Effort:         v.Effort,
+		Locked:         v.Locked,
+		Usage:          v.Usage,
+		Status:         v.Status,
+		StatusTool:     v.StatusTool,
+		Error:          v.Error,
+		FolderMissing:  v.FolderMissing,
+		SubsRunning:    v.SubsRunning,
+		SubsOwed:       v.SubsOwed,
+		Draft:          v.Draft,
+		DraftRev:       v.DraftRev,
+		Fresh:          v.Fresh,
 	}
 }
 
@@ -563,8 +588,9 @@ type Item struct {
 	// "end" is the end mark of a turn, in a chat's own thread only, never in a subagent's.
 	Kind string `json:"kind"` // "user" | "text" | "tool" | "perm" | "note" | "subresult" | "end"
 	// user
-	Text    string `json:"text,omitempty"`    // user, text, note
-	Context string `json:"context,omitempty"` // user: the <ui-context> sent with it (not shown)
+	Text     string `json:"text,omitempty"`     // user, text, note
+	Context  string `json:"context,omitempty"`  // user: the <ui-context> sent with it (not shown)
+	PromptID string `json:"promptId,omitempty"` // queued prompt committed by this user item
 	// user: parts of earlier messages in this chat the user quoted, with a comment on each
 	References []Reference `json:"references,omitempty"`
 	// user: the images the message carries, shown above its text

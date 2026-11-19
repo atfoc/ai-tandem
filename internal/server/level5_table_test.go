@@ -30,6 +30,7 @@ var l5Table = []string{
 	"GET /api/chats/{id}/subagents/{sid}/items",
 	"PATCH /api/chats/{id}",
 	"POST /api/chats/{id}/messages", "POST /api/chats/{id}/interrupt", "POST /api/chats/{id}/permission", "POST /api/chats/{id}/open",
+	"DELETE /api/chats/{id}/queue/{prompt}", "POST /api/chats/{id}/queue/resume",
 	"PUT /api/chats/{id}/label", "PUT /api/chats/{id}/draft",
 	"POST /api/chats/{id}/images", "GET /api/chats/{id}/images/{image}",
 	"POST /api/chats/{id}/fork",
@@ -129,7 +130,7 @@ func (r *l5Rows) ask(route, id, query string, body any, want int, has string) st
 	}
 	r.called[route] = true
 	method, path, _ := strings.Cut(route, " ")
-	path = strings.NewReplacer("{id}", id, "{sid}", "s1", "{agent}", "claude", "{tid}", "t1", "{n}", "1", "{v}", "1", "{server}", "local").Replace(path)
+	path = strings.NewReplacer("{id}", id, "{sid}", "s1", "{agent}", "claude", "{tid}", "t1", "{n}", "1", "{v}", "1", "{server}", "local", "{prompt}", "p1").Replace(path)
 	status, out := l5Call(r.c, method, path+query, body)
 	if out == l5Gate || out == l5TooOld || status == 401 || status == 403 {
 		r.t.Fatalf("%s: the listener's own answer, %d %s", route, status, out)
@@ -197,6 +198,8 @@ func TestLevel5TableRoutesServeAClient(t *testing.T) {
 		t.Errorf("the image a client reads back is %d bytes, not the %d it sent", len(got), len(l5Picture(t)))
 	}
 	ask("POST /api/chats/{id}/messages", chat, "", `{"text":"hello from X"}`, 200, `"branch":"main"`)
+	ask("DELETE /api/chats/{id}/queue/{prompt}", chat, "", nil, 404, "no such queued prompt")
+	ask("POST /api/chats/{id}/queue/resume", chat, "", nil, 200, done)
 	ask("POST /api/chats/{id}/permission", chat, "", `{"requestId":"p1","allow":true}`, 400, "no longer open")
 	ask("POST /api/chats/{id}/interrupt", chat, "", nil, 200, done)
 	ask("PUT /api/chats/{id}/label", chat, "", `{"branch":"main","item":0,"text":"first"}`, 200, `"labels":[{`)

@@ -78,6 +78,8 @@ var ClientRoutes = []string{
 	"GET /api/chats/{id}/subagents/{sid}/items",
 	"PATCH /api/chats/{id}",
 	"POST /api/chats/{id}/messages",
+	"DELETE /api/chats/{id}/queue/{prompt}",
+	"POST /api/chats/{id}/queue/resume",
 	"POST /api/chats/{id}/interrupt",
 	"POST /api/chats/{id}/permission",
 	"PUT /api/chats/{id}/label",

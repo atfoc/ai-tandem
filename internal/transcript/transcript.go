@@ -177,9 +177,16 @@ func (t *Transcript) AddUser(text, context string, refs []model.Reference) []Upd
 
 // AddUserImages is AddUser for a message that also holds images, by id, name, type and size.
 func (t *Transcript) AddUserImages(text, context string, refs []model.Reference, images []model.Image) []Update {
+	return t.AddPendingUser("", text, context, refs, images, true)
+}
+
+// AddPendingUser records a delivered prompt. A steer keeps the existing turn's status.
+func (t *Transcript) AddPendingUser(id, text, context string, refs []model.Reference, images []model.Image, newTurn bool) []Update {
 	ups := t.closeOpen()
-	t.status = model.StatusThinking
-	u := t.push(model.Item{Kind: "user", Text: text, Context: context, References: refs, Images: images})
+	if newTurn {
+		t.status = model.StatusThinking
+	}
+	u := t.push(model.Item{Kind: "user", PromptID: id, Text: text, Context: context, References: refs, Images: images})
 	t.dirty[u.Index] = true
 	return append(ups, u)
 }

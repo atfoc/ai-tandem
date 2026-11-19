@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"reflect"
 	"strings"
 
 	"ai-whiteboard/internal/agent"
@@ -42,7 +43,11 @@ func (p *proc) translate(m map[string]any) []agent.Event {
 	p.initMaps()
 	switch str(m["type"]) {
 	case "message_start":
-		if str(obj(m["message"])["role"]) == "assistant" {
+		msg := obj(m["message"])
+		if str(msg["role"]) == "user" {
+			return p.steerReceipt(msg)
+		}
+		if str(msg["role"]) == "assistant" {
 			p.msgSeq++
 		}
 		return nil
@@ -98,6 +103,43 @@ func (p *proc) translate(m map[string]any) []agent.Event {
 		return nil
 	}
 	return nil
+}
+
+// steerReceipt matches pi's emitted user message against the one steer in
+// flight. The initial user message must already have appeared, so an identical
+// initial prompt cannot be mistaken for a steer.
+func (p *proc) steerReceipt(msg map[string]any) []agent.Event {
+	p.steerMu.Lock()
+	defer p.steerMu.Unlock()
+	if !p.seenTurnUser {
+		p.seenTurnUser = true
+		return nil
+	}
+	if p.steerID == "" {
+		return nil
+	}
+	var parts []string
+	var images []map[string]any
+	if value, ok := msg["content"].(string); ok {
+		parts = append(parts, value)
+	}
+	for _, v := range list(msg["content"]) {
+		b := obj(v)
+		switch str(b["type"]) {
+		case "text":
+			parts = append(parts, str(b["text"]))
+		case "image":
+			images = append(images, map[string]any{"type": "image", "mimeType": str(b["mimeType"]), "data": str(b["data"])})
+		default:
+			return nil
+		}
+	}
+	if strings.Join(parts, "\n\n") != p.steerText || !reflect.DeepEqual(images, p.steerImages) {
+		return nil
+	}
+	id := p.steerID
+	p.steerID = ""
+	return []agent.Event{{Kind: agent.EvSteerConsumed, MsgID: id}}
 }
 
 // messageUpdate maps one streamed assistant-message event.

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -12,6 +13,13 @@ import (
 
 	"ai-whiteboard/internal/agent"
 )
+
+func TestSteerWithoutTurnIsDefinitelyUnavailable(t *testing.T) {
+	p := &proc{}
+	if err := p.Steer("s1", []agent.ContentBlock{{Text: "hello"}}); !errors.Is(err, agent.ErrSteerUnavailable) {
+		t.Fatalf("Steer = %v", err)
+	}
+}
 
 func TestMain(m *testing.M) {
 	if os.Getenv("AIWB_TEST_CODEX_SERVER") == "1" && len(os.Args) == 2 && os.Args[1] == "app-server" {
@@ -55,6 +63,12 @@ func TestTurnApprovalAndFork(t *testing.T) {
 	req := nextEvent(t, a, agent.EvPermRequest)
 	if req.ToolID != tool.ToolID || !strings.Contains(string(req.Input), "printf hello") {
 		t.Fatalf("approval = %+v", req)
+	}
+	if err := a.(agent.Steerer).Steer("steer-1", []agent.ContentBlock{{Text: "change direction"}}); err != nil {
+		t.Fatalf("steer: %v", err)
+	}
+	if ev := nextEvent(t, a, agent.EvSteerConsumed); ev.MsgID != "steer-1" {
+		t.Fatalf("steer receipt = %+v", ev)
 	}
 	if err := a.Decide(req.PermID, true); err != nil {
 		t.Fatal(err)
@@ -260,6 +274,12 @@ func fakeServer() int {
 			frame("turn/started", `{"threadId":"thread-original","turn":{"id":"turn-1"}}`)
 			frame("item/started", `{"threadId":"thread-original","turnId":"turn-1","item":{"id":"cmd","type":"commandExecution","command":"printf hello"}}`)
 			fmt.Fprintln(os.Stdout, `{"id":"permission","method":"item/commandExecution/requestApproval","params":{"threadId":"thread-original","turnId":"turn-1","itemId":"cmd","availableDecisions":["accept","decline"]}}`)
+		case "turn/steer":
+			if !strings.Contains(string(m.Params), `"expectedTurnId":"turn-1"`) || !strings.Contains(string(m.Params), `"clientUserMessageId":"steer-1"`) || !strings.Contains(string(m.Params), "change direction") {
+				return 8
+			}
+			frame("item/completed", `{"threadId":"thread-original","turnId":"turn-1","item":{"type":"userMessage","id":"u2","clientId":"steer-1","content":[{"type":"text","text":"change direction"}]}}`)
+			reply(`{"turnId":"turn-1"}`)
 		case "":
 			if string(m.ID) != `"permission"` || string(m.Result) != `{"decision":"accept"}` {
 				return 6

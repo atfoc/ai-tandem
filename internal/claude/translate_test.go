@@ -13,6 +13,24 @@ import (
 	"ai-whiteboard/internal/model"
 )
 
+func TestSteerReceiptPrecedesTurnEnd(t *testing.T) {
+	p := &proc{}
+	evs := p.translate(map[string]any{"type": "result", "subtype": "success", "num_turns": float64(1), "user_message_uuid": "original", "user_message_uuids": []any{"original", "steer-id"}})
+	var got []string
+	end := -1
+	for i, ev := range evs {
+		if ev.Kind == agent.EvSteerConsumed {
+			got = append(got, ev.MsgID)
+		}
+		if ev.Kind == agent.EvTurnEnd {
+			end = i
+		}
+	}
+	if !reflect.DeepEqual(got, []string{"original", "steer-id"}) || end != len(evs)-1 {
+		t.Fatalf("events = %+v", evs)
+	}
+}
+
 // Sample stream-json lines of one Claude turn, in the order they arrive.
 var sampleTurn = []struct {
 	line string

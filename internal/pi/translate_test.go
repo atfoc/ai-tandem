@@ -15,6 +15,21 @@ import (
 	"ai-whiteboard/internal/model"
 )
 
+func TestSteerReceiptMatchesAfterInitialUserMessage(t *testing.T) {
+	p := &proc{steerID: "s1", steerText: "same"}
+	line := `{"type":"message_start","message":{"role":"user","content":[{"type":"text","text":"same"}]}}`
+	if got := translateStr(t, p, line); len(got) != 0 {
+		t.Fatalf("initial message: %+v", got)
+	}
+	got := translateStr(t, p, line)
+	if len(got) != 1 || got[0].Kind != agent.EvSteerConsumed || got[0].MsgID != "s1" {
+		t.Fatalf("steer: %+v", got)
+	}
+	if got := translateStr(t, p, line); len(got) != 0 {
+		t.Fatalf("duplicate: %+v", got)
+	}
+}
+
 func TestTranslateTextAndThinking(t *testing.T) {
 	p := &proc{}
 	cases := []struct {

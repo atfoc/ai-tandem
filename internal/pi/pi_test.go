@@ -77,6 +77,53 @@ func TestHandshakeReadyErr(t *testing.T) {
 	}
 }
 
+func TestSteerUsesNativeCommand(t *testing.T) {
+	f := newFake(t)
+	a := spawn(t, f.spawner(), agent.SpawnOptions{ChatID: "c1", Cwd: t.TempDir()})
+	steerer, ok := a.(agent.Steerer)
+	if !ok {
+		t.Fatal("pi does not support steering")
+	}
+	if err := steerer.Steer("steer-1", []agent.ContentBlock{{Text: "change direction"}, {Image: &agent.Image{Type: "image/png", Data: []byte{1, 2, 3}}}}); err != nil {
+		t.Fatal(err)
+	}
+	lines := f.stdinLines(t, a)
+	var steer map[string]any
+	for _, line := range lines {
+		if line["type"] == "steer" {
+			steer = line
+		}
+		if line["type"] == "abort" {
+			t.Fatal("steering aborted the turn")
+		}
+	}
+	if steer == nil || steer["message"] != "change direction" {
+		t.Fatalf("steer = %v", steer)
+	}
+	images, ok := steer["images"].([]any)
+	if !ok || len(images) != 1 {
+		t.Fatalf("steer images = %v", steer["images"])
+	}
+}
+
+func TestSteerAfterObservedSettlementDoesNotReachPi(t *testing.T) {
+	f := newFake(t)
+	a := spawn(t, f.spawner(), agent.SpawnOptions{ChatID: "c1", Cwd: t.TempDir()})
+	p := a.(*proc)
+	<-p.ready
+	p.endMu.Lock()
+	p.settled = true
+	p.endMu.Unlock()
+	if err := p.Steer("s1", []agent.ContentBlock{{Text: "too late"}}); !errors.Is(err, agent.ErrSteerUnavailable) {
+		t.Fatalf("Steer = %v", err)
+	}
+	for _, line := range f.stdinLines(t, a) {
+		if line["type"] == "steer" {
+			t.Fatal("steer was sent after settlement")
+		}
+	}
+}
+
 // A handshake that pi answered with a failure leaves pi running, so no turn would ever end. Send
 // ends the turn itself, with the error it returns, and closes the process: its exit follows and
 // says nothing more.

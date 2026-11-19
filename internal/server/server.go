@@ -165,6 +165,10 @@ func ok(w http.ResponseWriter) { writeJSON(w, map[string]any{"ok": true}) }
 // call validates the request's input, 500 where it does not).
 func statusOf(err error, fallback int) int {
 	switch {
+	case errors.Is(err, chats.ErrNoQueuedPrompt):
+		return http.StatusNotFound
+	case errors.Is(err, chats.ErrEmptyPrompt):
+		return http.StatusBadRequest
 	case errors.Is(err, boards.ErrNotFound), errors.Is(err, chats.ErrNotFound),
 		errors.Is(err, chats.ErrNoSubagent), errors.Is(err, chats.ErrNoBranch), errors.Is(err, app.ErrGroupNotFound),
 		errors.Is(err, chats.ErrNoImage), errors.Is(err, aliases.ErrNotFound):
@@ -182,6 +186,7 @@ func statusOf(err error, fallback int) int {
 	case errors.Is(err, boards.ErrArchived), errors.Is(err, chats.ErrArchived),
 		errors.Is(err, chats.ErrLegacy), errors.Is(err, chats.ErrLocked), errors.Is(err, agent.ErrFolderMissing),
 		errors.Is(err, chats.ErrBusy), errors.Is(err, chats.ErrNotStarted), errors.Is(err, app.ErrGroupArchived),
+		errors.Is(err, chats.ErrSteerUnsupported), errors.Is(err, chats.ErrPromptInFlight), errors.Is(err, chats.ErrPromptQueueFull),
 		errors.Is(err, chats.ErrWindow),
 		errors.Is(err, usable.ErrMissing), errors.Is(err, usable.ErrNone), errors.Is(err, chats.ErrAgentFixed), errors.Is(err, chats.ErrIDTaken),
 		errors.Is(err, chats.ErrSubFixed),
@@ -850,6 +855,7 @@ func (s *Server) routes() *routeMux {
 	mux.HandleFunc("POST /api/chats/{id}/messages", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Text, Context string
+			Delivery      string
 			References    []model.Reference
 			Images        []model.Image
 			Target        *struct {
@@ -873,6 +879,19 @@ func (s *Server) routes() *routeMux {
 			return
 		}
 		msg := chats.Message{Text: body.Text, Context: body.Context, References: body.References, Images: body.Images}
+		if body.Delivery != "" {
+			if body.Target != nil || (body.Delivery != chats.QueueDelivery && body.Delivery != chats.SteerDelivery) {
+				writeError(w, http.StatusBadRequest, "queue and steer apply to the end of a branch")
+				return
+			}
+			on, err := a.Chats.SubmitPrompt(r.PathValue("id"), branch, body.Delivery, msg)
+			if err != nil {
+				fail(w, err, http.StatusInternalServerError)
+				return
+			}
+			writeJSON(w, map[string]any{"ok": true, "branch": on})
+			return
+		}
 		var to *chats.Target // nil: the chat's current branch
 		if tg := body.Target; tg != nil {
 			to = &chats.Target{Branch: tg.Branch, At: *tg.At, New: tg.New, Model: tg.Model, Effort: tg.Effort}
@@ -885,6 +904,20 @@ func (s *Server) routes() *routeMux {
 			return
 		}
 		writeJSON(w, map[string]any{"ok": true, "branch": on})
+	})
+	mux.HandleFunc("DELETE /api/chats/{id}/queue/{prompt}", func(w http.ResponseWriter, r *http.Request) {
+		if err := a.Chats.RemovePrompt(r.PathValue("id"), branchOf(r), r.PathValue("prompt")); err != nil {
+			fail(w, err, http.StatusInternalServerError)
+			return
+		}
+		ok(w)
+	})
+	mux.HandleFunc("POST /api/chats/{id}/queue/resume", func(w http.ResponseWriter, r *http.Request) {
+		if err := a.Chats.ResumePrompts(r.PathValue("id"), branchOf(r)); err != nil {
+			fail(w, err, http.StatusInternalServerError)
+			return
+		}
+		ok(w)
 	})
 	// Saves the draft of one branch (?branch=, without it the current one); an empty draft is
 	// none. rev is the counter of the draft this one was typed on (ChatView.DraftRev,

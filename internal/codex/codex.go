@@ -322,6 +322,49 @@ func (p *proc) Send(blocks []agent.ContentBlock) error {
 	return nil
 }
 
+// Steer targets the current turn by ID so a race with its completion cannot
+// accidentally start a new turn.
+func (p *proc) Steer(steerID string, blocks []agent.ContentBlock) error {
+	input := make([]map[string]any, 0, len(blocks))
+	for _, b := range blocks {
+		if b.Image != nil {
+			input = append(input, map[string]any{"type": "image", "url": "data:" + b.Image.Type + ";base64," + base64.StdEncoding.EncodeToString(b.Image.Data)})
+		} else if b.Text != "" {
+			input = append(input, map[string]any{"type": "text", "text": b.Text, "text_elements": []any{}})
+		}
+	}
+	if len(input) == 0 {
+		return errors.New("the message is empty")
+	}
+	p.mu.Lock()
+	t := p.active
+	p.mu.Unlock()
+	if t == nil {
+		return agent.ErrSteerUnavailable
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
+	defer cancel()
+	select {
+	case <-t.ready:
+	case <-p.conn.done:
+		return p.conn.err()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	p.mu.Lock()
+	live, id := p.active == t, t.id
+	p.mu.Unlock()
+	if !live || id == "" {
+		return agent.ErrSteerUnavailable
+	}
+	err := p.conn.call(ctx, "turn/steer", map[string]any{"threadId": p.threadID, "expectedTurnId": id, "clientUserMessageId": steerID, "input": input}, nil)
+	var rejection *rpcError
+	if errors.As(err, &rejection) {
+		return fmt.Errorf("%w: %v", agent.ErrSteerUnavailable, err)
+	}
+	return err
+}
+
 func (p *proc) Interrupt() error {
 	p.mu.Lock()
 	t := p.active

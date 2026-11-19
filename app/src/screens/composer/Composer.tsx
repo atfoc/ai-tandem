@@ -19,7 +19,7 @@ import type { Ref } from "@aiwb/core/logic/refs.ts";
 import { selectedOn } from "@aiwb/core/logic/roles.ts";
 import { goneBySend, putsBack, refusalShown, sentNothing, sentText, underComposer } from "@aiwb/core/logic/sendend.ts";
 import { serverConnected } from "@aiwb/core/logic/serverlists.ts";
-import { composerControls, notConnected, refreshAfterRefusal } from "@aiwb/core/logic/status.ts";
+import { composerControls, inTurn, isBusy, notConnected, refreshAfterRefusal } from "@aiwb/core/logic/status.ts";
 import { mergeQuotes, toSend } from "@aiwb/core/logic/quotes.ts";
 import { sendWait } from "@aiwb/core/logic/waits.ts";
 import { isSending, leftByBack, registerComposer, sendFailed } from "@aiwb/core/state/actions.ts";
@@ -27,7 +27,7 @@ import { refreshChat } from "@aiwb/core/state/conn.ts";
 import { draftToShow, saveDraft } from "@aiwb/core/state/chatdraft.ts";
 import { boardsOn, branchState, getState, isLegacy, markGone, shownBranch, shownView, unsavedDraft, viewedBranch } from "@aiwb/core/state/store.ts";
 import { addImages, imagesGone, setImageError, slotOf, subscribe as subscribeUploads } from "@aiwb/core/state/uploads.ts";
-import type { AgentKind, ChatImage, Held, Reference } from "@aiwb/core/types.ts";
+import type { AgentKind, ChatImage, Held, PromptDelivery, Reference } from "@aiwb/core/types.ts";
 
 import { ChipInput, type ChipInputHandle } from "../../platform/chipinput/ChipInput";
 import type { KeyLike } from "../../platform/keys.types.ts";
@@ -63,6 +63,7 @@ import { keyPlatform } from "../shell/keyplatform.ts";
 import { useEditingSettings } from "../../state/editing.ts";
 import { dialogOpen, underDialog } from "./underdialog.ts";
 import { SendButton, StopButton } from "./Send.tsx";
+import { DeliveryActions, PendingPrompts } from "./PendingPrompts.tsx";
 import { sendMessage } from "./send.ts";
 
 /** The chat whose composer had the focus as it went away for the composer of another branch (the chat is on that one now): the one that
@@ -336,7 +337,11 @@ function ComposerOf({ chatId, branch }: { chatId: string; branch: string }) {
   if (legacy && !phone) return root(<>{parts.VoiceNotice ? <parts.VoiceNotice chatId={chatId} /> : null}<LegacyBar /></>);
 
   // esc: the agent is busy on the branch shown; a message that starts a new branch may go out all the same
-  const { stop, blocked, esc } = composerControls(c, { newBranch: move, liveFork: liveFork(c.agent) });
+  const controls = composerControls(c, { newBranch: move, liveFork: liveFork(c.agent) });
+  const { stop, esc } = controls;
+  const queueing = !move && !!c.canQueue && (isBusy(c.status) || (!c.queuePaused && !!c.pendingPrompts?.length));
+  const steering = queueing && !!c.canSteer && !c.queuePaused && inTurn(c.status);
+  const blocked = controls.blocked && !queueing;
   const own = c.board ? boards[c.board] : undefined;
   const selected = canRef ? selectedOn(selection.count, board, onScreen, role) : 0;
   const off = sendOff(where); // its server is not connected: the chat is shown as it was, and nothing is sent, stopped or changed
@@ -364,7 +369,7 @@ function ComposerOf({ chatId, branch }: { chatId: string; branch: string }) {
     void pick().then((r) => { if (r.files.length || r.skipped.length) add(r.files, r.skipped); }, (e) => setImageError(chatId, branch, `The files could not be picked: ${e?.message ?? e}`));
   };
 
-  const submit = async () => {
+  const submit = async (delivery: PromptDelivery | undefined = queueing ? "queue" : undefined) => {
     const t = sentText(text); // (the first line's indent is kept: logic/sendend.ts)
     if ((!t && !quotes.length && !images.length) || blocked || off || left || sending || isSending(chatId)) return; // no send while busy, or while the composer of the branch left sends the move
     if (imagesHold(images, slotOf(chatId, branch).uploads.length > 0, noImages)) return; // nor while an image is on its way, or with images the message cannot carry
@@ -382,7 +387,7 @@ function ComposerOf({ chatId, branch }: { chatId: string; branch: string }) {
       input.current?.set(""); // the server clears the draft of the branch sent on; the empty one saved after it undoes a save still in flight
       setQuotes([]);
       setImages([]);
-      await sendMessage(chatId, t, toSend(qs), im);
+      await sendMessage(chatId, t, toSend(qs), im, delivery);
       // A sent move saves nothing here: the Send cleared the draft of the branch sent to, not this composer's, and the move's end (moveSent)
       // sets the drafts of both, this branch's through this composer while it is open.
     } catch (e: any) {
@@ -436,10 +441,24 @@ function ComposerOf({ chatId, branch }: { chatId: string; branch: string }) {
 
   const placeholder = offPlaceholder(where, usable, c, left) || (c.board ? "Ask or tell…" : `Ask ${agentName(c.agent as AgentKind)}…`);
   const showStop = stop && !frozen;
+  const hasMessage = !!(text.trim() || quotes.length || images.length);
+  const deliveryActions = (reason = "") => <DeliveryActions phone={phone} steering={steering}
+    disabled={!!(reason || hold || accountHeld || imagesHeld || sending || !hasMessage)}
+    queueKey={phone ? "" : names.send} onQueue={() => void submit("queue")} onSteer={() => void submit("steer")} />;
+  const changeQueue = async (operation: () => Promise<unknown>) => {
+    setErr("");
+    try { await operation(); }
+    catch (e) { setErr(e instanceof Error ? e.message : String(e)); }
+  };
+  const pending = !move && c.pendingPrompts?.length ? <PendingPrompts entries={c.pendingPrompts} paused={!!c.queuePaused} phone={phone} frozen={frozen}
+    onRemove={(id) => void changeQueue(() => api.removePrompt(chatId, branch, id))}
+    onResume={() => void changeQueue(() => api.resumePrompts(chatId, branch))} /> : null;
   const tail = {
     attach: parts.AttachButton ? <parts.AttachButton off={noAdd?.title ?? ""} onPress={() => attach()} /> : null,
     stop: showStop ? <StopButton title={esc ? "Stop (Esc)" : "Stop the subagents"} onPress={stopNow} /> : null,
-    send: hold && !off && !left ? <SendButton title={hold.title} disabled spin={hold.spin} />
+    delivery: queueing && !frozen ? steering ? "steer" : "queue" : undefined,
+    send: queueing && !frozen ? deliveryActions()
+      : hold && !off && !left ? <SendButton title={hold.title} disabled spin={hold.spin} />
       : accountHeld ? <SendButton title={accountHeld} disabled />
       : imagesHeld && !blocked && !off && !left ? <SendButton title={imagesHeld} disabled /> // the images hold it: an upload runs, or the message cannot carry them
       : <SendButton title={sendTitleFor(sendTitleOn(where, usable, c, blocked, left), names.send)} disabled={blocked || off || left || sending || (!text.trim() && !quotes.length && !images.length)}
@@ -481,13 +500,15 @@ function ComposerOf({ chatId, branch }: { chatId: string; branch: string }) {
           {Banner ? <Banner chat={chatId} /> : null}
           <ModelNotice chatId={chatId} plain />
           {parts.VoiceNotice ? <parts.VoiceNotice chatId={chatId} /> : null}
+          {pending}
         </>}
         strip={strip} input={(blocked) => blocked ? cloneElement(box, { placeholder: "" }) : box} // (a box under a block has no placeholder: the block says why)
         block={{ where, gone: left, usable, refused: parts.ImageStrip ? underComposer(err, c) : under, onDismissRefused: () => setErr("") }}
         toolbar={{
           empty, voiceOff: why, plusOff: readOnly ? why : "",
           stop: showStop ? <StopButton size="touch" title={esc ? "Stop" : "Stop the subagents"} onPress={stopNow} /> : null,
-          send: (why) => hold && !off && !left ? <SendButton size="touch" title={hold.title} disabled spin={hold.spin} />
+          send: (why) => queueing && !frozen ? deliveryActions(why)
+            : hold && !off && !left ? <SendButton size="touch" title={hold.title} disabled spin={hold.spin} />
             : accountHeld ? <SendButton size="touch" title={accountHeld} disabled />
             : imagesHeld && !blocked && !off && !left ? <SendButton size="touch" title={imagesHeld} disabled soft={up.uploads.length > 0} />
             : why ? <SendButton size="touch" title={why} disabled />
@@ -521,6 +542,7 @@ function ComposerOf({ chatId, branch }: { chatId: string; branch: string }) {
     <ModelNotice chatId={chatId} />
     {accountHeld && banner ? <AccountBanner banner={banner} server={where.server} c={c} /> : null}
     {parts.VoiceNotice ? <parts.VoiceNotice chatId={chatId} /> : null}
+    {pending}
     {/* (the wrapper is always there, so that the box is the same element while speech mode comes and goes; hidden it keeps its width, which the toolbar's fit reads) */}
     <View {...tid("composer-away", { away: speech })} aria-hidden={speech} style={speech ? styles.away : undefined}>
     <View {...tid("composer-box", { readonly: readOnly })} {...boxHandlers}

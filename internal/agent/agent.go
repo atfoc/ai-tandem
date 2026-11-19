@@ -13,6 +13,10 @@ import (
 // The chat manager re-exports it as chats.ErrFolderMissing.
 var ErrFolderMissing = errors.New("folder not found")
 
+// ErrSteerUnavailable means a steer definitely was not accepted because the
+// target turn no longer exists. Other errors can leave delivery uncertain.
+var ErrSteerUnavailable = errors.New("no active turn to steer")
+
 type SpawnOptions struct {
 	ChatID    string
 	SessionID string // Claude: the id to create or resume; Cursor: the id to load ("" = new session)
@@ -125,6 +129,13 @@ type Agent interface {
 	Close()
 }
 
+// Steerer accepts a message for an already running turn without interrupting it.
+// A successful return means the provider accepted the request, not necessarily
+// that the model has consumed it.
+type Steerer interface {
+	Steer(id string, blocks []ContentBlock) error
+}
+
 type EventKind int
 
 const (
@@ -145,6 +156,7 @@ const (
 	EvExit                            // ExitErr
 	EvSub                             // SubInfo: a subagent appeared or changed (a patch; zero fields are unchanged)
 	EvBackground                      // Background: the agent's background work changed (Claude only)
+	EvSteerConsumed                   // MsgID: id of a steer confirmed consumed by the provider
 )
 
 // Background is what an adapter knows of the background work of its process: commands the agent

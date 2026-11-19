@@ -78,7 +78,7 @@ func TestLevel5NotFoundOnEveryRouteWithAnID(t *testing.T) {
 			continue
 		}
 		method, path, _ := strings.Cut(route, " ")
-		path = strings.NewReplacer("{id}", id, "{sid}", "s1", "{image}", l5NoImage, "{tid}", "t1", "{n}", "1", "{v}", "1").Replace(path)
+		path = strings.NewReplacer("{id}", id, "{sid}", "s1", "{image}", l5NoImage, "{tid}", "t1", "{n}", "1", "{v}", "1", "{prompt}", "p1").Replace(path)
 		var body any
 		if b := l5Bodies[route][1]; b != "" {
 			body = b

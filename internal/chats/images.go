@@ -286,6 +286,13 @@ func (m *Manager) sweepImages(top *Chat, chat string, now time.Time) (changed bo
 			named[im.ID] = true
 		}
 	}
+	if pending := top.promptImages.Load(); pending != nil {
+		for _, images := range *pending {
+			for _, im := range images {
+				named[im.ID] = true
+			}
+		}
+	}
 	for id := range s.named {
 		if e := s.idx[id]; e != nil && !named[id] && e.Used.Before(s.looked) {
 			e.Used, changed = s.looked, true

@@ -4,7 +4,7 @@
 // every id in the path and in the body is that server's own. What a section's call answers gets the page's keys
 // (logic/sectionwire.ts). Nothing else on the page builds a path or writes an id into a body.
 import { LOCAL_SERVER, type Writer } from "./types.ts";
-import type { AgentKind, Board, BranchState, Catalog, ChatImage, ChatView, ContextSplit, Defaults, Draft, Group, Item, PlanUsage, Reference,
+import type { AgentKind, Board, BranchState, Catalog, ChatImage, ChatView, ContextSplit, Defaults, Draft, Group, Item, PlanUsage, PromptDelivery, Reference,
   Subagent, Target, TreeLabel, TreeView } from "./types.ts";
 import type { AliasList } from "./aliasesapi.ts";
 import type { PermAnswer } from "./logic/perms.ts";
@@ -189,14 +189,19 @@ export const api = {
    *  context: the block in front of a board chat's message, which names boards by their server's own ids (board.ts buildContext).
    *  images: the images the message carries, as its draft named them. Refused with the codes "image_id", "image_limit",
    *  "image_model" and "image_missing": the error of the last has the ids of the images the chat does not hold (images). */
-  send: (id: string, branch: string, text: string, context: string, references: Reference[] = [], target?: Target & { model?: string; effort?: string }, images: readonly ChatImage[] = []) =>
+  send: (id: string, branch: string, text: string, context: string, references: Reference[] = [], target?: Target & { model?: string; effort?: string }, images: readonly ChatImage[] = [], delivery?: PromptDelivery) =>
     thing("chats", id, "POST", `/messages${target ? "" : onBranch(branch)}`, {
       text, context,
       ...(references.length ? { references } : {}),
       ...(images.length ? { images } : {}),
+      ...(delivery ? { delivery } : {}),
       ...(target ? { target: { branch: target.branch, at: target.at, new: target.new,
         ...(target.model ? { model: target.model } : {}), ...(target.effort ? { effort: target.effort } : {}) } } : {}),
     }),
+  removePrompt: (id: string, branch: string, prompt: string) =>
+    thing("chats", id, "DELETE", `/queue/${encodeURIComponent(prompt)}${onBranch(branch)}`),
+  resumePrompts: (id: string, branch: string) =>
+    thing("chats", id, "POST", `/queue/resume${onBranch(branch)}`),
   /** A change of an unstarted chat's choices, the same call for a chat of this computer and of a section. The answer's chat has what the
    *  server made of it (another agent: that agent's model and effort). A chat's server is no choice: it is where the chat was made. */
   configure: (id: string, branch: string, p: { agent?: AgentKind; model?: string; effort?: string; cwd?: string; subDepth?: number; subCap?: number }) =>

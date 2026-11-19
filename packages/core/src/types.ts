@@ -184,7 +184,25 @@ export type Retry = {
 
 /** What clients see: ChatMeta without token, sessionId, turnActive (and mcpInstructionsSent), plus live state.
  *  instructionsSent is the curl-era disable marker. */
-export type ChatView = Archive & {
+export type PromptDelivery = "queue" | "steer";
+
+export type PendingPrompt = {
+  id: string;
+  text: string;
+  references?: Reference[];
+  images?: ChatImage[];
+  delivery: PromptDelivery;
+  state?: "waiting" | "next";
+};
+
+type PromptQueue = {
+  pendingPrompts?: PendingPrompt[];
+  queuePaused?: boolean;
+  canQueue?: boolean;
+  canSteer?: boolean;
+};
+
+export type ChatView = Archive & PromptQueue & {
   id: string;
   agent: AgentKind | ""; // "": no agent yet (none was usable when the chat was made)
   name?: string;
@@ -230,7 +248,7 @@ export type ChatView = Archive & {
 };
 
 /** One branch's session state: what ChatView tells of the current branch, for any branch. */
-export type BranchState = {
+export type BranchState = PromptQueue & {
   chat: string;
   branch: string;
   cwd: string;

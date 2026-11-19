@@ -37,6 +37,10 @@ export function stateFromView(c: ChatView): BranchState {
   if (c.subsRunning !== undefined) st.subsRunning = c.subsRunning;
   if (c.subsOwed !== undefined) st.subsOwed = c.subsOwed;
   if (c.draft !== undefined) st.draft = c.draft;
+  if (c.pendingPrompts !== undefined) st.pendingPrompts = c.pendingPrompts;
+  if (c.queuePaused !== undefined) st.queuePaused = c.queuePaused;
+  if (c.canQueue !== undefined) st.canQueue = c.canQueue;
+  if (c.canSteer !== undefined) st.canSteer = c.canSteer;
   if (c.draftRev !== undefined) st.draftRev = c.draftRev; // with its counter: a record that has none says 0, and a copy typed on the real one would count as older
   fromView.set(c, st);
   return st;
@@ -66,6 +70,7 @@ export function viewOf(c: ChatView | undefined, st: BranchState | undefined): Ch
     if (!v) {
       v = { ...c, locked: true, status: "ready", usage: { ctxIn: 0, ctxOut: 0, ctxWindow: c.usage.ctxWindow, turns: 0 }, subsRunning: 0, subsOwed: 0 };
       delete v.statusTool; delete v.error; delete v.folderMissing; delete v.fresh; delete v.draft;
+      delete v.pendingPrompts; delete v.queuePaused; delete v.canQueue; delete v.canSteer;
       bare.set(c, v);
     }
     return v;
@@ -78,6 +83,10 @@ export function viewOf(c: ChatView | undefined, st: BranchState | undefined): Ch
     v = { ...c, cwd: st.cwd, model: st.model, effort: st.effort, locked: st.locked, usage: st.usage, status: st.status,
       statusTool: st.statusTool, error: st.error, folderMissing: st.folderMissing, fresh: st.fresh,
       subsRunning: st.subsRunning, subsOwed: st.subsOwed, draft: st.draft };
+    if (st.pendingPrompts !== undefined) v.pendingPrompts = st.pendingPrompts; else delete v.pendingPrompts;
+    if (st.queuePaused !== undefined) v.queuePaused = st.queuePaused; else delete v.queuePaused;
+    if (st.canQueue !== undefined) v.canQueue = st.canQueue; else delete v.canQueue;
+    if (st.canSteer !== undefined) v.canSteer = st.canSteer; else delete v.canSteer;
     of.set(st, v);
   }
   return v;

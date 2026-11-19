@@ -234,6 +234,7 @@ var wantRoutes = []string{
 	"POST /api/groups/{id}/archive", "POST /api/groups/{id}/unarchive",
 	"POST /api/chats", "GET /api/chats/{id}", "GET /api/chats/{id}/items", "GET /api/chats/{id}/tree", "GET /api/chats/{id}/context",
 	"GET /api/chats/{id}/subagents/{sid}/items", "PATCH /api/chats/{id}", "POST /api/chats/{id}/messages",
+	"DELETE /api/chats/{id}/queue/{prompt}", "POST /api/chats/{id}/queue/resume",
 	"POST /api/chats/{id}/interrupt", "POST /api/chats/{id}/permission", "PUT /api/chats/{id}/label", "PUT /api/chats/{id}/draft",
 	"POST /api/chats/{id}/images", "GET /api/chats/{id}/images/{image}", "POST /api/chats/{id}/open", "POST /api/chats/{id}/fork",
 	"POST /api/chats/{id}/archive", "POST /api/chats/{id}/unarchive", "DELETE /api/chats/{id}", "POST /api/chats/{id}/unfollow",
@@ -340,8 +341,8 @@ func TestClientAPIIsTheTable(t *testing.T) {
 			t.Errorf("%s (%s %s): status %d body %q, want 404 not found", p, method, path, w.Code, w.Body)
 		}
 	}
-	if served != len(ClientRoutes) || served != 63 {
-		t.Errorf("%d routes of the table were asked for, the table has %d, want 63", served, len(ClientRoutes))
+	if served != len(ClientRoutes) || served != 65 {
+		t.Errorf("%d routes of the table were asked for, the table has %d, want 65", served, len(ClientRoutes))
 	}
 	if n := len(e.s.Bridge.Followers(editorbridge.Chat("x"))); n != 0 {
 		t.Errorf("%d followers of the chat the reads named: a read with no open stream follows nothing", n)
@@ -353,6 +354,31 @@ func TestClientAPIIsTheTable(t *testing.T) {
 	// A listed path with another method is 404 too, not 405.
 	for _, method := range []string{"POST", "PUT", "DELETE", "OPTIONS"} {
 		wantReply(t, clientDo(h, method, "/api/state", testHost, testSecret), method+" /api/state", 404, "not found")
+	}
+}
+
+func TestClientCanQueueAndRemoveAPrompt(t *testing.T) {
+	t.Parallel()
+	e := newRawEnv(t, withClients)
+	h := e.s.ClientHandler()
+	call := func(method, path, body string) string {
+		t.Helper()
+		w := clientDoAs(h, testAPIClient, method, path, testHost, testSecret, body)
+		wantReply(t, w, method+" "+path, 200, "")
+		return w.Body.String()
+	}
+	chat := decode[model.ChatView](t, call("POST", "/api/chats", `{"agent":"claude","group":"__ungrouped__"}`))
+	path := "/api/chats/" + chat.ID
+	call("POST", path+"/messages?branch=main", `{"text":"initial"}`)
+	call("POST", path+"/messages?branch=main", `{"text":"follow-up","delivery":"queue"}`)
+	view := decode[model.ChatView](t, call("GET", path, ""))
+	if !view.CanQueue || view.PendingPrompts == nil || len(*view.PendingPrompts) != 1 || (*view.PendingPrompts)[0].Text != "follow-up" {
+		t.Fatalf("unexpected queue: %+v", view)
+	}
+	call("DELETE", path+"/queue/"+(*view.PendingPrompts)[0].ID+"?branch=main", "")
+	view = decode[model.ChatView](t, call("GET", path, ""))
+	if view.PendingPrompts != nil {
+		t.Fatal("prompt still pending after delete")
 	}
 }
 

@@ -576,6 +576,21 @@ func TestStreamSendInterrupt(t *testing.T) {
 	}
 }
 
+func TestSteerWritesHumanMessageWithoutInterrupt(t *testing.T) {
+	f := newFake(t)
+	a, err := f.spawner().Spawn(agent.SpawnOptions{SessionID: "s1", Cwd: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.(agent.Steerer).Steer("a44aa422-2222-4222-8222-222222222222", []agent.ContentBlock{{Text: "change direction"}}); err != nil {
+		t.Fatal(err)
+	}
+	lines := skipInit(t, f.stdinLines(t, a))
+	if len(lines) != 1 || str(lines[0]["uuid"]) != "a44aa422-2222-4222-8222-222222222222" || str(obj(lines[0]["origin"])["kind"]) != "human" || lines[0]["priority"] != nil {
+		t.Fatalf("steer line = %v", lines)
+	}
+}
+
 func TestSpawnSendsInitialize(t *testing.T) {
 	f := newFake(t)
 	a, err := f.spawner().Spawn(agent.SpawnOptions{SessionID: "s1", Cwd: t.TempDir()})

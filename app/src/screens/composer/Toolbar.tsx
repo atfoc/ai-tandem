@@ -68,10 +68,10 @@ import { CtxError, CtxRing } from "../usage/CtxRing.tsx";
 import { contextOf, ctxText } from "../usage/meter.ts";
 import { roundDown } from "./widths.ts";
 
-const MORE = widthKey("more"), INSERT = widthKey("insert"), VOICE = widthKey("voice"), ATTACH = widthKey("attach"), SEND = widthKey("send"), STOP = widthKey("stop");
+const MORE = widthKey("more"), INSERT = widthKey("insert"), VOICE = widthKey("voice"), ATTACH = widthKey("attach"), STOP = widthKey("stop");
 
 /** What the toolbar draws after its spacer, from the composer: the attach button (K4's), Stop while the agent works, Send. */
-export type Tail = { attach: ReactNode; stop: ReactNode; send: ReactNode };
+export type Tail = { attach: ReactNode; stop: ReactNode; send: ReactNode; delivery?: string };
 
 type Common = {
   chatId: string;
@@ -187,11 +187,12 @@ function Tools({ c, chatId, ...p }: ToolbarProps & { c: ChatView }) {
   const ringKey = widthKey("meter", "", { fixed: !!u.error, mark: u.error ? "icon" : "ring" });
   const hasAttach = !!parts.AttachButton;
   const hasVoice = !!parts.VoiceButtons;
+  const sendKey = widthKey("send", tail.delivery);
   const row = {
     room: room?.w ?? Infinity, gap: room?.gap ?? 0, more: widths.get(MORE),
     controls: CONTROLS.filter((id) => keys[id]).map((id) => ({ id, w: widths.get(keys[id]!), ...(id === "subagents" && spare ? { optional: true } : {}) })),
     meter: { full: widths.get(meterKey), ring: widths.get(ringKey) },
-    fixed: [...(hasAttach ? [widths.get(ATTACH)] : []), ...(stop ? [widths.get(STOP)] : []), widths.get(SEND)],
+    fixed: [...(hasAttach ? [widths.get(ATTACH)] : []), ...(stop ? [widths.get(STOP)] : []), widths.get(sendKey)],
     held: more ? drawn.current?.fit.popup ?? [] : null,
     // The Subagents popover stays open through a pick, which can make its chip longer: the others leave before it.
     pinned: openPicker === "subagents" && drawn.current?.fit.toolbar.includes("subagents") ? "subagents" as const : undefined,
@@ -324,7 +325,7 @@ function Tools({ c, chatId, ...p }: ToolbarProps & { c: ChatView }) {
         {voicePlace === "row" && parts.VoiceButtons ? <Measure k={VOICE} onKept={kept} part="voice"><parts.VoiceButtons chatId={chatId} branch={branch} place="row" disabled={voiceOff} /></Measure> : null}
         {hasAttach ? <Measure k={ATTACH} onKept={kept} part="attach">{tail.attach}</Measure> : null}
         {stop ? <Measure k={STOP} onKept={kept} part="stop">{tail.stop}</Measure> : null}
-        <Measure k={SEND} onKept={kept} part="send">{tail.send}</Measure>
+        <Measure k={sendKey} onKept={kept} part="send">{tail.send}</Measure>
         {reason ? <AgentReason c={c} /> : null}
       </Sized>
 
@@ -338,7 +339,7 @@ function Tools({ c, chatId, ...p }: ToolbarProps & { c: ChatView }) {
         {parts.VoiceButtons && widths.get(VOICE) === undefined ? <Measure k={VOICE} onKept={kept}><parts.VoiceButtons chatId={chatId} branch={branch} place="row" disabled={voiceOff} /></Measure> : null}
         {widths.get(meterKey) === undefined ? <Measure k={meterKey} onKept={kept}>{measured(false)}</Measure> : null}
         {widths.get(ringKey) === undefined ? <Measure k={ringKey} onKept={kept}>{measured(true)}</Measure> : null}
-        {widths.get(SEND) === undefined ? <Measure k={SEND} onKept={kept}>{tail.send}</Measure> : null}
+        {widths.get(sendKey) === undefined ? <Measure k={sendKey} onKept={kept}>{tail.send}</Measure> : null}
         {stop && widths.get(STOP) === undefined ? <Measure k={STOP} onKept={kept}>{tail.stop}</Measure> : null}
         {hasAttach && widths.get(ATTACH) === undefined ? <Measure k={ATTACH} onKept={kept}>{tail.attach}</Measure> : null}
       </MeasuringLayer>

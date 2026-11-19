@@ -584,6 +584,19 @@ func (p *proc) write(v any) error {
 // place among the texts. A text block that is empty is left out: the API refuses an empty text
 // part, and a message of images alone has no words.
 func (p *proc) Send(blocks []agent.ContentBlock) error {
+	return p.sendUser("", blocks)
+}
+
+// Steer writes a human message to Claude's stream. Claude may consume it in
+// the current turn or start it itself after that turn finishes.
+func (p *proc) Steer(id string, blocks []agent.ContentBlock) error {
+	if id == "" {
+		return errors.New("steer id is empty")
+	}
+	return p.sendUser(id, blocks)
+}
+
+func (p *proc) sendUser(id string, blocks []agent.ContentBlock) error {
 	content := make([]map[string]any, 0, len(blocks))
 	for _, b := range blocks {
 		switch {
@@ -597,7 +610,12 @@ func (p *proc) Send(blocks []agent.ContentBlock) error {
 	if len(content) == 0 {
 		return errors.New("the message is empty")
 	}
-	return p.write(map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": content}})
+	msg := map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": content}}
+	if id != "" {
+		msg["uuid"] = id
+		msg["origin"] = map[string]any{"kind": "human"}
+	}
+	return p.write(msg)
 }
 
 // Interrupt stops the current turn; the process stays alive.

@@ -148,6 +148,8 @@ func (m *Manager) loadBranches(top *Chat, id string) {
 			continue
 		}
 		c := &Chat{meta: meta, interrupted: meta.TurnActive, top: top, branch: b.ID}
+		pausePrompts(c)
+		publishPromptImages(c)
 		m.chats[sid] = c
 		top.kids = append(top.kids, c)
 		m.registerChatToken(meta.Token)
@@ -351,6 +353,8 @@ func compose(identity, session model.ChatView) model.ChatView {
 	v.SubsRunning, v.SubsOwed = session.SubsRunning, session.SubsOwed
 	v.Fresh = session.Fresh
 	v.Draft, v.DraftRev = session.Draft, session.DraftRev
+	v.PendingPrompts, v.QueuePaused = session.PendingPrompts, session.QueuePaused
+	v.CanQueue, v.CanSteer = session.CanQueue, session.CanSteer
 	return v
 }
 
@@ -543,6 +547,10 @@ func (m *Manager) stopOne(c *Chat) {
 func (m *Manager) stopLocked(c *Chat, out *outbox) (toClose []agent.Agent) {
 	if c.deleted || c.unlisted {
 		return nil
+	}
+	if pausePrompts(c) {
+		m.logSave(c)
+		out.emitChat(c)
 	}
 	setHold(c)
 	if c.tr == nil && !c.interrupted {

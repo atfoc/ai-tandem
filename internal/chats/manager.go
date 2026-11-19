@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -103,27 +104,30 @@ type Manager struct {
 }
 
 type Chat struct {
-	mu            sync.Mutex
-	meta          model.ChatMeta
-	tr            *transcript.Transcript // nil until first needed (see trOf)
-	ag            agent.Agent            // nil when no process
-	gen           int                    // bumped on every spawn; events of an older process are dropped
-	errText       string
-	folderMissing bool
-	interrupted   bool               // TurnActive was true at boot; the "Stopped" note is added when tr loads
-	deleted       bool               // removed by Delete: nothing more is written or emitted for it (see gone)
-	unlisted      bool               // being made by Fork: only the token lookup sees it; never listed, saved or emitted
-	sentGen       int                // the gen of the process the last Send went to; 0 = none yet
-	subs          map[string]*sub    // sid → subagent; loaded with tr (see trOf)
-	subByTool     map[string]string  // Agent/Task tool call id → sid
-	pendingLinks  []pendingSpawnLink // unlinked app-spawned subs waiting for a matching spawn tool item
-	splitRun      *splitRun          // the context split being taken now (see ContextSplit)
-	shown         subCounts          // the subagent counts of the chat view clients were last sent (see emitCounts)
-	carry         *carry             // the turn carrying subagent results to the agent; nil once it ended
-	lateEnd       string             // the error of a refused delivery whose own turn end may still come (see lateEvent)
-	hold          bool               // the app starts no turn until the user sends (see setHold); not saved
-	bg            bgWork             // the background work of the chat's agent process (Claude; see background.go)
-	retry         *retryWait         // the chat's agent is being retried (retrychat.go); nil otherwise
+	mu             sync.Mutex
+	meta           model.ChatMeta
+	tr             *transcript.Transcript // nil until first needed (see trOf)
+	ag             agent.Agent            // nil when no process
+	gen            int                    // bumped on every spawn; events of an older process are dropped
+	errText        string
+	folderMissing  bool
+	interrupted    bool                                     // TurnActive was true at boot; the "Stopped" note is added when tr loads
+	deleted        bool                                     // removed by Delete: nothing more is written or emitted for it (see gone)
+	unlisted       bool                                     // being made by Fork: only the token lookup sees it; never listed, saved or emitted
+	sentGen        int                                      // the gen of the process the last Send went to; 0 = none yet
+	subs           map[string]*sub                          // sid → subagent; loaded with tr (see trOf)
+	subByTool      map[string]string                        // Agent/Task tool call id → sid
+	pendingLinks   []pendingSpawnLink                       // unlinked app-spawned subs waiting for a matching spawn tool item
+	splitRun       *splitRun                                // the context split being taken now (see ContextSplit)
+	shown          subCounts                                // the subagent counts of the chat view clients were last sent (see emitCounts)
+	carry          *carry                                   // the turn carrying subagent results to the agent; nil once it ended
+	lateEnd        string                                   // the error of a refused delivery whose own turn end may still come (see lateEvent)
+	hold           bool                                     // the app starts no turn until the user sends (see setHold); not saved
+	bg             bgWork                                   // the background work of the chat's agent process (Claude; see background.go)
+	retry          *retryWait                               // the chat's agent is being retried (retrychat.go); nil otherwise
+	promptWorker   bool                                     // one pending prompt is being handed off
+	steerTurnEnded bool                                     // the turn ended while a steer handoff was outstanding
+	promptImages   atomic.Pointer[map[string][]model.Image] // top-level chat: queued images by branch
 
 	// The cap on running turns (see cap.go). reserved says that a turn admitted on this chat
 	// object is starting and pub does not show it yet; Manager.capMu guards it, not mu. noTurn
@@ -514,6 +518,8 @@ func view(c *Chat) model.ChatView {
 		st = model.StatusReady
 	}
 	v := model.ViewOf(c.meta, st, tool, c.errText, c.folderMissing)
+	v.CanQueue, v.CanSteer = c.meta.Locked && !c.meta.Fresh, canSteer(c)
+	v.PendingPrompts, v.QueuePaused = c.meta.PendingPrompts, c.meta.QueuePaused
 	if c.top != nil { // main's draft is in its own meta; the others' are in their top-level chat's
 		v.Draft, v.DraftRev = draftAt(c.top, c.branch)
 	}
@@ -586,6 +592,19 @@ func (m *Manager) trOf(c *Chat, out *outbox) (*transcript.Transcript, error) {
 		return nil, err
 	}
 	c.tr = tr
+	if len(pendingPrompts(c)) > 0 {
+		_, items := tr.Snapshot()
+		committed := make(map[string]bool)
+		for _, item := range items {
+			if item.PromptID != "" {
+				committed[item.PromptID] = true
+			}
+		}
+		entries := slices.DeleteFunc(slices.Clone(pendingPrompts(c)), func(entry model.PendingPrompt) bool { return committed[entry.ID] })
+		setPendingPrompts(c, entries)
+		m.logSave(c)
+		out.emitChat(c)
+	}
 	m.loadSubs(c)
 	// Load closed the permission requests the file had open (the app was closed over them).
 	if err := tr.Flush(false); err != nil {
@@ -715,6 +734,8 @@ func (m *Manager) Load() error {
 			continue
 		}
 		c := &Chat{meta: meta, interrupted: meta.TurnActive}
+		pausePrompts(c)
+		publishPromptImages(c)
 		setDrafts(c, meta.Drafts)
 		m.chats[meta.ID] = c
 		m.registerChatToken(meta.Token)
@@ -1197,6 +1218,7 @@ func (m *Manager) chatBgQuiet(c *Chat) func(out *outbox, aft *after) {
 		m.logSave(c)
 		out.emitChat(c)
 		aft.add(m.deliver(c, out))
+		aft.wakePrompts = len(pendingPrompts(c)) > 0
 	}
 }
 
@@ -1319,6 +1341,13 @@ func (m *Manager) pump(c *Chat, ag agent.Agent, gen int) {
 		if gen != c.gen || c.tr == nil || c.deleted {
 			c.mu.Unlock()
 			continue // replaced by Stop
+		}
+		if ev.Kind == agent.EvSteerConsumed {
+			m.consumeSteer(c, ev.MsgID, &out)
+			c.mu.Unlock()
+			m.send(out)
+			m.wakePrompts(c)
+			continue
 		}
 		before := view(c)
 		wasInTurn := inTurn(c)
@@ -1478,13 +1507,18 @@ func (m *Manager) pump(c *Chat, ag agent.Agent, gen int) {
 		}
 		var d *carry
 		if (ev.Kind == agent.EvTurnEnd && !retried) || ev.Kind == agent.EvExit {
+			m.finishPromptTurn(c, ev, &out)
 			d = m.turnOver(c, ev, &out)
 		}
 		out.emitCounts(c)
+		wake := len(pendingPrompts(c)) > 0
 		c.mu.Unlock()
 		m.send(out)
 		closeAgents(toClose)
 		m.handOff(c, d)
+		if wake {
+			m.wakePrompts(c)
+		}
 	}
 }
 
@@ -1579,7 +1613,12 @@ func (m *Manager) SendMessage(id string, t *Target, msg Message) (branch string,
 //
 // on says that the message is in c's thread. It is false with every error but the refusal of the
 // agent's own Send, which leaves the message there as a turn that failed (see sendRefused).
-func (m *Manager) sendOn(c *Chat, text, context string, refs []model.Reference, imgs *takenImages) (on bool, err error) {
+func (m *Manager) sendOn(c *Chat, text, context string, refs []model.Reference, imgs *takenImages) (bool, error) {
+	return m.sendOnPrompt(c, text, context, refs, imgs, "")
+}
+
+// sendOnPrompt also consumes a queued prompt and preserves any newer composer draft.
+func (m *Manager) sendOnPrompt(c *Chat, text, context string, refs []model.Reference, imgs *takenImages, pendingID string) (on bool, err error) {
 	var out outbox
 	if m.down.Load() {
 		// In the hold of c.mu that would start the process (see Manager.down).
@@ -1602,7 +1641,7 @@ func (m *Manager) sendOn(c *Chat, text, context string, refs []model.Reference, 
 		return false, err
 	}
 	// The four refusals below leave nothing, but the load above may have: out holds what it sends.
-	if busy(c) {
+	if busy(c) || (pendingID == "" && promptOwnsTurn(c)) {
 		c.mu.Unlock()
 		m.send(out)
 		return false, ErrBusy
@@ -1688,22 +1727,14 @@ func (m *Manager) sendOn(c *Chat, text, context string, refs []model.Reference, 
 	c.meta.Fresh, c.meta.SourceCtx = false, 0 // a fork has its own message from here, also one its agent refuses
 	c.meta.TurnActive = true                  // in the hold of c.mu that started the process: its first tools/list finds a running turn
 	var blocks []agent.ContentBlock
+	context = m.promptContext(c, context)
 	if c.meta.Board != "" {
 		if c.meta.Agent == model.Cursor && !c.meta.McpInstructionsSent && !c.meta.InstructionsSent {
 			// Cursor has no system-prompt slot; inject the same whiteboard body Claude and pi get.
 			blocks = append(blocks, agent.ContentBlock{Text: prompts.Claude()})
 			c.meta.McpInstructionsSent = true
 		}
-		if context == "" { // every board chat message names its board
-			name := c.meta.Board
-			if bd, ok := m.Boards.Get(c.meta.Board); ok {
-				name = bd.Name
-			}
-			context = prompts.BoardContext(name, c.meta.Board)
-		}
 		blocks = append(blocks, agent.ContentBlock{Text: context})
-	} else {
-		context = "" // plain chats never get board context
 	}
 	notice, told := c.meta.NoticeOwed, false
 	if notice {
@@ -1725,7 +1756,10 @@ func (m *Manager) sendOn(c *Chat, text, context string, refs []model.Reference, 
 	blocks = append(blocks, pictures...) // directly before the block of the user's text
 	blocks = append(blocks, agent.ContentBlock{Text: withReferences(refs, text)})
 	m.markSent(imgs) // ahead of the message: from here on it stays, whatever the agent answers
-	ups = append(ups, c.tr.AddUserImages(text, context, refs, imgs.images())...)
+	ups = append(ups, c.tr.AddPendingUser(pendingID, text, context, refs, imgs.images(), true)...)
+	if pendingID != "" {
+		m.changePrompt(c, pendingID, "", true)
+	}
 	if told {
 		// A copy cut before this point is forked from the session as it was before the notice.
 		_, items := c.tr.Snapshot()
@@ -1734,7 +1768,9 @@ func (m *Manager) sendOn(c *Chat, text, context string, refs []model.Reference, 
 	if err := c.tr.Flush(false); err != nil {
 		log.Printf("chats: flush %s: %v", c.meta.ID, err)
 	}
-	m.dropDraft(c, draftRev) // the message is the draft, sent
+	if pendingID == "" {
+		m.dropDraft(c, draftRev) // the message is the draft, sent
+	}
 	if first && c.meta.Name == "" && !c.meta.UserNamed && strings.TrimSpace(text) == "" && len(imgs.images()) > 0 {
 		// A first message of images alone has no words to name the chat by, and no name is asked
 		// for: the one fixed word is the chat's name until the user gives it one, also where the
@@ -2272,6 +2308,10 @@ func (m *Manager) InterruptOf(id, branch string) error {
 	c, _, err := m.lockBranch(id, branch)
 	if err != nil {
 		return err
+	}
+	if pausePrompts(c) {
+		m.logSave(c)
+		out.emitChat(c)
 	}
 	noted := false // the "Stopped." note of a retry that waited
 	if c.retry != nil && !c.deleted && !c.unlisted && c.tr != nil {

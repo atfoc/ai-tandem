@@ -62,7 +62,7 @@ type fileChange struct {
 }
 
 type toolItem struct {
-	ID, Type, Status                string
+	ID, Type, Status, ClientID      string
 	Text, Command, AggregatedOutput string
 	Path, Cwd, Server, Tool, Query  string
 	ExitCode                        int
@@ -136,6 +136,9 @@ func (p *proc) onNotification(method string, raw json.RawMessage) {
 	case "item/agentMessage/delta":
 		p.textDelta(msg.ItemID, msg.Delta)
 	case "item/completed":
+		if msg.Item.Type == "userMessage" && msg.Item.ClientID != "" {
+			p.emit(agent.Event{Kind: agent.EvSteerConsumed, MsgID: msg.Item.ClientID})
+		}
 		p.finishItem(msg.Item)
 	case "item/fileChange/patchUpdated":
 		if len(msg.Changes) != 0 {

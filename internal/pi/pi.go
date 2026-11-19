@@ -112,6 +112,12 @@ type proc struct {
 	abortMu      sync.Mutex
 	abortPending bool
 
+	steerMu      sync.Mutex
+	steerID      string
+	steerText    string
+	steerImages  []map[string]any
+	seenTurnUser bool
+
 	endMu     sync.Mutex // a turn has one end, pi's settle or sendFailed: guards the two below
 	settled   bool       // an agent_settled arrived since the last Send began
 	sendEnded bool       // sendFailed ended a turn: a later agent_settled emits nothing
@@ -457,6 +463,10 @@ func (p *proc) Send(blocks []agent.ContentBlock) error {
 	p.abortMu.Lock()
 	p.abortPending = false
 	p.abortMu.Unlock()
+	p.steerMu.Lock()
+	p.seenTurnUser = false
+	p.steerID = ""
+	p.steerMu.Unlock()
 	parts := make([]string, 0, len(blocks))
 	var images []map[string]any
 	for _, b := range blocks {
@@ -485,6 +495,64 @@ func (p *proc) Send(blocks []agent.ContentBlock) error {
 		text := "pi rejected the prompt: " + resp.Error
 		p.emit(agent.Event{Kind: agent.EvTurnEnd, Error: text})
 		return errors.New(text)
+	}
+	return nil
+}
+
+// Steer asks pi to inject the message after its current tool batch.
+func (p *proc) Steer(id string, blocks []agent.ContentBlock) error {
+	select {
+	case <-p.ready:
+	case <-p.done:
+		return errors.New("pi exited before the chat was ready")
+	}
+	if p.readyErr != nil {
+		return p.readyErr
+	}
+	parts := make([]string, 0, len(blocks))
+	var images []map[string]any
+	for _, b := range blocks {
+		if b.Image != nil {
+			images = append(images, map[string]any{"type": "image", "mimeType": b.Image.Type, "data": base64.StdEncoding.EncodeToString(b.Image.Data)})
+		} else if b.Text != "" {
+			parts = append(parts, b.Text)
+		}
+	}
+	if len(parts) == 0 && len(images) == 0 {
+		return errors.New("the message is empty")
+	}
+	fields := map[string]any{"message": strings.Join(parts, "\n\n")}
+	if len(images) > 0 {
+		fields["images"] = images
+	}
+	// A settle already observed by the read loop is a definite refusal: do not
+	// leave a message in pi's queue for a turn that has finished. A settle not
+	// yet observed may still race the RPC; its outcome remains uncertain.
+	p.endMu.Lock()
+	if p.settled || p.sendEnded {
+		p.endMu.Unlock()
+		return agent.ErrSteerUnavailable
+	}
+	p.steerMu.Lock()
+	if p.steerID != "" {
+		p.steerMu.Unlock()
+		p.endMu.Unlock()
+		return errors.New("a pi steer is already pending")
+	}
+	p.steerID, p.steerText, p.steerImages = id, fields["message"].(string), images
+	p.steerMu.Unlock()
+	p.endMu.Unlock()
+	resp, err := p.rpc.call("steer", fields, rpcTimeout)
+	if err != nil {
+		return err
+	}
+	if !resp.Success {
+		p.steerMu.Lock()
+		if p.steerID == id {
+			p.steerID = ""
+		}
+		p.steerMu.Unlock()
+		return fmt.Errorf("%w: pi rejected the steer: %s", agent.ErrSteerUnavailable, resp.Error)
 	}
 	return nil
 }
