@@ -169,6 +169,17 @@ func TestCodexChatThroughServer(t *testing.T) {
 		t.Fatalf("permission request: %+v", ask)
 	}
 	ok200(t, p, "POST", path+"/permission", map[string]any{"requestId": ask.RequestID, "allow": true})
+	items = awaitItems(t, p, id, "the Git worker spawn approval", func(items []model.Item) bool {
+		return len(items) > 0 && items[len(items)-1].Kind == "perm" && items[len(items)-1].ToolName == "mcp__board__spawn_subagent"
+	})
+	ask = items[len(items)-1]
+	var approvalInput struct{ Description string }
+	if ask.RequestID == "" || json.Unmarshal(ask.Input, &approvalInput) != nil ||
+		!strings.Contains(approvalInput.Description, `"git":true`) ||
+		!strings.Contains(approvalInput.Description, "future subagent spawns") {
+		t.Fatalf("Git worker permission request: %+v", ask)
+	}
+	ok200(t, p, "POST", path+"/permission", map[string]any{"requestId": ask.RequestID, "allow": true})
 	items = awaitItems(t, p, id, "the completed Codex turn", func(items []model.Item) bool {
 		return len(items) > 0 && items[len(items)-1].Kind == "end"
 	})
@@ -217,6 +228,15 @@ readline.createInterface({input: process.stdin}).on("line", (raw) => {
     case undefined:
       if (id === "approve-test") {
         if (result?.decision !== "accept") process.exit(4);
+        line({id: "approve-spawn", method: "mcpServer/elicitation/request", params: {
+          threadId: "source-thread", serverName: "board", mode: "form",
+          message: 'Allow the board MCP server to run tool "spawn_subagent"?',
+          requestedSchema: {type: "object", properties: {}},
+          _meta: {codex_approval_kind: "mcp_tool_call", tool_name: "spawn_subagent", persist: "session",
+            tool_params: {agent: "codex", git: true, prompt: "Make a commit"}}
+        }});
+      } else if (id === "approve-spawn") {
+        if (result?.action !== "accept" || result._meta?.persist !== "session" || JSON.stringify(result.content) !== "{}") process.exit(5);
         notify("turn/completed", {threadId: "source-thread", turn: {id: "first-turn", status: "completed"}});
       }
       break;

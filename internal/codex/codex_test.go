@@ -88,6 +88,22 @@ func TestTurnApprovalAndFork(t *testing.T) {
 	if ev := nextEvent(t, a, agent.EvToolResult); ev.Result != "hello" || ev.IsError {
 		t.Fatalf("tool result = %+v", ev)
 	}
+	for _, decision := range []struct {
+		allow, session bool
+	}{{true, true}, {false, true}, {true, false}} {
+		req := nextEvent(t, a, agent.EvPermRequest)
+		var input struct{ Description string }
+		if req.ToolName != "mcp__board__spawn_subagent" ||
+			json.Unmarshal(req.Input, &input) != nil ||
+			!strings.Contains(input.Description, "Allow the board MCP server") ||
+			!strings.Contains(input.Description, `"git":true`) ||
+			strings.Contains(input.Description, "future subagent spawns") != decision.session {
+			t.Fatalf("Git worker spawn approval = %+v, description = %q", req, input.Description)
+		}
+		if err := a.Decide(req.PermID, decision.allow); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if ev := nextEvent(t, a, agent.EvToolStart); ev.ToolName != "mcp__board__read_board" {
 		t.Fatalf("board tool = %+v", ev)
 	}
@@ -253,6 +269,18 @@ func fakeServer() int {
 	frame := func(method, params string) {
 		fmt.Fprintf(os.Stdout, "{\"method\":%q,\"params\":%s}\n", method, params)
 	}
+	mcpApproval := func(id, persist string) {
+		send(map[string]any{
+			"id": id, "method": "mcpServer/elicitation/request",
+			"params": json.RawMessage(fmt.Sprintf(`{
+				"threadId":"thread-original","turnId":null,"serverName":"board",
+				"mode":"form","message":"Allow the board MCP server to run tool \"spawn_subagent\"?",
+				"requestedSchema":{"type":"object","properties":{}},
+				"_meta":{"codex_approval_kind":"mcp_tool_call","tool_name":"spawn_subagent","persist":%s,
+					"tool_params":{"agent":"codex","git":true,"prompt":"Make a commit"}}
+			}`, persist)),
+		})
+	}
 	for in.Scan() {
 		var m rpcMessage
 		if json.Unmarshal(in.Bytes(), &m) != nil {
@@ -310,11 +338,44 @@ func fakeServer() int {
 			frame("item/completed", `{"threadId":"thread-original","turnId":"turn-1","item":{"type":"userMessage","id":"u2","clientId":"steer-1","content":[{"type":"text","text":"change direction"}]}}`)
 			reply(`{"turnId":"turn-1"}`)
 		case "":
-			if string(m.ID) != `"permission"` || string(m.Result) != `{"decision":"accept"}` {
+			switch string(m.ID) {
+			case `"permission"`:
+				if string(m.Result) != `{"decision":"accept"}` {
+					return 6
+				}
+				send(map[string]any{"id": startID, "result": json.RawMessage(`{"turn":{"id":"turn-1"}}`)})
+				frame("item/completed", `{"threadId":"thread-original","turnId":"turn-1","item":{"id":"cmd","type":"commandExecution","command":"printf hello","status":"completed","aggregatedOutput":"hello"}}`)
+				send(map[string]any{
+					"id": "mcp-form", "method": "mcpServer/elicitation/request",
+					"params": json.RawMessage(`{"threadId":"thread-original","serverName":"board","mode":"form",
+						"message":"Enter a value","requestedSchema":{"type":"object","properties":{"value":{"type":"string"}}}}`),
+				})
+				continue
+			case `"mcp-form"`:
+				if m.Error == nil || m.Error.Code != -32601 {
+					return 6
+				}
+				mcpApproval("mcp-allow", `["session","always"]`)
+				continue
+			case `"mcp-allow"`:
+				if string(m.Result) != `{"_meta":{"persist":"session"},"action":"accept","content":{}}` {
+					return 6
+				}
+				mcpApproval("mcp-deny", `"session"`)
+				continue
+			case `"mcp-deny"`:
+				if string(m.Result) != `{"action":"decline","content":null}` {
+					return 6
+				}
+				mcpApproval("mcp-once", "null")
+				continue
+			case `"mcp-once"`:
+				if string(m.Result) != `{"action":"accept","content":{}}` {
+					return 6
+				}
+			default:
 				return 6
 			}
-			send(map[string]any{"id": startID, "result": json.RawMessage(`{"turn":{"id":"turn-1"}}`)})
-			frame("item/completed", `{"threadId":"thread-original","turnId":"turn-1","item":{"id":"cmd","type":"commandExecution","command":"printf hello","status":"completed","aggregatedOutput":"hello"}}`)
 			frame("item/started", `{"threadId":"thread-original","turnId":"turn-1","item":{"id":"mcp","type":"mcpToolCall","server":"board","tool":"read_board","arguments":{},"status":"inProgress"}}`)
 			frame("item/completed", `{"threadId":"thread-original","turnId":"turn-1","item":{"id":"mcp","type":"mcpToolCall","server":"board","tool":"read_board","arguments":{},"status":"completed","result":{"content":[{"type":"text","text":"board contents"}]}}}`)
 			frame("item/agentMessage/delta", `{"threadId":"thread-original","turnId":"turn-1","itemId":"msg","delta":"Done"}`)

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"ai-whiteboard/internal/agent"
@@ -359,6 +360,18 @@ func (p *proc) onRequest(id json.RawMessage, method string, raw json.RawMessage)
 		AdditionalPermissions                                     json.RawMessage
 		Permissions                                               json.RawMessage
 		AvailableDecisions                                        []json.RawMessage
+		Mode, ServerName, Message                                 string
+		RequestedSchema                                           struct {
+			Type       string
+			Properties map[string]json.RawMessage
+			Required   []string
+		}
+		MCPApproval struct {
+			Kind    string          `json:"codex_approval_kind"`
+			Tool    string          `json:"tool_name"`
+			Args    json.RawMessage `json:"tool_params"`
+			Persist json.RawMessage `json:"persist"`
+		} `json:"_meta"`
 	}
 	if err := json.Unmarshal(raw, &req); err != nil {
 		_ = p.conn.reply(id, nil, &rpcError{Code: -32602, Message: "invalid approval request"})
@@ -416,6 +429,30 @@ func (p *proc) onRequest(id json.RawMessage, method string, raw json.RawMessage)
 		input = toolJSON(map[string]string{"description": req.Reason + " Requested permissions: " + string(req.Permissions)})
 		a.allow = map[string]any{"scope": "turn", "permissions": req.Permissions}
 		a.deny = map[string]any{"scope": "turn", "permissions": map[string]any{}}
+	case "mcpServer/elicitation/request":
+		// Codex uses an empty form for a tool approval. Other elicitations
+		// can require form data, authentication, or a URL flow.
+		if req.Mode != "form" || req.MCPApproval.Kind != "mcp_tool_call" ||
+			req.ServerName == "" || req.MCPApproval.Tool == "" || req.RequestedSchema.Type != "object" ||
+			len(req.RequestedSchema.Properties) != 0 || len(req.RequestedSchema.Required) != 0 {
+			_ = p.conn.reply(id, nil, &rpcError{Code: -32601, Message: "unsupported Codex MCP elicitation"})
+			return
+		}
+		name = "mcp__" + req.ServerName + "__" + req.MCPApproval.Tool
+		description := req.Message
+		if len(req.MCPApproval.Args) > 0 && string(req.MCPApproval.Args) != "null" {
+			description += "\n" + string(req.MCPApproval.Args)
+		}
+		accept := map[string]any{"action": "accept", "content": map[string]any{}}
+		if req.ServerName == "board" && req.MCPApproval.Tool == "spawn_subagent" &&
+			p.opts.MCP != nil && p.opts.MCP.MCPURL != "" && !p.opts.Subagent && !p.opts.NoSpawn &&
+			gitWorkerSpawn(req.MCPApproval.Args) && offersSessionApproval(req.MCPApproval.Persist) {
+			description = "Allow this Git worker and future subagent spawns from this Codex session.\n" + description
+			accept["_meta"] = map[string]string{"persist": "session"}
+		}
+		input = toolJSON(map[string]string{"description": description})
+		a.allow = accept
+		a.deny = map[string]any{"action": "decline", "content": nil}
 	default:
 		_ = p.conn.reply(id, nil, &rpcError{Code: -32601, Message: "unsupported Codex request: " + method})
 		return
@@ -431,6 +468,22 @@ func (p *proc) onRequest(id json.RawMessage, method string, raw json.RawMessage)
 	p.perm[key] = a
 	p.mu.Unlock()
 	p.emit(agent.Event{Kind: agent.EvPermRequest, ToolID: req.ItemID, ToolName: name, PermID: key, Input: json.RawMessage(p.redact(string(input)))})
+}
+
+func gitWorkerSpawn(raw json.RawMessage) bool {
+	var args struct {
+		Agent model.AgentKind
+		Git   bool
+	}
+	return json.Unmarshal(raw, &args) == nil && args.Git && (args.Agent == "" || args.Agent == model.Codex)
+}
+
+func offersSessionApproval(raw json.RawMessage) bool {
+	if string(raw) == `"session"` {
+		return true
+	}
+	var choices []string
+	return json.Unmarshal(raw, &choices) == nil && slices.Contains(choices, "session")
 }
 
 func hasDecision(choices []json.RawMessage, decision string) bool {

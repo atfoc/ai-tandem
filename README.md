@@ -119,6 +119,11 @@ the result, so the orchestrator can run `git fetch -- "<clone path>" "refs/heads
 the original repository. The fetched commit is available as `FETCH_HEAD`. Fetching writes to the
 original repository's Git metadata, so the orchestrator's own approval policy applies.
 
+When Codex offers session approval, the first Git worker approval card says that **Allow** also
+covers later `spawn_subagent` calls from the same running Codex session. This covers both Git and
+ordinary workers. A new Codex process asks again, and policies requiring per-call approval still
+ask each time.
+
 Tandem keeps the clone under the sibling directory `<Whiteboard state directory>-workers` for
 resume and local fetch. Remove the clone when you have fetched its work and no longer need to
 resume the worker.
