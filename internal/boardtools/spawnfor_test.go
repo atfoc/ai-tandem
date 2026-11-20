@@ -32,10 +32,10 @@ func TestSpawnFamilyFor(t *testing.T) {
 	}{
 		{[]string{"claude", "cursor", "codex", "pi"}, "claude, cursor, codex, or pi; omit for this chat's agent", SpawnFamily[0].Summary, SpawnFamily[2].Summary},
 		{[]string{"claude", "pi"}, "claude, or pi; omit for this chat's agent",
-			`{"prompt": "...", "description"?: "...", "agent"?: "claude|pi", "model"?: "...", "effort"?: "..."}`, `{"agent"?: "claude|pi", "filter"?: "..."}`},
+			`{"prompt": "...", "description"?: "...", "agent"?: "claude|pi", "model"?: "...", "effort"?: "...", "git"?: true}`, `{"agent"?: "claude|pi", "filter"?: "..."}`},
 		{[]string{"cursor"}, "cursor; omit for this chat's agent",
-			`{"prompt": "...", "description"?: "...", "agent"?: "cursor", "model"?: "...", "effort"?: "..."}`, `{"agent"?: "cursor", "filter"?: "..."}`},
-		{nil, "", `{"prompt": "...", "description"?: "...", "model"?: "...", "effort"?: "..."}`, `{"filter"?: "..."}`},
+			`{"prompt": "...", "description"?: "...", "agent"?: "cursor", "model"?: "...", "effort"?: "...", "git"?: true}`, `{"agent"?: "cursor", "filter"?: "..."}`},
+		{nil, "", `{"prompt": "...", "description"?: "...", "model"?: "...", "effort"?: "...", "git"?: true}`, `{"filter"?: "..."}`},
 	} {
 		got := SpawnFamilyFor(kindsOf(tc.agents...))
 		if len(got) != len(SpawnFamily) {

@@ -724,6 +724,14 @@ const (
 // attempt.
 func (d SubDelivery) Owed() bool { return d == SubOwed || d == SubOwedAgain }
 
+// GitWorkspace is the server-provisioned clone and the source metadata it protects.
+type GitWorkspace struct {
+	Path            string `json:"path"`
+	SourceRoot      string `json:"sourceRoot"`
+	SourceGitDir    string `json:"sourceGitDir"`
+	SourceCommonDir string `json:"sourceCommonDir"`
+}
+
 // Subagent is a subagent's state: chats/<chat>/subagents/<ID>/subagent.json. Its own thread is the
 // items.jsonl next to it, in the same format as a chat's. It is not an Item: the parent's thread
 // only links it from the Agent/Task tool item that started it.
@@ -771,6 +779,8 @@ type Subagent struct {
 	// Session is the session its process runs on, recorded when it is started (Claude, pi) or when
 	// the agent reports it (Cursor); "" for a record from before, which cannot be resumed.
 	Session string `json:"session,omitempty"`
+	// GitWorkspace binds a Git-enabled Codex worker to the same clone on each launch.
+	GitWorkspace GitWorkspace `json:"gitWorkspace,omitzero"`
 	// Retry is set while it is being retried after a temporary error (running); zero otherwise.
 	Retry Retry `json:"retry,omitzero"`
 	// ErrorKind is, for a paused subagent, the agent.Temporary of its last failed turn.

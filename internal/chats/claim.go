@@ -40,7 +40,7 @@ func isEmptyJSON(v any) bool {
 }
 
 // canonicalSpawnArgs is a stable JSON object of the spawn request fields that the claim
-// matches against: prompt plus non-empty optional description/agent/model/effort.
+// matches against: prompt plus non-default optional arguments.
 func canonicalSpawnArgs(req SpawnSubRequest) string {
 	out := map[string]any{"prompt": req.Prompt}
 	if req.Description != "" {
@@ -54,6 +54,9 @@ func canonicalSpawnArgs(req SpawnSubRequest) string {
 	}
 	if req.Effort != "" {
 		out["effort"] = req.Effort
+	}
+	if req.Git {
+		out["git"] = true
 	}
 	b, _ := json.Marshal(out)
 	return string(b)
@@ -74,6 +77,9 @@ func canonicalToolInput(input json.RawMessage) string {
 		if v, ok := m[k]; ok && !isEmptyJSON(v) {
 			out[k] = v
 		}
+	}
+	if git, _ := m["git"].(bool); git {
+		out["git"] = true
 	}
 	b, _ := json.Marshal(out)
 	return string(b)

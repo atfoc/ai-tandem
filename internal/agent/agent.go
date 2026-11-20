@@ -37,6 +37,9 @@ type SpawnOptions struct {
 	// Dir is the folder of the chat object ChatID names; "" = <AppRoot>/chats/<ChatID>.
 	// (pi keeps its session files in <Dir>/pi and passes Dir as AIWB_CHAT_DIR.)
 	Dir string
+
+	// GitWorkspace is the Codex worker clone, when provisioned by the manager.
+	GitWorkspace model.GitWorkspace
 }
 
 type BoardAccess struct {

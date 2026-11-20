@@ -3,16 +3,123 @@
 package main
 
 import (
+	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
+	"ai-whiteboard/internal/agenttest"
 	"ai-whiteboard/internal/app"
 	"ai-whiteboard/internal/model"
 )
+
+// Run with AIWB_CODEX_E2E=1 and a logged-in Codex CLI on PATH.
+func TestLiveCodexGitWorkerThroughWhiteboard(t *testing.T) {
+	if os.Getenv("AIWB_CODEX_E2E") != "1" {
+		t.Skip("set AIWB_CODEX_E2E=1 to run against the real Codex CLI")
+	}
+	bin, err := exec.LookPath("codex")
+	if err != nil {
+		t.Skip("codex is not installed")
+	}
+	if !agenttest.HasNode() {
+		t.Skip("node is required for the scripted parent agent")
+	}
+	t.Parallel()
+
+	repo := t.TempDir()
+	git := func(dir string, args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	git(repo, "init")
+	git(repo, "-c", "user.name=Whiteboard Smoke", "-c", "user.email=smoke@example.invalid",
+		"-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "Base")
+	base := git(repo, "rev-parse", "HEAD")
+	probe := filepath.Join(repo, ".git", "whiteboard-worker-smoke")
+
+	in := newInstance(t)
+	in.claude, in.codex = agenttest.FakeClaude(t), bin
+	srv := &scriptedServer{in: in}
+	srv.start(t)
+	t.Cleanup(func() { srv.stop(t) })
+	p := in.page(t, testClient)
+	made := ok200(t, p, "POST", "/api/chats", map[string]any{
+		"agent": "claude", "group": model.Ungrouped,
+	})
+	id := made["id"].(string)
+	path := "/api/chats/" + id
+	in.must(t, testClient, "PATCH", path, map[string]any{"cwd": repo}, nil)
+	args, err := json.Marshal(map[string]any{
+		"agent": "codex", "git": true, "description": "Git worker smoke test",
+		"prompt": fmt.Sprintf(`Run the following shell commands from your current directory, using normal sandbox permissions. The first command should report a permission error. Do not request approval. Report the branch and commit hash.
+if (printf probe > %q) 2>/dev/null; then echo "Unexpected write to parent Git metadata"; exit 1; fi
+git switch -c whiteboard-smoke &&
+printf 'committed by a Whiteboard worker\n' > worker.txt &&
+git add -- worker.txt &&
+git -c user.name='Whiteboard Smoke' -c user.email=smoke@example.invalid -c commit.gpgsign=false commit -m 'Worker smoke commit' &&
+git rev-parse HEAD`, probe),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reply := in.say(t, id, "[[mcp spawn_subagent "+string(args)+"]]"); !strings.Contains(reply, "in Git clone") {
+		t.Fatalf("orchestrator did not get the Git clone receipt: %q", reply)
+	}
+	var worker model.Subagent
+	var thread struct{ Subagents []model.Subagent }
+	in.must(t, testClient, "GET", path+"/items", nil, &thread)
+	if len(thread.Subagents) != 1 {
+		t.Fatalf("expected one worker, got %+v", thread.Subagents)
+	}
+	sid := thread.Subagents[0].ID
+	for deadline := time.Now().Add(2 * time.Minute); ; time.Sleep(150 * time.Millisecond) {
+		var sub struct{ Items []model.Item }
+		in.must(t, testClient, "GET", path+"/subagents/"+sid+"/items", nil, &sub)
+		for _, item := range sub.Items {
+			if item.Kind == "perm" {
+				t.Fatalf("the Git worker asked for approval: %+v", item)
+			}
+		}
+		in.must(t, testClient, "GET", path+"/items", nil, &thread)
+		worker = thread.Subagents[0]
+		if worker.Status == model.SubCompleted {
+			break
+		}
+		if worker.Status != model.SubRunning {
+			t.Fatalf("worker ended as %s: %s\n%+v", worker.Status, worker.Error, sub.Items)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("worker did not finish: %+v", sub.Items)
+		}
+	}
+	if _, err := os.Stat(probe); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("parent Git metadata probe should be absent: %v", err)
+	}
+	git(repo, "fetch", "--no-tags", "--", worker.GitWorkspace.Path, "refs/heads/whiteboard-smoke")
+	if got := git(repo, "rev-parse", "FETCH_HEAD^"); got != base {
+		t.Fatalf("fetched commit parent = %s, want %s", got, base)
+	}
+	if got := git(repo, "show", "FETCH_HEAD:worker.txt"); got != "committed by a Whiteboard worker" {
+		t.Fatalf("fetched worker.txt = %q", got)
+	}
+	if got := git(repo, "rev-parse", "HEAD"); got != base {
+		t.Fatalf("parent checkout moved to %s", got)
+	}
+	t.Logf("fetched worker branch whiteboard-smoke at %s without an approval request", git(repo, "rev-parse", "FETCH_HEAD"))
+}
 
 func TestCodexChatThroughServer(t *testing.T) {
 	serverTest(t, "Codex adapter tests (internal/codex)")

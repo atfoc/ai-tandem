@@ -110,6 +110,19 @@ Each subagent is a row in the thread that shows what it is doing; a click opens 
 Before the first message you set two limits for the chat: the **depth** (off, or one to three
 levels of subagents starting subagents) and how many may **run at once** (up to 100).
 
+Ask the orchestrator to set `git: true` on `spawn_subagent` and use a Codex worker when you
+want the worker to commit. Tandem clones the chat's repository at its current commit, so commit
+any changes the worker needs before spawning it. The worker can create branches, stage files, and
+commit inside its clone using the server user's Git author identity or one supplied with the task.
+Ask the worker to report its branch name. Tandem includes the clone path in the spawn receipt and
+the result, so the orchestrator can run `git fetch -- "<clone path>" "refs/heads/<branch>"` from
+the original repository. The fetched commit is available as `FETCH_HEAD`. Fetching writes to the
+original repository's Git metadata, so the orchestrator's own approval policy applies.
+
+Tandem keeps the clone under the sibling directory `<Whiteboard state directory>-workers` for
+resume and local fetch. Remove the clone when you have fetched its work and no longer need to
+resume the worker.
+
 ### Keep your prompts in a library
 
 The prompt library holds the texts you type often, in nested groups. In any chat, ⌘P opens a

@@ -614,6 +614,9 @@ func (r *Relay) callSpawnFamily(caller chats.Caller, name string, args json.RawM
 		if err != nil {
 			return spawnErrorText(err), true
 		}
+		if sa.GitWorkspace.Path != "" {
+			return fmt.Sprintf("spawned subagent %s (%s) in Git clone %q", sa.ID, sa.Status, sa.GitWorkspace.Path), false
+		}
 		return fmt.Sprintf("spawned subagent %s (%s)", sa.ID, sa.Status), false
 	case "stop_subagent":
 		sid, err := parseSIDArgs(name, args)
@@ -671,6 +674,7 @@ func parseSpawnArgs(args json.RawMessage) (chats.SpawnSubRequest, error) {
 		Agent       string `json:"agent"`
 		Model       string `json:"model"`
 		Effort      string `json:"effort"`
+		Git         bool   `json:"git"`
 	}
 	if len(args) > 0 && string(args) != "null" {
 		if err := json.Unmarshal(args, &p); err != nil {
@@ -688,7 +692,7 @@ func parseSpawnArgs(args json.RawMessage) (chats.SpawnSubRequest, error) {
 		kind = model.AgentKind(p.Agent)
 	}
 	return chats.SpawnSubRequest{
-		Prompt: p.Prompt, Description: p.Description, Kind: kind, Model: p.Model, Effort: p.Effort,
+		Prompt: p.Prompt, Description: p.Description, Kind: kind, Model: p.Model, Effort: p.Effort, Git: p.Git,
 	}, nil
 }
 

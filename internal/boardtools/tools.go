@@ -176,8 +176,9 @@ var SpawnFamily = []Tool{
 			},
 			"model":  str(`model id for the requested agent, exactly as list_subagent_models lists it; omit for this chat's current model when the agent is this chat's own and that model and this chat's effort still fit its list, else for the default of a new chat of that agent (list_subagent_models shows which after "Model omitted ->")`),
 			"effort": str(`effort/thinking level the model accepts, as list_subagent_models lists it; omit with a model named for this chat's current effort, or the model's default effort when this chat has none or the agent's list shows the model does not offer it; omit with no model named for the effort list_subagent_models shows after "Model omitted ->"`),
+			"git":    map[string]any{"type": "boolean", "description": "For Codex only. Set true when asked to work and commit in an independent clone of the chat's Git repository at its current commit. Uncommitted changes are excluded. Ask the worker to report its branch, then fetch that branch from the clone path in the receipt or result."},
 		}, "prompt"),
-		Summary: `{"prompt": "...", "description"?: "...", "agent"?: "claude|cursor|codex|pi", "model"?: "...", "effort"?: "..."}`,
+		Summary: `{"prompt": "...", "description"?: "...", "agent"?: "claude|cursor|codex|pi", "model"?: "...", "effort"?: "...", "git"?: true}`,
 	},
 	{
 		Name: "stop_subagent",

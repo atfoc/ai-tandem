@@ -4,12 +4,14 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 
 	"ai-whiteboard/internal/agent"
 	"ai-whiteboard/internal/defaults"
+	"ai-whiteboard/internal/gitworker"
 	"ai-whiteboard/internal/model"
 	"ai-whiteboard/internal/transcript"
 )
@@ -21,6 +23,7 @@ type SpawnSubRequest struct {
 	Kind        model.AgentKind // empty = the chat's kind
 	Model       string          // empty = the chat's model when Kind is the chat's and it still fits the list, else a new-chat default
 	Effort      string          // empty = the chat's effort for a named model or the chat's own unless the list rules it out, else a default
+	Git         bool            // provision an independent clone for a Codex worker
 	// From is the sid of the subagent that calls; "" = the chat's agent. The new subagent is its:
 	// recorded with it as Parent, linked from the spawn call in its thread, and where Kind, Model
 	// and Effort say "the chat's" above, it is the caller's own that is meant.
@@ -134,6 +137,10 @@ func (m *Manager) SpawnSubagent(chatID string, req SpawnSubRequest) (model.Subag
 		unlock()
 		return model.Subagent{}, err
 	}
+	if req.Git && kind != model.Codex {
+		unlock()
+		return model.Subagent{}, errors.New("git mode requires a Codex subagent")
+	}
 	// The chat's cap on running subagents, last of the refusals: counting and recording the new
 	// one are one step under c.mu, so two spawns at once cannot both take the last place. A
 	// refused spawn leaves no record and starts no process, and is not queued.
@@ -188,6 +195,22 @@ func (m *Manager) SpawnSubagent(chatID string, req SpawnSubRequest) (model.Subag
 		sa.Tool = tool
 	}
 
+	if req.Git {
+		binding, err := gitworker.Provision(m.Store.P.Root, opts.Cwd)
+		if err != nil {
+			return m.finishAppSub(chatID, sid, model.SubFailed, err.Error(), endSpawnFailed), err
+		}
+		meta, active, err := m.bindGitWorkspace(chatID, sid, binding)
+		if !active {
+			if cleanupErr := os.RemoveAll(binding.Path); cleanupErr != nil {
+				log.Printf("chats: remove unused worker clone %s: %v", binding.Path, cleanupErr)
+			}
+			return meta, err
+		}
+		sa = meta
+		opts.Cwd, opts.GitWorkspace = binding.Path, binding
+	}
+
 	wanted := false
 	err = m.startSub(chatID, sid, kind, opts, func(c *Chat, s *sub, out *outbox) ([]agent.ContentBlock, bool) {
 		wanted = true
@@ -211,6 +234,37 @@ func (m *Manager) SpawnSubagent(chatID string, req SpawnSubRequest) (model.Subag
 		}
 	}
 	return sa, nil
+}
+
+// bindGitWorkspace persists the clone before starting Codex. The subagent may have
+// been stopped while Git was cloning.
+func (m *Manager) bindGitWorkspace(chatID, sid string, binding model.GitWorkspace) (model.Subagent, bool, error) {
+	c, err := m.lock(chatID)
+	if err != nil {
+		return model.Subagent{}, false, err
+	}
+	s := c.subs[sid]
+	if s == nil {
+		c.mu.Unlock()
+		return model.Subagent{}, false, ErrNoSubagent
+	}
+	if s.meta.Status != model.SubRunning {
+		meta := s.meta
+		c.mu.Unlock()
+		return meta, false, nil
+	}
+	s.meta.GitWorkspace = binding
+	if err := m.writeSub(c, s); err != nil {
+		s.meta.GitWorkspace = model.GitWorkspace{}
+		c.mu.Unlock()
+		return m.finishAppSub(chatID, sid, model.SubFailed, err.Error(), endSpawnFailed), false, err
+	}
+	var out outbox
+	meta := s.meta
+	out.emitSub(c, meta)
+	c.mu.Unlock()
+	m.send(out)
+	return meta, true, nil
 }
 
 // startSub is the one start of a subagent's process (design D4): a new one (SpawnSubagent), or one
@@ -472,6 +526,9 @@ func (m *Manager) subSpawnOptions(c *Chat, sid string, leaf bool, kind model.Age
 	}
 	opts.SessionID = session
 	opts.Dir = m.chatDir(opts.ChatID)
+	if binding := c.subs[sid].meta.GitWorkspace; binding.Path != "" {
+		opts.Cwd, opts.GitWorkspace = binding.Path, binding
+	}
 	return opts
 }
 

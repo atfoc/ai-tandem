@@ -7,16 +7,20 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 
 	"ai-whiteboard/internal/agent"
+	"ai-whiteboard/internal/gitworker"
 )
 
 const (
 	rpcTimeout        = 20 * time.Second
 	permissionProfile = "tandem"
+	gitWorkerProfile  = "tandem-git-worker"
 )
 
 type Spawner struct {
@@ -106,6 +110,14 @@ func (s *Spawner) DiscardFork(sessionID string) {
 }
 
 func (s *Spawner) start(o agent.SpawnOptions, src *agent.ForkSource) (*proc, error) {
+	if o.GitWorkspace.Path != "" {
+		if !o.Subagent || s.AppRoot == "" || o.Cwd != o.GitWorkspace.Path {
+			return nil, errors.New("a Git workspace requires a Codex subagent and Whiteboard state directory")
+		}
+		if err := gitworker.Validate(s.AppRoot, o.GitWorkspace); err != nil {
+			return nil, err
+		}
+	}
 	if o.Cwd != "" {
 		if fi, err := os.Stat(o.Cwd); os.IsNotExist(err) || (err == nil && !fi.IsDir()) {
 			return nil, agent.ErrFolderMissing
@@ -172,6 +184,7 @@ func (s *Spawner) openThread(ctx context.Context, p *proc, src *agent.ForkSource
 	var r struct {
 		Thread                  struct{ ID string }
 		ActivePermissionProfile *struct{ ID string }
+		RuntimeWorkspaceRoots   []string
 	}
 	if err := p.conn.call(ctx, method, params, &r); err != nil {
 		return err
@@ -184,8 +197,11 @@ func (s *Spawner) openThread(ctx context.Context, p *proc, src *agent.ForkSource
 	usage := p.pendingUsage
 	p.pendingUsage = nil
 	p.mu.Unlock()
-	if s.AppRoot != "" && (r.ActivePermissionProfile == nil || r.ActivePermissionProfile.ID != permissionProfile) {
+	if profile, ok := params["permissions"].(string); ok && (r.ActivePermissionProfile == nil || r.ActivePermissionProfile.ID != profile) {
 		return errors.New("Codex did not apply Tandem's sandbox profile. Use Codex CLI 0.170.0 or later.")
+	}
+	if o.GitWorkspace.Path != "" && !slices.Equal(r.RuntimeWorkspaceRoots, []string{o.Cwd}) {
+		return fmt.Errorf("Codex did not use the Git clone as its sole runtime workspace root: %v", r.RuntimeWorkspaceRoots)
 	}
 	if method == "thread/start" {
 		// App Server creates the rollout lazily. Make the ID resumable even if
@@ -209,19 +225,32 @@ func (s *Spawner) threadParams(o agent.SpawnOptions) map[string]any {
 		"config": config, "approvalPolicy": "on-request", "approvalsReviewer": "user",
 	}
 	if s.AppRoot != "" {
+		profile := permissionProfile
+		filesystem := map[string]string{s.AppRoot: "deny"}
+		if binding := o.GitWorkspace; binding.Path != "" {
+			profile = gitWorkerProfile
+			// Parent metadata can live under an inherited writable temp root, or
+			// outside the checkout entirely when the chat uses a linked worktree.
+			filesystem[binding.SourceRoot] = "read"
+			filesystem[filepath.Join(binding.SourceRoot, ".git")] = "deny"
+			filesystem[binding.SourceGitDir] = "deny"
+			filesystem[binding.SourceCommonDir] = "deny"
+			filesystem[filepath.Join(binding.Path, ".git")] = "write"
+			params["runtimeWorkspaceRoots"] = []string{binding.Path}
+		}
 		config["permissions"] = map[string]any{
-			permissionProfile: map[string]any{
+			profile: map[string]any{
 				"extends":    ":workspace",
-				"filesystem": map[string]string{s.AppRoot: "deny"},
+				"filesystem": filesystem,
 			},
 		}
-		params["permissions"] = permissionProfile
+		params["permissions"] = profile
 		// `permissions` selects the profile for thread/start only. Codex rebuilds its
 		// configuration from the config layers when it sets up each model request (Codex
 		// 0.170.0, workspace routing), and a config that defines profiles but names no
 		// default fails there with "failed to load workspace requirements: invalid input
 		// parameter", after thread/start has already succeeded. Name the default too.
-		config["default_permissions"] = permissionProfile
+		config["default_permissions"] = profile
 	} else {
 		params["sandbox"] = "workspace-write"
 	}

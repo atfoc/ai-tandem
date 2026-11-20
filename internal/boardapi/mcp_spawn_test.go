@@ -421,6 +421,10 @@ func TestSpawnFamilyValidationAndUnknown(t *testing.T) {
 	if status != 200 || !isErr || !strings.Contains(text, "agent") {
 		t.Fatalf("bad agent %q isErr=%v status=%d", text, isErr, status)
 	}
+	text, isErr, status = e.toolsCall(e.token, "spawn_subagent", `{"prompt":"x","agent":"claude","git":true}`)
+	if status != 200 || !isErr || text != "git mode requires a Codex subagent" {
+		t.Fatalf("git on Claude %q isErr=%v status=%d", text, isErr, status)
+	}
 	if e.claude.count() != 0 {
 		t.Fatal("invalid spawn started a process")
 	}

@@ -6,12 +6,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"ai-whiteboard/internal/agent"
+	"ai-whiteboard/internal/model"
 )
 
 func TestSteerWithoutTurnIsDefinitelyUnavailable(t *testing.T) {
@@ -167,6 +171,31 @@ func TestThreadParamsDefineSelectAndDefaultTheProfile(t *testing.T) {
 	pc := plain["config"].(map[string]any)
 	if _, ok := pc["default_permissions"]; ok || plain["sandbox"] != "workspace-write" {
 		t.Fatalf("without an app root: config %v, sandbox %v", pc, plain["sandbox"])
+	}
+}
+
+func TestGitWorkerThreadParams(t *testing.T) {
+	s := &Spawner{AppRoot: "/data/store"}
+	binding := model.GitWorkspace{
+		Path: "/data/store-workers/codex-1", SourceRoot: "/src/worktree",
+		SourceGitDir: "/src/project/.git/worktrees/worktree", SourceCommonDir: "/src/project/.git",
+	}
+	params := s.threadParams(agent.SpawnOptions{Cwd: binding.Path, GitWorkspace: binding, Subagent: true})
+	config := params["config"].(map[string]any)
+	profile := config["permissions"].(map[string]any)[gitWorkerProfile].(map[string]any)
+	want := map[string]string{
+		s.AppRoot: "deny", binding.SourceRoot: "read", binding.SourceGitDir: "deny",
+		binding.SourceCommonDir: "deny", filepath.Join(binding.SourceRoot, ".git"): "deny",
+		filepath.Join(binding.Path, ".git"): "write",
+	}
+	if profile["extends"] != ":workspace" || len(profile) != 2 || !maps.Equal(profile["filesystem"].(map[string]string), want) {
+		t.Fatalf("unexpected Git worker profile: %+v", profile)
+	}
+	if params["permissions"] != gitWorkerProfile || config["default_permissions"] != gitWorkerProfile {
+		t.Fatalf("Git worker profile must be active and default: %+v", params)
+	}
+	if params["cwd"] != binding.Path || !slices.Equal(params["runtimeWorkspaceRoots"].([]string), []string{binding.Path}) {
+		t.Fatalf("Git worker cwd and runtime roots must use the clone: %+v", params)
 	}
 }
 

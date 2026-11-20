@@ -151,18 +151,18 @@ func TestSpawnPointsToModelList(t *testing.T) {
 			t.Errorf("%s description does not name list_subagent_models: %q", name, desc)
 		}
 	}
-	for _, name := range []string{"prompt", "description", "agent", "model", "effort"} {
+	for _, name := range []string{"prompt", "description", "agent", "model", "effort", "git"} {
 		if _, ok := props[name]; !ok {
 			t.Errorf("spawn_subagent schema missing %s", name)
 		}
 	}
-	if len(props) != 5 {
-		t.Errorf("spawn_subagent schema has %d properties, want 5: %v", len(props), props)
+	if len(props) != 6 {
+		t.Errorf("spawn_subagent schema has %d properties, want 6: %v", len(props), props)
 	}
 	if req, _ := spawn.Schema["required"].([]string); len(req) != 1 || req[0] != "prompt" {
 		t.Errorf("spawn_subagent required = %v, want [prompt]", spawn.Schema["required"])
 	}
-	const summary = `{"prompt": "...", "description"?: "...", "agent"?: "claude|cursor|codex|pi", "model"?: "...", "effort"?: "..."}`
+	const summary = `{"prompt": "...", "description"?: "...", "agent"?: "claude|cursor|codex|pi", "model"?: "...", "effort"?: "...", "git"?: true}`
 	if spawn.Summary != summary {
 		t.Errorf("spawn_subagent summary = %q, want %q", spawn.Summary, summary)
 	}

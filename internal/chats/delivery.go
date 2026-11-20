@@ -547,6 +547,7 @@ func resultsBlock(subs []model.Subagent, running int, withMessage, toSub bool) s
 		field("sid", sa.ID)
 		field("description", sa.Description)
 		field("status", string(sa.Status))
+		field("git-workspace", sa.GitWorkspace.Path)
 		field("error", sa.Error)
 		if sa.Error != "" {
 			b.WriteString("This subagent's turn ended with the error above. Its report, if any, is what it wrote before the error.\n")
