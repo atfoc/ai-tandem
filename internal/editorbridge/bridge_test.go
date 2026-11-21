@@ -999,7 +999,7 @@ func TestEventsRows(t *testing.T) {
 		"groups": {List, PerNone}, "defaults": {List, PerNone},
 		"board": {List, PerBoard}, "board_removed": {List, PerBoard},
 		"scene": {Content, PerBoard}, "writer": {Content, PerBoard},
-		"catalog": {List, PerNone}, "agents": {List, PerNone},
+		"catalog": {List, PerNone}, "agents": {List, PerNone}, "plan_usage": {List, PerNone},
 		"own_library": {List, PerNone}, "aliases": {List, PerNone},
 		"chat": {List, PerChat}, "chat_removed": {List, PerChat}, "branch_state": {List, PerChat},
 		"tree": {Content, PerChat}, "chat_items": {Content, PerChat},

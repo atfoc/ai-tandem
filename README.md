@@ -50,7 +50,9 @@ board. Either way you pick the agent, its model, the effort, and the folder it w
   exactly that passage. A message can carry several.
 - **Context and plan usage.** A ring in the composer shows how full the context window is. A
   click opens the context breakdown and shows available plan limits for Claude Code, Cursor and
-  Codex. Codex reports input and output token counts.
+  Codex. Codex reports input and output token counts. The sidebar gauge shows the tightest limit
+  on this computer. Open it or choose **Plan usage** in Settings to see every agent’s limits and
+  reset times on connected servers.
 - **Several chats at once.** Chats keep working while you look at another one. The sidebar marks
   the ones that are working, and drafts of unsent messages are kept.
 

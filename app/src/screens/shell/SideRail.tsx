@@ -10,6 +10,7 @@ import { IconButton } from "../../ui/IconButton.tsx";
 import { SideIcon } from "../../ui/icons.tsx";
 import { useTheme } from "../../ui/theme.tsx";
 import { tid } from "../../ui/tid.ts";
+import { SettingsButton } from "../voice/SettingsButton.tsx";
 import { keyPlatform } from "./keyplatform.ts";
 import { SIDE_IDS, setSideHidden } from "./nav.ts";
 import { RAIL } from "./widths.ts";
@@ -28,6 +29,7 @@ export function SideRail() {
         </IconButton>
         {notice && <View {...tid("side-rail-dot")} pointerEvents="none" style={[styles.dot, { backgroundColor: t.warn, borderColor: t.panel }]} />}
       </View>
+      <SettingsButton testID="side-rail-settings" />
     </View>
   );
 }
@@ -42,6 +44,6 @@ export function SideHideButton() {
 }
 
 const styles = StyleSheet.create({
-  rail: { width: RAIL, alignItems: "center", paddingTop: 10, borderRightWidth: 1 },
+  rail: { width: RAIL, alignItems: "center", paddingTop: 10, gap: 6, borderRightWidth: 1 },
   dot: { position: "absolute", top: 1, right: 1, width: 7, height: 7, borderRadius: 4, borderWidth: 2 },
 });

@@ -661,7 +661,7 @@ func TestTableRoutesServeAnAPIClient(t *testing.T) {
 	t.Parallel()
 	sp := &apiSpawner{}
 	e, l := remoteEnv(t, withAgents(sp), func(s *Server) {
-		s.Usage = map[model.AgentKind]func(bool) (model.PlanUsage, error){model.Claude: func(bool) (model.PlanUsage, error) { return model.PlanUsage{}, nil }}
+		s.Usage = map[model.AgentKind]UsageCheck{model.Claude: func(context.Context, bool) (model.PlanUsage, error) { return model.PlanUsage{}, nil }}
 	})
 	x, _ := l.api(apiX)
 	path := "/api/chats/" + chat1
@@ -754,6 +754,10 @@ func TestTableRoutesServeAnAPIClient(t *testing.T) {
 	called["GET /api/dirs"] = true
 	if got := decode[obj](t, string(do(t, x, "GET", "/api/dirs?path="+dir, nil))); got["path"] != dir {
 		t.Fatalf("the folder listing: %v", got)
+	}
+	called["GET /api/usage"] = true
+	if got := decode[[]usageResult](t, string(do(t, x, "GET", "/api/usage", nil))); len(got) == 0 {
+		t.Fatal("no usable agents in the overview")
 	}
 	call("GET /api/usage/{agent}", nil)
 

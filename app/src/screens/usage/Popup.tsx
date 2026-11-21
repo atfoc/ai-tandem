@@ -2,12 +2,12 @@
 // what fills it ("Context"), then the agent's plan limits ("Plan usage limits", "Cursor usage", "Plan usage on <Server>"; Pi has none). Both are
 // asked for when the popup opens and keep their last answer. The words are the old popover's.
 import { useEffect, useRef } from "react";
-import { Animated, Easing, Platform, StyleSheet, View, type TextStyle } from "react-native";
+import { Animated, Easing, Platform, StyleSheet, View } from "react-native";
 
-import { agentMeta, agentName } from "@aiwb/core/agents.ts";
+import { agentMeta } from "@aiwb/core/agents.ts";
 import { usageKey, usageTitleOn, type Where } from "@aiwb/core/logic/chatserver.ts";
-import { isStale, limitTone, resetAt, resetIn, sortLimits, updatedAgo } from "@aiwb/core/logic/usage.ts";
-import type { AgentKind, ChatView, UsageLimit } from "@aiwb/core/types.ts";
+import { isStale, updatedAgo } from "@aiwb/core/logic/usage.ts";
+import type { AgentKind, ChatView } from "@aiwb/core/types.ts";
 
 import { IconButton } from "../../ui/IconButton.tsx";
 import { WarnIcon } from "../../ui/icons.tsx";
@@ -16,11 +16,11 @@ import { useOverlayKind } from "../../ui/overlaykind.ts";
 import { Text } from "../../ui/Text.tsx";
 import { useTokens } from "../../ui/theme.tsx";
 import { tid, TID } from "../../ui/tid.ts";
-import { useControlRef } from "../../ui/useControlRef";
 import { SplitView } from "./Split.tsx";
 import { useSplit, usePlan } from "./useUsage.ts";
 
-const TABULAR: TextStyle = { fontVariant: ["tabular-nums"] };
+import { PlanLimits } from "./PlanLimits.tsx";
+import { AllAgentsButton } from "./AllAgentsButton.tsx";
 /** The popup's width on the wide layouts (a sheet takes the screen's). */
 export const POP_WIDTH = 300;
 
@@ -38,6 +38,7 @@ export function UsageBody({ c, lines, where }: { c: ChatView; lines: string[]; w
           <PlanSection key={usageKey(where.server, c.agent)} agent={c.agent} server={where.server} title={title} />
         </>
       ) : null}
+      <AllAgentsButton />
     </View>
   );
 }
@@ -104,9 +105,7 @@ function PlanSection({ agent, server, title }: { agent: AgentKind; server: strin
     <View {...tid("usage-plan")}>
       <Head action={<Refresh testID="plan-refresh" title="Check again" loading={loading} onPress={() => void load(true)} />}>{title}</Head>
       {!u && loading ? <Note>Checking your plan…</Note> : null}
-      {u && !u.plan ? <Note>{u.note || `${agentName(agent)} reported no plan limits.`}</Note> : null}
-      {u?.plan ? sortLimits(u.limits).map((l) => <LimitRow key={l.kind + l.label} l={l} now={now} />) : null}
-      {u?.plan && u.note ? <Err>{u.note}</Err> : null}
+      <PlanLimits agent={agent} usage={u} now={now} layout="compact" note={(text) => <Note>{text}</Note>} warn={(text) => <Err>{text}</Err>} />
       {err ? <Err>{err}</Err> : null}
       {u ? (
         <Text {...tid("usage-foot", { stale: !loading && isStale(u.fetchedAt, now) || undefined })} size={10.5}
@@ -114,28 +113,6 @@ function PlanSection({ agent, server, title }: { agent: AgentKind; server: strin
           {loading ? "Updating…" : `Updated ${updatedAgo(u.fetchedAt, now)}`}
         </Text>
       ) : null}
-    </View>
-  );
-}
-
-/** A limit: its label, detail and percent, a bar of that width in a tone, and when it resets. */
-function LimitRow({ l, now }: { l: UsageLimit; now: number }) {
-  const t = useTokens();
-  const tone = limitTone(l);
-  const when = [resetIn(l.resetsAt, now), resetAt(l.resetsAt, now)].filter(Boolean).join(" · ");
-  const ref = useControlRef(l.resetsAt ? new Date(l.resetsAt).toLocaleString() : undefined);
-  const colour = tone === "danger" ? t.danger : tone === "warn" ? t.warn : t.accent;
-  const pct = Math.min(100, Math.max(0, l.percent));
-  return (
-    <View {...tid("usage-row", { tone, kind: l.kind })} style={styles.limit}>
-      <View style={styles.top}>
-        <Text size={12} style={styles.limitLabel}>{l.label}</Text>
-        <Text size={12} tone="muted" style={TABULAR}>
-          {l.detail ? <Text size={12} tone="faint">{l.detail} · </Text> : null}{Math.round(l.percent)}%
-        </Text>
-      </View>
-      <View style={[styles.bar, { backgroundColor: t.line2 }]}><View {...tid("usage-bar", { pct })} style={{ width: `${pct}%`, height: "100%", borderRadius: 3, backgroundColor: colour }} /></View>
-      {when ? <View ref={ref}><Text {...tid("usage-reset")} size={11} tone="faint">Resets {when}</Text></View> : null}
     </View>
   );
 }
@@ -153,8 +130,4 @@ const styles = StyleSheet.create({
   err: { flexDirection: "row", alignItems: "center", gap: 4, paddingVertical: 4, paddingHorizontal: 8 },
   errText: { flexShrink: 1 },
   foot: { paddingTop: 4, paddingHorizontal: 8 },
-  limit: { paddingVertical: 5, paddingHorizontal: 8 },
-  top: { flexDirection: "row", justifyContent: "space-between", gap: 8 },
-  limitLabel: { flexShrink: 1 },
-  bar: { height: 5, marginTop: 4, marginBottom: 3, borderRadius: 3, overflow: "hidden" },
 });

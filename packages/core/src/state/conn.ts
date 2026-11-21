@@ -2,6 +2,7 @@
 // list (this computer's included), each with its entry's id, and the app's own events about that list and the state of
 // each entry; calls go out through api.ts. Several windows work on one server at once; each board is held by one of
 // them, which hands it over after it has written its pending save (board.ts keeps the roles).
+import { forgetPlanUsage, planUsageEvent } from "./planusage.ts";
 import { api } from "../api.ts";
 import { setState, getState, applySnapshot, applySection, dropLeftBehind, dropServer, markGone, setSectionGroups, setSectionDefaults, setServers, withServers, setServerLists, setLibrary, dropLibrary, libraryAwayOf, upsertBoard, removeBoard, setWriter, clearWriters, upsertChat, removeChat, setThread, setSubs, upsertSub,
   upsertState, setDrawer, setShown, setThreadError, setLoading, dropLoading, threadAt, shownBranch, shownKey, currentBranch, branchState, isBusy,
@@ -83,6 +84,7 @@ function onApp(e: any) {
  *  stays as last received and cannot be changed. This computer's is a section like the others: the page holds its tree from
  *  its snapshot until here. */
 function leaves(server: string) {
+  forgetPlanUsage(server);
   libraryAwayOf(server);
   if (server === LOCAL_SERVER) {
     if (!getState().connected) return;
@@ -123,6 +125,7 @@ async function onEvent(server: string, m: any) {
     case "sub_items": if (m.chat) { const chat = key(m.chat); applyItems(chat, subKey(branchKey(chat, m.branch), m.sub), m.version, m.updates ?? []); } return;
     case "defaults": if (on) setSectionDefaults(on, m.defaults ?? { groups: {} }); else setState({ defaults: m.defaults }); return;
     case "catalog": if (on) offers(on, (l) => ({ ...l, catalogs: { ...l.catalogs, [m.agent]: m.catalog } })); else setState((s) => ({ catalogs: { ...s.catalogs, [m.agent]: m.catalog } })); return;
+    case "plan_usage": if (m.result) planUsageEvent(server, m.request, m.result); return;
     case "agents": if (on) offers(on, (l) => ({ ...l, agents: m.agents ?? [] })); else setState({ usable: m.agents ?? [] }); return; // that server's usable agents changed
     case ALIASES_EVENT: if (m.aliases) applyAliases(server, m.aliases); return; // that server's Claude accounts, whole, after every change of them (state/aliases.ts)
   }
@@ -245,6 +248,7 @@ export function onEntryGone(fn: (server: string) => void): () => void {
 
 function dropRemoved(before: ServerView[]) {
   for (const server of entriesGone(before, getState().servers)) {
+    forgetPlanUsage(server);
     givenUp(server);
     for (const id of dropServer(server)) forgetThing(id);
     applyAliases(server, null); // (its accounts, and the logins under way of them)

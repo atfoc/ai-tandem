@@ -23,14 +23,16 @@ import (
 
 	"ai-whiteboard/internal/agent"
 	"ai-whiteboard/internal/boardtools"
+	"ai-whiteboard/internal/model"
 )
 
 // Spawner starts Claude chat processes.
 type Spawner struct {
-	Bin     string // -claude flag, default "claude"
-	AppRoot string // data folder
-	Home    string
-	Prompt  string // prompts.Claude()
+	Bin         string // -claude flag, default "claude"
+	AppRoot     string // data folder
+	Home        string
+	Prompt      string // prompts.Claude()
+	OnPlanUsage func(model.PlanUsage)
 
 	// The fields below make the spawner a Claude account's (internal/aliases); all zero for the
 	// computer's own Claude Code, which runs as before. An account's spawner also has Home "":
@@ -452,6 +454,13 @@ func (p *proc) readLoop(stdout io.Reader) {
 			continue
 		}
 		switch m["type"] {
+		case "rate_limit_event":
+			if p.s.OnPlanUsage != nil {
+				if usage := streamPlanUsage(obj(m["rate_limit_info"]), time.Now()); usage.Plan {
+					p.s.OnPlanUsage(usage)
+				}
+			}
+			continue
 		case "control_request":
 			p.handleControl(m)
 			continue

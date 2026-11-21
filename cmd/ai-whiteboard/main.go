@@ -205,16 +205,41 @@ func serve(o options) {
 	cursorSpawner := &cursor.Spawner{Bin: o.cursorBin, AppRoot: p.Root, Home: home}
 	codexSpawner := &codex.Spawner{Bin: o.codexBin, AppRoot: p.Root, Prompt: prompts.Claude()}
 	claudeSpawner := &claude.Spawner{Bin: o.claudeBin, AppRoot: p.Root, Home: home, Prompt: prompts.Claude()}
+	usageCaches := map[model.AgentKind]*agent.UsageCache{
+		model.Claude: {Fetch: claudeSpawner.Usage, TTL: time.Minute},
+		model.Codex:  {Fetch: codexSpawner.Usage, TTL: time.Minute},
+		model.Cursor: {Fetch: (&cursor.CostReader{Bin: o.cursorCostBin, Home: home}).Usage, TTL: time.Minute},
+	}
+
+	publishUsage := func(kind model.AgentKind, usage model.PlanUsage) {
+		if agents.Has(kind) {
+			server.PublishPlanUsage(br, kind, usage)
+		}
+	}
+	claudeSpawner.OnPlanUsage = func(u model.PlanUsage) {
+		publishUsage(model.Claude, usageCaches[model.Claude].Update(u))
+	}
+	codexSpawner.OnPlanUsage = func(u model.PlanUsage) {
+		publishUsage(model.Codex, usageCaches[model.Codex].Update(u))
+	}
 	probePiVersion(o.piBin)
 	piSpawner := &pi.Spawner{Bin: o.piBin, AppRoot: p.Root, Home: home, Prompt: prompts.Pi()}
 	turnCaps()
 	// The Claude accounts, before the chats and the agent list are used: their kinds are agents of
 	// their own. Nothing here waits on Docker; svc is nil when they could not be set up.
 	dm := &container.Manager{Bin: o.dockerBin}
+	var accountUsage *accountsUsage
 	svc := openAccounts(accountsSetup{root: p.Root, home: home, docker: dm, mcpPort: mcpBoundPort,
-		host: claudeSpawner, st: st, br: br, agents: agents})
+		host: claudeSpawner, st: st, br: br, agents: agents,
+		planUsage: func(kind model.AgentKind, u model.PlanUsage) {
+			if accountUsage != nil && agents.Has(kind) {
+				publishUsage(kind, accountUsage.cache(kind).Update(u))
+			}
+		},
+	})
 	var accounts chats.Accounts // a nil interface without svc, never a typed nil
 	if svc != nil {
+		accountUsage = newAccountsUsage(svc, dm)
 		agents.SetExtra(svc)
 		accounts = aliaschats.Accounts(svc)
 	}
@@ -298,15 +323,14 @@ func serve(o options) {
 	}
 	var mcpUp atomic.Bool // read by the control socket's /status
 	srv := &server.Server{App: a, Relay: relay, Bridge: br,
-		Usage: map[model.AgentKind]func(bool) (model.PlanUsage, error){
-			model.Claude: (&agent.UsageCache{Fetch: claudeSpawner.Usage, TTL: time.Minute}).Get,
-			model.Codex:  (&agent.UsageCache{Fetch: codexSpawner.Usage, TTL: time.Minute}).Get,
-			model.Cursor: (&agent.UsageCache{Fetch: (&cursor.CostReader{Bin: o.cursorCostBin, Home: home}).Usage, TTL: time.Minute}).Get,
-		},
+		Usage:   map[model.AgentKind]server.UsageCheck{},
 		MCPPort: mcpBoundPort, MCPURL: boardapi.Endpoint(mcpBoundPort), MCPUp: mcpUp.Load}
+	for kind, cache := range usageCaches {
+		srv.Usage[kind] = cache.Get
+	}
 	if svc != nil {
 		srv.Aliases = svc
-		srv.UsageFor = newAccountsUsage(svc, dm).For
+		srv.UsageFor = accountUsage.For
 	}
 	// POST /stop of the control socket asks for the same shutdown as SIGINT and SIGTERM.
 	stopAsked := make(chan struct{})

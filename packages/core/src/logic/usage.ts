@@ -1,6 +1,6 @@
 // Labels for an agent's plan usage limits in the context popover. DOM-free.
 
-import type { UsageLimit } from "../types.ts";
+import type { AgentKind, PlanUsage, UsageLimit } from "../types.ts";
 
 const MIN = 60_000, HOUR = 60 * MIN, DAY = 24 * HOUR;
 
@@ -54,4 +54,47 @@ const ORDER: Record<string, number> = { session: 0, weekly_all: 1 };
 /** The session first, then the week for all models, then the rest in the order given. */
 export function sortLimits(ls: UsageLimit[]): UsageLimit[] {
   return ls.map((l, i) => ({ l, i })).sort((a, b) => (ORDER[a.l.kind] ?? 2) - (ORDER[b.l.kind] ?? 2) || a.i - b.i).map((x) => x.l);
+}
+
+/** The share used as reported, bounded for display and comparison. */
+export const usedShare = (percent: number): number => Number.isNaN(percent) ? 0 : Math.min(100, Math.max(0, percent));
+export const usedWords = (percent: number): string => `${Math.round(usedShare(percent))}% used`;
+
+export type AgentPlan = { agent: AgentKind; usage?: PlanUsage; error?: string; loading?: boolean };
+
+export function tightestLimit(plans: readonly AgentPlan[]): { agent: AgentKind; limit: UsageLimit; fetchedAt: string } | undefined {
+  let best: { agent: AgentKind; limit: UsageLimit; fetchedAt: string } | undefined;
+  let bestShare = -1, bestReset = -Infinity;
+  for (const plan of plans) {
+    if (plan.error || !plan.usage?.plan) continue;
+    for (const limit of plan.usage.limits ?? []) {
+      const share = usedShare(limit.percent);
+      const at = Date.parse(limit.resetsAt ?? "");
+      const reset = Number.isNaN(at) ? -Infinity : at;
+      if (share > bestShare || (share === bestShare && reset > bestReset)) {
+        best = { agent: plan.agent, limit, fetchedAt: plan.usage.fetchedAt };
+        bestShare = share;
+        bestReset = reset;
+      }
+    }
+  }
+  return best;
+}
+
+export function gaugeState(plans: readonly AgentPlan[]): "hidden" | "empty" | "ready" | "failed" {
+  const capable = plans.filter((p) => p.error || !p.usage || p.usage.plan);
+  if (!capable.length) return "hidden";
+  if (tightestLimit(capable)) return "ready";
+  return capable.every((p) => p.error) ? "failed" : "empty";
+}
+
+export const USAGE_MIN_INTERVAL = MIN;
+
+/** The earliest automatic check, measured from the most recent request to this server. */
+export function usageCheckAt({ foreground, working, turnEnded, last }: {
+  foreground: boolean; working: boolean; turnEnded: boolean; last?: number;
+}): number {
+  if (!foreground) return Infinity;
+  if (last === undefined) return 0;
+  return last + (turnEnded ? USAGE_MIN_INTERVAL : working ? 5 * MIN : 30 * MIN);
 }

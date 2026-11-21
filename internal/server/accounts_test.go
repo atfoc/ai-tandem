@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -70,17 +71,17 @@ func TestUsageForAccounts(t *testing.T) {
 
 	var asked []model.AgentKind
 	var gotFresh []bool
-	e.s.Usage = map[model.AgentKind]func(bool) (model.PlanUsage, error){
-		model.Claude: func(bool) (model.PlanUsage, error) {
+	e.s.Usage = map[model.AgentKind]UsageCheck{
+		model.Claude: func(context.Context, bool) (model.PlanUsage, error) {
 			return model.PlanUsage{Plan: true, Limits: []model.UsageLimit{{Kind: "session", Percent: 1}}}, nil
 		},
 	}
-	e.s.UsageFor = func(a model.AgentKind) func(bool) (model.PlanUsage, error) {
+	e.s.UsageFor = func(a model.AgentKind) UsageCheck {
 		asked = append(asked, a)
 		if a != acct {
 			return nil
 		}
-		return func(fresh bool) (model.PlanUsage, error) {
+		return func(_ context.Context, fresh bool) (model.PlanUsage, error) {
 			gotFresh = append(gotFresh, fresh)
 			return model.PlanUsage{Plan: true, Limits: []model.UsageLimit{{Kind: "session", Percent: 42}}}, nil
 		}

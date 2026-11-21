@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"ai-whiteboard/internal/agent"
 	"ai-whiteboard/internal/model"
@@ -78,6 +79,22 @@ type toolItem struct {
 }
 
 func (p *proc) onNotification(method string, raw json.RawMessage) {
+	if method == "account/rateLimits/updated" {
+		if p.planUsage != nil {
+			var msg struct{ RateLimits rateSnapshot }
+			if json.Unmarshal(raw, &msg) == nil {
+				snap := msg.RateLimits
+				key := snap.LimitID
+				if key == "" {
+					key = "codex"
+				}
+				if limits := appendRateSnapshot(nil, key, snap); len(limits) > 0 {
+					p.planUsage(model.PlanUsage{Plan: true, Limits: limits, FetchedAt: time.Now()})
+				}
+			}
+		}
+		return
+	}
 	if method == "thread/tokenUsage/updated" {
 		p.onUsage(raw)
 		return

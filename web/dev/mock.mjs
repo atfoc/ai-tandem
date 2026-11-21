@@ -498,10 +498,11 @@ function treeItems(list, at) {
 }
 // ux-t3: what the UXT3 section of mock-ui.js holds for Chat info and Context and usage (the mock has neither by itself):
 //   ux3.context[chat]   the answer of GET …/chats/<id>/context for that chat (the split by category); other chats get the mock's one
+//   ux3.planOverview    batches by server and agent, with optional limits, note or error
 //   ux3.plan            the plan limits [{ kind, label, percent, inMs }] GET /api/usage/<agent> answers while it is set (a check sets it
 //                       through /mock/eval and deletes it: `ux3.plan = [...]`, `ux3.plan = null`); null: "The mock has no plan limits."
 //   ux3.labels[chat]    the labels of the chat's tree [{ branch, item, text }]; PUT …/label sets one, a blank text removes it, as the server does
-const ux3 = { context: {}, plan: null, labels: {} };
+const ux3 = { context: {}, plan: null, planOverview: null, labels: {} };
 function ux3Label(id, b) {
   const list = (ux3.labels[id] ??= []), at = list.findIndex((l) => l.branch === b.branch && l.item === b.item);
   if (at >= 0) list.splice(at, 1);
@@ -1506,7 +1507,7 @@ export const CLIENT_ROUTES = [
   "POST /api/chats", "GET /api/chats/{id}", "GET /api/chats/{id}/items", "GET /api/chats/{id}/tree", "GET /api/chats/{id}/context", "GET /api/chats/{id}/subagents/{sid}/items",
   "PATCH /api/chats/{id}", "POST /api/chats/{id}/messages", "POST /api/chats/{id}/interrupt", "POST /api/chats/{id}/permission", "PUT /api/chats/{id}/label", "PUT /api/chats/{id}/draft",
   "POST /api/chats/{id}/images", "GET /api/chats/{id}/images/{image}", "POST /api/chats/{id}/open", "POST /api/chats/{id}/fork", "POST /api/chats/{id}/archive",
-  "POST /api/chats/{id}/unarchive", "DELETE /api/chats/{id}", "POST /api/chats/{id}/unfollow", "GET /api/dirs", "GET /api/usage/{agent}",
+  "POST /api/chats/{id}/unarchive", "DELETE /api/chats/{id}", "POST /api/chats/{id}/unfollow", "GET /api/dirs", "GET /api/usage", "GET /api/usage/{agent}",
   "POST /api/boards", "GET /api/boards/{id}/scene", "PUT /api/boards/{id}/scene", "POST /api/boards/{id}/take", "POST /api/boards/{id}/release", "POST /api/boards/{id}/follow", "POST /api/boards/{id}/unfollow", "POST /api/boards/{id}/rename",
   "PATCH /api/boards/{id}", "POST /api/boards/{id}/archive", "POST /api/boards/{id}/unarchive", "POST /api/boards/{id}/seen", "DELETE /api/boards/{id}", "POST /api/rpc-reply",
   "GET /api/library", "POST /api/library/{server}/groups", "PATCH /api/library/{server}/groups/{id}", "DELETE /api/library/{server}/groups/{id}",
@@ -1561,6 +1562,24 @@ async function apiRoute(req, res, u) {
     return json(res, { path: dir, parent: path.dirname(dir), dirs: TREE[dir] });
   }
   if (p === "/api/aliases" || p.startsWith("/api/aliases/")) return await aliasRoute(req, res, p);
+  if (p === "/api/usage") {
+    const request = u.searchParams.get("request");
+    const results = listsHere().agents.map((agent) => {
+      const preset = ux3.planOverview?.[world().id]?.[agent];
+      let result;
+      if (preset?.error) result = { agent, error: preset.error };
+      else {
+        const source = preset?.limits ?? (agent === "pi" ? undefined : ux3.plan);
+        const now = Date.now();
+        const limits = source?.map((limit) => ({ ...limit, resetsAt: limit.resetsAt ?? (limit.inMs ? iso(now + limit.inMs) : undefined) })) ?? [];
+        result = { agent, usage: { plan: !!limits.length, limits, fetchedAt: preset?.fetchedAt ?? iso(now - 3 * MIN),
+          ...(!limits.length ? { note: preset?.note ?? "The mock has no plan limits." } : {}) } };
+      }
+      if (request) send({ type: "plan_usage", request, result });
+      return result;
+    });
+    return json(res, results);
+  }
   if (/^\/api\/usage\/claude(:|%3A)/i.test(p)) { // an account's plan usage is read in its container, which is not started for it (D24)
     const st = accounts(), a = st?.aliases.find((x) => "/api/usage/" + aliasKindOf(x) === decodeURIComponent(p));
     if (a && !st.docker.ok) return answer(res, dockerRefusal(st));

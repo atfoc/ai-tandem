@@ -1406,12 +1406,12 @@ func TestUsage(t *testing.T) {
 
 	var gotFresh []bool
 	var err error
-	e.s.Usage = map[model.AgentKind]func(bool) (model.PlanUsage, error){
-		model.Claude: func(fresh bool) (model.PlanUsage, error) {
+	e.s.Usage = map[model.AgentKind]UsageCheck{
+		model.Claude: func(_ context.Context, fresh bool) (model.PlanUsage, error) {
 			gotFresh = append(gotFresh, fresh)
 			return model.PlanUsage{Plan: true, Limits: []model.UsageLimit{{Kind: "session", Label: "Current session", Percent: 8}}}, err
 		},
-		model.Cursor: func(bool) (model.PlanUsage, error) {
+		model.Cursor: func(context.Context, bool) (model.PlanUsage, error) {
 			return model.PlanUsage{Plan: true, Limits: []model.UsageLimit{{Kind: "individual.overall", Percent: 37.5, Detail: "$413.89 of $1,101"}}}, nil
 		},
 	}

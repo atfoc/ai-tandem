@@ -157,3 +157,34 @@ func TestSpawnerUsageError(t *testing.T) {
 		t.Fatalf("err %v", err)
 	}
 }
+
+func TestStreamPlanUsage(t *testing.T) {
+	parse := func(data string) model.PlanUsage {
+		t.Helper()
+		var info map[string]any
+		if err := json.Unmarshal([]byte(data), &info); err != nil {
+			t.Fatal(err)
+		}
+		return streamPlanUsage(info, usageNow)
+	}
+	if u := parse(`{"status":"allowed","rateLimitType":"five_hour","resetsAt":1788465600}`); u.Plan || len(u.Limits) != 0 {
+		t.Fatalf("status-only event reported usage: %+v", u)
+	}
+	u := parse(`{"status":"allowed","rateLimitType":"five_hour","isUsingOverage":true,
+		"unifiedWindows":{"five_hour":{"utilization":0.24,"resetsAt":1788465600},
+		"seven_day":{"utilization":0,"resetsAt":1789005600},
+		"seven_day_overage_included":{"utilization":1}}}`)
+	if !u.Plan || !u.FetchedAt.Equal(usageNow) || len(u.Limits) != 2 {
+		t.Fatalf("unified windows: %+v", u)
+	}
+	session, week := u.Limits[0], u.Limits[1]
+	if session.Kind != "session" || session.Percent != 24 || session.ResetsAt.Unix() != 1788465600 || session.Severity != "normal" ||
+		week.Kind != "weekly_all" || week.Percent != 0 || week.ResetsAt.Unix() != 1789005600 {
+		t.Fatalf("unified windows: %+v", u.Limits)
+	}
+	u = parse(`{"status":"allowed_warning","rateLimitType":"seven_day","utilization":0.82,"resetsAt":1789005600}`)
+	if !u.Plan || len(u.Limits) != 1 || u.Limits[0].Kind != "weekly_all" ||
+		u.Limits[0].Percent != 82 || u.Limits[0].Severity != "allowed_warning" {
+		t.Fatalf("single warning window: %+v", u)
+	}
+}

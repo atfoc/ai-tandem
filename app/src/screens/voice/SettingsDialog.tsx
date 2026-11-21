@@ -3,7 +3,8 @@
 // itself from the voice store's `settingsOpen`, which the foot's gear button and the problem popover's "Open Settings" set. Everything it
 // changes is a voice setting (one stored value, read by the speech bar and the pill too) or the key (which only the keystore holds): the key
 // typed here is held in this component alone and dropped at Save and at close.
-import { useEffect, useState } from "react";
+import { closeAnchoredPlanOverview, openPlanOverview } from "../usage/overviewOpen.ts";
+import { useEffect, useRef, useState } from "react";
 import { Pressable, StyleSheet, TextInput, View } from "react-native";
 
 import { DEFAULTS, PAUSE_MAX_MS, PAUSE_MIN_MS, PAUSE_STEP_MS, SPEEDS } from "../../voice/logic/settings.ts";
@@ -54,6 +55,8 @@ export function SettingsDialog() {
 
 /** The page. It is mounted while the dialog is open only, so everything it holds (the typed key, the result line, the open Advanced options) starts anew at each opening. */
 function SettingsPage() {
+  const planUsage = useRef<View>(null);
+  useEffect(() => () => closeAnchoredPlanOverview(planUsage), []);
   const { tokens: t } = useTheme();
   const [hasKey, setHasKey] = useState<boolean | null>(null);
   // Counts the changes of the key, so that the voice list asks the service again.
@@ -78,6 +81,9 @@ function SettingsPage() {
       <AdvancedSection />
       <EditingSection />
       <AccountsSettingsSection />
+      <View ref={planUsage} collapsable={false} style={{ alignSelf: "flex-start" }}>
+        <Button size="sm" label="Plan usage" testID="settings-plan-usage" aria-haspopup="dialog" onPress={() => openPlanOverview(planUsage, true)} />
+      </View>
       <DialogActions>
         <Button size="sm" label={SETTINGS_CLOSE} testID="vs-close" autoFocus onPress={closeVoiceSettings} />
       </DialogActions>

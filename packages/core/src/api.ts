@@ -4,7 +4,7 @@
 // every id in the path and in the body is that server's own. What a section's call answers gets the page's keys
 // (logic/sectionwire.ts). Nothing else on the page builds a path or writes an id into a body.
 import { LOCAL_SERVER, type Writer } from "./types.ts";
-import type { AgentKind, Board, BranchState, Catalog, ChatImage, ChatView, ContextSplit, Defaults, Draft, Group, Item, PlanUsage, PromptDelivery, Reference,
+import type { AgentKind, Board, BranchState, Catalog, ChatImage, ChatView, ContextSplit, Defaults, Draft, Group, Item, PlanUsage, PlanUsageResult, PromptDelivery, Reference,
   Subagent, Target, TreeLabel, TreeView } from "./types.ts";
 import type { AliasList } from "./aliasesapi.ts";
 import type { PermAnswer } from "./logic/perms.ts";
@@ -235,5 +235,7 @@ export const api = {
   /** server: the entry id of the server whose folders are read; without it this computer's. */
   dirs: (path: string, server: string = LOCAL_SERVER) => call<Dirs>(server, "GET", `/api/dirs?path=${encodeURIComponent(path)}`),
   contextSplit: (id: string, branch: string, fresh = false) => thing<ContextSplit>("chats", id, "GET", `/context${onBranch(branch)}${fresh ? "&fresh=1" : ""}`),
+  usageOverview: (server: string, fresh: boolean, request: string, signal: AbortSignal) =>
+    call<PlanUsageResult[]>(server, "GET", `/api/usage?request=${encodeURIComponent(request)}${fresh ? "&fresh=1" : ""}`, undefined, false, signal),
   usage: (agent: AgentKind, fresh = false, server: string = LOCAL_SERVER) => call<PlanUsage>(server, "GET", `/api/usage/${agent}${fresh ? "?fresh=1" : ""}`),
 };

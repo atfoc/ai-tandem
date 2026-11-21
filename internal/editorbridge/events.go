@@ -50,6 +50,7 @@ var Events = map[string]Rule{
 	"writer":        {Class: Content, Per: PerBoard},
 	"catalog":       {Class: List},
 	"agents":        {Class: List},
+	"plan_usage":    {Class: List},
 
 	// This server's prompt library (package library).
 	"own_library": {Class: List},

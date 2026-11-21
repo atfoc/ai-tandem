@@ -15,6 +15,7 @@ import (
 
 	"ai-whiteboard/internal/agent"
 	"ai-whiteboard/internal/gitworker"
+	"ai-whiteboard/internal/model"
 )
 
 const (
@@ -24,9 +25,10 @@ const (
 )
 
 type Spawner struct {
-	Bin     string
-	AppRoot string
-	Prompt  string
+	Bin         string
+	AppRoot     string
+	Prompt      string
+	OnPlanUsage func(model.PlanUsage)
 }
 
 var (
@@ -47,6 +49,7 @@ type proc struct {
 	active       *activeTurn
 	perm         map[string]approval
 	pendingUsage *usageUpdate
+	planUsage    func(model.PlanUsage)
 
 	// Item state belongs to the notification reader.
 	items     map[string]*itemState
@@ -126,11 +129,12 @@ func (s *Spawner) start(o agent.SpawnOptions, src *agent.ForkSource) (*proc, err
 		}
 	}
 	p := &proc{
-		opts:   o,
-		events: make(chan agent.Event, 128),
-		ready:  make(chan struct{}),
-		perm:   make(map[string]approval),
-		items:  make(map[string]*itemState),
+		opts:      o,
+		planUsage: s.OnPlanUsage,
+		events:    make(chan agent.Event, 128),
+		ready:     make(chan struct{}),
+		perm:      make(map[string]approval),
+		items:     make(map[string]*itemState),
 	}
 	c, err := startRPC(context.Background(), s.bin(), []string{"app-server"}, o.Cwd, nil, p.onNotification, p.onRequest)
 	if err != nil {

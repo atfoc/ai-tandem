@@ -388,3 +388,34 @@ func fakeServer() int {
 	}
 	return 0
 }
+
+func TestAccountRateLimitNotification(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now()
+	calls := 0
+	cache := &agent.UsageCache{TTL: time.Minute, Now: func() time.Time { return now }, Fetch: func() (model.PlanUsage, error) {
+		calls++
+		return model.PlanUsage{Plan: true, Limits: []model.UsageLimit{{Kind: "codex_primary", Percent: float64(calls)}}}, nil
+	}}
+	if _, err := cache.Get(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	p := &proc{planUsage: func(usage model.PlanUsage) { cache.Update(usage) }}
+	p.onNotification("account/rateLimits/updated", json.RawMessage(`{"rateLimits":{"limitId":"codex","primary":{}}}`))
+	if u, err := cache.Get(ctx, false); err != nil || u.Limits[0].Percent != 1 {
+		t.Fatalf("an event without a share changed the cache: %+v, %v", u, err)
+	}
+	p.onNotification("account/rateLimits/updated", json.RawMessage(`{"rateLimits":{"limitId":"codex","primary":{"usedPercent":82,"windowDurationMins":300,"resetsAt":1795258500}}}`))
+	got, err := cache.Get(ctx, false)
+	if err != nil || calls != 1 || !got.Plan || got.FetchedAt.Before(now) || len(got.Limits) != 1 {
+		t.Fatalf("passive usage: %+v, %v, %d checks", got, err, calls)
+	}
+	l := got.Limits[0]
+	if l.Kind != "codex_primary" || l.Percent != 82 || l.ResetsAt.Unix() != 1795258500 {
+		t.Fatalf("passive limit: %+v", l)
+	}
+	now = now.Add(time.Minute)
+	if u, err := cache.Get(ctx, true); err != nil || calls != 2 || u.Limits[0].Percent != 2 {
+		t.Fatalf("fresh check did not replace the passive update: %+v, %v, %d checks", u, err, calls)
+	}
+}

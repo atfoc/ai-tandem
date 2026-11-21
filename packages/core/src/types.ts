@@ -136,6 +136,8 @@ export type PlanUsage = {
   fetchedAt: string; // when the numbers are from
 };
 
+export type PlanUsageResult = { agent: AgentKind; usage?: PlanUsage; error?: string };
+
 export type UsageLimit = {
   kind: string; // "session", "weekly_all", "weekly_scoped", Cursor's "individual.overall", …
   label: string; // "Current session", "Current week (Fable)"

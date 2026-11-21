@@ -238,7 +238,7 @@ var wantRoutes = []string{
 	"POST /api/chats/{id}/interrupt", "POST /api/chats/{id}/permission", "PUT /api/chats/{id}/label", "PUT /api/chats/{id}/draft",
 	"POST /api/chats/{id}/images", "GET /api/chats/{id}/images/{image}", "POST /api/chats/{id}/open", "POST /api/chats/{id}/fork",
 	"POST /api/chats/{id}/archive", "POST /api/chats/{id}/unarchive", "DELETE /api/chats/{id}", "POST /api/chats/{id}/unfollow",
-	"GET /api/dirs", "GET /api/usage/{agent}",
+	"GET /api/dirs", "GET /api/usage", "GET /api/usage/{agent}",
 	"POST /api/boards", "GET /api/boards/{id}/scene", "PUT /api/boards/{id}/scene", "POST /api/boards/{id}/take",
 	"POST /api/boards/{id}/release", "POST /api/boards/{id}/follow", "POST /api/boards/{id}/unfollow", "POST /api/boards/{id}/rename", "PATCH /api/boards/{id}", "POST /api/boards/{id}/archive",
 	"POST /api/boards/{id}/unarchive", "POST /api/boards/{id}/seen", "DELETE /api/boards/{id}",
@@ -341,8 +341,8 @@ func TestClientAPIIsTheTable(t *testing.T) {
 			t.Errorf("%s (%s %s): status %d body %q, want 404 not found", p, method, path, w.Code, w.Body)
 		}
 	}
-	if served != len(ClientRoutes) || served != 65 {
-		t.Errorf("%d routes of the table were asked for, the table has %d, want 65", served, len(ClientRoutes))
+	if served != len(ClientRoutes) || served != 66 {
+		t.Errorf("%d routes of the table were asked for, the table has %d, want 66", served, len(ClientRoutes))
 	}
 	if n := len(e.s.Bridge.Followers(editorbridge.Chat("x"))); n != 0 {
 		t.Errorf("%d followers of the chat the reads named: a read with no open stream follows nothing", n)

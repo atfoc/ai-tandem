@@ -87,7 +87,11 @@ function limitFor(tm, raw, pathAndQuery) {
     if (q >= 0 && queryValue(pathAndQuery.slice(q + 1), 'contents') === 'delete') return tm.delete;
   }
   if (raw === 'GET /api/dirs') return tm.dirs;
-  if (raw === 'GET /api/usage/{agent}') return tm.usage;
+  if (raw === 'GET /api/usage' || raw === 'GET /api/usage/{agent}') {
+    const fresh = queryValue(pathAndQuery.split('?')[1] || '', 'fresh') === '1';
+    if (fresh) return tm.usage + 65000; // A forced check may wait out the server cooldown.
+    return raw === 'GET /api/usage' ? tm.usage + 5000 : tm.usage;
+  }
   if (UNFOLLOW.has(raw)) return tm.unfollow;
   return tm.call;
 }

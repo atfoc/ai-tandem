@@ -3,16 +3,16 @@
 // chat's context as one big share of its window, the stacked bar and a legend of what fills it, how it was counted, then the agent's plan limits with
 // their reset times, amber from 80 %. It asks for the same two things as the popover (`useSplit`, `usePlan`) and keeps their last answers.
 import { useState } from "react";
-import { Pressable, StyleSheet, View, type TextStyle } from "react-native";
+import { Pressable, StyleSheet, View } from "react-native";
 
 import { agentMeta, agentName } from "@aiwb/core/agents.ts";
 import { usageKey, usageTitleOn, type Where } from "@aiwb/core/logic/chatserver.ts";
 import { width } from "@aiwb/core/logic/ctxsplit.ts";
-import { isStale, resetAt, resetIn, sortLimits, updatedAgo } from "@aiwb/core/logic/usage.ts";
+import { isStale, updatedAgo } from "@aiwb/core/logic/usage.ts";
 import { chatTitle, shownView, threadOf } from "@aiwb/core/state/store.ts";
 import { catalogFor } from "@aiwb/core/logic/agentlist.ts";
 import { serverOf } from "@aiwb/core/logic/serverlists.ts";
-import type { AgentKind, ChatView, ContextSplit, UsageLimit } from "@aiwb/core/types.ts";
+import type { AgentKind, ChatView, ContextSplit } from "@aiwb/core/types.ts";
 
 import { useStore } from "../../state/useStore.ts";
 import { IconButton } from "../../ui/IconButton.tsx";
@@ -29,11 +29,12 @@ import { USAGE_TID } from "./ids.ts";
 import { contextLines, contextOf } from "./meter.ts";
 import { Spin } from "./Popup.tsx";
 import { closeUsage, useUsageOpen } from "./open.ts";
-import { bigNumber, countLine, hasMore, legend, phoneTone, type LegendRow } from "./phone.ts";
+import { bigNumber, countLine, hasMore, legend, type LegendRow } from "./phone.ts";
 import { fillOf } from "./Split.tsx";
 import { useSplit, usePlan } from "./useUsage.ts";
 
-const TABULAR: TextStyle = { fontVariant: ["tabular-nums"] };
+import { PlanLimits, TABULAR } from "./PlanLimits.tsx";
+import { AllAgentsButton } from "./AllAgentsButton.tsx";
 
 /** The sheet, always mounted: it shows itself while the store names a chat that is still there. */
 export function UsageSheet() {
@@ -58,6 +59,7 @@ function Open({ chat, c }: { chat: string; c: ChatView }) {
       <View {...tid("usage-body", { chat })} style={styles.body}>
         <ContextSection key={c.id} c={c} used={used} win={win} error={error} />
         {c.agent && title ? <PlanSection key={usageKey(where.server, c.agent)} agent={c.agent} where={where} title={title} /> : null}
+        <AllAgentsButton phone />
       </View>
     </Sheet>
   );
@@ -195,38 +197,13 @@ function PlanSection({ agent, where, title }: { agent: AgentKind; where: Where; 
     <View {...tid("usage-plan")} style={[styles.plan, { borderTopColor: t.line }]}>
       <Heading refresh={<Refresh testID="plan-refresh" title="Check again" loading={loading} onPress={() => void load(true)} />}>{title}</Heading>
       {!u && loading ? <Note>Checking your plan…</Note> : null}
-      {u && !u.plan ? <Note>{u.note || `${agentName(agent)} reported no plan limits.`}</Note> : null}
-      {u?.plan ? sortLimits(u.limits).map((l) => <LimitRow key={l.kind + l.label} l={l} now={now} />) : null}
-      {u?.plan && u.note ? <Err>{u.note}</Err> : null}
+      <PlanLimits agent={agent} usage={u} now={now} layout="phone" note={(text) => <Note>{text}</Note>} warn={(text) => <Err>{text}</Err>} />
       {err ? <Err>{err}</Err> : null}
       {u ? (
         <Text {...tid("usage-foot", { stale: stale || undefined })} size={TYPE.secondary} tone={stale ? "warn" : "muted"} style={[styles.pad, stale && { color: t.warnText }, styles.foot]}>
           {loading ? "Updating…" : `Updated ${updatedAgo(u.fetchedAt, now)}`}
         </Text>
       ) : null}
-    </View>
-  );
-}
-
-/** A limit: label and percent, an 8 pt bar in its tone (amber from 80 %), and when it resets. */
-function LimitRow({ l, now }: { l: UsageLimit; now: number }) {
-  const t = useTokens();
-  const tone = phoneTone(l);
-  const when = [resetIn(l.resetsAt, now), resetAt(l.resetsAt, now)].filter(Boolean).join(" · ");
-  const ref = useControlRef(l.resetsAt ? new Date(l.resetsAt).toLocaleString() : undefined);
-  const colour = tone === "danger" ? t.danger : tone === "warn" ? t.warn : t.accent;
-  const words = tone === "danger" ? t.danger : tone === "warn" ? t.warnText : t.muted;
-  const pct = Math.min(100, Math.max(0, l.percent));
-  return (
-    <View {...tid("usage-row", { tone, kind: l.kind })} style={styles.limit}>
-      <View style={styles.top}>
-        <Text size={TYPE.body} style={styles.label}>{l.label}</Text>
-        <Text size={TYPE.body} style={[TABULAR, { color: words }]}>
-          {l.detail ? <Text size={TYPE.secondary} tone="muted">{l.detail} · </Text> : null}{Math.round(l.percent)}%
-        </Text>
-      </View>
-      <View style={[styles.bar, { backgroundColor: t.line2 }]}><View {...tid("usage-bar", { pct })} style={{ width: `${pct}%`, height: "100%", backgroundColor: colour }} /></View>
-      {when ? <View ref={ref}><Text {...tid("usage-reset")} size={TYPE.secondary} tone="muted">Resets {when}</Text></View> : null}
     </View>
   );
 }
@@ -255,8 +232,5 @@ const styles = StyleSheet.create({
   factValue: { textAlign: "right" },
   counted: { paddingTop: 8 },
   plan: { marginTop: 10, borderTopWidth: StyleSheet.hairlineWidth },
-  limit: { paddingTop: 6, paddingBottom: 10 },
-  top: { flexDirection: "row", justifyContent: "space-between", alignItems: "baseline", gap: 10 },
-  bar: { height: 8, marginTop: 6, marginBottom: 6, borderRadius: 4, overflow: "hidden" },
   foot: { paddingTop: 2 },
 });

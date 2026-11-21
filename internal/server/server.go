@@ -47,11 +47,11 @@ type Server struct {
 	InstanceID string
 	Clients    *ClientListener
 	// Usage returns an agent's plan usage limits (agent.UsageCache.Get); a missing agent = not available.
-	Usage map[model.AgentKind]func(fresh bool) (model.PlanUsage, error)
+	Usage map[model.AgentKind]UsageCheck
 	// UsageFor is consulted for a kind Usage has no entry for: the Claude accounts, whose kinds
 	// come and go while the server runs. It returns the kind's usage call, or nil when the kind
 	// has none. nil = no kind beyond Usage's has usage.
-	UsageFor func(model.AgentKind) func(fresh bool) (model.PlanUsage, error)
+	UsageFor func(model.AgentKind) UsageCheck
 	// Aliases are the Claude accounts' calls (aliases.go); nil = this server has none, and their
 	// routes answer 501.
 	Aliases AliasAPI
@@ -1082,18 +1082,17 @@ func (s *Server) routes() *routeMux {
 		writeJSON(w, map[string]any{"path": abs, "parent": filepath.Dir(abs), "dirs": dirs})
 	})
 
+	mux.HandleFunc("GET /api/usage", s.usageOverview)
+
 	// An agent's plan usage limits, run on request and not stored. ?fresh=1 skips the cache.
 	mux.HandleFunc("GET /api/usage/{agent}", func(w http.ResponseWriter, r *http.Request) {
 		kind := model.AgentKind(r.PathValue("agent"))
-		get := s.Usage[kind]
-		if get == nil && s.UsageFor != nil {
-			get = s.UsageFor(kind)
-		}
+		get := s.usageFor(kind)
 		if get == nil {
 			writeError(w, http.StatusNotFound, "usage not available")
 			return
 		}
-		u, err := get(r.URL.Query().Get("fresh") == "1")
+		u, err := checkUsage(r.Context(), get, r.URL.Query().Get("fresh") == "1")
 		if err != nil {
 			fail(w, err, http.StatusInternalServerError)
 			return

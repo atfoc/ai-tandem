@@ -84,7 +84,7 @@ func (s *Spawner) ProbeCatalog() (*model.Catalog, error) {
 }
 
 type rateWindow struct {
-	UsedPercent        float64
+	UsedPercent        *float64
 	WindowDurationMins int
 	ResetsAt           int64
 }
@@ -124,10 +124,9 @@ func (s *Spawner) Usage() (model.PlanUsage, error) {
 		}
 		sort.Strings(keys)
 		for _, key := range keys {
-			snap := r.RateLimitsByLimitID[key]
-			out.Limits = appendRateWindow(out.Limits, key, snap.LimitName, "primary", snap.Primary)
-			out.Limits = appendRateWindow(out.Limits, key, snap.LimitName, "secondary", snap.Secondary)
+			out.Limits = appendRateSnapshot(out.Limits, key, r.RateLimitsByLimitID[key])
 		}
+		out.FetchedAt = time.Now()
 		out.Plan = len(out.Limits) > 0
 		if !out.Plan {
 			out.Note = "Codex reported no plan limits."
@@ -137,8 +136,13 @@ func (s *Spawner) Usage() (model.PlanUsage, error) {
 	return out, err
 }
 
+func appendRateSnapshot(limits []model.UsageLimit, key string, snap rateSnapshot) []model.UsageLimit {
+	limits = appendRateWindow(limits, key, snap.LimitName, "primary", snap.Primary)
+	return appendRateWindow(limits, key, snap.LimitName, "secondary", snap.Secondary)
+}
+
 func appendRateWindow(limits []model.UsageLimit, key, name, kind string, w *rateWindow) []model.UsageLimit {
-	if w == nil {
+	if w == nil || w.UsedPercent == nil {
 		return limits
 	}
 	if name == "" {
@@ -151,7 +155,7 @@ func appendRateWindow(limits []model.UsageLimit, key, name, kind string, w *rate
 	if w.WindowDurationMins > 0 {
 		label = fmt.Sprintf("%s · %s window", name, (time.Duration(w.WindowDurationMins) * time.Minute).String())
 	}
-	l := model.UsageLimit{Kind: key + "_" + kind, Label: label, Percent: w.UsedPercent, Active: w.UsedPercent >= 100}
+	l := model.UsageLimit{Kind: key + "_" + kind, Label: label, Percent: *w.UsedPercent, Active: *w.UsedPercent >= 100}
 	if w.ResetsAt > 0 {
 		l.ResetsAt = time.Unix(w.ResetsAt, 0)
 	}

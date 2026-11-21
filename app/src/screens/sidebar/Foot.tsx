@@ -18,6 +18,7 @@ import { tid, type DataSet } from "../../ui/tid.ts";
 import { useControlRef } from "../../ui/useControlRef";
 import { webStyle } from "../../ui/webstyle.ts";
 import { ServersButton } from "../servers";
+import { PlanGauge } from "../usage/PlanGauge.tsx";
 import { SettingsButton } from "../voice/SettingsButton.tsx";
 import { useSideHidden, Text } from "./parts.tsx";
 
@@ -36,7 +37,7 @@ export function Foot() {
         <Text size={12} tone="muted" numberOfLines={1}>Show archived</Text>
       </Pressable>
       <ServersButton />
-      <View style={styles.end}><LibraryButton /><SettingsButton /><ThemePicker /></View>
+      <View style={styles.end}><PlanGauge /><LibraryButton /><SettingsButton /><ThemePicker /></View>
     </View>
   );
 }
@@ -117,6 +118,6 @@ const styles = StyleSheet.create({
   archived: { flexGrow: 1, flexShrink: 0, flexDirection: "row", alignItems: "center", gap: 8 },
   footButton: { width: 28, height: 26, borderWidth: 1, borderRadius: 7, alignItems: "center", justifyContent: "center", flexShrink: 0 },
   dot: { position: "absolute", top: -3, right: -3, width: 7, height: 7, borderRadius: 4 },
-  end: { flexShrink: 0, flexDirection: "row", alignItems: "center", justifyContent: "flex-end", gap: 4, minWidth: 74, marginLeft: "auto" },
+  end: { flexShrink: 0, flexDirection: "row", alignItems: "center", justifyContent: "flex-end", gap: 4, minWidth: 74, maxWidth: "100%", marginLeft: "auto" },
   themeButton: { height: 26, flexDirection: "row", alignItems: "center", gap: 4, paddingLeft: 7, paddingRight: 6, borderWidth: 1, borderRadius: 7, flexShrink: 0 },
 });

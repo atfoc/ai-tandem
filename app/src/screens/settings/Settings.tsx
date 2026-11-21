@@ -15,6 +15,7 @@ import { Cell, CellGroup } from "../../ui/Cells.tsx";
 import { MicIcon, SunIcon } from "../../ui/icons.tsx";
 import { PHONE } from "../../ui/metrics.ts";
 import { useTheme, useTokens } from "../../ui/theme.tsx";
+import { openPlanOverview } from "../usage/overviewOpen.ts";
 import { pushScreen, subscribePushed } from "../shell/screens.ts";
 import { AccountsGlyph, ArchiveGlyph, InfoGlyph, IndentGlyph, LibraryGlyph, ServersGlyph, Tile } from "./icons.tsx";
 import { S1_TID } from "./ids.ts";
@@ -55,6 +56,7 @@ export function Settings() {
           leading={<Tile colour="viz1">{(c) => <ServersGlyph color={c} />}</Tile>} />
       </CellGroup>
       <CellGroup title="Agents">
+        <Cell {...row("plan-usage")} label="Plan usage" onPress={() => openPlanOverview()} />
         <Cell {...row(ACCOUNTS_SCREEN)} label={SCREEN_WORDS.settingsRow} sub={accounts.text}
           leading={<Tile colour="claude">{(c) => <AccountsGlyph color={c} />}</Tile>} />
       </CellGroup>

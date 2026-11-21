@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"testing"
@@ -70,6 +71,9 @@ func TestAccountsUsage(t *testing.T) {
 		fetches: map[model.AgentKind]int{},
 	}
 	u := w.usage()
+	ctx := context.Background()
+	now := time.Now()
+	u.cache(work).Now = func() time.Time { return now }
 
 	// No usage call for a kind that is no account, nor for a removed account.
 	if u.For(model.Claude) != nil || u.For(model.Cursor) != nil {
@@ -85,11 +89,12 @@ func TestAccountsUsage(t *testing.T) {
 		t.Fatal("no usage call for a running account")
 	}
 	for range 2 {
-		if _, err := get(false); err != nil {
+		if _, err := get(ctx, false); err != nil {
 			t.Fatalf("usage of a running account: %v", err)
 		}
 	}
-	if _, err := u.For(work)(true); err != nil {
+	now = now.Add(time.Minute)
+	if _, err := u.For(work)(ctx, true); err != nil {
 		t.Fatalf("fresh usage: %v", err)
 	}
 	if n := w.fetches[work]; n != 2 {
@@ -97,12 +102,12 @@ func TestAccountsUsage(t *testing.T) {
 	}
 
 	// A stopped container: refused, and nothing is read (no container is started for it).
-	if _, err := u.For(home)(false); !errors.Is(err, aliases.ErrStopped) {
+	if _, err := u.For(home)(ctx, false); !errors.Is(err, aliases.ErrStopped) {
 		t.Errorf("usage of a stopped account: %v, want %v", err, aliases.ErrStopped)
 	}
 	for _, s := range []string{aliases.ContainerNone, aliases.ContainerPreparing, aliases.ContainerError} {
 		w.set(func() { w.states[home] = s })
-		if _, err := u.For(home)(true); !errors.Is(err, aliases.ErrStopped) {
+		if _, err := u.For(home)(ctx, true); !errors.Is(err, aliases.ErrStopped) {
 			t.Errorf("usage of an account whose container is %s: %v, want %v", s, err, aliases.ErrStopped)
 		}
 	}
@@ -113,14 +118,14 @@ func TestAccountsUsage(t *testing.T) {
 	// Docker unavailable: its reason, even with a fresh cache.
 	why := &container.Unavailable{Kind: container.NotRunning, Reason: "Docker is not running"}
 	w.set(func() { w.docker = why })
-	if _, err := get(false); !errors.Is(err, why) {
+	if _, err := get(ctx, false); !errors.Is(err, why) {
 		t.Errorf("usage without Docker: %v, want Docker's reason", err)
 	}
 	w.set(func() { w.docker = nil })
 
 	// An account removed after its call was given: refused as removed.
 	w.set(func() { delete(w.states, work) })
-	if _, err := get(false); !errors.Is(err, aliases.ErrRemoved) {
+	if _, err := get(ctx, false); !errors.Is(err, aliases.ErrRemoved) {
 		t.Errorf("usage of a removed account: %v, want %v", err, aliases.ErrRemoved)
 	}
 	if u.For(work) != nil {

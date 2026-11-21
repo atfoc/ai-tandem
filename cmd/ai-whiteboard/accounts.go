@@ -4,6 +4,7 @@ package main
 // container of its own. What serve needs to set them up is here.
 
 import (
+	"context"
 	"log"
 	"net"
 	"net/url"
@@ -20,6 +21,7 @@ import (
 	"ai-whiteboard/internal/editorbridge"
 	"ai-whiteboard/internal/model"
 	"ai-whiteboard/internal/prompts"
+	"ai-whiteboard/internal/server"
 	"ai-whiteboard/internal/store"
 	"ai-whiteboard/internal/usable"
 )
@@ -37,6 +39,7 @@ type accountsSetup struct {
 	st         *store.Store
 	br         *editorbridge.Bridge
 	agents     *usable.Set
+	planUsage  func(model.AgentKind, model.PlanUsage)
 }
 
 // openAccounts makes the accounts' service. It calls neither Docker nor Claude, so a Docker that
@@ -49,11 +52,12 @@ func openAccounts(c accountsSetup) *aliases.Service {
 	var err error
 	svc, err = aliases.New(aliases.Options{
 		Root: c.root, Home: c.home, Containers: c.docker,
-		ClaudeBin: aliasClaude(),
-		Prompt:    prompts.Claude(),
-		MCPURL:    containerMCPURL(c.mcpPort),
-		Host:      c.host,
-		Broadcast: c.br.Broadcast,
+		ClaudeBin:   aliasClaude(),
+		Prompt:      prompts.Claude(),
+		MCPURL:      containerMCPURL(c.mcpPort),
+		Host:        c.host,
+		OnPlanUsage: c.planUsage,
+		Broadcast:   c.br.Broadcast,
 		// The agent list is looked at again; a change of it wakes the agents' Watch, which sends
 		// the "agents" event.
 		Changed: func() { c.agents.Refresh() },
@@ -142,14 +146,46 @@ func newAccountsUsage(svc *aliases.Service, docker *container.Manager) *accounts
 }
 
 // For is the usage call of kind; nil when kind is no account, or a removed one.
-func (u *accountsUsage) For(kind model.AgentKind) func(fresh bool) (model.PlanUsage, error) {
+func (u *accountsUsage) For(kind model.AgentKind) server.UsageCheck {
+	get := u.cacheFor(kind)
+	if get == nil {
+		return nil
+	}
+	return func(ctx context.Context, fresh bool) (model.PlanUsage, error) {
+		c, err := get()
+		if err != nil {
+			return model.PlanUsage{}, err
+		}
+		return c.Get(ctx, fresh)
+	}
+}
+
+func (u *accountsUsage) cacheFor(kind model.AgentKind) func() (*agent.UsageCache, error) {
 	if !model.IsAlias(kind) {
 		return nil
 	}
 	if _, ok := u.state(kind); !ok {
 		return nil
 	}
+	c := u.cache(kind)
+	return func() (*agent.UsageCache, error) {
+		if err := u.docker(); err != nil {
+			return nil, err
+		}
+		state, ok := u.state(kind)
+		if !ok {
+			return nil, aliases.ErrRemoved
+		}
+		if state != aliases.ContainerRunning {
+			return nil, aliases.ErrStopped
+		}
+		return c, nil
+	}
+}
+
+func (u *accountsUsage) cache(kind model.AgentKind) *agent.UsageCache {
 	u.mu.Lock()
+	defer u.mu.Unlock()
 	if u.caches == nil {
 		u.caches = map[model.AgentKind]*agent.UsageCache{}
 	}
@@ -158,18 +194,5 @@ func (u *accountsUsage) For(kind model.AgentKind) func(fresh bool) (model.PlanUs
 		c = &agent.UsageCache{Fetch: func() (model.PlanUsage, error) { return u.fetch(kind) }, TTL: time.Minute}
 		u.caches[kind] = c
 	}
-	u.mu.Unlock()
-	return func(fresh bool) (model.PlanUsage, error) {
-		if err := u.docker(); err != nil {
-			return model.PlanUsage{}, err
-		}
-		state, ok := u.state(kind)
-		if !ok {
-			return model.PlanUsage{}, aliases.ErrRemoved
-		}
-		if state != aliases.ContainerRunning {
-			return model.PlanUsage{}, aliases.ErrStopped
-		}
-		return c.Get(fresh)
-	}
+	return c
 }

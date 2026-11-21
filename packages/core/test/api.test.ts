@@ -12,6 +12,16 @@ const calls = fake.calls;
 const accepted = () => ok({ ok: true, branch: "0f0f0f0f" });
 beforeEach(() => { fake.reset(); fake.handler = accepted; fake.appHandler = () => undefined; });
 
+test("plan usage overview makes one call to the named server", async () => {
+  const results = [{ agent: "codex", error: "Unavailable" }];
+  fake.handler = () => ok(results);
+  const signal = new AbortController().signal;
+  assert.deepEqual(await api.usageOverview("s_1", true, "request a", signal), results);
+  assert.deepEqual(calls.map(({ server, method, path }) => [server, method, path]), [
+    ["s_1", "GET", "/api/usage?request=request%20a&fresh=1"],
+  ]);
+});
+
 test("api.send: a target with a model and an effort is posted whole, and the branch is not in the query", async () => {
   const answer = await api.send("c_1", "main", "hi", "ctx", [], { branch: "main", at: 3, new: true, model: "x", effort: "low" });
   assert.deepEqual(answer, { ok: true, branch: "0f0f0f0f" });
@@ -114,7 +124,7 @@ test("api.deleteChat and deleteBoard have no query: there is no record to remove
 const png = new Blob(["x"], { type: "image/png" });
 const SECTION: Record<keyof typeof api, [args: unknown[], method: string, path: string, body?: unknown] | null> = {
   // about no thing of a server
-  flushed: null, rpcReply: null, dirs: null, usage: null,
+  flushed: null, rpcReply: null, dirs: null, usage: null, usageOverview: null,
   reveal: null, // an owner's thing of the app, for a board of this computer: no call
   newGroup: [["s_1", "Shop", "s_1~g_1"], "POST", "/api/groups", { name: "Shop", parent: "g_1" }],
   renameGroup: [["s_1~g_1", "Shop"], "PATCH", "/api/groups/g_1", { name: "Shop" }],

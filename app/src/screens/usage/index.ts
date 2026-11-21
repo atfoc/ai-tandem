@@ -1,9 +1,11 @@
 // The context ring and the usage popup (package S9). Self-contained: the composer (K3) draws `ContextMeter` in its toolbar, and the subagent rows
 // and the drawer (S7) draw `SubMeter`; the phone's sheet registers itself in the shell's `Overlays` slot (T3).
 import { setSlot } from "../shell/slots.tsx";
+import { PlanOverviewHost } from "./PlanOverview.tsx";
 import { UsageSheet } from "./UsageSheet.tsx";
 
 setSlot("Overlays", UsageSheet);
+setSlot("Overlays", PlanOverviewHost);
 
 export { ContextMeter } from "./ContextMeter.tsx";
 export { CtxError, CtxRing, type CtxRingProps } from "./CtxRing.tsx";

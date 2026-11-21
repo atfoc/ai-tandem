@@ -201,7 +201,7 @@ type ContextFact struct {
 }
 
 // PlanUsage is an agent's plan usage limits: Claude's as `claude -p /usage` reports them,
-// Cursor's via `cursor-cost` and Codex's via its app server. It is fetched when the client asks and never stored.
+// Cursor's via `cursor-cost` and Codex's via its app server. It is kept in memory only.
 type PlanUsage struct {
 	Plan      bool         `json:"plan"`           // false: no limits were reported (API-key login, logged out)
 	Note      string       `json:"note,omitempty"` // Plan false: why (Claude: the first line /usage printed); true: a warning about the limits

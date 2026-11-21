@@ -93,6 +93,7 @@ var ClientRoutes = []string{
 	"DELETE /api/chats/{id}",
 	"POST /api/chats/{id}/unfollow",
 	"GET /api/dirs",
+	"GET /api/usage",
 	"GET /api/usage/{agent}",
 	"POST /api/boards",
 	"GET /api/boards/{id}/scene",

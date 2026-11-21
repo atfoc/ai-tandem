@@ -9,10 +9,10 @@ import { IconButton } from "../../ui/IconButton.tsx";
 import { useTheme } from "../../ui/theme.tsx";
 import { tid } from "../../ui/tid.ts";
 
-export function SettingsButton() {
+export function SettingsButton({ testID = "settings-btn" }: { testID?: string }) {
   const { tokens: t } = useTheme();
   return (
-    <IconButton {...tid("settings-btn")} title={SETTINGS_BUTTON} aria-haspopup="dialog" onPress={openVoiceSettings}
+    <IconButton {...tid(testID)} title={SETTINGS_BUTTON} aria-haspopup="dialog" onPress={openVoiceSettings}
       style={[styles.btn, { borderColor: t.line, backgroundColor: t.bg }]}>
       {(c) => <GearIcon color={c} />}
     </IconButton>

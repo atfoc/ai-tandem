@@ -35,7 +35,7 @@ var l5Table = []string{
 	"POST /api/chats/{id}/images", "GET /api/chats/{id}/images/{image}",
 	"POST /api/chats/{id}/fork",
 	"POST /api/chats/{id}/archive", "POST /api/chats/{id}/unarchive", "DELETE /api/chats/{id}", "POST /api/chats/{id}/unfollow",
-	"GET /api/dirs", "GET /api/usage/{agent}",
+	"GET /api/dirs", "GET /api/usage", "GET /api/usage/{agent}",
 	"POST /api/boards",
 	"GET /api/boards/{id}/scene", "PUT /api/boards/{id}/scene", "POST /api/boards/{id}/take", "POST /api/boards/{id}/release",
 	"POST /api/boards/{id}/follow", "POST /api/boards/{id}/unfollow",
@@ -211,6 +211,7 @@ func TestLevel5TableRoutesServeAClient(t *testing.T) {
 	ask("DELETE /api/chats/{id}", cx, "", nil, 200, done)
 
 	ask("GET /api/dirs", "", "?path="+url.QueryEscape(e.cwd), nil, 200, `"path":"`+e.cwd+`"`)
+	ask("GET /api/usage", "", "", nil, 200, `"agent"`)
 	ask("GET /api/usage/{agent}", "", "", nil, 404, `{"error":"usage not available"}`)
 
 	// Boards: the owner's board, which the client reads, takes, draws on and files.

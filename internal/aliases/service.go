@@ -874,6 +874,9 @@ func (s *Service) spawnerOf(id string) *claude.Spawner {
 			Bin: s.o.ClaudeBin, AppRoot: s.root, Home: "", Prompt: s.o.Prompt,
 			Runner: &accountRunner{s: s, id: id, mode: ensureQuick}, MCPURL: s.o.MCPURL, MCPDir: MCPDir(s.root, id),
 		}
+		if s.o.OnPlanUsage != nil {
+			r.spawner.OnPlanUsage = func(usage model.PlanUsage) { s.o.OnPlanUsage(model.AliasKind(id), usage) }
+		}
 	}
 	return r.spawner
 }

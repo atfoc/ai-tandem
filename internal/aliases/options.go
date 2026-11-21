@@ -33,6 +33,8 @@ type Options struct {
 	Host HostAuth
 	// Claude makes the Claude of an account from its spawner; nil = ClaudeOf. Tests give fakes.
 	Claude func(a Alias, sp *claude.Spawner) Claude
+	// OnPlanUsage receives passive usage from an account's running chat.
+	OnPlanUsage func(model.AgentKind, model.PlanUsage)
 
 	// Broadcast sends a stream event to every client ({"type": EventAliases, "aliases": List});
 	// nil = none. It is never called with a lock of the service held.
