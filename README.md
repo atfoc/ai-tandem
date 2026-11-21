@@ -121,10 +121,10 @@ the result, so the orchestrator can run `git fetch -- "<clone path>" "refs/heads
 the original repository. The fetched commit is available as `FETCH_HEAD`. Fetching writes to the
 original repository's Git metadata, so the orchestrator's own approval policy applies.
 
-When Codex offers session approval, the first Git worker approval card says that **Allow** also
+Tandem pre-approves its own board tools in Codex, including subagent tools where the chat permits
+them. When Codex offers a Git worker approval card, **Allow** with session approval also
 covers later `spawn_subagent` calls from the same running Codex session. This covers both Git and
-ordinary workers. A new Codex process asks again, and policies requiring per-call approval still
-ask each time.
+ordinary workers. Session approval lasts until the Codex process restarts.
 
 Tandem keeps the clone under the sibling directory `<Whiteboard state directory>-workers` for
 resume and local fetch. Remove the clone when you have fetched its work and no longer need to
@@ -200,8 +200,8 @@ There is no download: you build AI Whiteboard from source.
   [Codex CLI](https://learn.chatgpt.com/docs/codex/cli) 0.170.0 or later (`codex`), or pi (`pi`), on your `PATH`
 - Codex uses the server user’s existing CLI login and configuration. Select **Codex** in the chat
   composer. To use a binary outside the server’s PATH, pass `-codex /path/to/codex`.
-  Codex protects Tandem’s data folder in its default sandbox. A user-approved escalation can
-  give a command access outside that sandbox.
+  Codex protects Tandem’s data folder in its workspace sandbox. Tandem uses Codex Auto-review
+  to decide eligible requests for access outside the sandbox.
 - For Claude accounts only: [Docker](https://docs.docker.com/get-docker/) (Docker Desktop on a Mac),
   running. Without it everything else works, and the accounts are listed greyed with the reason.
 

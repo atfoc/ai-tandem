@@ -296,12 +296,19 @@ func fakeServer() int {
 		case "thread/start", "thread/resume", "thread/fork":
 			var opts struct {
 				ThreadID, LastTurnID, Permissions, ApprovalPolicy, DeveloperInstructions string
+				ApprovalsReviewer                                                        string
 				Config                                                                   map[string]json.RawMessage
+			}
+			var board struct {
+				HTTPHeaders      map[string]string `json:"http_headers"`
+				ToolApprovalMode string            `json:"default_tools_approval_mode"`
 			}
 			if json.Unmarshal(m.Params, &opts) != nil ||
 				opts.Permissions != "tandem" || opts.ApprovalPolicy != "on-request" ||
+				opts.ApprovalsReviewer != "auto_review" ||
 				opts.DeveloperInstructions != "Use the board." ||
-				!strings.Contains(string(opts.Config["mcp_servers.board"]), "Bearer test-token") ||
+				json.Unmarshal(opts.Config["mcp_servers.board"], &board) != nil ||
+				board.HTTPHeaders["Authorization"] != "Bearer test-token" || board.ToolApprovalMode != "approve" ||
 				string(opts.Config["features.multi_agent"]) != "false" ||
 				string(opts.Config["default_permissions"]) != `"tandem"` {
 				return 2

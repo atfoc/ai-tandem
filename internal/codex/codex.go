@@ -226,7 +226,7 @@ func (s *Spawner) openThread(ctx context.Context, p *proc, src *agent.ForkSource
 func (s *Spawner) threadParams(o agent.SpawnOptions) map[string]any {
 	config := map[string]any{"features.multi_agent": false}
 	params := map[string]any{
-		"config": config, "approvalPolicy": "on-request", "approvalsReviewer": "user",
+		"config": config, "approvalPolicy": "on-request", "approvalsReviewer": "auto_review",
 	}
 	if s.AppRoot != "" {
 		profile := permissionProfile
@@ -271,9 +271,12 @@ func (s *Spawner) threadParams(o agent.SpawnOptions) map[string]any {
 		params["developerInstructions"] = s.Prompt
 	}
 	if o.MCP != nil && o.MCP.MCPURL != "" {
+		// The board server scopes tool access to this chat's token, including subagent limits.
 		config["mcp_servers.board"] = map[string]any{
-			"url": o.MCP.MCPURL, "required": true,
-			"http_headers": map[string]string{"Authorization": "Bearer " + o.MCP.Token},
+			"url":                         o.MCP.MCPURL,
+			"required":                    true,
+			"http_headers":                map[string]string{"Authorization": "Bearer " + o.MCP.Token},
+			"default_tools_approval_mode": "approve",
 		}
 	}
 	return params
